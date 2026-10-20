@@ -10,14 +10,15 @@ import (
 
 const (
 	// Budget about 150 ms of user-space bytes at the observed write rate.
-	// Keep room for two full packets and a short ACK per sender at the
-	// slowest observed rate. QUIC ClientHello/ServerHello flights can span two
-	// Initial datagrams; repeatedly admitting only the first loses the same
-	// crypto suffix on every retry. The fixed maximum stays at 8 KiB, and already
-	// admitted prefixes retain their order. Socket/active bytes are separate.
-	streamIPByteBudget       = 8 * 1024
+	// Reserve room for a two-packet Initial flight alongside replies from
+	// the same device's existing app flows. Per-source fairness groups all
+	// those flows together; sizing only for an otherwise quiet source can
+	// repeatedly lose the same ClientHello suffix. The floor and maximum are
+	// twice the former limits; the age cap and admitted ordering still apply.
+	// Socket/active bytes are separate from this waiting-packet budget.
+	streamIPByteBudget       = 16 * 1024
 	streamIPFullPacketBytes  = TunnelMTU + 2*(fragmentHeader+5)
-	streamIPMinByteBudget    = 2 * (2*streamIPFullPacketBytes + streamFastIPMax + fragmentHeader + 5)
+	streamIPMinByteBudget    = 4 * (2*streamIPFullPacketBytes + streamFastIPMax + fragmentHeader + 5)
 	streamIPSourceByteBudget = streamIPByteBudget / 2
 	streamIPInitialQueueAge  = 2 * time.Second
 	streamIPMaxQueueAge      = 5 * time.Second

@@ -36,7 +36,7 @@ func queueTestAppUDP(size int, source byte, srcPort, dstPort uint16) []byte {
 
 func TestStreamIPQueueProtectsAppSetupFromSameSourceFlood(t *testing.T) {
 	q := newStreamIPSendQueue()
-	q.recordWrite(TunnelMTU, 90*time.Millisecond) // bounded two-packet flight per sender
+	q.recordWrite(TunnelMTU, 90*time.Millisecond) // bounded source share at a slow rate
 	now := time.Now()
 	app := queueTestAppUDP(1230, 1, 49200, AppSessionPort)
 	if !q.enqueue(1, app, now) || !q.enqueue(2, queueTestIP(1228, 2), now) {
@@ -54,7 +54,7 @@ func TestStreamIPQueueProtectsAppSetupFromSameSourceFlood(t *testing.T) {
 	if !ok || second.sequence != 2 {
 		t.Fatalf("app priority displaced the reserved other-source bulk packet: second=%+v ok=%t", second, ok)
 	}
-	if stats := q.snapshot(); stats.ByteLimit != streamIPMinByteBudget || stats.Bytes > stats.ByteLimit || stats.Packets != 1 || stats.DroppedCapacity == 0 {
+	if stats := q.snapshot(); stats.ByteLimit != streamIPMinByteBudget || stats.Bytes > stats.ByteLimit || stats.Packets != 3 || stats.DroppedCapacity == 0 {
 		t.Fatalf("queue bounds or overload accounting changed: %+v", stats)
 	}
 }
@@ -95,6 +95,8 @@ func TestStreamIPQueueAppSetupDisplacesOwnBulkAndPrioritizesResponse(t *testing.
 	now := time.Now()
 	q.enqueue(1, queueTestIP(1228, 1), now)
 	q.enqueue(2, queueTestIP(1228, 1), now)
+	q.enqueue(5, queueTestIP(1228, 1), now)
+	q.enqueue(6, queueTestIP(1228, 1), now)
 	q.enqueue(4, queueTestIP(1228, 2), now)
 	if !q.enqueue(3, queueTestAppUDP(1230, 1, 49200, AppSessionPort), now) {
 		t.Fatal("full-size app Initial was rejected behind same-source ICMP")
@@ -107,7 +109,7 @@ func TestStreamIPQueueAppSetupDisplacesOwnBulkAndPrioritizesResponse(t *testing.
 	if !streamFastRoutedIP(queueTestAppUDP(624, 3, AppSessionPort, 49200)) {
 		t.Fatal("server QUIC reply was not prioritized")
 	}
-	if stats := q.snapshot(); stats.Bytes > stats.ByteLimit || stats.Packets != 2 || stats.DroppedCapacity != 1 {
+	if stats := q.snapshot(); stats.Bytes > stats.ByteLimit || stats.Packets != 4 || stats.DroppedCapacity != 1 {
 		t.Fatalf("app admission exceeded bounded queue: %+v", stats)
 	}
 }
@@ -139,7 +141,7 @@ func TestStreamIPQueueBoundsBytesAndSources(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		q.enqueue(uint32(i), queueTestIP(1200, 1), now)
 	}
-	if q.stats.Bytes > streamIPSourceByteBudget || q.stats.Packets > 3 {
+	if q.stats.Bytes > streamIPSourceByteBudget || q.stats.Packets > 4 {
 		t.Fatalf("one sender monopolized the queue: %+v", q.snapshot())
 	}
 	for source := byte(2); source <= 4; source++ {
@@ -148,7 +150,7 @@ func TestStreamIPQueueBoundsBytesAndSources(t *testing.T) {
 		}
 	}
 	stats := q.snapshot()
-	if stats.Bytes > stats.ByteLimit || stats.Packets != 4 || stats.DroppedCapacity == 0 {
+	if stats.Bytes > stats.ByteLimit || stats.Packets != 9 || stats.DroppedCapacity == 0 {
 		t.Fatalf("byte cap/overload counters: %+v", stats)
 	}
 	if q.sourceBytes(queueTestSource(1)) == 0 || q.sourceBytes(queueTestSource(2)) == 0 {
@@ -226,7 +228,7 @@ func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 	q := newStreamIPSendQueue()
 	q.recordWrite(TunnelMTU, 90*time.Millisecond) // 14 KiB/s Pi-class link.
 	if got := q.snapshot().ByteLimit; got != streamIPMinByteBudget {
-		t.Fatalf("slow-link byte budget = %d, want room for two full packets and a short ACK per sender", got)
+		t.Fatalf("slow-link byte budget = %d, want bounded room for new flights and existing replies", got)
 	}
 	now := time.Now()
 	served := 0
@@ -244,7 +246,7 @@ func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 			q.enqueue(uint32(300+round*32+i), queueTestIP(TunnelMTU, 1), now)
 		}
 		stats := q.snapshot()
-		if stats.Bytes > stats.ByteLimit || stats.Packets != 3 || q.sourceBytes(queueTestSource(2)) == 0 {
+		if stats.Bytes > stats.ByteLimit || stats.Packets != 5 || q.sourceBytes(queueTestSource(2)) == 0 {
 			t.Fatalf("round %d: A flood evicted B or exceeded byte cap: %+v", round, stats)
 		}
 		for _, source := range [][16]byte{queueTestSource(2), queueTestSource(1)} {
@@ -253,11 +255,13 @@ func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 				t.Fatalf("round %d: dequeued source %x, ok=%t; want %x", round, packet.source, ok, source)
 			}
 		}
-		// The larger floor admits a second packet from A. It must follow
-		// both senders' opening packets and drain before the next round.
-		packet, ok := q.pop(now.Add(20*time.Millisecond), &served)
-		if !ok || packet.source != queueTestSource(1) {
-			t.Fatalf("second A packet lost: %+v ok=%t", packet, ok)
+		// A can use four full-packet slots, but B's first packet must still
+		// run before A's later packets. Drain those before the next round.
+		for range 3 {
+			packet, ok := q.pop(now.Add(20*time.Millisecond), &served)
+			if !ok || packet.source != queueTestSource(1) {
+				t.Fatalf("later A packet lost: %+v ok=%t", packet, ok)
+			}
 		}
 	}
 	if stats := q.snapshot(); stats.AgeLimitMS != 2000 || stats.MaxDequeuedWaitMS > 20 || stats.Bytes != 0 {
@@ -330,7 +334,7 @@ func TestStreamIPQueueAdaptsAgeToObservedWriteRate(t *testing.T) {
 		t.Fatalf("fast age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 400*time.Millisecond)
-	if got := q.snapshot().AgeLimitMS; got < 2200 || got > 2300 {
+	if got := q.snapshot().AgeLimitMS; got < 4100 || got > 4200 {
 		t.Fatalf("slow rate did not allow the bounded queue to drain: %d ms", got)
 	}
 }
@@ -361,7 +365,7 @@ func TestStreamIPQueueShrinksImmediatelyAfterSlowWrite(t *testing.T) {
 		q.recordWrite(1280, 10*time.Millisecond)
 	}
 	now := time.Now()
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 12; i++ {
 		q.enqueue(uint32(i+1), queueTestIP(TunnelMTU, byte(i%2+1)), now)
 	}
 	q.recordWrite(1280, 400*time.Millisecond)
@@ -690,18 +694,18 @@ func TestStreamIPQueueRateReductionKeepsAdmittedPrefixes(t *testing.T) {
 		q.recordWrite(TunnelMTU, 10*time.Millisecond)
 	}
 	now := time.Now()
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 12; i++ {
 		q.enqueue(uint32(i+1), queueTestIP(TunnelMTU, byte(i%2+1)), now)
 	}
 	q.recordWrite(TunnelMTU, 400*time.Millisecond)
 	served := 0
-	for want := uint32(1); want <= 4; want++ {
+	for want := uint32(1); want <= 8; want++ {
 		p, ok := q.pop(now, &served)
 		if !ok || p.sequence != want {
 			t.Fatalf("rate reduction discarded a sender's admitted prefix: got %d ok=%t want=%d", p.sequence, ok, want)
 		}
 	}
-	if stats := q.snapshot(); stats.Bytes != 0 || stats.DroppedCapacity != 2 {
+	if stats := q.snapshot(); stats.Bytes != 0 || stats.DroppedCapacity != 4 {
 		t.Fatalf("rate reduction did not retain bounded first packets: %+v", stats)
 	}
 }
@@ -709,14 +713,19 @@ func TestStreamIPQueueRateReductionKeepsAdmittedPrefixes(t *testing.T) {
 func TestStreamIPQueueRejectedFlightDoesNotDiscardOwnBulk(t *testing.T) {
 	q := newStreamIPSendQueue()
 	now := time.Now()
-	if !q.enqueue(1, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) || !q.enqueue(2, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) || !q.enqueue(3, queueTestIP(300, 1), now) {
+	for seq := uint32(1); seq <= 4; seq++ {
+		if !q.enqueue(seq, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) {
+			t.Fatal("fixture does not fit bounded source share")
+		}
+	}
+	if !q.enqueue(5, queueTestIP(300, 1), now) {
 		t.Fatal("fixture does not fit bounded source share")
 	}
-	if q.enqueue(4, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) {
-		t.Fatal("third full flight exceeded its source share")
+	if q.enqueue(6, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) {
+		t.Fatal("fifth full flight exceeded its source share")
 	}
 	served := 0
-	for _, want := range []uint32{1, 2, 3} {
+	for _, want := range []uint32{1, 2, 3, 4, 5} {
 		p, ok := q.pop(now, &served)
 		if !ok || p.sequence != want {
 			t.Fatalf("rejected packet discarded admitted traffic: got %d ok=%t want=%d", p.sequence, ok, want)
@@ -743,9 +752,6 @@ func TestStreamIPQueueAdmitsCompleteTwoInitialFlight(t *testing.T) {
 			if !q.enqueue(3, queueTestAppUDP(80, 1, 49200, AppSessionPort), now) || !q.enqueue(4, queueTestIP(TunnelMTU, 2), now) {
 				t.Fatal("flight consumed ACK or other-sender reservation")
 			}
-			if q.enqueue(5, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) {
-				t.Fatal("third full datagram exceeded bounded source share")
-			}
 			served := 0
 			for _, want := range []uint32{1, 2, 3, 4} {
 				got, ok := q.pop(now, &served)
@@ -753,8 +759,58 @@ func TestStreamIPQueueAdmitsCompleteTwoInitialFlight(t *testing.T) {
 					t.Fatalf("admitted prefix changed: got %d ok=%t want=%d", got.sequence, ok, want)
 				}
 			}
-			if got := q.snapshot(); got.Bytes != 0 || got.DroppedCapacity != 1 {
+			if got := q.snapshot(); got.Bytes != 0 || got.DroppedCapacity != 0 {
 				t.Fatalf("bad queue accounting: %+v", got)
+			}
+		})
+	}
+}
+
+// AV hardware lost every ClientHello suffix at an intermediate BLE hop while
+// small packets from earlier app flows occupied the same source's share. A
+// quiet-source two-Initial test misses that case: source identity is a device,
+// so a new flow competes with the device's existing ACKs and replies.
+func TestStreamIPQueueNewInitialFlightBehindExistingFlowReplies(t *testing.T) {
+	for _, slow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("slow=%t", slow), func(t *testing.T) {
+			q := newStreamIPSendQueue()
+			if slow {
+				q.recordWrite(TunnelMTU, 400*time.Millisecond)
+			}
+			now := time.Now()
+			var admitted []uint32
+			for source := byte(1); source <= 2; source++ {
+				for i := range 8 {
+					seq := uint32(source)*100 + uint32(i)
+					if !q.enqueue(seq, queueTestAppUDP(100, source, 49100+uint16(i), AppSessionPort), now) {
+						t.Fatal("small existing-flow backlog rejected")
+					}
+					admitted = append(admitted, seq)
+				}
+				for i := range 2 {
+					seq := uint32(source)*100 + 10 + uint32(i)
+					if !q.enqueue(seq, queueTestAppUDP(1248, source, 49200, AppSessionPort), now) {
+						t.Fatalf("new source%d ClientHello packet%d lost behind existing replies: %+v", source, i, q.snapshot())
+					}
+					admitted = append(admitted, seq)
+				}
+			}
+			served := 0
+			seen := make(map[uint32]bool)
+			for range admitted {
+				packet, ok := q.pop(now, &served)
+				if !ok || seen[packet.sequence] {
+					t.Fatal("admitted packet lost or duplicated")
+				}
+				seen[packet.sequence] = true
+			}
+			for _, seq := range admitted {
+				if !seen[seq] {
+					t.Fatalf("admitted packet %d displaced", seq)
+				}
+			}
+			if stats := q.snapshot(); stats.Bytes != 0 || stats.DroppedCapacity != 0 || stats.DroppedExpired != 0 {
+				t.Fatalf("bounded mixed-flow admission lost packets: %+v", stats)
 			}
 		})
 	}
