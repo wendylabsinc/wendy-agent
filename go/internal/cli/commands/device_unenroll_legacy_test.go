@@ -2,15 +2,23 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -554,5 +562,197 @@ func TestLegacyCloudUnenrollInventoriesAllPagesBeforeMutation(t *testing.T) {
 				t.Fatalf("operation order = %v, want %v", service.events, tc.wantEvents)
 			}
 		})
+	}
+}
+
+// legacyUnenrollAgent is the device side of numeric legacy unenrollment: an
+// agent enrolled as asset 42 of organization 55 whose reset always succeeds.
+type legacyUnenrollAgent struct {
+	agentpb.WendyProvisioningServiceClient
+	reset bool
+}
+
+func (a *legacyUnenrollAgent) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest, ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
+	return &agentpb.IsProvisionedResponse{Response: &agentpb.IsProvisionedResponse_Provisioned{
+		Provisioned: &agentpb.ProvisionedResponse{CloudHost: "grpc.a.sh:443", OrganizationId: 55, AssetId: 42},
+	}}, nil
+}
+
+func (a *legacyUnenrollAgent) Unprovision(context.Context, *agentpb.UnprovisionRequest, ...grpc.CallOption) (*agentpb.UnprovisionResponse, error) {
+	a.reset = true
+	return &agentpb.UnprovisionResponse{}, nil
+}
+
+// seedSessionBrokerState publishes a fake prepared session broker and returns
+// its state file, so a test can tell whether unenrollment invalidated brokers.
+func seedSessionBrokerState(t *testing.T) string {
+	t.Helper()
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(sessions, "device.json")
+	if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// TestLegacyUnenrollForgetsTheResetIdentity is WDY-3974. Once the agent has
+// reset, its enrolled identity is gone whatever Cloud cleanup does next, so the
+// pins naming it must go too — the report's case is Cloud failing the asset
+// delete after the reset, which used to return before anything was cleared and
+// left every later command refused. A reset that never happened clears nothing.
+func TestLegacyUnenrollForgetsTheResetIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deleteErr  error
+		membersErr error
+		wantReset  bool
+		wantErr    string
+	}{
+		{name: "cloud cleanup succeeds", wantReset: true},
+		{name: "cloud cleanup fails after reset", deleteErr: status.Error(codes.Unknown, ""), wantReset: true, wantErr: "deleting asset 42"},
+		{name: "preflight fails before reset", membersErr: status.Error(codes.PermissionDenied, "not a member"), wantErr: "device was not reset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			other := config.DevicePin{OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "99"}
+			pins := map[string]config.DevicePin{
+				"wendyos-hack-device-7": {OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+				// The same device pinned under another name it was dialled by.
+				"169.254.213.32": {OrgID: 55, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+				"other-device":   other,
+			}
+			readPins := writePinTestConfig(t, pins)
+			seedSPKIPins(t, "urn:wendy:org:55:asset:42", "urn:wendy:org:55:asset:99")
+			brokerState := seedSessionBrokerState(t)
+
+			certificate := activeLegacyUnenrollCertificate(11)
+			service, cloudConn := startLegacyUnenrollSequenceServer(t, []legacyUnenrollListPage{
+				{certificates: []*cloudpb.Certificate{certificate}},
+				{certificates: []*cloudpb.Certificate{certificate}},
+			})
+			service.deleteErr = tc.deleteErr
+			if tc.membersErr != nil {
+				service.memberPages = []legacyUnenrollMembersPage{{err: tc.membersErr}}
+			}
+			origDial := dialLegacyUnenrollCloudFn
+			dialLegacyUnenrollCloudFn = func(ctx context.Context, _, _ string) (*grpc.ClientConn, context.Context, *config.AuthConfig, error) {
+				return cloudConn, ctx, &config.AuthConfig{Certificates: []config.CertificateInfo{{UserID: "selected-user"}}}, nil
+			}
+			t.Cleanup(func() { dialLegacyUnenrollCloudFn = origDial })
+			agent := &legacyUnenrollAgent{}
+			resolveUnenrollTargetFn = func(context.Context, ...resolveOption) (*SelectedDevice, error) {
+				return &SelectedDevice{Agent: &grpcclient.AgentConnection{ProvisioningService: agent}}, nil
+			}
+			jsonOutput = true
+
+			cmd := newDeviceUnenrollCmd()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd.SetContext(ctx)
+			if err := cmd.Flags().Set("yes", "true"); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			var stdout string
+			stderr := captureStderr(t, func() {
+				stdout = captureStdout(t, func() { err = cmd.RunE(cmd, nil) })
+			})
+
+			if agent.reset != tc.wantReset {
+				t.Fatalf("device reset = %v, want %v", agent.reset, tc.wantReset)
+			}
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			got := readPins()
+			spki := readSPKIPins(t)
+			_, brokerErr := os.Stat(brokerState)
+			if !tc.wantReset {
+				if !reflect.DeepEqual(got, pins) || len(spki) != 2 || brokerErr != nil {
+					t.Fatalf("a device that was never reset lost trust state: pins=%v spki=%v broker=%v", got, spki, brokerErr)
+				}
+				return
+			}
+			if want := map[string]config.DevicePin{"other-device": other}; !reflect.DeepEqual(got, want) {
+				t.Errorf("pins after reset = %v, want only the other device's %v", got, want)
+			}
+			if _, ok := spki["urn:wendy:org:55:asset:42"]; ok {
+				t.Error("the reset identity's SPKI pin survived")
+			}
+			if _, ok := spki["urn:wendy:org:55:asset:99"]; !ok {
+				t.Error("another device's SPKI pin was cleared")
+			}
+			if runtime.GOOS != "windows" && !os.IsNotExist(brokerErr) {
+				t.Errorf("session broker state survived the reset: %v", brokerErr)
+			}
+			if !strings.Contains(stderr, `Cleared device pin "wendyos-hack-device-7"`) {
+				t.Errorf("cleared pins were not reported on stderr:\n%s", stderr)
+			}
+			var report map[string]any
+			if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+				t.Fatalf("stdout is not the JSON report (cleared pins belong on stderr): %v\n%s", err, stdout)
+			}
+			if report["deviceReset"] != true || report["pinError"] != nil {
+				t.Errorf("report = %v", report)
+			}
+			if tc.deleteErr != nil {
+				cloudErr, _ := report["cloudError"].(string)
+				retry, _ := report["retryCommand"].(string)
+				if !strings.Contains(cloudErr, "deleting asset 42") || !strings.Contains(retry, "wendy cloud device unenroll --device") {
+					t.Errorf("the Cloud failure and its retry must still be reported: %v", report)
+				}
+			}
+		})
+	}
+}
+
+// TestCloudOnlyUnenrollKeepsDevicePins is the other side of the same rule.
+// Cloud-only removal never contacts or resets the device, which still holds and
+// presents its certificate, so the pin naming it is still the binding the next
+// connection must be judged against.
+func TestCloudOnlyUnenrollKeepsDevicePins(t *testing.T) {
+	preserveCloudUnenrollmentHooks(t)
+	principal := "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/device/desk-device"
+	pins := map[string]config.DevicePin{"desk": {CloudGRPC: "grpc.a.sh:443", Principal: principal}}
+	readPins := writePinTestConfig(t, pins)
+	seedSPKIPin(t, principal)
+	brokerState := seedSessionBrokerState(t)
+	service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "desk-device").v2}
+	startUnenrollResetServer(t, service)
+	resolveUnenrollTargetFn = func(context.Context, ...resolveOption) (*SelectedDevice, error) {
+		t.Fatal("cloud-only unenrollment contacted the device")
+		return nil, nil
+	}
+	deviceFlag = liteTestAssetID
+
+	cmd := newDeviceUnenrollCmd()
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	for name, value := range map[string]string{"cloud-only": "true", "yes": "true"} {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if service.deletes.Load() != 1 {
+		t.Fatalf("cloud asset deletes = %d, want 1", service.deletes.Load())
+	}
+	if got := readPins(); !reflect.DeepEqual(got, pins) {
+		t.Errorf("pins after cloud-only unenroll = %v, want %v", got, pins)
+	}
+	if _, ok := readSPKIPins(t)[principal]; !ok {
+		t.Error("cloud-only unenroll cleared the device's SPKI pin")
+	}
+	if _, err := os.Stat(brokerState); err != nil {
+		t.Errorf("cloud-only unenroll invalidated session brokers: %v", err)
 	}
 }

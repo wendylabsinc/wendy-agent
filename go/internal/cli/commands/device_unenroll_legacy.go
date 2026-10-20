@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -16,6 +18,17 @@ type legacyUnenrollResult struct {
 	DeviceReset         bool
 	CertificatesRevoked int
 	AssetDeleted        bool
+}
+
+// dialLegacyUnenrollCloudFn is a seam over dialCloud for the numeric legacy
+// unenroll path, so its post-reset handling can be tested against a fake Cloud.
+var dialLegacyUnenrollCloudFn = dialCloud
+
+// legacyEnrollmentIdentity is the identity a numeric legacy enrollment's device
+// certificate carries — urn:wendy:org:<org>:asset:<asset>, the key its pins are
+// filed under.
+func legacyEnrollmentIdentity(orgID, assetID int32) certs.WendyIdentity {
+	return certs.WendyIdentity{OrgID: orgID, EntityType: certs.EntityAsset, EntityID: strconv.FormatInt(int64(assetID), 10)}
 }
 
 // Check Cloud before erasing the only local record of the enrollment. Keep

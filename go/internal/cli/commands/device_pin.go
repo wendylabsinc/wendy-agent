@@ -443,6 +443,15 @@ func (e *deviceIdentityRefusalError) CLIMessage() string {
 	return e.diagnostic.message(true)
 }
 
+// CLIMessage renders a pinned device that answered unprovisioned like the
+// identity refusals above, whose recovery steps it shares.
+func (e *noAuthenticatedEndpointError) CLIMessage() string {
+	if e.diagnostic == nil {
+		return tui.ErrorMessage(e.Error())
+	}
+	return e.diagnostic.message(true)
+}
+
 // challengeUnprovisionedDevice handles a connection with no verifiable identity
 // at all. Only a hostname we have previously seen enrolled is challenged: for
 // everything else, connecting to an unprovisioned device is the normal
