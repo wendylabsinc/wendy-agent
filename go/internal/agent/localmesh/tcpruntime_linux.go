@@ -283,11 +283,14 @@ func attachTCPWithCost(ctx context.Context, node *Node, credentials *Credentials
 		}
 		defer listener.Close()
 		conn, err = listener.Accept(handshake)
+		if err != nil {
+			return fmt.Errorf("wendy net QUIC peer %s: %w", peer.Principal(), err)
+		}
 	} else {
 		conn, err = transport.Dial(handshake, pc.RemoteAddr(), tlsConfig, QUICConfig())
-	}
-	if err != nil {
-		return fmt.Errorf("wendy net QUIC peer %s: %w", peer.Principal(), err)
+		if err != nil {
+			return fmt.Errorf("wendy net QUIC peer %s: %w", peer.Principal(), err)
+		}
 	}
 	// quic-go can return a nil accepted connection after rejecting an
 	// unauthenticated peer. Treat it as a failed handshake before Node sees it.
