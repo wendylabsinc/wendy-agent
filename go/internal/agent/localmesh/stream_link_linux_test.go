@@ -80,8 +80,8 @@ func TestStreamLinkSmallIPOvertakesBulkWithoutReorderingFragments(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	if len(link.priority) != 1 || len(link.fastIP) != 1 || len(link.ip) != 3 {
-		t.Fatalf("unexpected queue occupancy: priority=%d fast=%d bulk=%d", len(link.priority), len(link.fastIP), len(link.ip))
+	if len(link.routing) != 1 || len(link.priority) != 0 || len(link.fastIP) != 1 || len(link.ip) != 3 {
+		t.Fatalf("unexpected queue occupancy: routing=%d priority=%d fast=%d bulk=%d", len(link.routing), len(link.priority), len(link.fastIP), len(link.ip))
 	}
 	close(gate.release)
 	want := [][]byte{large[0], {PacketBabel, 1}, small[0], large[1], large[0], large[1]}

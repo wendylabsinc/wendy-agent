@@ -32,8 +32,9 @@ const (
 	// separately fails a write that stops making progress for five seconds.
 	streamWriteBase = 8 * time.Second
 	streamWriteMax  = 45 * time.Second
-	// Keep carrier buffering bounded. Babel and directory traffic must be able
-	// to pass a busy IP tunnel after the current frame completes.
+	// Keep carrier buffering bounded. Give routing a separate queue so a
+	// waiting directory/catalogue frame cannot delay the next Babel hello.
+	streamRoutingQueue  = 32
 	streamPriorityQueue = 32
 	// Reserve a few places for complete small IP packets such as QUIC ACKs
 	// and app port requests. Large packets use the bulk queue, including
@@ -114,11 +115,13 @@ func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Devic
 // accumulating unbounded latency on a slow BLE ACL.
 type streamNodeLink struct {
 	lastPriority bool // owned by the single writer: alternate priority with waiting IP
+	lastRouting  bool // at most one routing frame before another waiting class gets a turn
 
 	conn          net.Conn
 	once          sync.Once
 	controls      chan ControlMessage
 	packets       chan []byte
+	routing       chan streamFrame
 	priority      chan streamFrame
 	fastIP        chan streamFrame
 	ip            chan streamFrame
@@ -234,7 +237,7 @@ func (l *streamNodeLink) topTalker() (outKey talkerKey, outStat talkerStat, inKe
 }
 
 func newStreamNodeLink(conn net.Conn) *streamNodeLink {
-	l := &streamNodeLink{conn: conn, controls: make(chan ControlMessage, 128), packets: make(chan []byte, 128), priority: make(chan streamFrame, streamPriorityQueue), fastIP: make(chan streamFrame, streamFastIPQueue), ip: make(chan streamFrame, streamIPQueue), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{}), done: make(chan struct{}), diagIP: os.Getenv("WENDY_MESH_BLE_QUEUE_DIAG") == "1"}
+	l := &streamNodeLink{conn: conn, controls: make(chan ControlMessage, 128), packets: make(chan []byte, 128), routing: make(chan streamFrame, streamRoutingQueue), priority: make(chan streamFrame, streamPriorityQueue), fastIP: make(chan streamFrame, streamFastIPQueue), ip: make(chan streamFrame, streamIPQueue), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{}), done: make(chan struct{}), diagIP: os.Getenv("WENDY_MESH_BLE_QUEUE_DIAG") == "1"}
 	go l.readLoop()
 	go l.writeLoop()
 	if l.diagIP {
@@ -303,7 +306,7 @@ func (l *streamNodeLink) writeFrame(kind byte, data []byte) error {
 	}
 	queue := l.ip
 	if data[0] == PacketBabel {
-		queue = l.priority
+		queue = l.routing
 	} else if smallWholeIP(data) {
 		queue = l.fastIP
 	}
@@ -331,67 +334,93 @@ func smallWholeIP(data []byte) bool {
 		binary.BigEndian.Uint16(data[7:9]) == 0 && validIP(data[fragmentHeader:])
 }
 
-// nextFrame gives directory/Babel the first turn, then alternates it with
-// waiting IP. A control backlog must not expire every queued packet.
-// Within IP, bulk still gets a turn after at most four small packets.
+// nextFrame gives routing the next frame boundary, with at most one routing
+// frame before waiting metadata/IP gets a turn. Metadata and IP alternate;
+// within IP, bulk still gets a turn after at most four small packets. A frame
+// already being written, including all fragments of one IP packet, is atomic.
 func (l *streamNodeLink) nextFrame(fastServed *int) (streamFrame, bool) {
 	for {
-		if !l.lastPriority {
+		select {
+		case <-l.stop:
+			return streamFrame{}, false
+		default:
+		}
+		if !l.lastRouting {
 			select {
-			case <-l.stop:
-				return streamFrame{}, false
-			case frame := <-l.priority:
-				l.lastPriority = true
+			case frame := <-l.routing:
+				l.lastRouting = true
 				return frame, true
 			default:
 			}
 		}
-		l.lastPriority = false
-		if l.ipPackets != nil {
-			if packet, ok := l.ipPackets.pop(time.Now(), fastServed); ok {
-				return streamFrame{kind: streamWholeIP, data: packet.data, sequence: packet.sequence}, true
-			}
-		}
-		if *fastServed >= streamFastIPBurst {
-			select {
-			case <-l.stop:
-				return streamFrame{}, false
-			case frame := <-l.ip:
-				*fastServed = 0
-				return frame, true
-			default:
-			}
-		}
-		select {
-		case <-l.stop:
-			return streamFrame{}, false
-		case frame := <-l.fastIP:
-			*fastServed++
+		if frame, ok := l.nextNonRoutingFrame(fastServed); ok {
+			l.lastRouting = false
 			return frame, true
-		default:
 		}
 		select {
 		case <-l.stop:
 			return streamFrame{}, false
-		case frame := <-l.ip:
-			*fastServed = 0
+		case frame := <-l.routing:
+			l.lastRouting = true
 			return frame, true
-		default:
-		}
-		select {
-		case <-l.stop:
-			return streamFrame{}, false
 		case frame := <-l.priority:
+			l.lastRouting = false
 			l.lastPriority = true
 			return frame, true
 		case frame := <-l.fastIP:
+			l.lastRouting = false
 			*fastServed++
 			return frame, true
 		case frame := <-l.ip:
+			l.lastRouting = false
 			*fastServed = 0
 			return frame, true
 		case <-l.ipPacketWake():
 		}
+	}
+}
+
+func (l *streamNodeLink) nextNonRoutingFrame(fastServed *int) (streamFrame, bool) {
+	if !l.lastPriority {
+		select {
+		case frame := <-l.priority:
+			l.lastPriority = true
+			return frame, true
+		default:
+		}
+	}
+	l.lastPriority = false
+	if l.ipPackets != nil {
+		if packet, ok := l.ipPackets.pop(time.Now(), fastServed); ok {
+			return streamFrame{kind: streamWholeIP, data: packet.data, sequence: packet.sequence}, true
+		}
+	}
+	if *fastServed >= streamFastIPBurst {
+		select {
+		case frame := <-l.ip:
+			*fastServed = 0
+			return frame, true
+		default:
+		}
+	}
+	select {
+	case frame := <-l.fastIP:
+		*fastServed++
+		return frame, true
+	default:
+	}
+	select {
+	case frame := <-l.ip:
+		*fastServed = 0
+		return frame, true
+	default:
+	}
+	select {
+	case frame := <-l.priority:
+		l.lastPriority = true
+		return frame, true
+	default:
+		return streamFrame{}, false
 	}
 }
 
