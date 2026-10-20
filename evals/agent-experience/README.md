@@ -4,6 +4,48 @@ Measure whether Codex, Claude Code, and Wendy chat can finish the same Wendy tas
 from one prompt. Report each agent and each target separately. A simulator pass
 does not count as a hardware pass.
 
+For a separate **with/without Wendy CLI** experiment, see
+[`with_without.py`](with_without.py). It runs the same Codex model and reasoning
+settings against a supplied headless G1 MuJoCo recorded-expert replay service,
+using Wendy's local Docker provider in one arm and standard Docker tooling in
+the other. It tests deployment from supplied source and repair of a reproduced
+startup configuration fault. This does not measure RL training, physical G1
+setup, remote deployment, or Wendy Agent/MCP capabilities.
+
+That experiment requires a local ARM64 Docker runtime, a common prebuilt
+`g1-sim-bench-deps:20261016` image with Python, NumPy 2.2.6 and MuJoCo 3.12.0,
+and the supplied expert bundle's `model.mjb`, `rollout.npz` and `result.json`.
+Use a new output directory per cohort. Preview its paired randomized plan
+without model calls:
+
+```sh
+python3 evals/agent-experience/with_without.py \
+  --assets /path/to/g1-expert-sim-replay-20260915 --output /path/to/experiment/measured
+```
+
+Run `--calibrate` into a separate output directory first. It exercises the real
+fixture and verifier without a model. Add `--execute` to the measured command
+only after the target, dependency image, CLI versions and context isolation
+have been checked. The script makes up to 20 model attempts by default and
+stops if final token usage is unavailable or cleanup fails. It uses existing
+Codex authentication through a temporary symlink; experiment outputs exclude
+authentication files. Each attempt saves its initial context so the grader can
+reject leaked Wendy skills in the baseline and mismatched model settings.
+Host skills are explicitly disabled because the current CLI's experimental
+`skip_host_skill_discovery` flag alone did not isolate them in preflight.
+
+Render the results and paired uncertainty into HTML/JSON with:
+
+```sh
+python3 evals/agent-experience/report_with_without.py /path/to/experiment
+```
+
+The parent directory must contain `measured/results.jsonl` and its manifest.
+Retain failures, all raw events, the frozen pre-run protocol and the calibration
+evidence. Cached input is a subset of input, and reasoning output is a subset
+of output; do not count either twice. A five-pair cohort describes these tasks
+and does not establish product-wide token savings.
+
 The runner uses Python's standard library on macOS or Linux. It launches the real agent CLIs, saves
 their JSON event streams, and runs a separate verifier against the target. It
 never sends a follow-up prompt or answers an approval request.
