@@ -38,7 +38,9 @@ func quicConfig() *quic.Config {
 	// carrier to drain competing mesh-app setup packets.
 	// Normal multi-hop BLE replies can exceed the upstream 200ms initial
 	// probe timeout. A measured RTT replaces this conservative estimate.
-	return &quic.Config{MaxCryptoStreamSize: localmesh.MaxQUICCryptoStreamSize, InitialRTT: time.Second, HandshakeIdleTimeout: 30 * time.Second, MaxIdleTimeout: 45 * time.Second,
+	// Bound the initial burst on BLE paths with limited buffering; normal
+	// congestion control grows the window as packets are acknowledged.
+	return &quic.Config{MaxCryptoStreamSize: localmesh.MaxQUICCryptoStreamSize, InitialRTT: time.Second, InitialCongestionWindowPackets: 4, HandshakeIdleTimeout: 30 * time.Second, MaxIdleTimeout: 45 * time.Second,
 		MaxIncomingStreams: 8, MaxIncomingUniStreams: -1, Allow0RTT: false,
 		// The routed TUN carries at most 1320 bytes end to end. quic-go's
 		// default 1280-byte UDP payload exceeds that once IPv6/UDP headers
