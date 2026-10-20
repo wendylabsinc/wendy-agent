@@ -1,4 +1,4 @@
-// Package meshsharing controls opt-in local-mesh Internet sharing. It consumes
+// Package meshsharing controls opt-in local-wendy net Internet sharing. It consumes
 // signed, validated Node manifests and the selected Babel route; host policy
 // owns only its NAT, DNS and resolver changes.
 package meshsharing
@@ -110,7 +110,7 @@ func Decide(c Config, self meshid.Device, uplinks []Uplink, gateway Gateway, now
 		!now.Before(gateway.Expires) || !meshid.InMesh(gateway.Address) || gateway.Link == 0 {
 		return Decision{Mode: "offline", Reason: "no verified reachable gateway"}
 	}
-	return Decision{Mode: "roaming", GatewayDevice: gateway.Device, GatewayAddress: gateway.Address, DNSLink: gateway.Link, Reason: "using signed mesh gateway"}
+	return Decision{Mode: "roaming", GatewayDevice: gateway.Device, GatewayAddress: gateway.Address, DNSLink: gateway.Link, Reason: "using signed wendy net gateway"}
 }
 
 // SignedGateway binds a verified catalog capability and the donor's manifest

@@ -29,7 +29,6 @@ type Runtime struct {
 	transfers       []*freshTransfer
 	identityRepairs map[string]*identityRepair
 	hub             *localmesh.ControlHub
-	onGatewayChange func()
 }
 
 func NewRuntime(catalog *Catalog, snapshot func() localmesh.NodeSnapshot) (*Runtime, error) {
@@ -185,12 +184,6 @@ func (r *Runtime) receive(p *catalogPeer, data []byte) error {
 	for _, w := range changed {
 		// Receiving a verified copy proves this supplier has it, without an echo.
 		r.broadcastExcept(w, p.id)
-		if r.onGatewayChange != nil {
-			var record Record
-			if json.Unmarshal(w.Body, &record) == nil && IsGatewayOffer(record) {
-				r.onGatewayChange()
-			}
-		}
 	}
 	return nil
 }

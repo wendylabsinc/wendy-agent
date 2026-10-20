@@ -62,7 +62,7 @@ type linuxTunnelPolicy struct {
 
 func newLinuxTunnelPolicy(ctx context.Context, credentials *localmesh.Credentials) (p *linuxTunnelPolicy, err error) {
 	if credentials == nil || !credentials.Device.IsValid() {
-		return nil, errors.New("mesh Internet sharing requires credentials")
+		return nil, errors.New("Wendy Net Internet sharing requires credentials")
 	}
 	p = &linuxTunnelPolicy{credentials: credentials, grants: map[uint16]*grantedTunnel{}, resolver: &localmesh.HostPolicy{}, probeIPv6: probeUplinkIPv6}
 	defer func() {
@@ -155,7 +155,7 @@ func (p *linuxTunnelPolicy) SetSharing(ctx context.Context, iface, upstream stri
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return errors.New("mesh Internet policy closed")
+		return errors.New("Wendy Net Internet policy closed")
 	}
 	if iface != "" && (!validPhysicalName(iface) || net.ParseIP(upstream) == nil) {
 		return errors.New("invalid sharing uplink or DNS")
@@ -183,11 +183,11 @@ func (p *linuxTunnelPolicy) SetSharing(ctx context.Context, iface, upstream stri
 		select {
 		case exit := <-p.dnsDone:
 			p.dnsDone <- exit
-			return errors.Join(fmt.Errorf("mesh DNS proxy stopped: %v", exit), p.stopSharingLocked(ctx))
+			return errors.Join(fmt.Errorf("Wendy Net DNS proxy stopped: %v", exit), p.stopSharingLocked(ctx))
 		default:
 		}
 	}
-	if iface == p.sharing && upstream == p.upstream && share6 == p.sharing6 && sameDonorRoutes(routes, p.donorRouting.routes) && (iface != "" || (len(p.grants) == 0 && len(p.shareRules) == 0)) {
+	if iface == p.sharing && upstream == p.upstream && share6 == p.sharing6 && sameDonorRoutes(routes, p.donorRouting.routes) && (iface != "" || (len(p.grants) == 0 && len(p.shareRules) == 0 && !p.forwarding6)) {
 		return nil
 	}
 	if err = p.stopSharingLocked(ctx); err != nil {
@@ -236,7 +236,7 @@ func (p *linuxTunnelPolicy) SetSharing(ctx context.Context, iface, upstream stri
 	select {
 	case exit := <-done:
 		done <- exit
-		return fmt.Errorf("mesh DNS proxy failed to start: %v", exit)
+		return fmt.Errorf("Wendy Net DNS proxy failed to start: %v", exit)
 	case <-time.After(150 * time.Millisecond):
 	}
 	p.sharing, p.upstream, p.sharing6 = iface, upstream, share6
@@ -374,7 +374,7 @@ func (p *linuxTunnelPolicy) SetGateway(ctx context.Context, peer meshid.Device) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return errors.New("mesh Internet policy closed")
+		return errors.New("Wendy Net Internet policy closed")
 	}
 	if p.borrowed != nil && p.borrowed.peer == peer {
 		select {
@@ -517,10 +517,15 @@ func (p *linuxTunnelPolicy) stopBorrowingLocked(ctx context.Context) error {
 func (p *linuxTunnelPolicy) Close() error {
 	p.mu.Lock()
 	p.closed = true
+	server := p.server
+	p.server = nil
 	p.mu.Unlock()
 	var errs []error
-	if p.server != nil {
-		errs = append(errs, p.server.Close())
+	if server != nil {
+		// The drained server can report a historical lease-cleanup failure.
+		// Keep that error for this attempt; subsequent Close calls retry the
+		// retained grants below instead of replaying the same stale error.
+		errs = append(errs, server.Close())
 	}
 	p.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

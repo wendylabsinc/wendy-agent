@@ -15,3 +15,4 @@ func newMeshSharingManager(_ string, _ *meshCatalogManager, _ *zap.Logger) *mesh
 func (*meshSharingManager) Status() services.LocalMeshRuntimeStatus {
 	return services.LocalMeshRuntimeStatus{}
 }
+func (*meshSharingManager) Deactivate() error { return nil }

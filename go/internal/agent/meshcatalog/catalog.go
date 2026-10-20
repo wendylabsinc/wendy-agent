@@ -222,7 +222,7 @@ func (c *Catalog) Publish(spec PublishSpec, now time.Time) (SignedRecord, error)
 	c.mutation.Lock()
 	defer c.mutation.Unlock()
 	if spec.AppID == GatewayAppID || spec.ServiceID == GatewayServiceID {
-		return SignedRecord{}, errors.New("reserved mesh gateway identity cannot be published by an app")
+		return SignedRecord{}, errors.New("reserved wendy net gateway identity cannot be published by an app")
 	}
 	if err := c.authorize(spec.AppID, spec.Type, spec.HostPort); err != nil {
 		return SignedRecord{}, err
@@ -252,7 +252,7 @@ func (c *Catalog) Remove(appID, serviceID string, now time.Time) (SignedRecord, 
 	c.mutation.Lock()
 	defer c.mutation.Unlock()
 	if appID == GatewayAppID || serviceID == GatewayServiceID {
-		return SignedRecord{}, errors.New("reserved mesh gateway identity cannot be withdrawn by an app")
+		return SignedRecord{}, errors.New("reserved wendy net gateway identity cannot be withdrawn by an app")
 	}
 	key := Key{c.mesh, c.principal, appID, serviceID}
 	c.mu.Lock()

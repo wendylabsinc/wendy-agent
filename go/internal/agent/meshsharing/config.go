@@ -23,7 +23,7 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	if !stat.Mode().IsRegular() || stat.Size() > 16*1024 {
-		return Config{}, errors.New("invalid mesh sharing configuration file")
+		return Config{}, errors.New("invalid wendy net Internet sharing configuration file")
 	}
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
@@ -33,7 +33,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 	var extra any
 	if err = decoder.Decode(&extra); err != io.EOF {
-		return Config{}, errors.New("trailing mesh sharing configuration")
+		return Config{}, errors.New("trailing wendy net Internet sharing configuration")
 	}
 	if err = config.Validate(); err != nil {
 		return Config{}, err

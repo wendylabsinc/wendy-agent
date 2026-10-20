@@ -3,6 +3,7 @@
 package meshsharing
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/vishvananda/netlink"
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"golang.org/x/sys/unix"
 )
 
@@ -235,4 +237,17 @@ func TestDonorRoutingNamespaceProcess(t *testing.T) {
 		t.Fatal("broad foreign source rule mistaken for owned lease")
 	}
 	t.Log("dual-stack exact lease routing, host isolation, gateway refresh, fail-closed deletion and ownership cleanup passed")
+	// A failed final forwarding release can outlive all routes and rules.
+	// Retrying an empty sharing intent must still release that retained owner.
+	if err := hostnetwork.AcquireIPv6Forwarding("mesh-internet"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hostnetwork.ReleaseIPv6Forwarding("mesh-internet") })
+	cleanupPolicy := &linuxTunnelPolicy{forwarding6: true}
+	if err := cleanupPolicy.SetSharing(context.Background(), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupPolicy.forwarding6 {
+		t.Fatal("empty sharing intent skipped retained IPv6 forwarding cleanup")
+	}
 }

@@ -10,5 +10,5 @@ import (
 )
 
 func NewLinux(context.Context, *localmesh.Credentials, Node) (*Controller, error) {
-	return nil, errors.New("mesh Internet sharing requires Linux")
+	return nil, errors.New("wendy net Internet sharing requires Linux")
 }

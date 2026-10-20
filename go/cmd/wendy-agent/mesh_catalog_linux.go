@@ -193,7 +193,7 @@ func (m *meshCatalogManager) SetGatewayOffer(enable bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active == nil {
-		return errors.New("mesh catalog is not active")
+		return errors.New("wendy net catalog is not active")
 	}
 	if enable {
 		w, err := m.active.catalog.PublishGatewayOffer(time.Now())

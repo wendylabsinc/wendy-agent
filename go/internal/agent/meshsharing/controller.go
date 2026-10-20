@@ -67,14 +67,16 @@ type Controller struct {
 	dns                   dnsState
 	dnsUncertain          bool
 	closed                bool
+	closeComplete         bool
+	offerWithdrawn        bool
 }
 
 func NewWithDeps(self meshid.Device, node Node, policy Policy, probe Probe) (*Controller, error) {
 	if !self.IsValid() {
-		return nil, errors.New("mesh sharing needs a device identity")
+		return nil, errors.New("Wendy Net Internet sharing needs a device identity")
 	}
 	if node == nil || policy == nil || probe == nil {
-		return nil, errors.New("mesh sharing needs node, policy and probe")
+		return nil, errors.New("Wendy Net Internet sharing needs node, policy and probe")
 	}
 	return &Controller{self: self, node: node, policy: policy, probe: probe, logger: zap.NewNop(),
 		uplinkHealth: map[string]*HealthTracker{}, gatewayHealth: map[meshid.Device]*HealthTracker{}}, nil
@@ -117,10 +119,10 @@ func (c *Controller) auditDNS(next dnsState, err error) error {
 		// SetDNS may have reverted the old resolver before a new apply failed.
 		// Preserve the last successful target for audit, but flag state unknown.
 		c.dnsUncertain = true
-		c.logger.Warn("mesh DNS transition", append(fields, zap.String("outcome", "failed"), zap.Error(err))...)
+		c.logger.Warn("Wendy Net DNS transition", append(fields, zap.String("outcome", "failed"), zap.Error(err))...)
 		return err
 	}
-	c.logger.Info("mesh DNS transition", append(fields, zap.String("outcome", "applied"))...)
+	c.logger.Info("Wendy Net DNS transition", append(fields, zap.String("outcome", "applied"))...)
 	c.dns, c.dnsUncertain = next, false
 	return nil
 }
@@ -133,7 +135,7 @@ func (c *Controller) Step(ctx context.Context, config Config) (Decision, error) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return Decision{}, errors.New("mesh sharing controller closed")
+		return Decision{}, errors.New("Wendy Net Internet sharing controller closed")
 	}
 	var uplinks []Uplink
 	var gateway Gateway
@@ -394,20 +396,32 @@ func (c *Controller) withdrawSharing(ctx context.Context) error {
 func (c *Controller) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closeComplete {
 		return nil
 	}
+	firstAttempt := !c.closed
 	c.closed = true
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	// Withdrawing routes and signed capability precedes NAT/DNS removal.
-	uplinkErr := c.node.SetGatewayOffer(ctx, "")
-	roamErr := c.withdrawGateway(ctx)
+	var uplinkErr, roamErr error
+	if !c.offerWithdrawn {
+		uplinkErr = c.node.SetGatewayOffer(ctx, "")
+		c.offerWithdrawn = uplinkErr == nil
+	}
+	if firstAttempt {
+		roamErr = c.withdrawGateway(ctx)
+	}
+	// Policy.Close retains ownership of failed cleanup and can be retried.
+	// Do not call its normal mutation methods after the first Close: the
+	// Linux policy is already closed to new gateway/sharing transitions.
 	closeErr := c.policy.Close()
 	if c.dnsUncertain && closeErr == nil {
 		// Close retries policy cleanup. A successful retry must also be visible
 		// after a failed explicit resolver-removal event.
 		_ = c.auditDNS(dnsState{}, nil)
 	}
-	return errors.Join(uplinkErr, roamErr, closeErr)
+	err := errors.Join(uplinkErr, roamErr, closeErr)
+	c.closeComplete = err == nil
+	return err
 }

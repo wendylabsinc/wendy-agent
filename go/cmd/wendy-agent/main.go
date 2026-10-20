@@ -1584,6 +1584,24 @@ func deviceIdentity(provisioningSvc *services.ProvisioningService) (meshid.Tenan
 	return device.Tenant(), device
 }
 
+// advertiseProvisionedMeshIdentity republishes the avahi advertisement with
+// this device's full SPIFFE principal, read from its current leaf. The
+// principal is what mesh peers dial and pin, so a sighting of this device
+// cannot be spoofed by re-advertising someone else's id.
+//
+// A provisioned device whose leaf carries no tenant principal is a broken
+// identity, not a naming detail: advertising a zero or numeric id would put a
+// fake claim at the center of the mesh, so the advertisement is left alone
+// and the failure is logged.
+func advertiseProvisionedMeshIdentity(logger *zap.Logger, mtlsPort int, provisioningSvc *services.ProvisioningService) {
+	_, device := deviceIdentity(provisioningSvc)
+	if device == (meshid.Device{}) {
+		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; wendy net advertisement not updated")
+		return
+	}
+	configpartition.UpdateAvahiForProvisioning(logger, mtlsPort, device.Principal())
+}
+
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and
 // "host-local" symlinks pointing at this running binary's own executable
 // path. The vendored bridge CNI plugin (internal/agent/cni/bridge) delegates
@@ -1740,13 +1758,4 @@ func envBytes(logger *zap.Logger, name string, fallback, minimum int64) int64 {
 		return fallback
 	}
 	return v
-}
-
-func advertiseProvisionedMeshIdentity(logger *zap.Logger, mtlsPort int, provisioningSvc *services.ProvisioningService) {
-	_, device := deviceIdentity(provisioningSvc)
-	if device == (meshid.Device{}) {
-		logger.Warn("Provisioned certificate carries no tenant SPIFFE principal; mesh advertisement not updated")
-		return
-	}
-	configpartition.UpdateAvahiForProvisioning(logger, mtlsPort, device.Principal())
 }

@@ -20,13 +20,15 @@ import (
 // meshSharingManager follows the lifetime of one Babel node. The controller
 // owns only policies it installed and closes before the node is torn down.
 type meshSharingManager struct {
-	mu      sync.Mutex
-	path    string
-	logger  *zap.Logger
-	catalog *meshCatalogManager
-	cancel  context.CancelFunc
-	done    chan struct{}
-	state   services.LocalMeshRuntimeStatus
+	lifecycleMu    sync.Mutex
+	mu             sync.Mutex
+	path           string
+	logger         *zap.Logger
+	catalog        *meshCatalogManager
+	cancel         context.CancelFunc
+	done           chan struct{}
+	state          services.LocalMeshRuntimeStatus
+	pendingCleanup interface{ Close() error }
 }
 
 type sharingNode struct {
@@ -58,15 +60,22 @@ func (m *meshSharingManager) setState(state services.LocalMeshRuntimeStatus) {
 }
 
 func (m *meshSharingManager) Activate(parent context.Context, node *localmesh.Node) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	if m.done != nil {
 		m.mu.Unlock()
 		return
 	}
+	m.mu.Unlock()
+	if err := m.retryCleanup(); err != nil {
+		return
+	}
+	m.mu.Lock()
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	m.cancel, m.done = cancel, done
-	m.state = services.LocalMeshRuntimeStatus{Available: true, State: "starting", Detail: "Checking local mesh sharing policy."}
+	m.state = services.LocalMeshRuntimeStatus{Available: true, State: "starting", Detail: "Checking Wendy Net sharing policy."}
 	m.mu.Unlock()
 	go func() {
 		defer close(done)
@@ -74,7 +83,9 @@ func (m *meshSharingManager) Activate(parent context.Context, node *localmesh.No
 	}()
 }
 
-func (m *meshSharingManager) Deactivate() {
+func (m *meshSharingManager) Deactivate() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	cancel, done := m.cancel, m.done
 	m.cancel, m.done = nil, nil
@@ -83,42 +94,78 @@ func (m *meshSharingManager) Deactivate() {
 		cancel()
 		<-done
 	}
+	if err := m.retryCleanup(); err != nil {
+		return err
+	}
 	m.setState(services.LocalMeshRuntimeStatus{})
+	return nil
+}
+
+// closeController preserves the owner of incomplete cleanup. Dropping it
+// would lose resolver and firewall state that a later reset must retry.
+func (m *meshSharingManager) closeController(controller interface{ Close() error }) error {
+	err := controller.Close()
+	m.mu.Lock()
+	if err != nil {
+		m.pendingCleanup = controller
+		m.state = services.LocalMeshRuntimeStatus{Available: true, State: "error", Detail: err.Error()}
+	} else {
+		m.pendingCleanup = nil
+	}
+	m.mu.Unlock()
+	if err != nil && m.logger != nil {
+		m.logger.Warn("Wendy Net Internet sharing cleanup failed", zap.Error(err))
+	}
+	return err
+}
+
+func (m *meshSharingManager) retryCleanup() error {
+	m.mu.Lock()
+	pending := m.pendingCleanup
+	m.mu.Unlock()
+	if pending == nil {
+		return nil
+	}
+	return m.closeController(pending)
 }
 
 func (m *meshSharingManager) run(ctx context.Context, node *localmesh.Node) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	var controller *meshsharing.Controller
+	closing := false
 	defer func() {
 		if controller != nil {
-			if err := controller.Close(); err != nil {
-				m.logger.Warn("mesh sharing cleanup failed", zap.Error(err))
-			}
+			_ = m.closeController(controller)
 		}
 	}()
 	for {
 		config, loadErr := meshsharing.LoadConfig(m.path)
 		if loadErr != nil {
-			m.logger.Warn("invalid local mesh sharing policy", zap.Error(loadErr))
+			m.logger.Warn("invalid Wendy Net sharing policy", zap.Error(loadErr))
 			config = meshsharing.Config{}
+		}
+		if closing {
+			if err := m.closeController(controller); err == nil {
+				controller, closing = nil, false
+			}
 		}
 		if config.Participate && controller == nil {
 			var err error
 			controller, err = meshsharing.NewLinux(ctx, node.Credentials, sharingNode{node, m.catalog})
 			if err != nil {
-				m.logger.Warn("local mesh sharing unavailable", zap.Error(err))
+				m.logger.Warn("Wendy Net sharing unavailable", zap.Error(err))
 				m.setState(services.LocalMeshRuntimeStatus{Available: true, State: "error", Detail: err.Error(),
 					AuthenticatedPeers: node.Snapshot().Peers})
 			}
 		}
-		if controller != nil {
+		if controller != nil && !closing {
 			controller.SetLogger(m.logger)
 			stepCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			decision, stepErr := controller.Step(stepCtx, config)
 			cancel()
 			if stepErr != nil && !errors.Is(stepErr, context.Canceled) {
-				m.logger.Warn("mesh sharing reconciliation failed", zap.Error(stepErr))
+				m.logger.Warn("Wendy Net Internet sharing reconciliation failed", zap.Error(stepErr))
 			}
 			state := services.LocalMeshRuntimeStatus{Available: true, State: decision.Mode, Detail: decision.Reason,
 				AuthenticatedPeers: node.Snapshot().Peers}
@@ -132,13 +179,14 @@ func (m *meshSharingManager) run(ctx context.Context, node *localmesh.Node) {
 			}
 			m.setState(state)
 			if !config.Participate {
-				if closeErr := controller.Close(); closeErr != nil {
-					m.logger.Warn("mesh sharing cleanup failed", zap.Error(closeErr))
+				if closeErr := m.closeController(controller); closeErr != nil {
+					closing = true
+				} else {
+					controller = nil
 				}
-				controller = nil
 			}
-		} else if !config.Participate {
-			state := services.LocalMeshRuntimeStatus{Available: true, State: "mesh-active", Detail: "Local mesh transport is active; Internet sharing is disabled.",
+		} else if !config.Participate && !closing {
+			state := services.LocalMeshRuntimeStatus{Available: true, State: "mesh-active", Detail: "Wendy Net transport is active; Internet sharing is disabled.",
 				AuthenticatedPeers: node.Snapshot().Peers}
 			if loadErr != nil {
 				state.State, state.Detail = "error", loadErr.Error()

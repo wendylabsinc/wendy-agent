@@ -10,10 +10,10 @@ import (
 
 // Register this constructor under the device command's manage group.
 func newDeviceLocalMeshCmd() *cobra.Command {
-	root := &cobra.Command{Use: "local-mesh", Aliases: []string{"nan-mesh"}, Short: "Configure local mesh carriers and Internet sharing"}
-	configure := &cobra.Command{Use: "configure", Short: "Update selected local mesh settings", Args: cobra.NoArgs}
-	configure.Flags().Bool("participate", false, "Participate in the local mesh")
-	configure.Flags().Bool("roam", false, "Use signed mesh Internet when an independent uplink is unavailable")
+	root := &cobra.Command{Use: "wendy-net", Aliases: []string{"local-mesh", "nan-mesh"}, Short: "Configure wendy net carriers and Internet sharing"}
+	configure := &cobra.Command{Use: "configure", Short: "Update selected wendy net settings", Args: cobra.NoArgs}
+	configure.Flags().Bool("participate", false, "Participate in the wendy net")
+	configure.Flags().Bool("roam", false, "Use signed wendy net Internet when an independent uplink is unavailable")
 	configure.Flags().Bool("share-uplink", false, "Offer an independent uplink to the mesh")
 	configure.Flags().Bool("nan", false, "Enable Wi-Fi Aware NAN as a mesh carrier")
 	configure.Flags().Bool("ble", false, "Enable BLE L2CAP as a mesh carrier")
@@ -28,7 +28,7 @@ func newDeviceLocalMeshCmd() *cobra.Command {
 		}
 		defer target.Close()
 		if target.Agent == nil || target.Agent.Conn == nil {
-			return fmt.Errorf("local mesh settings require a WendyOS agent")
+			return fmt.Errorf("wendy net settings require a WendyOS agent")
 		}
 		client := pb.NewWendyLocalMeshAdminServiceClient(target.Agent.Conn)
 		response, err := client.ConfigureLocalMesh(cmd.Context(), req)
@@ -37,14 +37,14 @@ func newDeviceLocalMeshCmd() *cobra.Command {
 		}
 		return printLocalMeshStatus(cmd, response)
 	}
-	inspect := &cobra.Command{Use: "status", Short: "Show saved local mesh settings and runtime state", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	inspect := &cobra.Command{Use: "status", Short: "Show saved wendy net settings and runtime state", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		target, err := resolveTarget(cmd.Context(), SuppressUpdateCheck())
 		if err != nil {
 			return err
 		}
 		defer target.Close()
 		if target.Agent == nil || target.Agent.Conn == nil {
-			return fmt.Errorf("local mesh status requires a WendyOS agent")
+			return fmt.Errorf("wendy net status requires a WendyOS agent")
 		}
 		client := pb.NewWendyLocalMeshAdminServiceClient(target.Agent.Conn)
 		response, err := client.GetLocalMeshStatus(cmd.Context(), &pb.GetLocalMeshStatusRequest{})

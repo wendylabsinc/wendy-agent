@@ -158,3 +158,24 @@ func TestLocalMeshAdminCanDisableLastRadioWithoutTCPConfig(t *testing.T) {
 		t.Fatalf("radio-only disabled state should remove opt-in file: %+v %v", carriers, err)
 	}
 }
+
+func TestLocalMeshAdminReportsPendingLANCarriers(t *testing.T) {
+	for name, carriers := range map[string]localmesh.TCPConfig{
+		"Ethernet": {Ethernet: true},
+		"Wi-Fi":    {InfrastructureWiFi: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			tenant, device := adminTenant(t), adminDevice(t)
+			if err := meshsharing.SaveCarrierConfig(filepath.Join(dir, "local-mesh.json"), device, carriers); err != nil {
+				t.Fatal(err)
+			}
+			svc := NewLocalMeshAdminService(nil, dir, func() (meshid.Tenant, meshid.Device) { return tenant, device })
+			ctx := ctxWithIdentity(t, userPrincipal(adminTenantID, "alice"))
+			got, err := svc.GetLocalMeshStatus(ctx, &pb.GetLocalMeshStatusRequest{})
+			if err != nil || got.GetState() != "pending-runtime" || got.GetRuntimeAvailable() {
+				t.Fatalf("saved %s opt-in reported as disabled or active: %+v %v", name, got, err)
+			}
+		})
+	}
+}

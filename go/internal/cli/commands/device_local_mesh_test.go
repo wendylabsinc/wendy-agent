@@ -1,6 +1,10 @@
 package commands
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
 
 func TestLocalMeshFlagsPreservePresenceAndIndependentCarriers(t *testing.T) {
 	root := newDeviceLocalMeshCmd()
@@ -22,7 +26,12 @@ func TestLocalMeshFlagsPreservePresenceAndIndependentCarriers(t *testing.T) {
 		req.Nan == nil || *req.Nan || req.Ble == nil || !*req.Ble || req.Roam != nil {
 		t.Fatalf("partial settings lost or carriers coupled: %+v", req)
 	}
-	if len(root.Aliases) != 1 || root.Aliases[0] != "nan-mesh" {
-		t.Fatal("legacy nan-mesh alias missing")
+	device := &cobra.Command{Use: "device"}
+	device.AddCommand(root)
+	for _, name := range []string{"wendy-net", "local-mesh", "nan-mesh"} {
+		resolved, _, err := device.Find([]string{name, "configure"})
+		if err != nil || resolved != cmd || resolved.CommandPath() != "device wendy-net configure" {
+			t.Fatalf("command or compatibility alias %q failed: %v %v", name, resolved, err)
+		}
 	}
 }

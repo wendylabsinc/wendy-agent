@@ -71,6 +71,7 @@ type fakePolicy struct {
 	failDNSWithdrawal     bool
 	cancelOnDNS           context.CancelFunc
 	cleanupContexts       []error
+	closeErr              error
 }
 
 func (p *fakePolicy) SetGateway(ctx context.Context, peer meshid.Device) error {
@@ -113,7 +114,41 @@ func (p *fakePolicy) SetDNS(ctx context.Context, iface, address string) error {
 	}
 	return nil
 }
-func (p *fakePolicy) Close() error { *p.events = append(*p.events, "policy:close"); return nil }
+func (p *fakePolicy) Close() error {
+	*p.events = append(*p.events, "policy:close")
+	return p.closeErr
+}
+
+func TestControllerCloseRetainsFailedCleanupForRetry(t *testing.T) {
+	var events []string
+	want := errors.New("resolver restore failed")
+	policy := &fakePolicy{events: &events, closeErr: want}
+	c, err := NewWithDeps(policySelf(t), &fakeNode{events: &events}, policy, &fakeProbe{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := c.Close(); !errors.Is(err, want) {
+			t.Fatalf("unfinished cleanup reported success: %v", err)
+		}
+	}
+	if _, err := c.Step(context.Background(), Config{Participate: true}); err == nil {
+		t.Fatal("closed controller accepted new sharing work")
+	}
+	policy.closeErr = nil
+	if err := c.Close(); err != nil {
+		t.Fatalf("cleanup retry failed: %v", err)
+	}
+	count := len(events)
+	if err := c.Close(); err != nil || len(events) != count {
+		t.Fatalf("completed cleanup was not idempotent: %v, %v", err, events)
+	}
+	// Normal policy mutation methods must not be called again after Close;
+	// Linux policy rejects those methods once shutdown has begun.
+	if got := strings.Join(events, ","); got != "offer:,dns:|,gateway:,policy:close,policy:close,policy:close" {
+		t.Fatalf("unexpected retry sequence: %s", got)
+	}
+}
 
 type fakeProbe struct {
 	candidates      map[string]string

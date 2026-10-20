@@ -49,7 +49,7 @@ func (s *LocalMeshAdminService) SetRuntimeStatusSource(source func() LocalMeshRu
 }
 
 func (s *LocalMeshAdminService) authorize(ctx context.Context) (meshid.Device, error) {
-	actor, err := userIdentityFromContext(ctx, "administering local mesh")
+	actor, err := userIdentityFromContext(ctx, "administering wendy net")
 	if err != nil {
 		return meshid.Device{}, err
 	}
@@ -61,7 +61,7 @@ func (s *LocalMeshAdminService) authorize(ctx context.Context) (meshid.Device, e
 		return meshid.Device{}, status.Error(codes.FailedPrecondition, "device must be enrolled")
 	}
 	if actor.TenantUUID == "" || actor.TenantUUID != tenant.UUID().String() {
-		return meshid.Device{}, status.Error(codes.PermissionDenied, "local mesh administration requires a user in this device's tenant")
+		return meshid.Device{}, status.Error(codes.PermissionDenied, "wendy net administration requires a user in this device's tenant")
 	}
 	return device, nil
 }
@@ -82,8 +82,8 @@ func (s *LocalMeshAdminService) read(device meshid.Device) (meshsharing.Config, 
 }
 
 func (s *LocalMeshAdminService) response(sharing meshsharing.Config, carriers localmesh.TCPConfig) *pb.LocalMeshStatus {
-	state, detail := "disabled", "Local mesh is disabled."
-	if sharing.Participate || carriers.NAN || carriers.BLE || carriers.Listen != "" {
+	state, detail := "disabled", "Wendy net is disabled."
+	if sharing.Participate || carriers.NAN || carriers.BLE || carriers.Ethernet || carriers.InfrastructureWiFi || carriers.Listen != "" {
 		state, detail = "pending-runtime", "Configuration is saved; awaiting runtime state."
 	}
 	out := &pb.LocalMeshStatus{Configured: &pb.LocalMeshConfiguration{
@@ -116,7 +116,7 @@ func (s *LocalMeshAdminService) GetLocalMeshStatus(ctx context.Context, _ *pb.Ge
 	defer s.mu.Unlock()
 	sharing, carriers, err := s.read(device)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "reading local mesh configuration: %v", err)
+		return nil, status.Errorf(codes.Internal, "reading wendy net configuration: %v", err)
 	}
 	return s.response(sharing, carriers), nil
 }
@@ -127,13 +127,13 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 		return nil, err
 	}
 	if req == nil || (req.Participate == nil && req.Roam == nil && req.ShareUplink == nil && req.Nan == nil && req.Ble == nil) {
-		return nil, status.Error(codes.InvalidArgument, "specify at least one local mesh setting")
+		return nil, status.Error(codes.InvalidArgument, "specify at least one wendy net setting")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sharing, carriers, err := s.read(device)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "reading local mesh configuration: %v", err)
+		return nil, status.Errorf(codes.Internal, "reading wendy net configuration: %v", err)
 	}
 	previous := sharing
 	shareChanged := req.Participate != nil || req.Roam != nil || req.ShareUplink != nil
@@ -161,7 +161,7 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 	// Roll it back if writing the carrier document fails.
 	if shareChanged {
 		if err = meshsharing.SaveConfig(s.sharingPath, sharing); err != nil {
-			return nil, status.Errorf(codes.Internal, "saving local mesh sharing policy: %v", err)
+			return nil, status.Errorf(codes.Internal, "saving wendy net sharing policy: %v", err)
 		}
 	}
 	if carrierChanged {
@@ -169,12 +169,12 @@ func (s *LocalMeshAdminService) ConfigureLocalMesh(ctx context.Context, req *pb.
 			if shareChanged {
 				err = errors.Join(err, meshsharing.SaveConfig(s.sharingPath, previous))
 			}
-			return nil, status.Errorf(codes.Internal, "saving local mesh carriers: %v", err)
+			return nil, status.Errorf(codes.Internal, "saving wendy net carriers: %v", err)
 		}
 	}
 	if s.logger != nil {
-		actor, _ := userIdentityFromContext(ctx, "local mesh configuration")
-		s.logger.Info("local mesh configuration saved", zap.String("actorTenant", actor.TenantUUID), zap.String("actorUser", actor.EntityID),
+		actor, _ := userIdentityFromContext(ctx, "wendy net configuration")
+		s.logger.Info("wendy net configuration saved", zap.String("actorTenant", actor.TenantUUID), zap.String("actorUser", actor.EntityID),
 			zap.Bool("participate", sharing.Participate), zap.Bool("roam", sharing.Roam), zap.Bool("shareUplink", sharing.ShareUplink),
 			zap.Bool("nan", carriers.NAN), zap.Bool("ble", carriers.BLE))
 	}

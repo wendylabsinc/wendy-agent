@@ -15,13 +15,20 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/bleprovider"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/meshsharing"
 	"github.com/wendylabsinc/wendy/go/internal/agent/nanprovider"
 	"go.uber.org/zap"
 )
 
 // runConfiguredNetCarriers runs one Babel node for every enabled carrier.
 // Its observer is cleared only after the radio provider has drained its links.
-func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, catalog *meshCatalogManager, vips *mesh.VIPTable, sharing *meshSharingManager, observe func(func() localmesh.NodeSnapshot)) error {
+func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, catalog *meshCatalogManager, vips *mesh.VIPTable, sharing *meshSharingManager, observe func(func() localmesh.NodeSnapshot)) (runErr error) {
+	if err := sharing.Deactivate(); err != nil {
+		return err
+	}
+	if err := errors.Join(meshsharing.CleanupStale(ctx), localmesh.CleanupStaleResolver(ctx)); err != nil {
+		return fmt.Errorf("recover Wendy Net Internet sharing: %w", err)
+	}
 	path := filepath.Join(configDir, "local-mesh.json")
 	initial, err := localmesh.ReadTCPConfigFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -53,10 +60,10 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 	defer func() { cancelRun(); <-watchDone }()
 	var stopProviders context.CancelFunc
 	var providersDone sync.WaitGroup
-	defer sharing.Deactivate()
+	defer func() { runErr = errors.Join(runErr, sharing.Deactivate()) }()
 	return localmesh.RunConfiguredWithNode(runCtx, configDir, id, func(node *localmesh.Node, cfg *localmesh.TCPConfig) {
 		if node == nil {
-			sharing.Deactivate()
+			_ = sharing.Deactivate()
 			catalog.Deactivate()
 			if stopProviders != nil {
 				stopProviders()
