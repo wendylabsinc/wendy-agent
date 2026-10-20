@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -70,12 +71,14 @@ func TestDNSImmediateReleaseReturnsItsSocket(t *testing.T) {
 		if err := server.EnsureListener("127.0.0.1"); err != nil {
 			t.Fatal(err)
 		}
-		address := server.listenerAddr("127.0.0.1")
+		server.mu.Lock()
+		packets := server.listeners["127.0.0.1"].srv.PacketConn
+		server.mu.Unlock()
 		server.ReleaseListener("127.0.0.1")
-		probe, err := net.ListenPacket("udp4", address)
-		if err != nil {
-			t.Fatalf("immediate start/stop leaked its DNS socket: %v", err)
+		// Inspect the actual owned socket. An unrelated test process can
+		// legitimately acquire its ephemeral port as soon as release closes it.
+		if err := packets.SetReadDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("immediate start/stop retained an open DNS socket: %v", err)
 		}
-		probe.Close()
 	}
 }
