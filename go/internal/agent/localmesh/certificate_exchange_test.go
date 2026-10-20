@@ -216,6 +216,35 @@ func TestCertificateExchangeDisconnectReleasesFirstSupplier(t *testing.T) {
 	}
 }
 
+func TestCertificateExchangeSilentSupplierYieldsToAnotherNeighbour(t *testing.T) {
+	f := newCertificateFixture(t)
+	a, b := testPrincipal(testTenantUUID, testDeviceAID), testPrincipal(testTenantUUID, testDeviceBID)
+	source := NewCertificateExchange(f.cache(t, a, nil), testTenant(t))
+	c := f.cache(t, b, nil)
+	first, other := NewCertificateExchange(c, testTenant(t)), NewCertificateExchange(c, testTenant(t))
+	descriptor := source.Describe(a, f.now)
+	if q, _, err := first.Receive(*descriptor, f.now); err != nil || len(q) != 1 {
+		t.Fatal(q, err)
+	}
+	if q, _, err := other.Receive(*descriptor, f.now); err != nil || len(q) != 0 {
+		t.Fatal(q, err)
+	}
+	// Poll the stalled supplier first: map/maintenance iteration order must
+	// not let it retain ownership forever after missing its progress bound.
+	now := f.now.Add(certificateFetchTTL)
+	if q, _, err := first.Poll(now); err != nil || len(q) != 0 {
+		t.Fatal("silent first supplier immediately reclaimed the fetch", q, err)
+	}
+	if q, _, err := other.Poll(now); err != nil || len(q) != 1 || q[0].Request.Offset != 0 {
+		t.Fatal("another supplier could not recover the fetch", q, err)
+	}
+	first.Close()
+	other.Close()
+	if len(c.parts.pending) != 0 {
+		t.Fatal("closed suppliers retained fetch state")
+	}
+}
+
 func TestCertificateExchangeRejectsWrongBytesAndPrincipal(t *testing.T) {
 	for _, mode := range []string{"wrong-bytes", "wrong-principal", "untrusted-chain"} {
 		t.Run(mode, func(t *testing.T) {

@@ -73,15 +73,38 @@ expiry. They describe presence, not application services or routing authority.
 Every receiver verifies the origin's certificate and signature before relaying
 an accepted version to its other neighbours. Missing certificates cause a
 bounded pending record and an identity request to the sending neighbour.
-Certificates are cached under current trust, with entry, total-byte and age
-limits. A cache hit is not a trust grant. Per-peer hints avoid resending bundles
-already written, and an explicit request repairs a receiver that lost its cache.
+Identity announcements carry an ordered list of SHA-256 certificate hashes.
+The receiver reuses individual certificates from its own enrolled chain,
+authenticated handshakes and previously verified identities. It requests only
+the first missing chain element, in sequential chunks of at most 1,024 bytes.
+Concurrent directory/service caches and neighbour links can share the same
+bounded byte pool; only the first announcing supplier is asked. Disconnect
+releases its request immediately, and a silent supplier yields to another
+announcing neighbour after 30 seconds without progress. Routing and application
+frames can be transmitted between certificate chunks.
+
+The assembled chain is independently verified under current trust, principal,
+tenant, expiry and renewal rules before admitting its manifest. Hashes identify
+bytes only; fetched intermediates never become trust anchors. Known bytes do
+not bypass verification after trust changes.
+
+The additional RAM pool retains at most 8 MiB, including reserved unfinished
+downloads, 4,096 completed elements and 128 pending element fetches. An element
+is limited to 64 KiB. Unverified completed elements expire after two minutes;
+verified elements last at most 24 hours, capped by chain expiry. Existing disk
+identity caches still persist verified full chains with their own 1,024-entry,
+8 MiB and 24-hour bounds. Restart can reuse those chains; unverified fragments
+are never persisted.
+
+Certificate exchange changes the control protocol. Its ALPN adds `-cert-1`
+to the existing carrier protocol version; peers must be updated together.
+TLS handshake certificates and their verification remain unchanged.
 
 Changed records are pushed immediately; duplicate revisions do not renew their
 expiry. Reconciliation sends live records periodically to repair reconnects. A repair
 pass uses only free control-queue slots and resumes from its last admitted
 principal on the existing maintenance tick; it stops when the pass completes.
-Insufficient queue space does not consume a bundle hint.
+Insufficient queue space does not consume a certificate-description stamp.
 The node currently signs a fresh presence manifest every 20 seconds, with a
 one-minute lease; receivers allow at most two minutes. Reconciliation runs every
 30 seconds. These intervals are separate from Babel's one-second

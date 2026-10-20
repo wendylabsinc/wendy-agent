@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	LinkALPN = "wendy-local-mesh/2"
+	LinkALPN = "wendy-local-mesh/1-cert-1"
 	// Leave room for an IPv6 outer header around a minimum-size IPv6 packet.
 	// Carrier fragmentation remains at most two bounded datagrams per packet.
 	TunnelMTU          = 1320

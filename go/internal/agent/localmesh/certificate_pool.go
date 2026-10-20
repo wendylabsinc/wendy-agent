@@ -22,10 +22,12 @@ type certificateObject struct {
 }
 
 type certificateFetch struct {
-	owner   uint64
-	expires time.Time
-	data    []byte
-	total   int
+	owner     uint64
+	avoid     uint64
+	suppliers map[uint64]bool
+	expires   time.Time
+	data      []byte
+	total     int
 }
 
 // CertificatePool shares exact public certificate bytes between identity
@@ -67,7 +69,15 @@ func (p *CertificatePool) prune(now time.Time) {
 	for hash, fetch := range p.pending {
 		if !fetch.expires.After(now) {
 			p.bytes -= fetch.total
-			delete(p.pending, hash)
+			if fetch.owner != 0 && len(fetch.suppliers) > 1 {
+				// Give another announcing neighbour the next attempt. The old
+				// supplier cannot repeatedly reclaim the first maintenance slot.
+				fetch.avoid, fetch.owner = fetch.owner, 0
+				fetch.data, fetch.total = nil, 0
+				fetch.expires = now.Add(certificateFetchTTL)
+			} else {
+				delete(p.pending, hash)
+			}
 		}
 	}
 }
@@ -149,10 +159,23 @@ func (p *CertificatePool) claim(hash string, owner uint64, now time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.prune(now)
-	if _, found := p.objects[hash]; found || p.pending[hash] != nil || len(p.pending) >= maxCertificatePending {
+	if _, found := p.objects[hash]; found {
 		return false
 	}
-	p.pending[hash] = &certificateFetch{owner: owner, expires: now.Add(certificateFetchTTL)}
+	if fetch := p.pending[hash]; fetch != nil {
+		if len(fetch.suppliers) < maxCertificatePending {
+			fetch.suppliers[owner] = true
+		}
+		if fetch.owner != 0 || fetch.avoid == owner && len(fetch.suppliers) > 1 {
+			return false
+		}
+		fetch.owner, fetch.expires = owner, now.Add(certificateFetchTTL)
+		return true
+	}
+	if len(p.pending) >= maxCertificatePending {
+		return false
+	}
+	p.pending[hash] = &certificateFetch{owner: owner, suppliers: map[uint64]bool{owner: true}, expires: now.Add(certificateFetchTTL)}
 	return true
 }
 
@@ -160,7 +183,11 @@ func (p *CertificatePool) release(owner uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for hash, fetch := range p.pending {
-		if fetch.owner == owner {
+		delete(fetch.suppliers, owner)
+		if fetch.avoid == owner {
+			fetch.avoid = 0
+		}
+		if fetch.owner == owner || fetch.owner == 0 && len(fetch.suppliers) == 0 {
 			p.bytes -= fetch.total
 			delete(p.pending, hash)
 		}

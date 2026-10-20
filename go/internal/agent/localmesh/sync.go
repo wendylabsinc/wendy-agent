@@ -113,9 +113,9 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 
 // Synchronizer is per-link, single-caller, and does not own networking. Changed
 // records are broadcast immediately by its caller; periodic Reconcile repairs
-// loss/reconnect. Certificates are sent once per bounded link cache, not once per
-// service. Missing bundles hold a bounded number of manifests until validated
-// replies arrive; further manifests are requested again at reconciliation.
+// loss/reconnect. Bounded chain descriptions replace unsolicited bundles;
+// certificate bytes are fetched individually only when missing. A bounded
+// number of manifests wait for independently verified identity completion.
 type Synchronizer struct {
 	directory    *Directory
 	cache        *IdentityCache
