@@ -83,7 +83,20 @@ func (q *streamIPSendQueue) enqueue(sequence uint32, data []byte, now time.Time)
 		q.remove(victim)
 		q.stats.DroppedCapacity++
 	}
-	q.pending = append(q.pending, p)
+	// Keep a retransmitted TCP prefix ahead of later data from the same
+	// flow even when both fit. Previously the one-packet minimum happened to
+	// enforce this only by replacing the later segment at capacity. Other
+	// flows and opaque QUIC datagrams retain their admitted relative order.
+	index := len(q.pending)
+	for i, queued := range q.pending {
+		if queued.fast == p.fast && tcpQueuedBefore(p.data, queued.data) {
+			index = i
+			break
+		}
+	}
+	q.pending = append(q.pending, streamIPPacket{})
+	copy(q.pending[index+1:], q.pending[index:])
+	q.pending[index] = p
 	q.stats.Bytes += p.bytes
 	q.stats.Packets++
 	q.stats.Enqueued++
