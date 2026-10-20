@@ -484,22 +484,21 @@ func (r *runtime) scanLoop(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 	defer ticker.Stop()
 	consecutiveErrors := 0
 	for {
-		if r.governDiscovery(ctx, bus, adapter) {
-			if err := r.scanOnce(ctx, bus, adapter); err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				if errors.Is(err, errBlueZOwnerChanged) || errors.Is(err, errBLEAdapterUnavailable) {
-					return err
-				}
-				consecutiveErrors++
-				r.cfg.Logger.Warn("BLE discovery unavailable", zap.Error(err), zap.Int("consecutive_errors", consecutiveErrors))
-				if consecutiveErrors >= 3 {
-					return fmt.Errorf("BlueZ discovery failed three times: %w", err)
-				}
-			} else {
-				consecutiveErrors = 0
+		r.governDiscovery(ctx, bus, adapter)
+		if err := r.scanOnce(ctx, bus, adapter); err != nil {
+			if ctx.Err() != nil {
+				return nil
 			}
+			if errors.Is(err, errBlueZOwnerChanged) || errors.Is(err, errBLEAdapterUnavailable) {
+				return err
+			}
+			consecutiveErrors++
+			r.cfg.Logger.Warn("BLE discovery unavailable", zap.Error(err), zap.Int("consecutive_errors", consecutiveErrors))
+			if consecutiveErrors >= 3 {
+				return fmt.Errorf("BlueZ discovery failed three times: %w", err)
+			}
+		} else {
+			consecutiveErrors = 0
 		}
 		select {
 		case <-ctx.Done():
@@ -585,6 +584,10 @@ func (r *runtime) scanOnce(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 	}
 	if err := requirePoweredAdapter(objects, adapter); err != nil {
 		return err
+	}
+	// Pausing radio discovery must not pause adapter/daemon health monitoring.
+	if r.scanPaused {
+		return nil
 	}
 	now := time.Now()
 	peers := r.discoveredCandidates(objects, now)
