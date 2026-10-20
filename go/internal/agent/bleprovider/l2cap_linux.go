@@ -131,14 +131,15 @@ type l2Listener struct {
 }
 
 // l2capReceiveMTULadder tries receive MTUs from large to small. The kernel
-// rejects L2CAP_OPTIONS before bind and caps imtu per version; the settled
-// value is reported once so fleets show what bulk channels actually grant.
+// exposes LE receive MTU through BT_RCVMTU after bind. Preserve the fallback
+// policy for kernels that reject a requested value.
 var l2capReceiveMTULadder = []int{65535, 32768, 16384, 8192, 4096, 2048}
 
-const l2capOptionsOpt = 1
+// Linux bluetooth.h: LE sockets expose receive MTU as a native uint16.
+const btReceiveMTU = 13
 
-// settleLog is an optional diagnostic hook. Socket setup uses its no-op
-// default; handshake telemetry independently reads the negotiated socket MTU.
+// settleLog is an optional observer for receive-MTU attempts. Its default
+// is quiet; the connected-socket readback remains available independently.
 var settleLog func(mtu int, err error) = func(int, error) {}
 
 func reportSettle(mtu int, err error) {
@@ -172,40 +173,41 @@ func settleL2CAPReceiveMTU(fd int, report func(mtu int, err error)) int {
 	return 0
 }
 
-// setL2CAPReceiveMTU stages imtu through get-modify-set-verify and reports
-// which stage failed, so field logs distinguish kernel rejection from
-// transport impossible states.
+// setL2CAPReceiveMTU uses the LE socket API, then verifies the kernel value.
+// L2CAP_OPTIONS is the classic Bluetooth API and is rejected for LE sockets.
 func setL2CAPReceiveMTU(fd, mtu int) error {
-	var opts [11]byte
-	length := uint32(len(opts))
-	_, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), uintptr(unix.SOL_L2CAP), uintptr(l2capOptionsOpt),
-		uintptr(unsafe.Pointer(&opts[0])), uintptr(unsafe.Pointer(&length)), 0)
+	// LE credit-based channels require an MTU of at least 23 bytes.
+	if mtu < 23 || mtu > maxReadSDU {
+		return fmt.Errorf("invalid LE receive MTU %d", mtu)
+	}
+	value := uint16(mtu)
+	_, _, errno := unix.Syscall6(unix.SYS_SETSOCKOPT, uintptr(fd), uintptr(solBluetooth), uintptr(btReceiveMTU),
+		uintptr(unsafe.Pointer(&value)), unsafe.Sizeof(value), 0)
 	if errno != 0 {
-		return fmt.Errorf("l2cap options inspect: %w", errno)
+		return fmt.Errorf("LE receive MTU %d rejected: %w", mtu, errno)
 	}
-	if length < 4 {
-		return fmt.Errorf("l2cap options short read %d", length)
+	got, err := getL2CAPReceiveMTU(fd)
+	if err != nil {
+		return err
 	}
-	opts[2] = byte(mtu & 0xff)
-	opts[3] = byte(mtu >> 8)
-	_, _, errno = unix.Syscall6(unix.SYS_SETSOCKOPT, uintptr(fd), uintptr(unix.SOL_L2CAP), uintptr(l2capOptionsOpt),
-		uintptr(unsafe.Pointer(&opts[0])), uintptr(length), 0)
-	if errno != 0 {
-		return fmt.Errorf("l2cap imtu %d rejected: %w", mtu, errno)
-	}
-	for i := range opts {
-		opts[i] = 0
-	}
-	length = uint32(len(opts))
-	_, _, errno = unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), uintptr(unix.SOL_L2CAP), uintptr(l2capOptionsOpt),
-		uintptr(unsafe.Pointer(&opts[0])), uintptr(unsafe.Pointer(&length)), 0)
-	if errno != 0 {
-		return fmt.Errorf("l2cap options verify: %w", errno)
-	}
-	if got := int(opts[2]) | int(opts[3])<<8; got != mtu {
-		return fmt.Errorf("l2cap imtu read back %d, want %d", got, mtu)
+	if got != mtu {
+		return fmt.Errorf("LE receive MTU read back %d, want %d", got, mtu)
 	}
 	return nil
+}
+
+func getL2CAPReceiveMTU(fd int) (int, error) {
+	var value uint16
+	length := uint32(unsafe.Sizeof(value))
+	_, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), uintptr(solBluetooth), uintptr(btReceiveMTU),
+		uintptr(unsafe.Pointer(&value)), uintptr(unsafe.Pointer(&length)), 0)
+	if errno != 0 {
+		return 0, fmt.Errorf("inspect LE receive MTU: %w", errno)
+	}
+	if length != uint32(unsafe.Sizeof(value)) {
+		return 0, fmt.Errorf("unexpected LE receive MTU size %d", length)
+	}
+	return int(value), nil
 }
 
 func localL2SocketAddress(local l2addr, psm uint16) (*unix.SockaddrL2, error) {
@@ -392,14 +394,11 @@ func (c *packetConn) receiveMTU() int {
 	if c.closed.Load() {
 		return 0
 	}
-	var opts [11]byte
-	length := uint32(len(opts))
-	_, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(c.fd), uintptr(unix.SOL_L2CAP), uintptr(l2capOptionsOpt),
-		uintptr(unsafe.Pointer(&opts[0])), uintptr(unsafe.Pointer(&length)), 0)
-	if errno != 0 || length < 4 {
+	mtu, err := getL2CAPReceiveMTU(c.fd)
+	if err != nil {
 		return 0
 	}
-	return int(opts[2]) | int(opts[3])<<8
+	return mtu
 }
 
 // SockQueue reports raw Linux Bluetooth socket ioctl readings. SIOCINQ is
