@@ -19,6 +19,7 @@ type testEdge struct {
 	id   babel.LinkID
 }
 type neighbourNetwork struct {
+	observe  func(from, to int, fragment []byte)
 	mu       sync.RWMutex
 	t        *testing.T
 	catalogs []*Catalog
@@ -126,6 +127,9 @@ func (n *neighbourNetwork) connect(a, b int) babel.LinkID {
 			n.mu.RUnlock()
 			if !live {
 				return errors.New("link down")
+			}
+			if n.observe != nil {
+				n.observe(from, to, data)
 			}
 			// Exercise actual multiplexed control framing, not a record shortcut.
 			var wire bytes.Buffer

@@ -21,6 +21,9 @@ type inventoryMessage struct {
 }
 
 func (m inventoryMessage) validate() error {
+	if m.Kind != "gossip" && m.Gossip != nil {
+		return errors.New("unexpected inventory gossip payload")
+	}
 	if m.Kind != "certificate" && m.Certificate != nil {
 		return errors.New("unexpected inventory certificate message")
 	}

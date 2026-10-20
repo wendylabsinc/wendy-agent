@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -22,6 +23,7 @@ type ControlMessage struct {
 	Manifest    *SignedManifest     `json:"manifest,omitempty"`
 	Principal   string              `json:"principal,omitempty"`
 	Certificate *CertificateMessage `json:"certificate,omitempty"`
+	Gossip      *meshgossip.Message `json:"gossip,omitempty"`
 	Catalog     []byte              `json:"catalog,omitempty"`
 }
 
@@ -78,7 +80,17 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 	if m.Kind != "certificate" && m.Certificate != nil {
 		return m, errors.New("unexpected certificate message")
 	}
+	if m.Kind != "gossip" && m.Gossip != nil {
+		return m, errors.New("unexpected gossip payload")
+	}
 	switch m.Kind {
+	case "gossip":
+		if m.Gossip == nil || m.Gossip.Type != meshgossip.Manifest || m.Hello != nil || m.Manifest != nil || len(m.Bundle) != 0 || m.Principal != "" {
+			return m, errors.New("invalid manifest gossip envelope")
+		}
+		if err := m.Gossip.Validate(); err != nil {
+			return m, err
+		}
 	case "catalog":
 		if len(m.Catalog) == 0 || len(m.Catalog) > MaxCatalogFrame || m.Hello != nil || m.Manifest != nil || len(m.Bundle) != 0 || m.Principal != "" {
 			return m, errors.New("invalid catalogue frame")
@@ -133,6 +145,7 @@ type pendingManifestRenewal struct {
 // certificate bytes are fetched individually only when missing. A bounded
 // number of manifests wait for independently verified identity completion.
 type Synchronizer struct {
+	gossip    *meshgossip.Session
 	directory *Directory
 	cache     *IdentityCache
 	// leafBundles selects the negotiated Lite bundle role; routers use descriptors.
@@ -148,8 +161,12 @@ type Synchronizer struct {
 	reconcileRemaining int
 }
 
-func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
-	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingManifestRenewal{}, certificates: NewCertificateExchange(c, d.tenant)}
+func NewSynchronizer(d *Directory, c *IdentityCache, pools ...*meshgossip.Pool) *Synchronizer {
+	s := &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingManifestRenewal{}, certificates: NewCertificateExchange(c, d.tenant)}
+	if len(pools) > 0 && pools[0] != nil {
+		s.gossip = pools[0].NewSession(meshgossip.Manifest)
+	}
+	return s
 }
 
 // SeedKnownBundles uses only the sender's per-peer record of completed writes.
@@ -171,6 +188,12 @@ func (s *Synchronizer) Record(w SignedManifest, now time.Time) []ControlMessage 
 // The bundle hint is consumed only if the complete record fits. A caller must
 // reserve this many queue slots before sending the returned messages.
 func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int) ([]ControlMessage, bool) {
+	if s.gossip != nil {
+		if slots < 1 {
+			return nil, false
+		}
+		return s.offerManifest(w, now), true
+	}
 	chain, ok := s.directory.CurrentRecordChain(w, now)
 	if !ok {
 		return nil, true
@@ -255,7 +278,7 @@ func (s *Synchronizer) reconcileBatch(records []SignedManifest, now time.Time, s
 // Receive returns replies plus independently verified changed records to relay.
 // Invalid signatures or lifetimes are fatal except for a bounded retry while
 // an exact advertised renewed chain is in flight. Unverified data grants no trust.
-func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []ControlMessage, changed []SignedManifest, err error) {
+func (s *Synchronizer) receive(m ControlMessage, now time.Time) (replies []ControlMessage, changed []SignedManifest, err error) {
 	s.prunePendingRenewals(now)
 	switch m.Kind {
 	case "certificate":
@@ -284,13 +307,16 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 		// to an unrelated whole-bundle response for the same principal.
 		if w, ok := s.pending[principal]; ok && s.pendingRenewals[principal].chain.Principal == "" {
 			delete(s.pending, principal)
-			return s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
+			return s.receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
 		}
 	case "manifest":
 		if m.Manifest == nil {
 			return nil, nil, errors.New("missing manifest")
 		}
 		ok, e := s.directory.Accept(*m.Manifest, now)
+		if s.gossip != nil && (e == nil || errors.Is(e, ErrStaleManifest) || errors.Is(e, ErrExpiredManifest)) {
+			s.resolveManifest(*m.Manifest, now, e == nil)
+		}
 		// Reordering across relays and leases expiring in transit are normal,
 		// not grounds to disconnect an authenticated neighbour.
 		if errors.Is(e, ErrStaleManifest) || errors.Is(e, ErrExpiredManifest) {
@@ -306,6 +332,9 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 			// a receiver restart. The request repairs its identity cache, and
 			// the periodic reconciliation repeats any manifest we cannot hold.
 			if _, exists := s.pending[m.Manifest.Principal]; exists || len(s.pending) < 128 {
+				if old, exists := s.pending[m.Manifest.Principal]; exists && s.gossip != nil {
+					s.resolveManifest(old, now, false)
+				}
 				s.pending[m.Manifest.Principal] = cloneSignedManifest(*m.Manifest)
 			}
 			return []ControlMessage{{Kind: "identity-request", Principal: m.Manifest.Principal}}, nil, nil
@@ -347,7 +376,7 @@ func (s *Synchronizer) certificateResult(messages []*CertificateMessage, complet
 		}
 	}
 	for _, w := range retry {
-		out, admitted, err := s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
+		out, admitted, err := s.receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -357,10 +386,30 @@ func (s *Synchronizer) certificateResult(messages []*CertificateMessage, complet
 	return replies, changed, nil
 }
 
-func (s *Synchronizer) ContinueCertificates(now time.Time) ([]ControlMessage, []SignedManifest, error) {
+// ContinueCertificates also advances bounded HAVE/WANT replies and downloads.
+func (s *Synchronizer) ContinueCertificates(now time.Time, slots ...int) ([]ControlMessage, []SignedManifest, error) {
 	s.prunePendingRenewals(now)
+	if s.gossip != nil {
+		for principal, w := range s.pending {
+			var m Manifest
+			if json.Unmarshal(w.Body, &m) != nil || !time.UnixMilli(m.Expires).After(now) {
+				s.resolveManifest(w, now, false)
+				delete(s.pending, principal)
+			}
+		}
+	}
 	messages, completed, err := s.certificates.Poll(now)
-	return s.certificateResult(messages, completed, err, now)
+	replies, changed, err := s.certificateResult(messages, completed, err, now)
+	if s.gossip != nil {
+		budget := 12
+		if len(slots) > 0 {
+			budget = max(0, slots[0]-len(replies))
+		}
+		for _, m := range s.gossip.Poll(now, budget) {
+			replies = append(replies, ControlMessage{Kind: "gossip", Gossip: m})
+		}
+	}
+	return replies, changed, err
 }
 
 // deferPendingRenewal retains no authority. A signature mismatch needs a
@@ -409,4 +458,9 @@ func (s *Synchronizer) prunePendingRenewals(now time.Time) {
 	}
 }
 
-func (s *Synchronizer) Close() { s.certificates.Close() }
+func (s *Synchronizer) Close() {
+	s.certificates.Close()
+	if s.gossip != nil {
+		s.gossip.Close()
+	}
+}

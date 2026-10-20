@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
 )
 
 const MaxMessageBytes = 64 << 10
@@ -122,6 +123,7 @@ func ReadMessage(r io.Reader) (Message, error) {
 // Synchronizer is owned by one peer link. Callers fan out changed signed
 // records and periodically Reconcile to repair a partition or dropped frame.
 type Synchronizer struct {
+	gossip  *meshgossip.Session
 	catalog *Catalog
 	cache   *localmesh.IdentityCache
 	sent    map[string]bool
@@ -148,12 +150,19 @@ type sentRecordStamp struct {
 	digest     [32]byte
 }
 
-func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache) *Synchronizer {
-	return &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
+func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache, pools ...*meshgossip.Pool) *Synchronizer {
+	s := &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
 		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]pendingServiceRecord{}, certificates: localmesh.NewCertificateExchange(cache, c.device.Tenant())}
+	if len(pools) > 0 && pools[0] != nil {
+		s.gossip = pools[0].NewSession(meshgossip.Service)
+	}
+	return s
 }
 
 func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
+	if s.gossip != nil {
+		return s.offerService(w, now)
+	}
 	var record Record
 	if json.Unmarshal(w.Body, &record) != nil {
 		return nil
@@ -227,11 +236,14 @@ func (s *Synchronizer) snapshotRecords(now time.Time) []SignedRecord {
 // signed origin's certificate chain. A snapshot is not safe to project until
 // all records sent before its completion marker have been verified.
 func (s *Synchronizer) PendingIdentity() bool { return len(s.pending) != 0 }
+func (s *Synchronizer) PendingAnnouncements(now time.Time) bool {
+	return s.PendingIdentity() || (s.gossip != nil && s.gossip.Pending(now))
+}
 
 // Receive returns replies for this peer and newly admitted records to relay.
 // Invalid signatures and identities fail the link; ordinary stale/expired
 // records are ignored. Relaying never changes the signed absolute expiry.
-func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, changed []SignedRecord, err error) {
+func (s *Synchronizer) receive(m Message, now time.Time) (replies []Message, changed []SignedRecord, err error) {
 	if err := m.validate(); err != nil {
 		return nil, nil, err
 	}
@@ -264,7 +276,7 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 			if entry.renewal != nil {
 				continue
 			}
-			_, admitted, err := s.Receive(Message{Kind: "record", Record: &entry.wire}, now)
+			_, admitted, err := s.receive(Message{Kind: "record", Record: &entry.wire}, now)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -273,6 +285,9 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 	case "record":
 		s.prunePending(now)
 		ok, err := s.catalog.Accept(*m.Record, now)
+		if s.gossip != nil && (err == nil || errors.Is(err, ErrStale) || errors.Is(err, ErrExpired)) {
+			s.resolveService(*m.Record, now, err == nil)
+		}
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrStale) {
 			return nil, nil, nil
 		}
@@ -378,7 +393,7 @@ func (s *Synchronizer) certificateResult(messages []*localmesh.CertificateMessag
 			if !s.pendingReady(principal, w, now) {
 				continue
 			}
-			out, admitted, err := s.Receive(Message{Kind: "record", Record: &w.wire}, now)
+			out, admitted, err := s.receive(Message{Kind: "record", Record: &w.wire}, now)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -390,15 +405,28 @@ func (s *Synchronizer) certificateResult(messages []*localmesh.CertificateMessag
 	return replies, changed, nil
 }
 
-func (s *Synchronizer) ContinueCertificates(now time.Time) ([]Message, []SignedRecord, error) {
+func (s *Synchronizer) ContinueCertificates(now time.Time, slots ...int) ([]Message, []SignedRecord, error) {
 	s.prunePending(now)
 	messages, completed, err := s.certificates.Poll(now)
-	return s.certificateResult(messages, completed, err, now)
+	replies, changed, err := s.certificateResult(messages, completed, err, now)
+	if s.gossip != nil {
+		budget := 12
+		if len(slots) > 0 {
+			budget = max(0, slots[0]-len(replies))
+		}
+		for _, m := range s.gossip.Poll(now, budget) {
+			replies = append(replies, Message{Kind: "gossip", Gossip: m})
+		}
+	}
+	return replies, changed, err
 }
 
 func (s *Synchronizer) Close() {
 	s.certificates.Close()
 	clear(s.pending)
+	if s.gossip != nil {
+		s.gossip.Close()
+	}
 }
 
 func sameServiceWire(a, b SignedRecord) bool {

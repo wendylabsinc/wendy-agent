@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	LeafALPN = "wendy-local-mesh-leaf/3"
+	LeafALPN            = "wendy-local-mesh-leaf/3"
+	LeafProtocolVersion = 3
 	// LeafPort is the conventional, explicitly configured listener port.
 	LeafPort           = 43024
 	maxLeafConnections = 32

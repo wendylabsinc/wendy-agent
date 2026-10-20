@@ -21,6 +21,8 @@ type Runtime struct {
 	snapshot        func() localmesh.NodeSnapshot
 	mu              sync.Mutex
 	fresh           map[meshid.Device]bool
+	syncReady       bool
+	syncRequired    bool
 	pendingFresh    map[meshid.Device]string
 	wake            chan struct{}
 	changes         chan SignedRecord
@@ -48,6 +50,9 @@ func (r *Runtime) Run(ctx context.Context, hubs ...*localmesh.ControlHub) error 
 		return errors.New("catalogue requires neighbour control transport")
 	}
 	r.hub = hubs[0]
+	r.mu.Lock()
+	r.syncRequired = true
+	r.mu.Unlock()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	reconcile := time.NewTicker(15 * time.Second)
@@ -68,6 +73,16 @@ func (r *Runtime) Run(ctx context.Context, hubs ...*localmesh.ControlHub) error 
 			r.pump(p)
 		}
 		r.pumpTransfers()
+		ready := true
+		for _, p := range r.peers {
+			if p.receivedSnapshot && !p.syncer.PendingAnnouncements(time.Now()) {
+				p.snapshotReady = true
+			}
+			ready = ready && p.snapshotReady
+		}
+		r.mu.Lock()
+		r.syncReady = ready
+		r.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return nil
@@ -133,7 +148,7 @@ func (r *Runtime) ProjectionReady(device meshid.Device) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.fresh[device]
+	return r.fresh[device] && (!r.syncRequired || r.syncReady)
 }
 func (r *Runtime) InvalidateProjection(device meshid.Device) {
 	r.mu.Lock()
@@ -166,9 +181,12 @@ func (r *Runtime) receive(p *catalogPeer, data []byte) error {
 	if m.Kind == "identity-cache" || m.Kind == "identity-cache-done" {
 		return errors.New("duplicate catalogue inventory")
 	}
-	replies, changed, err := p.syncer.Receive(m.Message, time.Now())
+	replies, changed, err := p.syncer.Receive(m.Message, time.Now(), r.replySlots(p))
 	if err != nil {
 		return err
+	}
+	if m.Kind == "snapshot-done" {
+		p.receivedSnapshot = true
 	}
 	r.repairIdentityMessage(p, m.Message, time.Now())
 	if !r.queueReplies(p, replies) {

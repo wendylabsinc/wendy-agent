@@ -4,11 +4,11 @@ import "github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 
 // StreamALPN identifies the routing/control protocol carried over a TLS stream.
 // Carriers must negotiate this exact capability before admitting the stream.
-const StreamALPN = "wendy-local-mesh-ble/3-catalog-1-cert-1"
+const StreamALPN = "wendy-local-mesh-ble/1"
 
 // StreamProtocolVersion is independent of router QUIC frame capabilities.
 // Leaf carriers enforce their own version at their explicit admission boundary.
-const StreamProtocolVersion = 3
+const StreamProtocolVersion = 1
 
 // validStreamHelloVersion deliberately refuses router-only IP capabilities.
 // The caller supplies its explicit stream role's version, independently of

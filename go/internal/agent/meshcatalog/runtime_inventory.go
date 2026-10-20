@@ -18,20 +18,22 @@ const maxInventoryQueueFrames = 16
 const maxInventoryQueueBytes = 128 << 10
 
 type catalogPeer struct {
-	id           babel.LinkID
-	device       meshid.Device
-	syncer       *Synchronizer
-	inventory    receivedInventory
-	initial      []inventoryMessage
-	records      []SignedRecord
-	completed    bool
-	pendingSince time.Time
-	started      time.Time
-	out          chan []byte
-	queued       atomic.Int64
-	replies      [][]byte
-	replyBytes   int
-	cancel       context.CancelFunc
+	id               babel.LinkID
+	device           meshid.Device
+	syncer           *Synchronizer
+	inventory        receivedInventory
+	initial          []inventoryMessage
+	records          []SignedRecord
+	completed        bool
+	receivedSnapshot bool
+	snapshotReady    bool
+	pendingSince     time.Time
+	started          time.Time
+	out              chan []byte
+	queued           atomic.Int64
+	replies          [][]byte
+	replyBytes       int
+	cancel           context.CancelFunc
 }
 
 func (r *Runtime) syncPeers(ctx context.Context) {
@@ -42,7 +44,7 @@ func (r *Runtime) syncPeers(ctx context.Context) {
 			continue
 		}
 		peerCtx, cancel := context.WithCancel(ctx)
-		p := &catalogPeer{id: info.ID, device: info.Device, syncer: NewSynchronizer(r.catalog, r.catalog.cache), initial: inventoryMessages(r.catalog.cache.Fingerprints(time.Now(), maxInventoryEntries)), out: make(chan []byte, maxInventoryQueueFrames), cancel: cancel, started: time.Now()}
+		p := &catalogPeer{id: info.ID, device: info.Device, syncer: NewSynchronizer(r.catalog, r.catalog.cache, r.hub.Announcements()), initial: inventoryMessages(r.catalog.cache.Fingerprints(time.Now(), maxInventoryEntries)), out: make(chan []byte, maxInventoryQueueFrames), cancel: cancel, started: time.Now()}
 		r.peers[info.ID] = p
 		go func() {
 			for {
@@ -237,4 +239,9 @@ func (r *Runtime) pump(p *catalogPeer) {
 	if !p.completed && r.queue(p, inventoryMessage{Message: Message{Kind: "snapshot-done"}}) {
 		p.completed = true
 	}
+}
+
+// Keep response/identity-repair headroom independently of bulk DATA scheduling.
+func (r *Runtime) replySlots(p *catalogPeer) int {
+	return max(0, cap(p.out)-len(p.out)+maxInventoryQueueFrames-len(p.replies)-8)
 }

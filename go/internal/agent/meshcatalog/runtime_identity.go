@@ -65,6 +65,13 @@ func (r *Runtime) repairIdentityMessage(p *catalogPeer, m Message, now time.Time
 			}
 		}
 	}
+	if m.Kind == "gossip" {
+		for principal := range p.syncer.pending {
+			if _, _, ok := r.catalog.cache.Get(principal, now); !ok {
+				r.requestIdentity(p.id, principal, now)
+			}
+		}
+	}
 	if m.Kind == "record" && m.Record != nil {
 		var rec Record
 		if json.Unmarshal(m.Record.Body, &rec) == nil {
@@ -79,7 +86,7 @@ func (r *Runtime) repairIdentityMessage(p *catalogPeer, m Message, now time.Time
 // not remain stuck merely because the bundle arrived on another protocol path.
 func (r *Runtime) repairKnownIdentities(now time.Time) {
 	for id, peer := range r.peers {
-		replies, admitted, err := peer.syncer.ContinueCertificates(now)
+		replies, admitted, err := peer.syncer.ContinueCertificates(now, r.replySlots(peer))
 		if err != nil {
 			if r.hub != nil {
 				r.hub.ClosePeer(id)

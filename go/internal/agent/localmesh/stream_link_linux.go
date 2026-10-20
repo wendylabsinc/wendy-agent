@@ -100,7 +100,11 @@ func OpenStreamHelloWithALPN(ctx context.Context, conn net.Conn, self, peer mesh
 		return err
 	}
 	defer conn.SetDeadline(time.Time{})
-	if err := WriteControl(conn, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: StreamProtocolVersion, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
+	version := StreamProtocolVersion
+	if alpn == LeafALPN {
+		version = LeafProtocolVersion
+	}
+	if err := WriteControl(conn, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: version, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
 		return err
 	}
 	m, err := ReadControl(conn)
@@ -111,7 +115,7 @@ func OpenStreamHelloWithALPN(ctx context.Context, conn net.Conn, self, peer mesh
 		return errors.New("missing wendy net stream hello")
 	}
 	h := m.Hello
-	if !validStreamHelloVersion(h, self, peer, StreamProtocolVersion) {
+	if !validStreamHelloVersion(h, self, peer, version) {
 		return errors.New("invalid wendy net stream hello")
 	}
 	return nil

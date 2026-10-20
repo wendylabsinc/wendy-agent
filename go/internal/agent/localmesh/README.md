@@ -336,9 +336,11 @@ neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
 end-to-end application authentication still apply.
 
 Router QUIC links require hello version 2, ALPN `wendy-net-router/2` and the
-authenticated IP carrier capability described below. BLE TLS uses hello version 3
-and `wendy-local-mesh-ble/3-catalog-1-cert-1` without router IP capabilities.
-The opt-in leaf listener requires
+authenticated IP carrier capability described below. BLE TLS uses hello version 1
+and `wendy-local-mesh-ble/1` without router IP capabilities. Both router carriers
+include signed route authorization, neighbour service catalogue, certificate
+exchange and HAVE/WANT dissemination. Signed manifest and service schema versions
+remain independent. The opt-in leaf listener requires
 `wendy-local-mesh-leaf/3` and the `WML3` preface. Earlier BLE and leaf protocols
 are rejected during negotiation. Every carrier rejects earlier manifest versions
 for both directory presence and route admission, including peers that still
@@ -451,12 +453,13 @@ identity caches still persist verified full chains with their own 1,024-entry,
 are never persisted.
 
 Certificate exchange is part of each role's advertised control protocol.
-Peers must agree on the exact role-specific ALPN and hello version above;
-they must be updated together. TLS handshake certificates and their
-verification remain unchanged.
+TLS handshake certificates and their verification remain unchanged. The endpoint-only
+leaf carrier keeps its separate ALPN and hello version 3; the router bridges its
+verified announcements into router HAVE/WANT dissemination.
 
-Changed records are pushed immediately; duplicate revisions do not renew their
-expiry. Reconciliation sends live records periodically to repair reconnects. A repair
+Changed records immediately advertise a HAVE digest. Duplicate revisions do not
+renew their expiry. Reconciliation advertises live digests periodically to repair
+reconnects; full signed records are sent only on request between routers. A repair
 pass uses only free control-queue slots and resumes from its last admitted
 principal on the existing maintenance tick; it stops when the pass completes.
 Insufficient queue space does not consume a certificate-description stamp.
@@ -507,6 +510,56 @@ now only manages resolver selection and restores its owned resolver changes.
 The kernel feature contract is checked by WendyOS-Builder's
 `recipes-kernel/linux/mesh-internet.inc`.
 
+## Shared HAVE/WANT announcements
+
+`meshgossip.Pool` is shared by every router neighbour and both announcement
+classes through `ControlHub.Announcements()`. Transport-specific synchronizers
+only adapt signed device manifests and signed service records. A service record
+includes publications, renewals and withdrawal tombstones; a device manifest
+includes presence, signed router authorization and withdrawal revisions.
+
+The artifact ID is SHA-256 over the domain `wendy-mesh-artifact/1`, its one-byte
+type, a big-endian four-byte envelope length and the deterministic signed JSON
+envelope. The domain ends with NUL. The signature is included and forwarded
+unchanged. Digest fields carry 32 raw bytes, base64-encoded by JSON, not hex.
+Each gossip message has version 1 and an explicit artifact type:
+
+- `have`: availability hint containing a digest, with no signed body.
+- `want`: digest plus a nonzero request ID scoped to the neighbour session.
+- `data`: matching digest/request, total bytes, offset and at most 1,024 bytes.
+- `unavailable`: matching request whose body is no longer available.
+
+If B and C advertise the same object to D, D selects only one supplier. The
+other remains an alternate. Complete bytes awaiting origin verification retain
+the claim, so certificate repair cannot start another full download. Only a
+verified, admitted object is advertised onward. Unsolicited full records are
+rejected on router links. Digests, availability hints and download completion
+never advance signed revision/generation receipts or grant route authority.
+
+Disconnect immediately releases an owner's claim. Thirty idle seconds without
+an accepted DATA chunk permits an alternate; polling and repeated HAVEs do not
+extend the timeout. Request IDs ignore responses from a superseded download.
+Normal delivery downloads each object once; timeout recovery can still receive
+late bytes already queued by the previous supplier. Small bounded chunks expose
+progress without waiting for a whole large announcement or adding a round trip
+for every chunk. A poll emits at most eight chunks and four new requests.
+
+The shared pool bounds known receipts to 4,096, pending objects to 128, suppliers
+per object to 64, active downloads/uploads to 16 each, and active transfers per
+session to four. Envelopes are at most 40 KiB and cached payloads at most 8 MiB.
+Evicting payload bytes retains the verified receipt until signed expiry, so a
+new HAVE does not redownload an already admitted object. A serving router can
+recover evicted bytes from its authoritative directory/catalogue. Advertised
+hints expire after two minutes. No cache is seeded from durable generation
+receipts when the actual body is absent after restart.
+
+First delivery adds a request round trip per relay hop; larger bodies also drain
+through the bounded chunk scheduler. Presence/route-proof replies use the
+existing high-priority directory queue; service replies use their bounded reply
+reserve. Both retain application packet fairness. The existing immediate route
+reevaluation runs after proof verification; early Babel updates can be rejected
+until their requested proof arrives and periodic Babel updates repair ordering.
+
 ## Verification
 
 From the WendyOS root:
@@ -532,11 +585,12 @@ routing event loop. Catalogue messages are split into 1 KiB fragments, with a
 64 KiB logical-message bound; the neighbour writer interleaves these fragments
 with urgent device control. Babel datagrams retain the carrier's existing path.
 
-Every neighbour exchanges its current certificate inventory and incremental
-service snapshot. Accepted origin signatures are preserved on relay. Verified
-supplier records seed per-link send stamps to prevent echoes. Failed queue
-admission does not consume a send stamp. The existing 15-second repair scan
-sends unqueued generations only. Certificate cache misses can be repaired through
+Every neighbour exchanges its current certificate inventory and a HAVE-only
+service snapshot. Accepted origin signatures are preserved on relay. The
+existing 15-second repair scan re-advertises current digests; it does not push
+full records. Snapshot completion waits for advertised records to resolve,
+including signatures waiting for certificate repair. Failed queue admission
+does not consume a send stamp. Certificate cache misses can be repaired through
 other neighbours with bounded, coalesced requests. Directory, authenticated
 handshake and catalogue paths share the same public certificate-element pool.
 Service announcements and freshness proofs describe certificate hashes instead
@@ -562,11 +616,10 @@ limit work on malformed or non-responsive peers. No request creates a routed
 socket. These freshness requests occur on readiness recovery, not on each normal
 service renewal. An origin without a live route remains unprojected.
 
-The catalogue capability is part of the neighbour ALPN, so connected neighbours
-must be upgraded together. Later route-proof versions retain their stronger
-signature contract alongside that capability. Compact HAVE/WANT artifact
-dissemination is a separate follow-up; full signed-record gossip and certificate
-inventories are preserved.
+The neighbour ALPN selects the complete router-hop v1 contract, so connected
+routers must be updated together. There is no fallback to full-record push.
+Origin-signed route proofs retain their existing signature contract. Certificate
+inventories and origin freshness challenges remain separate from HAVE/WANT.
 
 Run the native affected-package race checks and the opt-in
 `TestNeighbourCatalogueLinuxNamespaces` in a disposable privileged Linux container.

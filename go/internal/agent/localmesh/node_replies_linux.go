@@ -62,3 +62,9 @@ func (n *Node) flushReplies(p *nodePeer) {
 		}
 	}
 }
+
+// Reserve room for unsolicited arrivals of up to four requested responses and
+// their identity-repair messages while bulk transfer scheduling is paused.
+func directoryReplySlots(p *nodePeer) int {
+	return max(0, cap(p.control)-len(p.control)+maxDirectoryReplyFrames-len(p.replies)-8)
+}

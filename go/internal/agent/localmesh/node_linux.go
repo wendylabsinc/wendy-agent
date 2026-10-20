@@ -312,7 +312,7 @@ func (n *Node) Run() error {
 			// drains. This uses the existing maintenance tick, not a new scan
 			// interval, and stops once the pass completes.
 			for _, p := range n.peers {
-				replies, changed, err := p.sync.ContinueCertificates(time.Now())
+				replies, changed, err := p.sync.ContinueCertificates(time.Now(), directoryReplySlots(p))
 				if err != nil {
 					_ = p.link.Close()
 					continue
@@ -390,7 +390,7 @@ func (n *Node) handle(e nodeEvent) error {
 		if _, leaf := e.add.link.(*leafNodeLink); leaf {
 			e.add.sync = newLeafSynchronizer(n.directory, n.cache)
 		} else {
-			e.add.sync = NewSynchronizer(n.directory, n.cache)
+			e.add.sync = NewSynchronizer(n.directory, n.cache, n.controlHub.Announcements())
 		}
 		n.peers[e.add.id] = e.add
 		p := e.add
@@ -445,7 +445,7 @@ func (n *Node) handle(e nodeEvent) error {
 			}
 			return nil
 		}
-		replies, changed, err := p.sync.Receive(*e.control, time.Now())
+		replies, changed, err := p.sync.Receive(*e.control, time.Now(), directoryReplySlots(p))
 		if err != nil {
 			_ = p.link.Close()
 			return nil
