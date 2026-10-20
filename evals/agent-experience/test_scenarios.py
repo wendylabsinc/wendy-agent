@@ -651,11 +651,10 @@ class ExecuteTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        agent = self.root / "agent.py"
-        agent.write_text(AGENT.format(here=str(HERE)))
+        # Wendy chat as configured for real: through the shim, which hands chat the hook (fake_mcp_server chat).
         self.config = {"wendy": FAKE, "budget_usd": 10, "scenario_reserve_usd": .5,
                        "agents": {"fake": {"adapter": "wendy", "model": "fixture",
-                                           "command": [sys.executable, str(agent)]}},
+                                           "command": ["{wendy}", "chat", "--json", "--prompt", "{prompt}"]}},
                        "targets": {"simulator": {"kind": "simulator", "device": "vm:pilot", "capabilities": []}}}
         self.scenarios = self.root / "scenarios.json"
         self.scenarios.write_text(json.dumps([
@@ -670,26 +669,34 @@ class ExecuteTests(unittest.TestCase):
             shutil.rmtree(run_vm["state"], True)
         return {"exit_code": 0}
 
-    def main(self, *argv, failures=(), capabilities=("wifi",), real_prepare=False):
+    def main(self, *argv, failures=(), capabilities=("wifi",), real_prepare=False, refuse=False):
+        """refuse: the run must stop before running anything, so a missed check can't start a real agent."""
         path = self.root / "config.json"
         path.write_text(json.dumps(self.config))
         run_vm = {"state": self.run_state, "name": "wendy-eval-run", "device": "vm:wendy-eval-run",
                   "profile": "generic", "stages": {}, "ready": True}
         out, err = io.StringIO(), io.StringIO()
         self.calls = {"prepare": [], "remove": []}
-        with mock.patch.object(sys, "argv", ["benchmark.py", "--config", str(path), "--scenarios", str(self.scenarios),
-                                             "--output", str(self.root / "results"), "--wendy", FAKE, *argv]), \
-                mock.patch.object(b, "require_state_isolation"), \
-                mock.patch("preflight.check_host", return_value=list(failures)), \
-                mock.patch.object(sc, "detect_board", return_value=(list(capabilities), {"capabilities": capabilities})), \
-                mock.patch.object(sc, "prepare_run_vm", side_effect=(
-                    sc.prepare_run_vm if real_prepare else lambda *a, **k: self.calls["prepare"].append(a[3]) or run_vm)), \
-                mock.patch.object(sc, "remove_run_vm", side_effect=self.remove), \
-                mock.patch.object(sc, "vm_snapshot", return_value=[]), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        prepare = sc.prepare_run_vm if real_prepare else lambda *a, **k: self.calls["prepare"].append(a[3]) or run_vm
+        patches = [mock.patch.object(sys, "argv", ["benchmark.py", "--config", str(path), "--scenarios", str(self.scenarios),
+                                                   "--output", str(self.root / "results"), "--wendy", FAKE, *argv]),
+                   mock.patch.object(b, "require_state_isolation"),
+                   mock.patch("preflight.check_host", return_value=list(failures)),
+                   mock.patch.object(sc, "detect_board", return_value=(list(capabilities), {"capabilities": capabilities})),
+                   mock.patch.object(sc, "prepare_run_vm", side_effect=prepare),
+                   mock.patch.object(sc, "remove_run_vm", side_effect=self.remove),
+                   mock.patch.object(sc, "vm_snapshot", return_value=[]),
+                   contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)]
+        if refuse:
+            nothing = AssertionError("the run must be refused before anything runs")
+            patches += [mock.patch.object(b, name, side_effect=nothing) for name in ("run_process", "list_all_tools", "trial")]
+            patches.append(mock.patch.object(sc, "scenario_trial", side_effect=nothing))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
             try:
                 code = b.main()
-            except SystemExit as exit:
+            except SystemExit:
                 code = ("exit", err.getvalue())
         return code, out.getvalue()
 
@@ -704,6 +711,8 @@ class ExecuteTests(unittest.TestCase):
         self.assertEqual(sorted((r["task"], r["target"], r["device_selector"]) for r in rows),
                          [("probe", "simulator", "vm:wendy-eval-run"), ("wifi", "board", "192.0.2.10:50051")])
         self.assertTrue(all(r["kind"] == "scenario" and r["success"] for r in rows))
+        # chat -> WENDY_CHAT_MCP_COMMAND (the shim) -> recording proxy -> the real binary's mcp serve
+        self.assertEqual([(r["metrics"]["transcript_mcp_calls"], r["metrics"]["proxy_calls"]) for r in rows], [(2, 2)] * 2)
         self.assertEqual(text.count("Usage unknown; charged the scenario reserve of $0.50."), 2)
         manifest = json.loads((output / "manifest.json").read_text())
         self.assertEqual(manifest["scenarios_sha256"], b.hashlib.sha256(self.scenarios.read_bytes()).hexdigest())
@@ -744,14 +753,60 @@ class ExecuteTests(unittest.TestCase):
     def test_codex_template_must_carry_the_scenario_and_vm_store(self):
         codex = json.loads((HERE / "config.example.json").read_text())["agents"]["codex"]
         self.config["agents"] = {"codex": dict(codex, model="pinned")}
-        code, _ = self.main("--scenario", "probe", "--execute", "--wendy", str(self.root / "missing"))
+        code, _ = self.main("--scenario", "probe", "--execute", "--wendy", str(self.root / "missing"), refuse=True)
         self.assertIn("Wendy executable not found", code[1])
-        for dropped in ('mcp_servers.wendy.env.WENDY_EVAL_SCENARIO="{scenario_config}"', "{wendy_vm_home}"):
+        for dropped in ('mcp_servers.wendy.env.WENDY_EVAL_SCENARIO="{scenario_config}"', "{wendy_vm_home}",
+                        'mcp_servers.wendy.command="{wendy}"'):
             with self.subTest(dropped=dropped):
                 self.config["agents"]["codex"]["command"] = [a for a in codex["command"] if a != dropped]
-                code, _ = self.main("--scenario", "probe", "--execute")
+                code, _ = self.main("--scenario", "probe", "--execute", refuse=True)
                 self.assertEqual(code[0], "exit")
                 self.assertIn("codex must", code[1])
+
+    def test_scenario_templates_must_route_wendy_through_the_shim(self):
+        example = json.loads((HERE / "config.example.json").read_text())["agents"]
+        def without(name, *dropped, **replaced):
+            command = [replaced.get(a, a) for a in example[name]["command"] if a not in dropped]
+            return {name: dict(example[name], model="pinned", command=command)}
+        cases = [(without("claude", "--plugin-dir", "{plugin_dir}"), "Claude must load the staged plugin"),
+                 (without("claude", "--strict-mcp-config"), "claude must load only the runner's MCP config"),
+                 (without("claude", **{"{workspace}/mcp.json": "/elsewhere/mcp.json"}),
+                  "claude must load only the runner's MCP config"),
+                 (without("wendy", "{wendy}"), "wendy must run chat through the shim")]
+        for agents, message in cases:
+            with self.subTest(message=message, command=next(iter(agents.values()))["command"]):
+                self.config["agents"] = agents
+                code, _ = self.main("--scenario", "probe", "--execute", refuse=True)
+                self.assertEqual(code[0], "exit")
+                self.assertIn(message, code[1])
+        self.assertFalse((self.root / "results").exists())
+        # The staged plugin is required for end-to-end runs too.
+        self.config["agents"] = without("claude", "--plugin-dir", "{plugin_dir}")
+        code, _ = self.main("--task", "deploy-http", "--execute", refuse=True)
+        self.assertIn("Claude must load the staged plugin", code[1])
+
+    def test_wendy_chat_needs_a_binary_with_the_mcp_hook(self):
+        old = self.root / "old-wendy"
+        old.write_text("#!/bin/sh\nexit 0\n")  # a chat built before WENDY_CHAT_MCP_COMMAND
+        old.chmod(0o755)
+        code, _ = self.main("--scenario", "probe", "--execute", "--wendy", str(old), refuse=True)
+        self.assertEqual(code[0], "exit")
+        self.assertIn(f"{old} predates the WENDY_CHAT_MCP_COMMAND hook", code[1])
+        self.assertFalse((self.root / "results").exists())
+        self.assertEqual(self.calls["prepare"], [])
+
+    def test_a_chat_that_bypasses_the_proxy_stops_the_run(self):
+        with mock.patch.dict(os.environ, {"FAKE_CHAT_IGNORES_HOOK": "1"}):
+            code, text = self.main("--scenario", "probe", "--repetitions", "2", "--execute")
+        output = next((self.root / "results").iterdir())
+        rows = [json.loads(line) for line in (output / "results.jsonl").read_text().splitlines()]
+        for row in rows:
+            self.addCleanup(shutil.rmtree, row["workspace"], True)
+        self.assertEqual([(r["status"], r["success"]) for r in rows], [("mcp_unverified", False)])
+        self.assertEqual((rows[0]["metrics"]["transcript_mcp_calls"], rows[0]["metrics"]["proxy_calls"]), (2, 0))
+        self.assertIn("The agent's Wendy MCP calls never reached the recording proxy; stopping.", text)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls["remove"], ["wendy-eval-run"])
 
 
 def go_tool_names():

@@ -897,18 +897,29 @@ def main():
             parser.error(f"pin a model for {name} in the config")
         if agent["adapter"] not in ("codex", "claude", "wendy"):
             parser.error(f"unknown adapter for {name}")
-        if agent["adapter"] == "claude":
-            command = agent["command"]
-            at = command.index("--plugin-dir") if "--plugin-dir" in command else -1
-            if at < 0 or at + 1 >= len(command) or command[at + 1] != "{plugin_dir}":
-                parser.error('Claude must load the staged plugin: use "--plugin-dir", "{plugin_dir}"')
-        if agent["adapter"] == "codex" and selected_scenarios:
+        command = agent["command"]
+        pairs = list(zip(command, command[1:]))
+        if agent["adapter"] == "claude" and ("--plugin-dir", "{plugin_dir}") not in pairs:
+            parser.error('Claude must load the staged plugin: use "--plugin-dir", "{plugin_dir}"')
+        if not selected_scenarios:
+            continue
+        # In a scenario run, {wendy} is the shim, and only a Wendy MCP server or chat started through it is recorded.
+        if agent["adapter"] == "claude" and ("--strict-mcp-config" not in command
+                                             or ("--mcp-config", "{workspace}/mcp.json") not in pairs):
+            parser.error(f"{name} must load only the runner's MCP config: add \"--strict-mcp-config\", "
+                         '"--mcp-config", "{workspace}/mcp.json" to its command')
+        if agent["adapter"] == "codex":
+            if 'mcp_servers.wendy.command="{wendy}"' not in command:
+                parser.error(f'{name} must start its Wendy MCP server through the shim: add "-c", '
+                             '"mcp_servers.wendy.command=\\"{wendy}\\"" to its command')
             # Codex starts MCP servers with a cleared environment and runs its shell in a sandbox.
-            if not any("WENDY_EVAL_SCENARIO" in arg for arg in agent["command"]):
+            if not any("WENDY_EVAL_SCENARIO" in arg for arg in command):
                 parser.error(f'{name} must pass the scenario to its MCP server: add "-c", '
                              '"mcp_servers.wendy.env.WENDY_EVAL_SCENARIO=\\"{scenario_config}\\"" to its command')
-            if "{wendy_vm_home}" not in agent["command"]:
+            if "{wendy_vm_home}" not in command:
                 parser.error(f'{name} must be able to use the shared VM store: add "--add-dir", "{{wendy_vm_home}}" to its command')
+        if agent["adapter"] == "wendy" and command[:1] != ["{wendy}"]:
+            parser.error(f'{name} must run chat through the shim: start its command with "{{wendy}}"')
     for name in {target for _, _, target, _ in plan} | set(detect):
         target = config["targets"][name]
         if target["kind"] not in ("simulator", "cloud", "physical"):
@@ -923,6 +934,12 @@ def main():
     if not wendy:
         parser.error("Wendy executable not found")
     wendy = os.path.abspath(wendy)
+    chats = [name for name in agents if config["agents"][name]["adapter"] == "wendy"]
+    if selected_scenarios and chats:
+        import eval_wendy
+        if not eval_wendy.has_chat_hook(wendy):  # the shim refuses it too; fail before any attempt
+            parser.error(f"{wendy} predates the WENDY_CHAT_MCP_COMMAND hook, so Wendy chat ({', '.join(chats)}) "
+                         "would start its own unrecorded MCP server; rebuild it to run scenarios with chat")
     if not (args.treatment_root / "plugins/wendy-agentic-coding/skills").is_dir():
         parser.error("--treatment-root has no plugins/wendy-agentic-coding/skills directory")
     if config.get("isolate_device_state", True) or selected_scenarios:

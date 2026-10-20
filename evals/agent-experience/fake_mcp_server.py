@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fake `wendy` for tests: `mcp serve` speaks newline-delimited JSON-RPC; `--version` prints a version."""
+"""Fake `wendy` for tests: `mcp serve` speaks newline-delimited JSON-RPC; `--version` prints a version;
+`chat` is a fake Wendy chat that calls two tools through its MCP server."""
 import json
 import os
 import sys
@@ -43,6 +44,23 @@ def handle(message):
         sys.stdout.flush()
 
 
+def chat():
+    """Like the real chat, start `mcp serve` with the command WENDY_CHAT_MCP_COMMAND names, unless
+    FAKE_CHAT_IGNORES_HOOK makes this a chat built before that hook, which runs its own binary."""
+    from mcp_client import StdioMCP
+    command = os.environ.get("WENDY_CHAT_MCP_COMMAND")
+    if not command or os.environ.get("FAKE_CHAT_IGNORES_HOOK"):
+        command = os.path.abspath(sys.argv[0])
+    with StdioMCP([command, "mcp", "serve", "--tool-groups", "all"], timeout=20) as mcp:
+        mcp.initialize()
+        for i, (name, arguments) in enumerate((("write_thing", {"path": "x"}), ("read_thing", {}))):
+            print(json.dumps({"type": "tool_start", "id": str(i), "tool": name, "arguments": arguments}), flush=True)
+            mcp.call(name, arguments)
+    print(json.dumps({"type": "usage", "usage": {"input_tokens": 10, "output_tokens": 2, "complete": True}}))
+    print(json.dumps({"type": "done", "text": "done"}))
+    return 0
+
+
 def main():
     if os.environ.get("FAKE_MCP_ENV_LOG"):
         state = os.environ.get("WENDY_CONFIG_DIR")
@@ -52,6 +70,8 @@ def main():
     if "--version" in sys.argv[1:]:
         print("fake-wendy 0.0.0")
         return 0
+    if sys.argv[1:2] == ["chat"]:
+        return chat()
     if os.environ.get("FAKE_MCP_STDERR"):
         sys.stderr.write(os.environ["FAKE_MCP_STDERR"])
         sys.stderr.flush()
