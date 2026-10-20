@@ -138,6 +138,28 @@ class GradeTests(unittest.TestCase):
         self.assertIn({"cli": "device apps stop"}, tasks["stop-app"]["expect"]["right"])
         self.assertIn({"cli": "device apps start"}, tasks["start-app"]["expect"]["right"])
 
+    def test_diagnosis_tasks_accept_the_cli_equivalents(self):
+        # The same CLI paths the scenarios accept for these tools (checked with `wendy WORDS --help`).
+        import json
+        from pathlib import Path
+        tasks = {t["id"]: t for t in json.loads((Path(__file__).parent / "tasks.json").read_text())}
+        cases = {"debug-otel-logs": [["device", "logs", "--app", "worker"]],
+                 "debug-otel-metrics": [["device", "telemetry-stream", "--metrics", "--app", "worker"]],
+                 "debug-otel-traces": [["device", "telemetry-stream", "--traces"]],
+                 "debug-go2-ros2": [["device", "ros2", "topics"], ["device", "ros2", "topic", "info", "/odom"]],
+                 "debug-g1-ros2": [["device", "ros2", "topics", "--all"], ["device", "ros2", "topic", "info", "/odom"]],
+                 "repair-go2-camera": [["device", "camera", "list"], ["device", "camera", "view", "--stdout"]],
+                 "repair-g1-camera": [["device", "camera", "list", "--json"], ["--json", "device", "camera", "view"]]}
+        for task, argvs in cases.items():
+            for argv in argvs:
+                with self.subTest(task=task, argv=argv):
+                    self.assertEqual(g.grade([cli(*argv)], tasks[task]["expect"], "", True)["outcome"], "right")
+        # Metrics and traces are told apart by their stream flag, as in the scenarios.
+        self.assertEqual(g.grade([cli("device", "telemetry-stream", "--logs")], tasks["debug-otel-metrics"]["expect"],
+                                 "", True)["outcome"], "missed")
+        self.assertEqual(g.grade([cli("device", "telemetry-stream", "--metrics")], tasks["debug-otel-traces"]["expect"],
+                                 "", True)["outcome"], "missed")
+
 
 if __name__ == "__main__":
     unittest.main()

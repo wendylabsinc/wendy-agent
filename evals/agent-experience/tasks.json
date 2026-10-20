@@ -744,6 +744,9 @@
       "right": [
         {
           "tool": "telemetry_logs"
+        },
+        {
+          "cli": "device logs"
         }
       ],
       "wrong": [
@@ -823,6 +826,10 @@
       "right": [
         {
           "tool": "telemetry_metrics"
+        },
+        {
+          "cli": "device telemetry-stream",
+          "args_regex": "--metrics\\b"
         }
       ],
       "wrong": [
@@ -902,6 +909,10 @@
       "right": [
         {
           "tool": "telemetry_traces"
+        },
+        {
+          "cli": "device telemetry-stream",
+          "args_regex": "--traces\\b"
         }
       ],
       "wrong": [
@@ -1095,6 +1106,12 @@
         },
         {
           "tool": "ros2_topic_info"
+        },
+        {
+          "cli": "device ros2 topics"
+        },
+        {
+          "cli": "device ros2 topic info"
         }
       ],
       "wrong": [
@@ -1171,6 +1188,12 @@
         },
         {
           "tool": "camera_snapshot"
+        },
+        {
+          "cli": "device camera list"
+        },
+        {
+          "cli": "device camera view"
         }
       ],
       "wrong": [
@@ -1247,6 +1270,12 @@
         },
         {
           "tool": "ros2_topic_info"
+        },
+        {
+          "cli": "device ros2 topics"
+        },
+        {
+          "cli": "device ros2 topic info"
         }
       ],
       "wrong": [
@@ -1323,6 +1352,12 @@
         },
         {
           "tool": "camera_snapshot"
+        },
+        {
+          "cli": "device camera list"
+        },
+        {
+          "cli": "device camera view"
         }
       ],
       "wrong": [
