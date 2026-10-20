@@ -109,19 +109,26 @@ class CompareTest(unittest.TestCase):
         r = self.run_compare([row("s1", "right", calls=[("mcp", "a")])], [row("s1", "right", calls=[("cli", "b")])])
         self.assertEqual((r["rows"][0]["tools_added"], r["rows"][0]["tools_removed"]), (["b"], ["a"]))
 
-    def test_confirm_reruns_flagged_pairs_on_candidate(self):
-        b = make(self.tmp.name, "b", [row("s1", "right")] * 3)
-        n = make(self.tmp.name, "n", [row("s1", "wrong")] * 3)
-
-        def fake_run(argv, **kw):
-            run = n / "confirm" / "20260101-000000-abc"
-            run.mkdir(parents=True)
-            (run / "results.jsonl").write_text(json.dumps(row("s1", "wrong")) + "\n")
-            return mock.Mock(returncode=0)
-
+    def confirm(self, rows, fake, extra_target=False, base_rows=None):
+        b = make(self.tmp.name, "b", base_rows or [row("s1", "right")] * 3)
+        n = make(self.tmp.name, "n", rows)
         out = Path(self.tmp.name) / "out"
-        with mock.patch("compare.subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("compare.subprocess.run", side_effect=fake) as run:
             code = c.main(["--baseline", str(b), "--candidate", str(n), "--output", str(out), "--confirm", "2"])
+        return code, run, json.loads((out / "compare.json").read_text()), (out / "compare.md").read_text(), n
+
+    @staticmethod
+    def writer(rows, code=0):
+        def fake(argv, **kw):
+            if rows is not None:
+                run = Path(argv[argv.index("--output") + 1]) / "20260101-000000-abc"
+                run.mkdir(parents=True)
+                (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            return mock.Mock(returncode=code)
+        return fake
+
+    def test_confirm_reruns_flagged_pairs_on_candidate(self):
+        code, run, result, md, n = self.confirm([row("s1", "wrong")] * 3, self.writer([row("s1", "wrong")]))
         self.assertEqual(code, 1)
         argv = run.call_args.args[0]
         joined = " ".join(argv)
@@ -130,9 +137,55 @@ class CompareTest(unittest.TestCase):
         self.assertIn("--treatment-root /t", joined)
         self.assertIn("--wendy /w", joined)
         self.assertEqual(run.call_args.kwargs["cwd"], "/cwd")
-        result = json.loads((out / "compare.json").read_text())
         self.assertEqual(result["rows"][0]["candidate"]["attempts"], 4)
         self.assertIn("tool_choice", result["rows"][0]["confirmed"])
+        self.assertIn("tool_choice (confirmed)", md)
+
+    def test_failed_rerun_leaves_flag_unconfirmed(self):
+        _, _, result, md, _ = self.confirm([row("s1", "wrong")] * 3, self.writer([row("s1", "wrong")], code=1))
+        r = result["rows"][0]
+        self.assertEqual(r["confirmed"], [])
+        self.assertEqual(r["unconfirmed"]["tool_choice"], "rerun failed: exit 1")
+        self.assertIn("unconfirmed: rerun failed: exit 1", md)
+
+    def test_rerun_without_rows_is_unconfirmed(self):
+        _, _, result, _, _ = self.confirm([row("s1", "wrong")] * 3, self.writer(None))
+        self.assertEqual(result["rows"][0]["unconfirmed"]["tool_choice"], "rerun added no attempts")
+        self.assertEqual(result["rows"][0]["candidate"]["attempts"], 3)
+
+    def test_stale_confirm_dir_is_not_merged(self):
+        n = Path(self.tmp.name) / "n"
+        make(self.tmp.name, "n", [row("s1", "wrong")] * 3)
+        stale = n / "confirm" / "old" / "run"
+        stale.mkdir(parents=True)
+        (stale / "results.jsonl").write_text(json.dumps(row("s1", "wrong")) + "\n")
+        _, _, result, _, _ = self.confirm([row("s1", "wrong")] * 3, self.writer(None))
+        self.assertEqual(result["rows"][0]["candidate"]["attempts"], 3)
+        self.assertIn("tool_choice", result["rows"][0]["unconfirmed"])
+
+    def test_confirm_is_keyed_by_target(self):
+        rows = [row("s1", "wrong", target="sim")] * 3 + [row("s1", "wrong", target="board")] * 3
+        base = [row("s1", "right", target="sim")] * 3 + [row("s1", "right", target="board")] * 3
+        # the rerun only produces a row for target sim
+        _, _, result, _, _ = self.confirm(rows, self.writer([row("s1", "wrong", target="sim")]), base_rows=base)
+        by = {r["target"]: r for r in result["rows"]}
+        self.assertEqual(by["sim"]["confirmed"], ["tool_choice"])
+        self.assertEqual(by["board"]["unconfirmed"]["tool_choice"], "rerun added no attempts")
+
+    def test_setup_error_only_side_is_visible_and_never_flagged(self):
+        bad = dict(row("s1", None), status="setup_error")
+        r = self.run_compare([row("s1", "right")] * 3, [bad] * 3)
+        self.assertEqual(r["rows"][0]["flags"], [])
+        self.assertEqual(r["rows"][0]["candidate"]["setup_errors"], 3)
+        md = c.render_markdown(r)
+        self.assertIn("no scored attempts (3 setup errors)", md)
+
+    def test_markdown_counts_and_escapes(self):
+        rows = [row("s|1", "right")] * 3 + [dict(row("s|1", None), status="setup_error")]
+        r = self.run_compare([row("s|1", "right")] * 3, rows)
+        md = c.render_markdown(r)
+        self.assertIn("3R/0W/0M/0A of 3 (1 setup error)", md)
+        self.assertIn("s\\|1", md)
 
 
 if __name__ == "__main__":

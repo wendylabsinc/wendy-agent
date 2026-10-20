@@ -12,6 +12,8 @@ from pathlib import Path
 import statistics
 import subprocess
 import sys
+import time
+import uuid
 
 OUTCOMES = ("right", "wrong", "missed", "asked")
 TRACKED = ("runner_sha256", "task_sha256", "scenarios_sha256")
@@ -76,6 +78,7 @@ def _median(values):
 
 
 def side_stats(rows):
+    setup_errors = sum(r.get("status") == "setup_error" for r in rows)
     rows = [r for r in rows if r.get("status") != "setup_error"]
     outcomes = {k: 0 for k in OUTCOMES}
     outcomes["ungraded"] = 0
@@ -91,7 +94,7 @@ def side_stats(rows):
         for e in ((r.get("metrics") or {}).get("tool_trace") or []):
             if isinstance(e, dict) and e.get("channel") in ("mcp", "cli") and e.get("name"):
                 used.add(e["name"])
-    return {"attempts": len(rows), "outcomes": outcomes, "good": outcomes["right"] + outcomes["asked"],
+    return {"attempts": len(rows), "setup_errors": setup_errors, "outcomes": outcomes, "good": outcomes["right"] + outcomes["asked"],
             "median_tokens": _median(tokens), "max_tokens": max(tokens, default=None),
             "known_usage": len(tokens), "unknown_usage": len(rows) - len(tokens),
             "median_seconds": _median(seconds), "max_seconds": max(seconds, default=None),
@@ -205,8 +208,17 @@ def compare(baseline, candidate, scenarios, margin=.25):
 
 
 def _rwma(stats):
+    errors = stats.get("setup_errors", 0)
+    plural = "s" if errors != 1 else ""
+    if not stats["attempts"]:
+        return f"no scored attempts ({errors} setup error{plural})" if errors else "-"
     o = stats["outcomes"]
-    return "/".join(str(o[k]) for k in OUTCOMES) if stats["attempts"] else "-"
+    text = "/".join(f"{o[k]}{k[0].upper()}" for k in OUTCOMES) + f" of {stats['attempts']}"
+    return text + (f" ({errors} setup error{plural})" if errors else "")
+
+
+def _cell(value):
+    return str(value).replace("|", "\\|")
 
 
 def _pair(b, c, unknown_b, unknown_c):
@@ -224,18 +236,24 @@ def render_markdown(result):
               "| --- | --- | --- | --- | --- | --- | --- | --- |"]
     for r in result["rows"]:
         b, n = r["baseline"], r["candidate"]
-        flags = [f + (" (confirmed)" if f in r.get("confirmed", []) else "") for f in r["flags"]]
+        flags = [f + (" (confirmed)" if f in r.get("confirmed", []) else
+                      f" (unconfirmed: {r['unconfirmed'][f]})" if f in r.get("unconfirmed", {}) else "")
+                 for f in r["flags"]]
         if r["one_sided"]:
             flags.append("one side only")
-        lines.append(f"| {r['task']} | {r['agent']} | {r['target']} | {_rwma(b)} | {_rwma(n)} | "
+        lines.append(f"| {_cell(r['task'])} | {_cell(r['agent'])} | {_cell(r['target'])} | {_rwma(b)} | {_rwma(n)} | "
                      f"{_pair(b['median_tokens'], n['median_tokens'], b['unknown_usage'], n['unknown_usage'])} | "
-                     f"{_pair(b['median_seconds'], n['median_seconds'], 0, 0)} | {', '.join(flags)} |")
+                     f"{_pair(b['median_seconds'], n['median_seconds'], 0, 0)} | {_cell(', '.join(flags))} |")
     notes = [f"- {r['task']}: reply text of {', '.join(r['canned_tools_changed'])} is shared between runs; "
              "recapture against the candidate to measure it"
              for r in result["rows"] if r["canned_tools_changed"]]
     if notes:
         lines += ["", "## Not measured", ""] + list(dict.fromkeys(notes))
     return "\n".join(lines) + "\n"
+
+
+def _key_of(r):
+    return (r["kind"], r["task"], r["target"], r["agent"])
 
 
 def _strip_flags(argv, names):
@@ -253,20 +271,32 @@ def _strip_flags(argv, names):
 
 
 def _confirm(candidate, flagged, count):
+    """Rerun each flagged (kind, task, agent) once; return {(kind, task, agent): outcome}.
+
+    Reruns write to a fresh directory, and only the rows that directory holds are merged.
+    """
     manifest = candidate["manifest"]
     argv = manifest.get("argv") or []
     if not argv:
-        return
+        return {}
     base = [sys.executable] + argv if str(argv[0]).endswith(".py") else list(argv)
     base = _strip_flags(base, {"--task", "--scenario", "--agent", "--repetitions", "--output", "--limit"})
     base = [w for w in base if w != "--execute"]
-    confirm_dir = candidate["dir"] / "confirm"
+    invocation = candidate["dir"] / "confirm" / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
+    outcomes, merged = {}, []
     for kind, task, agent in sorted(flagged):
-        command = base + ["--output", str(confirm_dir), "--scenario" if kind == "scenario" else "--task", task,
+        command = base + ["--output", str(invocation), "--scenario" if kind == "scenario" else "--task", task,
                           "--agent", agent, "--repetitions", str(count), "--execute"]
-        subprocess.run(command, cwd=manifest.get("cwd") or None, check=False)
-    for results in sorted(confirm_dir.glob("*/results.jsonl")):
-        candidate["rows"] = candidate["rows"] + _read_rows(results)
+        before = set(invocation.glob("*/results.jsonl"))
+        try:
+            code = subprocess.run(command, cwd=manifest.get("cwd") or None, check=False).returncode
+        except OSError as error:
+            code = f"could not start ({error})"
+        rows = [r for path in sorted(set(invocation.glob("*/results.jsonl")) - before) for r in _read_rows(path)]
+        merged += rows
+        outcomes[(kind, task, agent)] = {"exit": code, "rows": rows}
+    candidate["rows"] = candidate["rows"] + merged
+    return outcomes
 
 
 def main(argv=None):
@@ -290,11 +320,25 @@ def main(argv=None):
     if result["mismatches"] and not args.allow_mismatch:
         print("The runs differ in: " + ", ".join(result["mismatches"]) + " (pass --allow-mismatch to compare anyway)")
     elif args.confirm and any(r["flags"] for r in result["rows"]):
-        first = {(r["kind"], r["task"], r["agent"]): list(r["flags"]) for r in result["rows"] if r["flags"]}
-        _confirm(candidate, first, args.confirm)
+        first = {_key_of(r): list(r["flags"]) for r in result["rows"] if r["flags"]}
+        reruns = _confirm(candidate, {k[:2] + k[3:] for k in first}, args.confirm)
         result = compare(baseline, candidate, scenarios, args.margin)
         for r in result["rows"]:
-            r["confirmed"] = [f for f in r["flags"] if f in first.get((r["kind"], r["task"], r["agent"]), [])]
+            key = _key_of(r)
+            r["confirmed"], r["unconfirmed"] = [], {}
+            rerun = reruns.get(key[:2] + key[3:])
+            for flag in r["flags"] if key in first else []:
+                if flag not in first[key]:
+                    continue
+                added = sum(x.get("status") != "setup_error" and _key(x) == key for x in (rerun or {}).get("rows", []))
+                if rerun is None:
+                    r["unconfirmed"][flag] = "no rerun"
+                elif rerun["exit"] != 0:
+                    r["unconfirmed"][flag] = f"rerun failed: exit {rerun['exit']}"
+                elif not added:
+                    r["unconfirmed"][flag] = "rerun added no attempts"
+                else:
+                    r["confirmed"].append(flag)
     output = args.output or (args.candidate / "compare")
     output.mkdir(parents=True, exist_ok=True)
     (output / "compare.json").write_text(json.dumps(result, indent=2) + "\n")
