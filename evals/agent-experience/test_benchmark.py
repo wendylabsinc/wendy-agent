@@ -312,9 +312,10 @@ class MetricsTests(unittest.TestCase):
                 "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
         with tempfile.TemporaryDirectory() as directory:
             rows = [b.trial(config, "fake", "sim", task, Path(directory), sys.executable) for _ in range(2)]
-            plugins = []
             for row in rows:
                 self.addCleanup(shutil.rmtree, row["workspace"], True)
+            plugins = []
+            for row in rows:
                 self.assertEqual((row["status"], row["success"]), ("mcp_contaminated", False))
                 plugin = Path(row["metrics"]["final_text"])  # the plugin dir the agent was given
                 self.assertEqual(plugin, Path(directory) / f"fake-sim-fixture-{row['id']}" / "plugin")
