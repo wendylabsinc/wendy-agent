@@ -1,4 +1,4 @@
-// Package localmesh implements transport-independent local mesh facilities.
+// Package localmesh implements transport-independent wendy net facilities.
 package localmesh
 
 import (
@@ -164,22 +164,29 @@ func cloneChain(chain [][]byte) [][]byte {
 }
 
 func (c *IdentityCache) prune(now time.Time) {
+	// Bytes bounds all retained certificate data, independently of the entry
+	// count and whether this cache has a backing file.
+	totalBytes := 0
 	for principal, entry := range c.entries {
 		if _, ok := c.valid(principal, entry, now); !ok {
 			delete(c.entries, principal)
+			c.pendingSave = true
+		} else {
+			totalBytes += chainSize(entry.Chain)
 		}
 	}
-	for len(c.entries) > c.limits.Entries {
+	for len(c.entries) > c.limits.Entries || totalBytes > c.limits.Bytes {
 		oldest := ""
 		var when time.Time
 		for principal, entry := range c.entries {
-			if oldest == "" || entry.Used.Before(when) {
+			if oldest == "" || entry.Used.Before(when) || entry.Used.Equal(when) && principal < oldest {
 				oldest, when = principal, entry.Used
 			}
 		}
 		if oldest == "" {
 			return
 		}
+		totalBytes -= chainSize(c.entries[oldest].Chain)
 		delete(c.entries, oldest)
 		c.pendingSave = true
 	}

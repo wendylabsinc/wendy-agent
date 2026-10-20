@@ -62,7 +62,7 @@ func TestStreamWriterCauseSurvivesInducedReadClose(t *testing.T) {
 			close(c.release)
 			terminalWait(t, l.done)
 			terminalWait(t, c.returned)
-			if _, err := l.ReadControl(); !errors.Is(err, c.failure) || !strings.Contains(err.Error(), "mesh stream write:") {
+			if _, err := l.ReadControl(); !errors.Is(err, c.failure) || !strings.Contains(err.Error(), "wendy net stream write:") {
 				t.Fatalf("read lost initiating writer cause: %v", err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)

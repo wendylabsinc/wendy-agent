@@ -72,7 +72,7 @@ func OpenDeviceStateStore(path string, device meshid.Device, routerID babel.Rout
 	_ = json.Unmarshal(data, &legacy)
 	_, principalErr := meshid.DeviceFromPrincipal(old.Device)
 	if old.Version != 1 || (principalErr != nil && !(old.Device == "" && legacy.Org > 0 && legacy.Asset > 0)) {
-		return nil, old, errors.New("local-mesh safety state identity mismatch")
+		return nil, old, errors.New("wendy net safety state identity mismatch")
 	}
 	return OpenStateStore(scoped, device, routerID)
 }
@@ -87,7 +87,7 @@ func OpenStateStore(path string, device meshid.Device, routerID babel.RouterID) 
 	s := &StateStore{path: path}
 	principal := device.Principal()
 	if principal == "" || len(principal) > maxPrincipalBytes || routerID == 0 || routerID == babel.RouterID(^uint64(0)) {
-		return nil, PersistentState{}, errors.New("invalid local-mesh instance identity")
+		return nil, PersistentState{}, errors.New("invalid wendy net instance identity")
 	}
 	state := PersistentState{Version: 1, Device: principal, RouterID: uint64(routerID)}
 	loaded, data, err := readPersistentState(path)
@@ -99,16 +99,16 @@ func OpenStateStore(path string, device meshid.Device, routerID babel.RouterID) 
 	}
 	state = loaded
 	if state.Version != 1 || state.Device != principal {
-		return nil, state, errors.New("local-mesh safety state identity mismatch")
+		return nil, state, errors.New("wendy net safety state identity mismatch")
 	}
 	if _, err := meshid.DeviceFromPrincipal(state.Device); err != nil {
-		return nil, state, errors.New("local-mesh safety state identity mismatch")
+		return nil, state, errors.New("wendy net safety state identity mismatch")
 	}
 	if state.RouterID == 0 || state.RouterID == uint64(babel.RouterID(^uint64(0))) {
-		return nil, state, errors.New("local-mesh safety state has no router ID")
+		return nil, state, errors.New("wendy net safety state has no router ID")
 	}
 	if state.Babel != nil && state.Babel.RouterID != babel.RouterID(state.RouterID) {
-		return nil, state, errors.New("local-mesh checkpoint belongs to another router ID")
+		return nil, state, errors.New("wendy net checkpoint belongs to another router ID")
 	}
 	s.previous = append([]byte(nil), data...)
 	return s, state, nil
@@ -126,7 +126,7 @@ func readPersistentState(path string) (PersistentState, []byte, error) {
 		return state, nil, err
 	}
 	if len(data) > 4<<20 {
-		return state, nil, errors.New("oversized local-mesh safety state")
+		return state, nil, errors.New("oversized wendy net safety state")
 	}
 	err = json.Unmarshal(data, &state)
 	return state, data, err

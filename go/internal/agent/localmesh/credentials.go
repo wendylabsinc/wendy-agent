@@ -44,11 +44,11 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 		return nil, err
 	}
 	if len(base.Certificates) != 1 {
-		return nil, errors.New("missing local-mesh identity")
+		return nil, errors.New("missing wendy net identity")
 	}
 	cert := base.Certificates[0]
 	if len(cert.Certificate) == 0 || len(cert.Certificate) > 16 {
-		return nil, errors.New("invalid local-mesh identity bundle")
+		return nil, errors.New("invalid wendy net identity bundle")
 	}
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
@@ -91,10 +91,10 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 			return Identity{}, err
 		}
 		if device.Tenant() != self.Tenant() {
-			return Identity{}, errors.New("local-mesh peer is outside the tenant")
+			return Identity{}, errors.New("wendy net peer is outside the tenant")
 		}
 		if now.Before(peerLeaf.NotBefore) || !now.Before(peerLeaf.NotAfter) {
-			return Identity{}, errors.New("local-mesh identity is not currently valid")
+			return Identity{}, errors.New("wendy net identity is not currently valid")
 		}
 		expires := peerLeaf.NotAfter
 		// A peer may present an intermediate absent from our own enrollment
@@ -157,7 +157,7 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 	}}
 	credentials.peerTLSTickets = func(peer meshid.Device, alpn, transport string) (*tls.Config, error) {
 		if alpn == "" || transport == "" {
-			return nil, errors.New("mesh ticket scope needs ALPN and transport")
+			return nil, errors.New("wendy net ticket scope needs ALPN and transport")
 		}
 		cfg, err := credentials.PeerTLS(peer)
 		if err != nil {
@@ -184,7 +184,7 @@ func pinPeer(config *tls.Config, peer meshid.Device) {
 			return err
 		}
 		if len(rawCerts) == 0 {
-			return errors.New("missing local-mesh peer certificate")
+			return errors.New("missing wendy net peer certificate")
 		}
 		leaf, err := x509.ParseCertificate(rawCerts[0])
 		if err != nil {
@@ -195,7 +195,7 @@ func pinPeer(config *tls.Config, peer meshid.Device) {
 			return err
 		}
 		if device.Principal() != peer.Principal() {
-			return errors.New("local-mesh peer identity mismatch")
+			return errors.New("wendy net peer identity mismatch")
 		}
 		return nil
 	}
@@ -227,7 +227,7 @@ func (c *Credentials) PeerTLS(peer meshid.Device) (*tls.Config, error) {
 		return nil, errors.New("self link")
 	}
 	if peer.Tenant() != c.Device.Tenant() {
-		return nil, errors.New("local-mesh peer is outside the tenant")
+		return nil, errors.New("wendy net peer is outside the tenant")
 	}
 	return c.peerTLS(peer)
 }
@@ -237,7 +237,7 @@ func (c *Credentials) PeerTLS(peer meshid.Device) (*tls.Config, error) {
 // discarded with this Credentials instance when provisioning rotates.
 func (c *Credentials) PeerTLSWithTickets(peer meshid.Device, alpn, transport string) (*tls.Config, error) {
 	if c == nil || c.peerTLSTickets == nil {
-		return nil, errors.New("missing mesh credential ticket scope")
+		return nil, errors.New("missing wendy net credential ticket scope")
 	}
 	return c.peerTLSTickets(peer, alpn, transport)
 }

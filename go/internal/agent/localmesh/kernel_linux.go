@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/vishvananda/netlink"
@@ -60,23 +61,23 @@ func (k *Kernel) ReconcileBase() error {
 	if !state.guard {
 		guard := k.routes[0]
 		if err := netlink.RouteAdd(&guard); err != nil && !errors.Is(err, unix.EEXIST) {
-			return fmt.Errorf("restore local-mesh guard route: %w", err)
+			return fmt.Errorf("restore wendy net guard route: %w", err)
 		}
 	}
 	if !state.address {
 		addr := &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}
 		if err := netlink.AddrAdd(state.link, addr); err != nil && !errors.Is(err, unix.EEXIST) {
-			return fmt.Errorf("restore local-mesh address: %w", err)
+			return fmt.Errorf("restore wendy net address: %w", err)
 		}
 	}
 	if !state.up {
 		if err := netlink.LinkSetUp(state.link); err != nil {
-			return fmt.Errorf("restore local-mesh link state: %w", err)
+			return fmt.Errorf("restore wendy net link state: %w", err)
 		}
 	}
 	if !state.rule {
 		if err := netlink.RuleAdd(k.rule); err != nil && !errors.Is(err, unix.EEXIST) {
-			return fmt.Errorf("restore local-mesh policy rule: %w", err)
+			return fmt.Errorf("restore wendy net policy rule: %w", err)
 		}
 	}
 	// EEXIST can mean a competing writer installed different state. Confirm
@@ -86,7 +87,7 @@ func (k *Kernel) ReconcileBase() error {
 		return err
 	}
 	if !state.address || !state.up || !state.guard || !state.rule {
-		return errors.New("local-mesh base state changed during reconciliation")
+		return errors.New("wendy net base state changed during reconciliation")
 	}
 	return nil
 }
@@ -102,20 +103,20 @@ type baseState struct {
 func (k *Kernel) inspectBase() (baseState, error) {
 	var state baseState
 	if k.link == nil || k.rule == nil || len(k.routes) == 0 {
-		return state, errors.New("local-mesh kernel is not initialized")
+		return state, errors.New("wendy net kernel is not initialized")
 	}
 	live, err := netlink.LinkByName(InterfaceName)
 	if err != nil {
-		return state, fmt.Errorf("local-mesh interface missing: %w", err)
+		return state, fmt.Errorf("wendy net interface missing: %w", err)
 	}
 	if live.Attrs().Index != k.link.Index || live.Attrs().Alias != interfaceOwner || live.Type() != "dummy" {
-		return state, errors.New("local-mesh interface ownership changed")
+		return state, errors.New("wendy net interface ownership changed")
 	}
 	state.link = live
 	state.up = live.Attrs().Flags&net.FlagUp != 0
 	addresses, err := netlink.AddrList(live, netlink.FAMILY_V6)
 	if err != nil {
-		return state, fmt.Errorf("inspect local-mesh address: %w", err)
+		return state, fmt.Errorf("inspect wendy net address: %w", err)
 	}
 	own := ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128))
 	for _, address := range addresses {
@@ -123,18 +124,18 @@ func (k *Kernel) inspectBase() (baseState, error) {
 			continue
 		}
 		if address.IPNet == nil || address.IPNet.String() != own.String() {
-			return state, errors.New("local-mesh address has conflicting prefix")
+			return state, errors.New("wendy net address has conflicting prefix")
 		}
 		state.address = true
 	}
 	rules, err := netlink.RuleList(netlink.FAMILY_V6)
 	if err != nil {
-		return state, fmt.Errorf("inspect local-mesh policy rule: %w", err)
+		return state, fmt.Errorf("inspect wendy net policy rule: %w", err)
 	}
 	for _, rule := range rules {
 		if rule.Priority == RouteTable {
 			if !baseRuleMatches(rule) {
-				return state, errors.New("local-mesh policy rule ownership conflict")
+				return state, errors.New("wendy net policy rule ownership conflict")
 			}
 			state.rule = true
 		} else if rule.Table == RouteTable {
@@ -146,13 +147,13 @@ func (k *Kernel) inspectBase() (baseState, error) {
 				}
 			}
 			if !ownedPeer {
-				return state, errors.New("local-mesh route table rule ownership conflict")
+				return state, errors.New("wendy net route table rule ownership conflict")
 			}
 		}
 	}
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return state, fmt.Errorf("inspect local-mesh guard route: %w", err)
+		return state, fmt.Errorf("inspect wendy net guard route: %w", err)
 	}
 	for _, route := range routes {
 		if !defaultIPv6Route(route.Dst) {
@@ -167,7 +168,7 @@ func (k *Kernel) inspectBase() (baseState, error) {
 		// so a reclaimed guard reports RTA_OIF=lo rather than no device. The
 		// protocol, metric, type and absent gateway are the ownership signature.
 		if route.Priority != 32767 || route.Protocol != routeProtocol || route.Type != unix.RTN_UNREACHABLE || route.Gw != nil {
-			return state, errors.New("local-mesh guard route ownership conflict")
+			return state, errors.New("wendy net guard route ownership conflict")
 		}
 		state.guard = true
 	}
@@ -194,18 +195,34 @@ func (k *Kernel) ownsLearnedDefault(route netlink.Route) bool {
 	return false
 }
 
+// Unspecified selectors must remain unspecified: an extra suppression, mark or
+// input constraint changes the rule even if it selects our reserved table.
+func plainRuleSelectors(rule netlink.Rule) bool {
+	return rule.Family == netlink.FAMILY_V6 && rule.Table == RouteTable &&
+		rule.Src == nil && rule.OifName == "" && rule.Mark == 0 && rule.Mask == nil &&
+		rule.Tos == 0 && !rule.Invert && rule.Dport == nil && rule.Sport == nil &&
+		rule.UIDRange == nil && rule.IPProto == 0 && rule.TunID == 0 &&
+		rule.Goto == -1 && rule.Flow == -1 &&
+		rule.SuppressIfgroup == -1 && rule.SuppressPrefixlen == -1
+}
+
 func baseRuleMatches(rule netlink.Rule) bool {
-	return rule.Table == RouteTable && rule.Dst != nil && rule.Dst.String() == meshid.MeshPrefix.String() &&
-		rule.Src == nil && rule.IifName == "" && rule.OifName == "" &&
-		rule.Mark == 0 && rule.Mask == nil && rule.Tos == 0 && !rule.Invert &&
-		rule.Dport == nil && rule.Sport == nil && rule.UIDRange == nil && rule.IPProto == 0
+	return plainRuleSelectors(rule) && rule.Priority == RouteTable &&
+		rule.Dst != nil && rule.Dst.String() == meshid.MeshPrefix.String() && rule.IifName == ""
 }
 
 func peerRuleMatches(rule netlink.Rule, peer *netlink.Rule) bool {
-	return rule.Priority == peer.Priority && rule.IifName == peer.IifName &&
-		rule.OifName == "" && rule.Src == nil && rule.Dst == nil &&
-		rule.Mark == 0 && rule.Mask == nil && rule.Tos == 0 && !rule.Invert &&
-		rule.Dport == nil && rule.Sport == nil && rule.UIDRange == nil && rule.IPProto == 0
+	return plainRuleSelectors(rule) && rule.Priority == peer.Priority &&
+		rule.IifName == peer.IifName && rule.Dst == nil
+}
+
+func ownedPeerInterfaceName(name string) bool {
+	if !strings.HasPrefix(name, peerInterfacePrefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(name, peerInterfacePrefix)
+	id, err := strconv.ParseUint(suffix, 16, 32)
+	return err == nil && id != 0 && strconv.FormatUint(id, 16) == suffix
 }
 
 func defaultIPv6Route(dst *net.IPNet) bool {
@@ -217,7 +234,7 @@ func defaultIPv6Route(dst *net.IPNet) bool {
 
 func NewKernel(device meshid.Device) (*Kernel, error) {
 	if !device.IsValid() {
-		return nil, errors.New("mesh kernel needs a device principal")
+		return nil, errors.New("wendy net kernel needs a device principal")
 	}
 	if err := reclaimMeshForwarding(); err != nil {
 		return nil, err
@@ -380,7 +397,7 @@ func (k *Kernel) Apply(routes []babel.Route) error {
 	// address with no mesh route would fall through to the host's ordinary
 	// uplink instead of failing closed.
 	if len(k.routes) == 0 || k.routes[0].Priority != 32767 {
-		return errors.New("local-mesh fallback guard is missing")
+		return errors.New("wendy net fallback guard is missing")
 	}
 	if err := netlink.RouteReplace(&k.routes[0]); err != nil {
 		return err
@@ -396,7 +413,7 @@ func (k *Kernel) Apply(routes []babel.Route) error {
 			continue
 		}
 		if !r.Prefix.Addr().Is6() || r.Prefix.Addr().Is4In6() {
-			return errors.New("local-mesh payload routing is IPv6-only")
+			return errors.New("wendy net payload routing is IPv6-only")
 		}
 		n := netlink.Route{Table: RouteTable, Protocol: routeProtocol, Family: netlink.FAMILY_V6, Dst: ipNet(r.Prefix), Priority: 100, Type: unix.RTN_UNICAST}
 		if r.Unreachable {
@@ -488,7 +505,7 @@ func (k *Kernel) Close() error {
 		return errors.Join(append(errs, err)...)
 	}
 	if live.Attrs().Index != k.link.Index || live.Attrs().Alias != interfaceOwner || live.Type() != "dummy" {
-		return errors.Join(append(errs, errors.New("local-mesh interface ownership changed"))...)
+		return errors.Join(append(errs, errors.New("wendy net interface ownership changed"))...)
 	}
 	errs = append(errs, netlink.LinkDel(live))
 	return errors.Join(errs...)
@@ -522,44 +539,46 @@ func sysctls(name string) error {
 	return nil
 }
 
-// reclaimReservedState removes local-mesh state left behind by an earlier
-// instance that exited abruptly. Ownership is the interface alias and the
-// reserved route protocol: leftover interfaces, rules and routes are deleted,
-// while an interface name, rule slot or table entry that does not carry them
-// belongs to someone else and is refused.
+// reclaimReservedState checks the complete reserved state before deleting any
+// of it. Links carry our alias, routes carry our protocol, and policy rules must
+// match the exact base or peer signature. A table number alone is not ownership.
 func reclaimReservedState() error {
 	links, err := netlink.LinkList()
 	if err != nil {
 		return err
 	}
+	var ownedLinks []netlink.Link
 	for _, l := range links {
 		name := l.Attrs().Name
 		if name != InterfaceName && !strings.HasPrefix(name, peerInterfacePrefix) {
 			continue
 		}
-		if l.Attrs().Alias != interfaceOwner {
-			return fmt.Errorf("interface %q exists and is not owned by local-mesh", name)
+		if l.Attrs().Alias != interfaceOwner ||
+			(name == InterfaceName && l.Type() != "dummy") ||
+			(name != InterfaceName && (!ownedPeerInterfaceName(name) || l.Type() != "tuntap")) {
+			return fmt.Errorf("interface %q exists and is not owned by wendy net", name)
 		}
-		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
-			return err
-		}
+		ownedLinks = append(ownedLinks, l)
 	}
 	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
+	var ownedRules []netlink.Rule
 	for _, r := range rules {
 		if r.Table == RouteTable {
-			// The table is reserved, so a rule selecting it is this package's.
-			if err := netlink.RuleDel(&r); err != nil && !errors.Is(err, unix.ENOENT) {
-				return err
+			peer := netlink.NewRule()
+			peer.Priority = RouteTable + 1
+			peer.IifName = r.IifName
+			if !baseRuleMatches(r) && !(ownedPeerInterfaceName(r.IifName) && peerRuleMatches(r, peer)) {
+				return fmt.Errorf("wendy net route table %d holds a foreign policy rule", RouteTable)
 			}
-			continue
-		}
-		if r.Priority == RouteTable || r.Priority == RouteTable+1 {
-			return fmt.Errorf("local-mesh rule priority %d is already in use", r.Priority)
+			ownedRules = append(ownedRules, r)
+		} else if r.Priority == RouteTable || r.Priority == RouteTable+1 {
+			return fmt.Errorf("wendy net rule priority %d is already in use", r.Priority)
 		}
 	}
+	var ownedRoutes []netlink.Route
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: RouteTable}, netlink.RT_FILTER_TABLE)
 		if err != nil {
@@ -567,11 +586,24 @@ func reclaimReservedState() error {
 		}
 		for _, r := range routes {
 			if r.Protocol != routeProtocol {
-				return fmt.Errorf("local-mesh route table %d holds a foreign route", RouteTable)
+				return fmt.Errorf("wendy net route table %d holds a foreign route", RouteTable)
 			}
-			if err := netlink.RouteDel(&r); err != nil && !errors.Is(err, unix.ESRCH) {
-				return err
-			}
+			ownedRoutes = append(ownedRoutes, r)
+		}
+	}
+	for _, r := range ownedRules {
+		if err := netlink.RuleDel(&r); err != nil && !errors.Is(err, unix.ENOENT) {
+			return err
+		}
+	}
+	for _, r := range ownedRoutes {
+		if err := netlink.RouteDel(&r); err != nil && !errors.Is(err, unix.ESRCH) {
+			return err
+		}
+	}
+	for _, l := range ownedLinks {
+		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
+			return err
 		}
 	}
 	return nil

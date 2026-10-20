@@ -48,7 +48,7 @@ type quicNodeLink struct {
 	stream *quic.Stream
 }
 
-func (l quicNodeLink) Close() error                   { return l.conn.CloseWithError(0, "local-mesh link ended") }
+func (l quicNodeLink) Close() error                   { return l.conn.CloseWithError(0, "wendy net link ended") }
 func (l quicNodeLink) SendDatagram(data []byte) error { return l.conn.SendDatagram(data) }
 func (l quicNodeLink) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return l.conn.ReceiveDatagram(ctx)
@@ -92,7 +92,7 @@ type Node struct {
 
 func NewNode(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16) (*Node, error) {
 	if credentials == nil || agentPort == 0 {
-		return nil, errors.New("missing local-mesh credentials or agent port")
+		return nil, errors.New("missing wendy net credentials or agent port")
 	}
 	now := time.Now()
 	derived, err := instanceRouterID()
@@ -296,7 +296,7 @@ func (n *Node) step(event babel.Event) error {
 func (n *Node) handle(e nodeEvent) error {
 	if e.add != nil {
 		if len(n.peers) >= 64 {
-			return errors.New("local-mesh link capacity reached")
+			return errors.New("wendy net link capacity reached")
 		}
 		if e.add.device.Principal() == n.Credentials.Device.Principal() {
 			return errors.New("self link")
@@ -426,7 +426,7 @@ func (n *Node) Attach(ctx context.Context, peer meshid.Device, conn *quic.Conn) 
 // AttachWithCost adds an authenticated carrier link with its Babel metric.
 // TCP uses 256, NAN 512, and slower carriers may supply a higher cost.
 func (n *Node) AttachWithCost(ctx context.Context, peer meshid.Device, conn *quic.Conn, cost uint16) error {
-	defer conn.CloseWithError(0, "local-mesh link ended")
+	defer conn.CloseWithError(0, "wendy net link ended")
 	stream, err := OpenControl(ctx, conn, n.Credentials.Device, peer)
 	if err != nil {
 		return err
@@ -440,7 +440,7 @@ func (n *Node) AttachStream(ctx context.Context, peer meshid.Device, conn net.Co
 	defer conn.Close()
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
-		return errors.New("mesh stream requires TLS")
+		return errors.New("wendy net stream requires TLS")
 	}
 	if err := n.verifyPeerCertificates(peer, tlsConn.ConnectionState().PeerCertificates); err != nil {
 		return err
@@ -453,7 +453,7 @@ func (n *Node) AttachStream(ctx context.Context, peer meshid.Device, conn net.Co
 
 func (n *Node) verifyPeerCertificates(peer meshid.Device, certs []*x509.Certificate) error {
 	if len(certs) == 0 || len(certs) > 16 {
-		return errors.New("mesh peer certificate missing")
+		return errors.New("wendy net peer certificate missing")
 	}
 	chain := make([][]byte, len(certs))
 	for i, cert := range certs {
@@ -464,14 +464,14 @@ func (n *Node) verifyPeerCertificates(peer meshid.Device, certs []*x509.Certific
 		return err
 	}
 	if id.Device != peer {
-		return errors.New("mesh peer certificate does not match expected device")
+		return errors.New("wendy net peer certificate does not match expected device")
 	}
 	return nil
 }
 
 func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, link nodeLink) error {
 	if cost == 0 || cost == ^uint16(0) {
-		return errors.New("invalid local-mesh link cost")
+		return errors.New("invalid wendy net link cost")
 	}
 	p := &nodePeer{device: peer, cost: cost, link: link, control: make(chan ControlMessage, 128)}
 	if err := n.request(ctx, nodeEvent{add: p}); err != nil {
@@ -584,7 +584,7 @@ func (n *Node) readLink(ctx context.Context, p *nodePeer) error {
 			return err
 		}
 		if len(d) == 0 || len(d) > DatagramLimit {
-			return errors.New("invalid local-mesh datagram")
+			return errors.New("invalid wendy net datagram")
 		}
 		switch d[0] {
 		case PacketBabel:
@@ -609,7 +609,7 @@ func (n *Node) readLink(ctx context.Context, p *nodePeer) error {
 			if stream, ok := p.link.(*streamNodeLink); ok && stream.diagIP && packet[0]>>4 == 6 && len(packet) >= 256 {
 				id := binary.BigEndian.Uint32(d[1:5])
 				if id%16 == 0 {
-					log.Printf("localmesh BLE IP event=receive peer=%s packet_id=%d source=%s bytes=%d ts_unix_ns=%d", p.device.UUID(), id, net.IP(packet[8:24]), len(packet), time.Now().UnixNano())
+					log.Printf("wendy net BLE IP event=receive peer=%s packet_id=%d source=%s bytes=%d ts_unix_ns=%d", p.device.UUID(), id, net.IP(packet[8:24]), len(packet), time.Now().UnixNano())
 				}
 			}
 			n.gate.RLock()
@@ -624,7 +624,7 @@ func (n *Node) readLink(ctx context.Context, p *nodePeer) error {
 				return err
 			}
 		default:
-			return errors.New("unknown local-mesh datagram kind")
+			return errors.New("unknown wendy net datagram kind")
 		}
 	}
 }

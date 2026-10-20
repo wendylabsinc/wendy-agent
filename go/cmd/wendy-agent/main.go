@@ -919,7 +919,7 @@ func main() {
 		}
 		if _, err := os.Stat(filepath.Join(configPath, "local-mesh.json")); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
-				logger.Error("local mesh configuration is inaccessible", zap.Error(err))
+				logger.Error("wendy net configuration is inaccessible", zap.Error(err))
 			}
 			return
 		}
@@ -934,7 +934,7 @@ func main() {
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
 					})
 					if err != nil && !errors.Is(err, context.Canceled) {
-						logger.Error("configured local mesh stopped", zap.Error(err))
+						logger.Error("configured wendy net stopped", zap.Error(err))
 					}
 					select {
 					case <-ctx.Done():

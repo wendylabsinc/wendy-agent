@@ -95,7 +95,7 @@ func (p *HostPolicy) useResolverStub() error {
 	}
 	current, err := os.Readlink("/etc/resolv.conf")
 	if err != nil {
-		return fmt.Errorf("mesh DNS requires a managed resolv.conf symlink: %w", err)
+		return fmt.Errorf("wendy net DNS requires a managed resolv.conf symlink: %w", err)
 	}
 	resolved := current
 	if !filepath.IsAbs(resolved) {
@@ -105,7 +105,7 @@ func (p *HostPolicy) useResolverStub() error {
 		return nil
 	}
 	if p.previousResolver != "" {
-		return errors.New("resolver changed externally during local-mesh roaming")
+		return errors.New("resolver changed externally during wendy net roaming")
 	}
 	if err = replaceResolverLink(resolverStub); err != nil {
 		return err

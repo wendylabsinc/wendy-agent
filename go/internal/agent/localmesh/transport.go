@@ -41,11 +41,11 @@ func OpenControl(ctx context.Context, conn *quic.Conn, self, peer meshid.Device)
 		return nil, errors.New("self link")
 	}
 	if self.Tenant() != peer.Tenant() {
-		return nil, errors.New("local-mesh peer is outside the tenant")
+		return nil, errors.New("wendy net peer is outside the tenant")
 	}
 	state := conn.ConnectionState()
 	if state.TLS.NegotiatedProtocol != LinkALPN || !state.SupportsDatagrams.Local || !state.SupportsDatagrams.Remote {
-		return nil, errors.New("incompatible local-mesh transport")
+		return nil, errors.New("incompatible wendy net transport")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -76,11 +76,11 @@ func OpenControl(ctx context.Context, conn *quic.Conn, self, peer meshid.Device)
 		return nil, err
 	}
 	if m.Kind != "hello" || m.Hello == nil {
-		return nil, errors.New("missing local-mesh hello")
+		return nil, errors.New("missing wendy net hello")
 	}
 	h := m.Hello
 	if h.Version != 1 || h.Device != peer.UUID() || h.Peer != self.UUID() || h.MTU != TunnelMTU || h.Datagram != DatagramLimit {
-		return nil, errors.New("invalid local-mesh hello")
+		return nil, errors.New("invalid wendy net hello")
 	}
 	_ = stream.SetDeadline(time.Time{})
 	ok = true

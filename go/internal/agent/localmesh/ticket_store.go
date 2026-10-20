@@ -38,7 +38,7 @@ func (s *TicketStore) Configure(config *tls.Config) {
 			return nil, err
 		}
 		if len(encoded) > maxTicketStateBytes {
-			return nil, errors.New("oversized mesh TLS session state")
+			return nil, errors.New("oversized wendy net TLS session state")
 		}
 		var token [32]byte
 		if _, err := rand.Read(token[:]); err != nil {

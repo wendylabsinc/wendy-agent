@@ -126,14 +126,71 @@ func TestKernelRefusesForeignTableOwnership(t *testing.T) {
 		t.Skip("requires disposable privileged container network namespace")
 	}
 	self, _ := testDevices(t)
+	owned := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: InterfaceName, Alias: interfaceOwner}}
+	if err := netlink.LinkAdd(owned); err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.LinkDel(owned)
 	foreign := netlink.Route{Table: RouteTable, Protocol: 187, Family: netlink.FAMILY_V6, Dst: ipNet(netip.MustParsePrefix("fd00::445:1/128")), LinkIndex: 1}
 	if err := netlink.RouteReplace(&foreign); err != nil {
 		t.Skipf("cannot plant a foreign route: %v", err)
 	}
 	defer netlink.RouteDel(&foreign)
+	rule := netlink.NewRule()
+	rule.Family = netlink.FAMILY_V6
+	rule.Priority = RouteTable + 10
+	rule.Table = RouteTable
+	rule.Dst = foreign.Dst
+	if err := netlink.RuleAdd(rule); err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.RuleDel(rule)
 	if _, err := NewKernel(self); err == nil {
 		t.Fatal("kernel adopted a foreign route in the reserved table")
 	}
+	if live, err := netlink.LinkByName(InterfaceName); err != nil || live.Attrs().Index != owned.Index {
+		t.Fatalf("ownership refusal removed the pre-existing owned link: %v", err)
+	}
+	rules, err := netlink.RuleList(netlink.FAMILY_V6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range rules {
+		if live.Priority == rule.Priority && live.Table == rule.Table && live.Dst != nil && live.Dst.String() == rule.Dst.String() {
+			return
+		}
+	}
+	t.Fatal("refusing a foreign route still deleted its unrelated policy rule")
+}
+
+func TestKernelRefusesForeignRuleInReservedTable(t *testing.T) {
+	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
+		t.Skip("requires disposable privileged container network namespace")
+	}
+	self, _ := testDevices(t)
+	rule := netlink.NewRule()
+	rule.Family = netlink.FAMILY_V6
+	rule.Priority = RouteTable + 10
+	rule.Table = RouteTable
+	rule.Dst = ipNet(netip.MustParsePrefix("fd00::1234/128"))
+	if err := netlink.RuleAdd(rule); err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.RuleDel(rule)
+	if kernel, err := NewKernel(self); err == nil {
+		_ = kernel.Close()
+		t.Fatal("kernel removed and adopted an unrelated rule selecting the reserved table")
+	}
+	rules, err := netlink.RuleList(netlink.FAMILY_V6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range rules {
+		if live.Priority == rule.Priority && live.Table == rule.Table && live.Dst != nil && live.Dst.String() == rule.Dst.String() {
+			return
+		}
+	}
+	t.Fatal("foreign rule was removed")
 }
 
 // ipv6Addresses returns the source and destination of an IPv6 packet.
@@ -247,7 +304,7 @@ func TestKernelReconcileBaseIsolatedNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if live.Attrs().Flags&net.FlagUp == 0 {
-		t.Fatal("local-mesh link was not brought up")
+		t.Fatal("wendy net link was not brought up")
 	}
 	addresses, err = netlink.AddrList(live, netlink.FAMILY_V6)
 	if err != nil {

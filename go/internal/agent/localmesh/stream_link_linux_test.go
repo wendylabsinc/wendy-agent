@@ -548,7 +548,7 @@ func TestStreamLinkSendIPv6RoundTrip(t *testing.T) {
 	binary.BigEndian.PutUint16(v4[2:4], uint16(len(v4)))
 	for _, packet := range [][]byte{nil, {0x60}, bad, v4} {
 		if err := left.SendIP(99, packet); err == nil {
-			t.Fatal("invalid/non-IPv6 mesh packet admitted")
+			t.Fatal("invalid/non-IPv6 wendy net packet admitted")
 		}
 	}
 }

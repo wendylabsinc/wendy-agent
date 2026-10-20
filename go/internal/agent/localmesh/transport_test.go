@@ -77,7 +77,7 @@ var testPKI = sync.OnceValue(func() testCA {
 		panic(err)
 	}
 	now := time.Now()
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "local-mesh test CA"}, NotBefore: now.Add(-24 * time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "wendy net test CA"}, NotBefore: now.Add(-24 * time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
 	if err != nil {
 		panic(err)
@@ -158,7 +158,7 @@ func testForeignCredentials(t testing.TB, principal string) *Credentials {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	ca := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "untrusted local-mesh CA"}, NotBefore: now.Add(-24 * time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	ca := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "untrusted wendy net CA"}, NotBefore: now.Add(-24 * time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	der, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestCredentialsRejectNonDeviceIdentity(t *testing.T) {
 	} {
 		certPEM, keyPEM := testIssue(t, principal)
 		if _, err := NewCredentials(certPEM, chainPEM, keyPEM); err == nil {
-			t.Fatalf("principal %s accepted as a mesh identity", principal)
+			t.Fatalf("principal %s accepted as a wendy net identity", principal)
 		}
 	}
 }
@@ -457,11 +457,11 @@ func TestLinkQUICResumesAcrossCarriers(t *testing.T) {
 	}
 	separate, err := handshake("nan", "wendy-app-mesh/1", "app-quic")
 	if err != nil || separate.resumed {
-		t.Fatalf("app QUIC resumed mesh link ticket: %+v %v", separate, err)
+		t.Fatalf("app QUIC resumed wendy net link ticket: %+v %v", separate, err)
 	}
 	separate, err = handshake("nan", LinkALPN, "ble-tls")
 	if err != nil || separate.resumed {
-		t.Fatalf("BLE TLS scope resumed mesh link ticket: %+v %v", separate, err)
+		t.Fatalf("BLE TLS scope resumed wendy net link ticket: %+v %v", separate, err)
 	}
 	var peerCerts []*x509.Certificate
 	for _, der := range b.Certificate.Certificate {

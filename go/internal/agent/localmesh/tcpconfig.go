@@ -14,7 +14,7 @@ import (
 )
 
 // TCPConfig retains explicit TCP simulation links and independently enables
-// discovered local mesh carriers. Each explicit edge is configured at both ends.
+// discovered wendy net carriers. Each explicit edge is configured at both ends.
 type TCPConfig struct {
 	Listen string    `json:"listen"`
 	Peers  []TCPPeer `json:"peers"`
@@ -46,25 +46,30 @@ type TCPIdentity struct {
 func (c *TCPConfig) Devices() []meshid.Device { return c.devices }
 
 func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
-	data, err := os.ReadFile(path)
+	f, err := openTCPConfig(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 65537))
+	if err != nil {
+		return nil, err
+	}
 	if len(data) == 0 || len(data) > 65536 {
-		return nil, errors.New("local mesh config size out of range")
+		return nil, errors.New("wendy net config size out of range")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var cfg TCPConfig
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("local mesh config: %w", err)
+		return nil, fmt.Errorf("wendy net config: %w", err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, errors.New("local mesh config has trailing data")
+		return nil, errors.New("wendy net config has trailing data")
 	}
 	if cfg.Listen == "" {
 		if (!cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi) || len(cfg.Peers) != 0 {
@@ -74,17 +79,17 @@ func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
 	if len(cfg.Peers) > 64 {
-		return nil, errors.New("too many configured mesh peers")
+		return nil, errors.New("too many configured wendy net peers")
 	}
 	seen := make(map[string]bool, len(cfg.Peers))
 	cfg.devices = make([]meshid.Device, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
 		device, err := meshid.ParseDevice(self.Tenant(), p.Device)
 		if err != nil {
-			return nil, fmt.Errorf("mesh peer: %w", err)
+			return nil, fmt.Errorf("wendy net peer: %w", err)
 		}
 		if device.Principal() == self.Principal() || seen[device.Principal()] {
-			return nil, fmt.Errorf("invalid or duplicate mesh peer device %s", p.Device)
+			return nil, fmt.Errorf("invalid or duplicate wendy net peer device %s", p.Device)
 		}
 		seen[device.Principal()] = true
 		if err := validateTCPAddress(p.Address, false); err != nil {

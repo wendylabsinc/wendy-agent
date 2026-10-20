@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +25,25 @@ import (
 	"github.com/wendylabsinc/WendyOS/go/babel"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
+
+// Subprocess output is inspected while peers are still running. Keep the
+// buffer private so io.Copy cannot bypass Write through an embedded ReadFrom.
+type lifecycleProcessOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lifecycleProcessOutput) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(data)
+}
+
+func (b *lifecycleProcessOutput) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // lifecycleTestConfig configures one re-executed node process for the route
 // lifecycle suite. StopFile is the parent's lever for an orderly shutdown: the
@@ -188,10 +208,10 @@ func TestMeshRouteLifecycleIsolatedNamespaces(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var procs []*exec.Cmd
-	outputs := map[string]*bytes.Buffer{}
+	outputs := map[string]*lifecycleProcessOutput{}
 	start := func(principal, namespace string) {
 		t.Helper()
-		buf := &bytes.Buffer{}
+		buf := &lifecycleProcessOutput{}
 		outputs[principal] = buf
 		cmd := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, binary, "-test.run", "^TestMeshLifecyclePeerProcess$", "-test.v")
 		cmd.Env = append(os.Environ(), "WENDY_LOCALMESH_LIFECYCLE_CONFIG="+configs[principal])
@@ -239,7 +259,7 @@ func TestMeshRouteLifecycleIsolatedNamespaces(t *testing.T) {
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
-		dump("waiting for a mesh route")
+		dump("waiting for a wendy net route")
 		t.Fatalf("%s never became a mesh-table route in %s (err=%v): %s", addr, namespace, lastErr, last)
 		return ""
 	}
@@ -285,7 +305,7 @@ func TestMeshRouteLifecycleIsolatedNamespaces(t *testing.T) {
 	for _, namespace := range names {
 		table := showTable(namespace)
 		if strings.Contains(table, "/48") {
-			t.Fatalf("%s installs the mesh pool as a route:\n%s", namespace, table)
+			t.Fatalf("%s installs the wendy net pool as a route:\n%s", namespace, table)
 		}
 		if !strings.Contains(table, "unreachable") {
 			t.Fatalf("%s has no unreachable fallback in table %d:\n%s", namespace, RouteTable, table)
@@ -300,7 +320,7 @@ func TestMeshRouteLifecycleIsolatedNamespaces(t *testing.T) {
 			t.Fatalf("ip -6 addr show dev %s in %s: %v %s", InterfaceName, namespace, err, out)
 		}
 		if !strings.Contains(string(out), own.String()) {
-			t.Fatalf("%s does not carry its own mesh address %s:\n%s", namespace, own, out)
+			t.Fatalf("%s does not carry its own wendy net address %s:\n%s", namespace, own, out)
 		}
 	}
 	for namespace, peer := range map[string]netip.Addr{names[0]: meshHigher, names[1]: meshLower} {
@@ -328,7 +348,7 @@ func TestMeshRouteLifecycleIsolatedNamespaces(t *testing.T) {
 		t.Fatalf("ip rule show: %v %s", err, rules)
 	}
 	if strings.Contains(string(rules), strconv.Itoa(RouteTable)) {
-		t.Fatalf("the stopped agent left a mesh rule behind:\n%s", rules)
+		t.Fatalf("the stopped agent left a wendy net rule behind:\n%s", rules)
 	}
 
 	// Recovery: the peer comes back in the same namespace and the route returns.
@@ -481,7 +501,7 @@ func assertDerivedLinkLocals(t *testing.T, self, peer meshid.Device) {
 			case addr == self.MeshAddress():
 				own++
 			default:
-				t.Fatalf("%s carries %s, which is neither the derived link-local nor the device's own mesh address", name, addr)
+				t.Fatalf("%s carries %s, which is neither the derived link-local nor the device's own wendy net address", name, addr)
 			}
 		}
 		if name == InterfaceName {
@@ -489,7 +509,7 @@ func assertDerivedLinkLocals(t *testing.T, self, peer meshid.Device) {
 			// nothing else. A kernel link-local here would be a second,
 			// MAC-derived identity on the same host.
 			if derived != 0 || own != 1 {
-				t.Fatalf("%s carries %d link-local and %d mesh addresses, want 0 and 1", name, derived, own)
+				t.Fatalf("%s carries %d link-local and %d wendy net addresses, want 0 and 1", name, derived, own)
 			}
 			continue
 		}
@@ -497,10 +517,10 @@ func assertDerivedLinkLocals(t *testing.T, self, peer meshid.Device) {
 		// A peer TUN carries the derived link-local for the link and the device's
 		// own ULA as the payload source - exactly one of each.
 		if derived != 1 || own != 1 {
-			t.Fatalf("%s carries %d link-local and %d mesh addresses, want 1 and 1", name, derived, own)
+			t.Fatalf("%s carries %d link-local and %d wendy net addresses, want 1 and 1", name, derived, own)
 		}
 	}
 	if tunnels == 0 {
-		t.Fatal("no local-mesh TUN exists")
+		t.Fatal("no wendy net TUN exists")
 	}
 }

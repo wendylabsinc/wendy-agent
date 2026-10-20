@@ -60,7 +60,7 @@ func (k *Kernel) closeForwarding() error {
 		return nil
 	}
 	if err := hostnetwork.ReleaseIPv6Forwarding(meshForwardingOwner); err != nil {
-		return errors.Join(errors.New("restore mesh IPv6 forwarding"), err)
+		return errors.Join(errors.New("restore wendy net IPv6 forwarding"), err)
 	}
 	k.forwarding = false
 	return nil

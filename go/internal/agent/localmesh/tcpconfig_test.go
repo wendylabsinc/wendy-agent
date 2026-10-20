@@ -55,3 +55,14 @@ func TestTCPConfigRequiresReciprocalConcretePeers(t *testing.T) {
 		t.Fatalf("configured peers are not the configured devices: %+v", devices)
 	}
 }
+
+func TestTCPConfigRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local-mesh.json")
+	if err := os.WriteFile(path, make([]byte, 65537), 0600); err != nil {
+		t.Fatal(err)
+	}
+	self := testDevice(t, testPrincipal(testTenantUUID, testDeviceAID))
+	if _, err := LoadTCPConfig(path, self); err == nil {
+		t.Fatal("oversized configuration accepted")
+	}
+}

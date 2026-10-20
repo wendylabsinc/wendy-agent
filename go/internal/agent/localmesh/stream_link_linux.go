@@ -70,17 +70,17 @@ func streamWriteBudget(kind byte, size int) time.Duration {
 func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Device) error {
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
-		return errors.New("mesh stream requires TLS")
+		return errors.New("wendy net stream requires TLS")
 	}
 	state := tlsConn.ConnectionState()
 	if !state.HandshakeComplete || state.Version != tls.VersionTLS13 || state.NegotiatedProtocol != StreamALPN || len(state.PeerCertificates) == 0 {
-		return errors.New("mesh stream TLS is not authenticated")
+		return errors.New("wendy net stream TLS is not authenticated")
 	}
 	if self.Principal() == peer.Principal() {
-		return errors.New("self mesh stream")
+		return errors.New("self wendy net stream")
 	}
 	if self.Tenant() != peer.Tenant() {
-		return errors.New("local-mesh peer is outside the tenant")
+		return errors.New("wendy net peer is outside the tenant")
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -98,11 +98,11 @@ func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Devic
 		return err
 	}
 	if m.Kind != "hello" || m.Hello == nil {
-		return errors.New("missing mesh stream hello")
+		return errors.New("missing wendy net stream hello")
 	}
 	h := m.Hello
 	if h.Version != 1 || h.Device != peer.UUID() || h.Peer != self.UUID() || h.MTU != TunnelMTU || h.Datagram != DatagramLimit {
-		return errors.New("invalid mesh stream hello")
+		return errors.New("invalid wendy net stream hello")
 	}
 	return nil
 }
@@ -232,11 +232,10 @@ func (l *streamNodeLink) topTalker() (outKey talkerKey, outStat talkerStat, inKe
 }
 
 func newStreamNodeLink(conn net.Conn) *streamNodeLink {
-	l := &streamNodeLink{conn: conn, controls: make(chan ControlMessage, 128), packets: make(chan []byte, 128), priority: make(chan streamFrame, streamPriorityQueue), fastIP: make(chan streamFrame, streamFastIPQueue), ip: make(chan streamFrame, streamIPQueue), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{}), done: make(chan struct{})}
+	l := &streamNodeLink{conn: conn, controls: make(chan ControlMessage, 128), packets: make(chan []byte, 128), priority: make(chan streamFrame, streamPriorityQueue), fastIP: make(chan streamFrame, streamFastIPQueue), ip: make(chan streamFrame, streamIPQueue), ipPackets: newStreamIPSendQueue(), stop: make(chan struct{}), done: make(chan struct{}), diagIP: os.Getenv("WENDY_MESH_BLE_QUEUE_DIAG") == "1"}
 	go l.readLoop()
 	go l.writeLoop()
-	if os.Getenv("WENDY_MESH_BLE_QUEUE_DIAG") == "1" {
-		l.diagIP = true
+	if l.diagIP {
 		go l.queueDiagnosticLoop()
 	}
 	return l
@@ -265,7 +264,7 @@ func (l *streamNodeLink) queueDiagnosticLoop() {
 			}
 			inQ, outQ := l.sockQueueDepths()
 			topOutKey, topOutStat, topInKey, topInStat := l.topTalker()
-			log.Printf("localmesh BLE queue peer=%s queued_bytes=%d byte_limit=%d queued_packets=%d enqueued=%d dequeued=%d dropped_capacity=%d dropped_expired=%d last_wait_ms=%d max_wait_ms=%d age_limit_ms=%d write_rate_bytes_s=%d active_bytes=%d active_ms=%d last_write_ms=%d rx_bytes=%d rx_last_ms_ago=%d sock_inq=%d sock_outq=%d out_talker=%s:%d out_bytes=%d in_talker=%s:%d in_bytes=%d", l.conn.RemoteAddr(), stats.Bytes, stats.ByteLimit, stats.Packets, stats.Enqueued, stats.Dequeued, stats.DroppedCapacity, stats.DroppedExpired, stats.LastDequeuedWaitMS, stats.MaxDequeuedWaitMS, stats.AgeLimitMS, stats.WriteRateBytesPerSec, activeBytes, activeMS, l.lastIPWriteMS.Load(), l.rxBytes.Load(), l.rxLastMSAgo(), inQ, outQ, topOutKey.dst, topOutKey.port, topOutStat.bytes, topInKey.dst, topInKey.port, topInStat.bytes)
+			log.Printf("wendy net BLE queue peer=%s queued_bytes=%d byte_limit=%d queued_packets=%d enqueued=%d dequeued=%d dropped_capacity=%d dropped_expired=%d last_wait_ms=%d max_wait_ms=%d age_limit_ms=%d write_rate_bytes_s=%d active_bytes=%d active_ms=%d last_write_ms=%d rx_bytes=%d rx_last_ms_ago=%d sock_inq=%d sock_outq=%d out_talker=%s:%d out_bytes=%d in_talker=%s:%d in_bytes=%d", l.conn.RemoteAddr(), stats.Bytes, stats.ByteLimit, stats.Packets, stats.Enqueued, stats.Dequeued, stats.DroppedCapacity, stats.DroppedExpired, stats.LastDequeuedWaitMS, stats.MaxDequeuedWaitMS, stats.AgeLimitMS, stats.WriteRateBytesPerSec, activeBytes, activeMS, l.lastIPWriteMS.Load(), l.rxBytes.Load(), l.rxLastMSAgo(), inQ, outQ, topOutKey.dst, topOutKey.port, topOutStat.bytes, topInKey.dst, topInKey.port, topInStat.bytes)
 			last = stats
 		}
 	}
@@ -283,7 +282,7 @@ func (l *streamNodeLink) Close() error {
 
 func (l *streamNodeLink) writeFrame(kind byte, data []byte) error {
 	if len(data) == 0 || len(data) > MaxControlMessage+4 || kind == streamPacket && len(data) > DatagramLimit {
-		return errors.New("invalid mesh stream frame size")
+		return errors.New("invalid wendy net stream frame size")
 	}
 	frame := streamFrame{kind: kind, data: append([]byte(nil), data...)}
 	if kind == streamControl {
@@ -425,7 +424,7 @@ func (l *streamNodeLink) writeLoop() {
 			err = l.writeFrameNow(frame.kind, frame.data)
 		}
 		if err != nil {
-			l.recordTerminalError(fmt.Errorf("mesh stream write: %w", err))
+			l.recordTerminalError(fmt.Errorf("wendy net stream write: %w", err))
 			if frame.ack != nil {
 				frame.ack <- l.terminalError()
 			}
@@ -471,7 +470,7 @@ func (l *streamNodeLink) SendDatagram(data []byte) error {
 // dropped intact and the next IP/TCP/QUIC retransmission can repair it.
 func (l *streamNodeLink) SendIP(sequence uint32, packet []byte) error {
 	if !validIP(packet) || packet[0]>>4 != 6 {
-		return errors.New("invalid mesh stream IP packet")
+		return errors.New("invalid wendy net stream IP packet")
 	}
 	select {
 	case <-l.stop:
@@ -481,7 +480,7 @@ func (l *streamNodeLink) SendIP(sequence uint32, packet []byte) error {
 	now := time.Now()
 	admitted := l.ipPackets.enqueue(sequence, packet, now)
 	if l.diagIP && sequence%16 == 0 && len(packet) >= 256 {
-		log.Printf("localmesh BLE IP event=admit peer=%s packet_id=%d source=%s bytes=%d admitted=%t ts_unix_ns=%d", l.conn.RemoteAddr(), sequence, net.IP(packet[8:24]), len(packet), admitted, now.UnixNano())
+		log.Printf("wendy net BLE IP event=admit peer=%s packet_id=%d source=%s bytes=%d admitted=%t ts_unix_ns=%d", l.conn.RemoteAddr(), sequence, net.IP(packet[8:24]), len(packet), admitted, now.UnixNano())
 	}
 	return nil
 }
@@ -496,7 +495,7 @@ func (l *streamNodeLink) readLoop() {
 		}
 		n := binary.BigEndian.Uint32(header[1:])
 		if n == 0 || n > MaxControlMessage+4 || header[0] == streamPacket && n > DatagramLimit {
-			l.recordTerminalError(errors.New("invalid mesh stream frame"))
+			l.recordTerminalError(errors.New("invalid wendy net stream frame"))
 			return
 		}
 		buf := make([]byte, n)
@@ -525,7 +524,7 @@ func (l *streamNodeLink) readLoop() {
 				return
 			}
 		default:
-			l.recordTerminalError(fmt.Errorf("unknown mesh stream frame kind %d", header[0]))
+			l.recordTerminalError(fmt.Errorf("unknown wendy net stream frame kind %d", header[0]))
 			return
 		}
 	}

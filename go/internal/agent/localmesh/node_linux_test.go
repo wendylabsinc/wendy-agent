@@ -81,7 +81,7 @@ func TestNodePeerProcess(t *testing.T) {
 	if meshid.Compare(self, peer) > 0 {
 		server := &http.Server{Addr: fmt.Sprintf("[%s]:18080", self.MeshAddress()), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(r.RemoteAddr, "["+peer.MeshAddress().String()+"]:") {
-				http.Error(w, "request bypassed mesh source addressing", http.StatusForbidden)
+				http.Error(w, "request bypassed wendy net source addressing", http.StatusForbidden)
 				return
 			}
 			fmt.Fprint(w, "hello over Babel and QUIC")
@@ -103,7 +103,7 @@ func TestNodePeerProcess(t *testing.T) {
 				// Payload arriving over the mesh must carry the peer's own ULA,
 				// never a link-local or an underlay address.
 				if !src.(*net.UDPAddr).IP.Equal(net.IP(peer.MeshAddress().AsSlice())) {
-					t.Errorf("UDP datagram from %v bypassed mesh source addressing", src)
+					t.Errorf("UDP datagram from %v bypassed wendy net source addressing", src)
 					continue
 				}
 				_, _ = udp.WriteTo([]byte(strconv.Itoa(n)), src)
@@ -181,7 +181,7 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 	routes := node.Snapshot().Routes
 	for i, r := range routes {
 		if r.Prefix.Bits() <= meshid.MeshPrefix.Bits() {
-			t.Fatalf("node carries %s; the mesh pool is an address pool, never advertised reachability", r.Prefix)
+			t.Fatalf("node carries %s; the wendy net pool is an address pool, never advertised reachability", r.Prefix)
 		}
 		if r.Prefix == own {
 			local = &routes[i]
@@ -191,12 +191,12 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 		}
 	}
 	if local == nil || !local.Local || local.Metric != 0 {
-		t.Fatalf("own mesh address is not originated at metric 0: %+v", local)
+		t.Fatalf("own wendy net address is not originated at metric 0: %+v", local)
 	}
 	// The origin advertises its own /128 at metric 0, so one hop across a link
 	// configured with receive cost 256 must arrive as exactly 256.
 	if learned == nil || learned.Local || learned.Metric != 256 || !learned.NextHop.IsLinkLocalUnicast() {
-		t.Fatalf("peer mesh address is not a metric-0 origin plus one 256-cost hop: %+v", learned)
+		t.Fatalf("peer wendy net address is not a metric-0 origin plus one 256-cost hop: %+v", learned)
 	}
 
 	conn, err := net.Dial("udp", net.JoinHostPort(peer.MeshAddress().String(), "18081"))
@@ -265,7 +265,7 @@ func verifyMeshTransport(t *testing.T, node *Node, self, peer meshid.Device) {
 			continue
 		}
 		if !src.(*net.IPAddr).IP.Equal(net.IP(peer.MeshAddress().AsSlice())) {
-			t.Fatalf("echo reply came from %v, not the peer's mesh address", src)
+			t.Fatalf("echo reply came from %v, not the peer's wendy net address", src)
 		}
 		body, ok := reply.Body.(*icmp.Echo)
 		if !ok || string(body.Data) != "wendy-mesh-probe" {

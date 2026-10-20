@@ -50,8 +50,8 @@ type SignedManifest struct {
 	Signature []byte          `json:"signature"`
 }
 
-var ErrExpiredManifest = errors.New("expired local-mesh manifest")
-var ErrStaleManifest = errors.New("stale local-mesh manifest")
+var ErrExpiredManifest = errors.New("expired wendy net manifest")
+var ErrStaleManifest = errors.New("stale wendy net manifest")
 
 func (m Manifest) validate(now time.Time) error {
 	issued, expires := time.UnixMilli(m.Issued), time.UnixMilli(m.Expires)
@@ -61,7 +61,7 @@ func (m Manifest) validate(now time.Time) error {
 	if m.Version != 1 || m.Revision == 0 ||
 		issued.After(now.Add(5*time.Second)) || !expires.After(issued) || expires.Sub(issued) > MaxLease ||
 		len(m.Name) > 255 || (!m.Withdraw && m.AgentPort == 0) {
-		return errors.New("invalid or expired local-mesh manifest")
+		return errors.New("invalid or expired wendy net manifest")
 	}
 	return nil
 }
@@ -117,7 +117,7 @@ func SignManifest(m Manifest, chain [][]byte, signer crypto.Signer, now time.Tim
 
 // ErrIdentityNeeded lets the synchronizer request an independently validated
 // bundle from its neighbour. Unverified announcements are not retained here.
-var ErrIdentityNeeded = errors.New("local-mesh identity bundle needed")
+var ErrIdentityNeeded = errors.New("wendy net identity bundle needed")
 
 type directoryEntry struct {
 	manifest Manifest

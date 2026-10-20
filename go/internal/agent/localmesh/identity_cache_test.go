@@ -87,6 +87,55 @@ func TestIdentityCachePersistenceBoundsAndTrust(t *testing.T) {
 	}
 }
 
+func TestIdentityCacheEvictsByTotalCertificateBytes(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "memory", true: "disk"}[persistent], func(t *testing.T) {
+			now := time.Unix(1800000000, 0)
+			devices := map[string]meshid.Device{
+				"aaa": testDevice(t, testPrincipal(testTenantUUID, testDeviceAID)),
+				"bbb": testDevice(t, testPrincipal(testTenantUUID, testDeviceBID)),
+				"ddd": testDevice(t, testPrincipal(testTenantUUID, testDeviceCID)),
+			}
+			path := ""
+			if persistent {
+				path = filepath.Join(t.TempDir(), "identities.json")
+			}
+			limits := CacheLimits{Entries: 3, Bytes: 6, Age: time.Hour}
+			verify := fakeVerifier(devices, now.Add(time.Hour))
+			c, err := OpenIdentityCache(path, limits, verify, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			put := func(chain string, at time.Time) {
+				t.Helper()
+				if _, err := c.Put([][]byte{[]byte(chain)}, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			put("aaa", now)
+			put("bbb", now.Add(time.Second))
+			if _, _, ok := c.Get(devices["aaa"].Principal(), now.Add(2*time.Second)); !ok {
+				t.Fatal("first bundle missing")
+			}
+			put("ddd", now.Add(3*time.Second))
+			if persistent {
+				c, err = OpenIdentityCache(path, limits, verify, now.Add(4*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, ok := c.Get(devices["bbb"].Principal(), now.Add(5*time.Second)); ok {
+				t.Fatal("least recently used bundle exceeded the aggregate byte budget")
+			}
+			for _, chain := range []string{"aaa", "ddd"} {
+				if _, _, ok := c.Get(devices[chain].Principal(), now.Add(5*time.Second)); !ok {
+					t.Fatalf("admitted bundle %s was lost instead of the LRU entry", chain)
+				}
+			}
+		})
+	}
+}
+
 // TestIdentityCacheKeysByFullPrincipal is the identity contract: the key is the
 // complete principal, the same device UUID under two tenants is two entries, and
 // a file key that is not a device principal is never loaded.
@@ -352,5 +401,37 @@ func TestIdentityCacheOlderChainIsNotARenewal(t *testing.T) {
 	_, id, ok := c.Get(principal, now.Add(time.Minute))
 	if !ok || !id.NotAfter.Equal(now.Add(2*time.Hour)) {
 		t.Fatal("live chain was displaced", ok)
+	}
+}
+
+func TestIdentityCachePrunesLoadedCertificateBytes(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	devices := map[string]meshid.Device{
+		"aaa": testDevice(t, testPrincipal(testTenantUUID, testDeviceAID)),
+		"bbb": testDevice(t, testPrincipal(testTenantUUID, testDeviceBID)),
+		"ddd": testDevice(t, testPrincipal(testTenantUUID, testDeviceCID)),
+	}
+	verify := fakeVerifier(devices, now.Add(time.Hour))
+	path := filepath.Join(t.TempDir(), "identities.json")
+	c, err := OpenIdentityCache(path, CacheLimits{Entries: 3, Bytes: 9, Age: time.Hour}, verify, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, chain := range []string{"aaa", "bbb", "ddd"} {
+		if _, err := c.Put([][]byte{[]byte(chain)}, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err = OpenIdentityCache(path, CacheLimits{Entries: 3, Bytes: 6, Age: time.Hour}, verify, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := c.Get(devices["aaa"].Principal(), now.Add(3*time.Second)); ok {
+		t.Fatal("oldest bundle survived reduced byte budget on reopen")
+	}
+	for _, chain := range []string{"bbb", "ddd"} {
+		if _, _, ok := c.Get(devices[chain].Principal(), now.Add(3*time.Second)); !ok {
+			t.Fatalf("newer bundle %s lost", chain)
+		}
 	}
 }

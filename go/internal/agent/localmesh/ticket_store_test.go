@@ -25,7 +25,7 @@ func TestTicketStoreUsesOpaqueBoundedShortLivedTokens(t *testing.T) {
 		}
 	}
 	if state.EarlyData {
-		t.Fatal("mesh ticket retained early data")
+		t.Fatal("wendy net ticket retained early data")
 	}
 	if len(store.cache.entries) != meshTicketLimit {
 		t.Fatalf("ticket count=%d", len(store.cache.entries))

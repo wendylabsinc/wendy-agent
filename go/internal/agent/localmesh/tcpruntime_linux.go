@@ -243,7 +243,7 @@ func readTCPPreface(conn net.Conn, tenant meshid.Tenant) (uuid.UUID, error) {
 	}
 	want := tenant.UUID()
 	if string(data[:4]) != "WMT1" || !bytes.Equal(data[4:20], want[:]) {
-		return uuid.Nil, errors.New("invalid mesh TCP preface")
+		return uuid.Nil, errors.New("invalid wendy net TCP preface")
 	}
 	var id uuid.UUID
 	copy(id[:], data[20:])
@@ -287,12 +287,12 @@ func attachTCPWithCost(ctx context.Context, node *Node, credentials *Credentials
 		conn, err = transport.Dial(handshake, pc.RemoteAddr(), tlsConfig, QUICConfig())
 	}
 	if err != nil {
-		return fmt.Errorf("mesh QUIC peer %s: %w", peer.Principal(), err)
+		return fmt.Errorf("wendy net QUIC peer %s: %w", peer.Principal(), err)
 	}
 	// quic-go can return a nil accepted connection after rejecting an
 	// unauthenticated peer. Treat it as a failed handshake before Node sees it.
 	if conn == nil {
-		return fmt.Errorf("mesh QUIC peer %s: no authenticated connection", peer.Principal())
+		return fmt.Errorf("wendy net QUIC peer %s: no authenticated connection", peer.Principal())
 	}
 	return node.AttachWithCost(ctx, peer, conn, cost)
 }

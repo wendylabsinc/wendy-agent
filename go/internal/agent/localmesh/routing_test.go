@@ -53,8 +53,8 @@ func newMeshDevice(t *testing.T, principal string, macLast byte) meshDevice {
 	return meshDevice{device: device, prefix: netip.PrefixFrom(device.MeshAddress(), 128), routerID: routerID}
 }
 
-// meshConfig is the routing configuration a node runs. Admission is the mesh
-// pool boundary and nothing else: the origin router ID is not consulted.
+// meshConfig admits only individual device addresses in the wendy net pool.
+// The claimed origin router ID is not authenticated at this layer.
 func meshConfig(self meshDevice) babel.Config {
 	return babel.Config{
 		RouterID:       self.routerID,
@@ -249,13 +249,12 @@ func TestRouteAdmissionAcceptsPeerMeshRouteWithoutManifest(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("mesh route from a peer was not installed: routes=%+v counters=%+v", r.engine.Snapshot().Routes, r.engine.Snapshot().Counters)
+		t.Fatalf("wendy net route from a peer was not installed: routes=%+v counters=%+v", r.engine.Snapshot().Routes, r.engine.Snapshot().Counters)
 	}
 }
 
-// TestRouteAdmissionRefusesPrefixesOutsideThePool: the pool boundary is the
-// whole policy. Anything it cannot contain - a foreign block, the pool itself,
-// a covering subnet, a default - is not this mesh's to carry.
+// Foreign prefixes and aggregates cannot become device reachability, even when
+// advertised over an admitted peer link.
 func TestRouteAdmissionRefusesPrefixesOutsideThePool(t *testing.T) {
 	self := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceAID), 1)
 	peer := newMeshDevice(t, testPrincipal(testTenantUUID, testDeviceBID), 2)
@@ -263,10 +262,13 @@ func TestRouteAdmissionRefusesPrefixesOutsideThePool(t *testing.T) {
 		name   string
 		prefix netip.Prefix
 	}{
-		{"prefix outside the mesh pool", netip.MustParsePrefix("2001:db8:445::1/128")},
+		{"prefix outside the wendy net pool", netip.MustParsePrefix("2001:db8:445::1/128")},
 		{"another ULA pool", netip.MustParsePrefix("fd00::445:1/128")},
-		{"the mesh pool itself", netip.MustParsePrefix("fd45:b891:567f::/48")},
-		{"a block wider than the mesh pool", netip.MustParsePrefix("fd45:b891:5600::/40")},
+		{"the wendy net pool itself", netip.MustParsePrefix("fd45:b891:567f::/48")},
+		{"half the device pool", netip.MustParsePrefix("fd45:b891:567f::/49")},
+		{"an in-pool subnet", netip.MustParsePrefix("fd45:b891:567f:1::/64")},
+		{"two device addresses", netip.MustParsePrefix("fd45:b891:567f::/127")},
+		{"a block wider than the wendy net pool", netip.MustParsePrefix("fd45:b891:5600::/40")},
 		{"default route", netip.MustParsePrefix("::/0")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -286,16 +288,15 @@ func TestRouteAdmissionRefusesPrefixesOutsideThePool(t *testing.T) {
 	}
 }
 
-// TestAdmittedPrefixPoolBoundary is the admission rule on its own: any block
-// the pool can contain is a mesh route, anything wider or elsewhere is not.
+// TestAdmittedPrefixPoolBoundary checks the device address pool and host width.
 func TestAdmittedPrefixPoolBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		prefix netip.Prefix
 		want   bool
 	}{
 		{netip.MustParsePrefix("fd45:b891:567f:4000:8000::445/128"), true},
-		{netip.MustParsePrefix("fd45:b891:567f:1::/64"), true},
-		{netip.MustParsePrefix("fd45:b891:567f::/49"), true},
+		{netip.MustParsePrefix("fd45:b891:567f:1::/64"), false},
+		{netip.MustParsePrefix("fd45:b891:567f::/49"), false},
 		{netip.MustParsePrefix("fd45:b891:567f::/48"), false},
 		{netip.MustParsePrefix("fd45:b891:5600::/40"), false},
 		{netip.MustParsePrefix("fd00::445:1/128"), false},

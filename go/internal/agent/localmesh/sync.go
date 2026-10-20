@@ -28,7 +28,7 @@ func WriteControl(w io.Writer, m ControlMessage) error {
 		return err
 	}
 	if len(data) > MaxControlMessage {
-		return errors.New("oversized local-mesh control message")
+		return errors.New("oversized wendy net control message")
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(data)))
@@ -91,7 +91,7 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 			return m, errors.New("invalid identity request")
 		}
 	default:
-		return m, errors.New("unknown local-mesh control message")
+		return m, errors.New("unknown wendy net control message")
 	}
 	if m.Kind != "hello" && m.Hello != nil {
 		return m, errors.New("unexpected hello payload")
