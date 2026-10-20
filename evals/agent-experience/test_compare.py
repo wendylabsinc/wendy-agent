@@ -141,12 +141,17 @@ class CompareTest(unittest.TestCase):
         self.assertIn("tool_choice", result["rows"][0]["confirmed"])
         self.assertIn("tool_choice (confirmed)", md)
 
-    def test_failed_rerun_leaves_flag_unconfirmed(self):
+    def test_rerun_exit_1_with_scored_rows_confirms(self):
+        # benchmark.py exits 1 when any attempt is unsuccessful, which a reproduced regression is.
         _, _, result, md, _ = self.confirm([row("s1", "wrong")] * 3, self.writer([row("s1", "wrong")], code=1))
         r = result["rows"][0]
-        self.assertEqual(r["confirmed"], [])
-        self.assertEqual(r["unconfirmed"]["tool_choice"], "rerun failed: exit 1")
-        self.assertIn("unconfirmed: rerun failed: exit 1", md)
+        self.assertEqual((r["confirmed"], r["unconfirmed"], r["rerun_exit"]), (["tool_choice"], {}, 1))
+        self.assertIn("tool_choice (confirmed)", md)
+
+    def test_crashed_rerun_without_rows_reports_exit(self):
+        _, _, result, md, _ = self.confirm([row("s1", "wrong")] * 3, self.writer(None, code=2))
+        self.assertEqual(result["rows"][0]["unconfirmed"]["tool_choice"], "rerun failed: exit 2")
+        self.assertIn("unconfirmed: rerun failed: exit 2", md)
 
     def test_rerun_without_rows_is_unconfirmed(self):
         _, _, result, _, _ = self.confirm([row("s1", "wrong")] * 3, self.writer(None))

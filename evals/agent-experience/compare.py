@@ -278,7 +278,7 @@ def _confirm(candidate, flagged, count):
     manifest = candidate["manifest"]
     argv = manifest.get("argv") or []
     if not argv:
-        return {}
+        return {k: {"exit": "no argv in the manifest", "rows": []} for k in flagged}
     base = [sys.executable] + argv if str(argv[0]).endswith(".py") else list(argv)
     base = _strip_flags(base, {"--task", "--scenario", "--agent", "--repetitions", "--output", "--limit"})
     base = [w for w in base if w != "--execute"]
@@ -326,17 +326,15 @@ def main(argv=None):
         for r in result["rows"]:
             key = _key_of(r)
             r["confirmed"], r["unconfirmed"] = [], {}
-            rerun = reruns.get(key[:2] + key[3:])
+            rerun = reruns[key[:2] + key[3:]]
             for flag in r["flags"] if key in first else []:
                 if flag not in first[key]:
                     continue
                 added = sum(x.get("status") != "setup_error" and _key(x) == key for x in (rerun or {}).get("rows", []))
-                if rerun is None:
-                    r["unconfirmed"][flag] = "no rerun"
-                elif rerun["exit"] != 0:
-                    r["unconfirmed"][flag] = f"rerun failed: exit {rerun['exit']}"
-                elif not added:
-                    r["unconfirmed"][flag] = "rerun added no attempts"
+                r["rerun_exit"] = rerun["exit"]
+                if not added:
+                    r["unconfirmed"][flag] = (f"rerun failed: exit {rerun['exit']}" if rerun["exit"] not in (0, 1)
+                                              else "rerun added no attempts")
                 else:
                     r["confirmed"].append(flag)
     output = args.output or (args.candidate / "compare")
