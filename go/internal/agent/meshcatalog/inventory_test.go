@@ -157,11 +157,12 @@ func TestInventoryStaleAdvertisementCannotExceedPendingBound(t *testing.T) {
 	f := newFixture(t)
 	origin, oc := f.newCatalog(t, p535, "default", nil, nil)
 	viewer, cache := f.newCatalog(t, p533, "default", nil, nil)
+	origin.limit, viewer.limit = maxPendingRecords+1, maxPendingRecords+1
 	fp := localmesh.Fingerprint(f.creds[p535].Certificate.Certificate)
 	sender := NewSynchronizer(origin, oc)
 	sender.useCurrentInventory(receivedInventory{fingerprints: map[string]bool{fp: true}, done: true})
 	receiver := NewSynchronizer(viewer, cache)
-	for i := range 9 {
+	for i := range maxPendingRecords + 1 {
 		spec := testSpec()
 		spec.ServiceID = fmt.Sprintf("http-%d", i)
 		w, err := origin.Publish(spec, f.now)
@@ -173,28 +174,27 @@ func TestInventoryStaleAdvertisementCannotExceedPendingBound(t *testing.T) {
 			t.Fatal("current inventory unexpectedly reverted to four hints")
 		}
 		_, _, err = receiver.Receive(frames[0], f.now)
-		if i < 8 && err != nil {
+		if i < maxPendingRecords && err != nil {
 			t.Fatal(err)
 		}
-		if i == 8 && !errors.Is(err, errPendingIdentities) {
-			t.Fatal("ninth pending identity did not fail closed")
+		if i == maxPendingRecords && !errors.Is(err, errPendingIdentities) {
+			t.Fatal("pending record count exceeded its bound")
 		}
 	}
-	if n := len(receiver.pending[p535]); n != 8 {
+	if n := len(receiver.pending[p535]); n != maxPendingRecords {
 		t.Fatalf("pending=%d", n)
 	}
 	if len(viewer.Snapshot(f.now)) != 0 {
 		t.Fatal("unverified snapshot projected")
 	}
-	// Empty inventory cold retry carries its bundle first and admits all records.
+	// A fresh session fetches the missing elements before transferring its
+	// snapshot; the sender can then deliver every record without pending data.
 	retry := NewSynchronizer(origin, oc)
 	fresh := NewSynchronizer(viewer, cache)
-	for _, m := range retry.Reconcile(f.now) {
-		if _, _, err := fresh.Receive(m, f.now); err != nil {
-			t.Fatal(err)
-		}
+	for _, w := range retry.snapshotRecords(f.now) {
+		exchangeServiceMessages(t, retry, fresh, retry.Record(w, f.now), f.now)
 	}
-	if fresh.PendingIdentity() || len(viewer.Snapshot(f.now)) != 9 {
+	if fresh.PendingIdentity() || len(viewer.Snapshot(f.now)) != maxPendingRecords+1 {
 		t.Fatal("cold retry failed")
 	}
 }

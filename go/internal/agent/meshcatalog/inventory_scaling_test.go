@@ -91,10 +91,12 @@ func TestInventory150OriginsColdWarmAndPersistentRestart(t *testing.T) {
 		}
 		return c, cache
 	}
-	type measurement struct{ bytes, bundles, inventory, records int }
+	type measurement struct{ bytes, elements, certificateBytes, inventory, records int }
 	exchange := func(c *Catalog, cache *localmesh.IdentityCache) measurement {
 		sender := NewSynchronizer(senderCatalog, senderCache)
 		receiver := NewSynchronizer(c, cache)
+		defer sender.Close()
+		defer receiver.Close()
 		var inventory receivedInventory
 		var result measurement
 		for _, m := range inventoryMessages(cache.Fingerprints(now, maxInventoryEntries)) {
@@ -114,27 +116,50 @@ func TestInventory150OriginsColdWarmAndPersistentRestart(t *testing.T) {
 		}
 		sender.useCurrentInventory(inventory)
 		deliver := func(m inventoryMessage) {
-			var wire bytes.Buffer
-			if e := writeInventoryMessage(&wire, m); e != nil {
-				t.Fatal(e)
+			type delivery struct {
+				message    inventoryMessage
+				toReceiver bool
 			}
-			result.bytes += wire.Len()
-			if m.Kind == "bundle" {
-				result.bundles++
-			}
-			if m.Kind == "record" {
-				result.records++
-			}
-			decoded, e := readInventoryMessage(&wire)
-			if e != nil {
-				t.Fatal(e)
-			}
-			replies, _, e := receiver.Receive(decoded.Message, now)
-			if e != nil {
-				t.Fatal(e)
-			}
-			if len(replies) != 0 {
-				t.Fatal("current inventory generated an unexpected repair")
+			queue := []delivery{{m, true}}
+			for steps := 0; len(queue) != 0; steps++ {
+				if steps > 1000 {
+					t.Fatal("certificate exchange did not converge")
+				}
+				d := queue[0]
+				queue = queue[1:]
+				var wire bytes.Buffer
+				if e := writeInventoryMessage(&wire, d.message); e != nil {
+					t.Fatal(e)
+				}
+				result.bytes += wire.Len()
+				if d.message.Kind == "bundle" {
+					t.Fatal("whole certificate bundle sent")
+				}
+				if d.message.Certificate != nil && d.message.Certificate.Chunk != nil {
+					chunk := d.message.Certificate.Chunk
+					result.certificateBytes += len(chunk.Data)
+					if chunk.Offset == 0 {
+						result.elements++
+					}
+				}
+				if d.message.Kind == "record" {
+					result.records++
+				}
+				decoded, e := readInventoryMessage(&wire)
+				if e != nil {
+					t.Fatal(e)
+				}
+				target := sender
+				if d.toReceiver {
+					target = receiver
+				}
+				replies, _, e := target.Receive(decoded.Message, now)
+				if e != nil {
+					t.Fatal(e)
+				}
+				for _, reply := range replies {
+					queue = append(queue, delivery{inventoryMessage{Message: reply}, !d.toReceiver})
+				}
 			}
 		}
 		for _, w := range sender.snapshotRecords(now) {
@@ -155,11 +180,14 @@ func TestInventory150OriginsColdWarmAndPersistentRestart(t *testing.T) {
 	restart := exchange(restarted, reopened)
 	empty, emptyCache := open(filepath.Join(t.TempDir(), "empty.json"))
 	coldRestart := exchange(empty, emptyCache)
-	if cold.bundles != 150 || coldRestart.bundles != 150 || warm.bundles != 0 || restart.bundles != 0 {
-		t.Fatal("cold/warm certificate count", cold, warm, restart, coldRestart)
+	if cold.elements != 150 || coldRestart.elements != 150 || warm.elements != 0 || restart.elements != 0 {
+		t.Fatal("cold/warm certificate element count", cold, warm, restart, coldRestart)
+	}
+	if warm.certificateBytes != 0 || restart.certificateBytes != 0 || cold.certificateBytes != coldRestart.certificateBytes {
+		t.Fatal("warm or persistent restart retransmitted certificate bodies", cold, warm, restart, coldRestart)
 	}
 	if warm.bytes*3 >= cold.bytes || restart.bytes != warm.bytes || coldRestart.bytes != cold.bytes {
 		t.Fatal("warm/restart savings", cold, warm, restart, coldRestart)
 	}
-	t.Logf("origins=150 outgoingLeafDER=%d coldBytes=%d coldBundles=%d warmBytes=%d warmBundles=%d warmInventoryBytes=%d persistedRestartBytes=%d emptyRestartBytes=%d", len(creds[0].Certificate.Certificate[0]), cold.bytes, cold.bundles, warm.bytes, warm.bundles, warm.inventory, restart.bytes, coldRestart.bytes)
+	t.Logf("origins=150 outgoingLeafDER=%d coldBytes=%d coldElements=%d warmBytes=%d warmElements=%d warmInventoryBytes=%d persistedRestartBytes=%d emptyRestartBytes=%d", len(creds[0].Certificate.Certificate[0]), cold.bytes, cold.elements, warm.bytes, warm.elements, warm.inventory, restart.bytes, coldRestart.bytes)
 }
