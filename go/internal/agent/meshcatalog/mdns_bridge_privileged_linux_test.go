@@ -137,7 +137,7 @@ func TestAppMDNSMulticastLifetimesWithAvahi(t *testing.T) {
 	f := newFixture(t)
 	catalog, _ := f.newCatalog(t, p533, "default", nil, nil)
 	emitted := make(chan SignedRecord, 64)
-	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.test", AppIP: net.ParseIP("192.168.42.2"), BridgeIndex: iface.Index, Ports: map[uint16]uint16{8080: 18080}}, catalog, testVIPs(t), func(string, Record) bool { return true }, func(w SignedRecord) { emitted <- w })
+	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.test", AppIP: net.ParseIP("192.168.42.2"), BridgeIndex: iface.Index, Ports: map[uint16]uint16{8080: 18080}}, catalog, testVIPs(t), func(string, Record) bool { return true }, func(w SignedRecord) { emitted <- w }, emptyBridgeRouteView)
 	if err != nil {
 		t.Fatal(err)
 	}
