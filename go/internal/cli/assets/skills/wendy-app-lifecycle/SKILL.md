@@ -42,13 +42,16 @@ the app.
 Without `--build-type`, `wendy run` uses the first of: a Compose file, a
 Stagefile, a Dockerfile or Containerfile, a Swift package, a Python project.
 `--yes` writes a minimal `wendy.json` when none exists, using the directory name
-as `appId`. Only `appId` is required; a web app also declares its port:
+as `appId`. Only `appId` is required. A typical service adds environment
+variables, its HTTP port (forwarded from simulators) and a readiness probe:
 
 ```json
 {
   "appId": "my-app",
   "version": "1.0.0",
-  "entitlements": [{ "type": "network", "mode": "host" }, { "type": "http", "port": 8080 }]
+  "env": { "PORT": "8080" },
+  "entitlements": [{ "type": "network", "mode": "host" }, { "type": "http", "port": 8080 }],
+  "readiness": { "tcpSocket": { "port": 8080 }, "timeoutSeconds": 60 }
 }
 ```
 
