@@ -112,6 +112,74 @@ class PublicationTests(unittest.TestCase):
                 publication.verify(directory, info)
 
 
+class SwiftReleaseTests(unittest.TestCase):
+    info = derive("0.1.0", "pr", source_sha=SHA, pr=42, branch="feature", run_id=123)
+    source = "let before = 1\n// BEGIN BINARY TARGETS\nlet binaryTargets: [Target] = local()\n// END BINARY TARGETS\nlet after = 2\n"
+
+    def assets(self, directory):
+        import swift_release
+        for name in swift_release.ASSETS:
+            (directory / swift_release.asset(name, self.info["version"])).write_bytes(name.encode())
+
+    def test_release_manifest_replaces_only_the_binary_block(self):
+        import swift_release
+        with tempfile.TemporaryDirectory() as temp:
+            self.assets(Path(temp))
+            text = swift_release.release_manifest(self.source, REPOSITORY, self.info["version"], Path(temp))
+        version = self.info["version"]
+        url = f"https://github.com/{REPOSITORY}/releases/download/v{version}/CWendyCore-{version}.xcframework.zip"
+        self.assertTrue(text.startswith("let before = 1\n// BEGIN BINARY TARGETS\n"))
+        self.assertTrue(text.endswith("// END BINARY TARGETS\nlet after = 2\n"))
+        self.assertIn(f'url: "{url}", checksum: "{hashlib.sha256(b"CWendyCoreApple").hexdigest()}"', text)
+        self.assertNotIn("local()", text)
+        for invalid in ("1.0", '1.0.0"; evil'):
+            with self.subTest(version=invalid), self.assertRaises(ValueError):
+                swift_release.release_manifest(self.source, REPOSITORY, invalid, Path(temp))
+        with self.assertRaises(ValueError):
+            swift_release.manifest("let binaryTargets: [Target] = []\n", {})
+
+    def github(self, tags, created):
+        from urllib.error import HTTPError
+        manifests = {SHA: self.source}
+
+        def response(path, data=None):
+            if data is not None:
+                created.append((path, data))
+                if path.endswith("/git/blobs"):
+                    manifests["release"] = data["content"]
+                return {"sha": "release" if path.endswith("/git/commits") else "new"}
+            if "/git/ref/tags/" in path:
+                tag = path.rsplit("/", 1)[1]
+                if tag not in tags:
+                    raise HTTPError(path, 404, "Not Found", {}, None)
+                return {"object": {"type": "commit", "sha": tags[tag]}}
+            if "/contents/Package.swift" in path:
+                return {"content": base64.b64encode(manifests[path.rsplit("=", 1)[1]].encode()).decode()}
+            if path.endswith("/git/commits/" + SHA):
+                return {"tree": {"sha": "tree"}}
+            return {"parents": [{"sha": SHA}]}
+        return response
+
+    def test_tag_is_a_release_only_child_of_the_tested_source(self):
+        created = []
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(publication, "api", side_effect=self.github({}, created)):
+            self.assets(Path(temp))
+            publication.swift_tag(Path(temp), REPOSITORY, self.info)
+            commit = next(data for path, data in created if path.endswith("/git/commits"))
+            self.assertEqual(commit["parents"], [SHA])
+            self.assertEqual(created[-1][1], {"ref": "refs/tags/" + self.info["version"], "sha": "release"})
+            # A retry accepts the identical tag and refuses a different one.
+            api = self.github({self.info["version"]: "release"}, [])
+            api(f"repos/{REPOSITORY}/git/blobs", {"content": created[0][1]["content"]})
+            with patch.object(publication, "api", side_effect=api):
+                publication.swift_tag(Path(temp), REPOSITORY, self.info)
+            api = self.github({self.info["version"]: "release"}, [])
+            api(f"repos/{REPOSITORY}/git/blobs", {"content": "different"})
+            with patch.object(publication, "api", side_effect=api), self.assertRaises(ValueError):
+                publication.swift_tag(Path(temp), REPOSITORY, self.info)
+
+
 class PackageVersionTests(unittest.TestCase):
     def archive(self, path, name, content):
         import io
@@ -129,8 +197,13 @@ class PackageVersionTests(unittest.TestCase):
         for target in TARGETS:
             with zipfile.ZipFile(directory / f"wheel-{target}.whl", "w") as archive:
                 archive.writestr("wendy_core.dist-info/METADATA", f"Name: wendy-core\nVersion: {info['pythonVersion']}\n")
-        for suffix in (*TARGETS, "swiftpm"):
+        for suffix in TARGETS:
             self.archive(directory / f"wendy-core-{info['version']}-{suffix}.tar.gz", "VERSION", info["version"].encode())
+        with zipfile.ZipFile(directory / f"CWendyCore-{info['version']}.artifactbundle.zip", "w") as archive:
+            bundle = {"artifacts": {"CWendyCore": {"version": info["version"]}}}
+            archive.writestr("CWendyCore.artifactbundle/info.json", json.dumps(bundle))
+        with zipfile.ZipFile(directory / f"CWendyCore-{info['version']}.xcframework.zip", "w") as archive:
+            archive.writestr("CWendyCore.xcframework/Info.plist", "")
 
     def test_inner_versions_must_match_even_if_artifacts_are_sealed(self):
         info = derive("0.1.0", "pr", source_sha=SHA, pr=42, branch="feature", run_id=123)

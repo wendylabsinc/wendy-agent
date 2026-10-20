@@ -58,10 +58,15 @@ def kotlin():
 
 
 def swift():
+    build.swift()
     if platform.system() == "Darwin":
-        run("xcodebuildmcp", "swift-package", "test", "--package-path", build.SWIFT)
+        run("xcodebuildmcp", "swift-package", "test", "--package-path", ROOT)
+        # Compile and link (without running) the tests against the iOS slices.
+        for destination in ("generic/platform=iOS", "generic/platform=iOS Simulator"):
+            run("xcodebuild", "build-for-testing", "-quiet", "-scheme", "wendy-core", "-destination", destination,
+                "-derivedDataPath", BUILD / "swift/ios", env=build.apple_environment())
     else:
-        run("swift", "test", cwd=build.SWIFT)
+        run("swift", "test", cwd=ROOT)
 
 
 def compare():

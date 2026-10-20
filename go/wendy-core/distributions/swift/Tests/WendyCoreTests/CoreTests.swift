@@ -2,6 +2,6 @@ import Testing
 import WendyCore
 
 @Test
-func `calls the packaged Go engine`() throws {
-    #expect(try WendyHelloWorld() == 42)
+func `calls the linked Go engine`() {
+    #expect(WendyHelloWorld() == 42)
 }

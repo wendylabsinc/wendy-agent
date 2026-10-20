@@ -133,11 +133,18 @@ def verify_versions(directory, expected):
             metadata = message_from_bytes(archive.read(names[0]))
             if metadata["Name"] != "wendy-core" or metadata["Version"] != expected["pythonVersion"]:
                 raise ValueError("Wheel payload has a different package version")
-    for suffix in (*TARGETS, "swiftpm"):
+    for suffix in TARGETS:
         file = directory / f"wendy-core-{expected['version']}-{suffix}.tar.gz"
         with tarfile.open(file) as archive:
             if archive.extractfile("VERSION").read().decode().strip() != expected["version"]:
-                raise ValueError("Native/Swift archive has a different package version")
+                raise ValueError("Native archive has a different package version")
+    from swift_release import asset
+    with zipfile.ZipFile(directory / asset("CWendyCoreLinux", expected["version"])) as archive:
+        info = json.loads(archive.read("CWendyCore.artifactbundle/info.json"))
+        if info["artifacts"]["CWendyCore"]["version"] != expected["version"]:
+            raise ValueError("Swift artifact bundle has a different package version")
+    with zipfile.ZipFile(directory / asset("CWendyCoreApple", expected["version"])) as archive:
+        archive.getinfo("CWendyCore.xcframework/Info.plist")
 
 
 def go_tag(repository, expected):
@@ -152,6 +159,34 @@ def go_tag(repository, expected):
         return
     if source != expected["sourceSha"]:
         raise ValueError("An existing module version cannot be moved")
+
+
+def swift_tag(directory, repository, expected):
+    """Create or verify the bare Swift tag after the GitHub release assets exist."""
+    from urllib.error import HTTPError
+    from swift_release import release_manifest
+    tag, source = expected["version"], expected["sourceSha"]
+
+    def package_swift(ref):
+        return base64.b64decode(api(f"repos/{repository}/contents/Package.swift?ref={ref}")["content"]).decode()
+
+    text = release_manifest(package_swift(source), repository, tag, directory)
+    try:
+        commit = tag_commit(repository, tag)
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        tree = api(f"repos/{repository}/git/commits/{source}")["tree"]["sha"]
+        blob = api(f"repos/{repository}/git/blobs", {"content": text, "encoding": "utf-8"})["sha"]
+        tree = api(f"repos/{repository}/git/trees", {"base_tree": tree, "tree": [
+            {"path": "Package.swift", "mode": "100644", "type": "blob", "sha": blob}]})["sha"]
+        commit = api(f"repos/{repository}/git/commits", {
+            "message": f"chore: distribute Wendy Core {tag} to SwiftPM", "tree": tree, "parents": [source]})["sha"]
+        api(f"repos/{repository}/git/refs", {"ref": "refs/tags/" + tag, "sha": commit})
+        return
+    parents = [parent["sha"] for parent in api(f"repos/{repository}/git/commits/{commit}")["parents"]]
+    if parents != [source] or package_swift(commit) != text:
+        raise ValueError("An existing SwiftPM version cannot be moved")
 
 
 def maven(directory, repository, expected):
@@ -221,7 +256,7 @@ def registry_check(directory, expected, registry):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("context", "verify", "go-tag", "maven", "npm-check", "pypi-check"))
+    parser.add_argument("command", choices=("context", "verify", "go-tag", "swift-tag", "maven", "npm-check", "pypi-check"))
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--directory", type=Path, default=Path("release"))
     args = parser.parse_args()
@@ -241,6 +276,8 @@ def main():
         verify(args.directory, expected)
         if args.command == "go-tag":
             go_tag(repository, expected)
+        elif args.command == "swift-tag":
+            swift_tag(args.directory, repository, expected)
         elif args.command == "maven":
             maven(args.directory, repository, expected)
         elif args.command in ("npm-check", "pypi-check"):

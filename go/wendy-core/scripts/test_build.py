@@ -37,7 +37,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_distribution_license_copies_match_the_root(self):
         with tempfile.TemporaryDirectory() as temp:
-            directories = {name: Path(temp) / name for name in ("JS", "PYTHON", "SWIFT")}
+            directories = {name: Path(temp) / name for name in ("JS", "PYTHON")}
             with patch.multiple(build, **directories):
                 build.stage_licenses()
             for directory in directories.values():

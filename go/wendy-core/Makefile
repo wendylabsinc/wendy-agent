@@ -18,7 +18,11 @@ generate: documentation-manifest
 native wasm:
 	$(PYTHON) scripts/build.py $@
 
-javascript python kotlin swift: native
+javascript python kotlin: native
+	$(PYTHON) scripts/tasks.py $@
+
+# Swift links its own static Go build, not the shared library.
+swift:
 	$(PYTHON) scripts/tasks.py $@
 
 javascript: wasm

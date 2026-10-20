@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 from versioning import base_version, identity
@@ -17,11 +18,24 @@ from versioning import base_version, identity
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / ".build"
 TARGETS = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64")
-SWIFT_TARGETS = ("linux-x64", "darwin-x64", "darwin-arm64")
+# Swift links Go statically. Each target contributes these files; darwin-arm64
+# builds the universal Apple XCFramework (macOS, iOS and iOS Simulator).
+SWIFT_FILES = {"linux-x64": ("libCWendyCore.a",), "linux-arm64": ("libCWendyCore.a",),
+               "darwin-arm64": ("CWendyCore.xcframework.zip",)}
+SWIFT_TRIPLES = {"linux-x64": "x86_64-unknown-linux-gnu", "linux-arm64": "aarch64-unknown-linux-gnu"}
+# Name: (GOOS, GOARCH, Xcode SDK, Clang target). Minimums match Package.swift.
+APPLE_SLICES = {
+    "macos-arm64": ("darwin", "arm64", "macosx", "arm64-apple-macos15.0"),
+    "macos-x64": ("darwin", "amd64", "macosx", "x86_64-apple-macos15.0"),
+    "ios-arm64": ("ios", "arm64", "iphoneos", "arm64-apple-ios18.0"),
+    "ios-simulator-arm64": ("ios", "arm64", "iphonesimulator", "arm64-apple-ios18.0-simulator"),
+    "ios-simulator-x64": ("ios", "amd64", "iphonesimulator", "x86_64-apple-ios18.0-simulator"),
+}
 LIBRARIES = {"linux": "libWendyCore.so", "darwin": "libWendyCore.dylib", "win32": "WendyCore.dll"}
 JNI = {"linux": "libwendy_core_jni.so", "darwin": "libwendy_core_jni.dylib", "win32": "wendy_core_jni.dll"}
 JS = ROOT / "distributions/javascript"
 SWIFT = ROOT / "distributions/swift"
+SWIFT_ARTIFACTS = SWIFT / "artifacts"
 KOTLIN = ROOT / "distributions/kotlin"
 PYTHON = ROOT / "distributions/python"
 
@@ -79,7 +93,7 @@ def go_license(goroot):
 
 
 def stage_licenses():
-    for distribution in (JS, PYTHON, SWIFT):
+    for distribution in (JS, PYTHON):
         for name in ("LICENSE", "NOTICE"):
             copy(ROOT / name, distribution / name)
 
@@ -93,10 +107,6 @@ def stage_native(target, directory):
     if license_file.exists():
         copy(license_file, JS / "assets/native" / target / license_file.name)
         copy(license_file, KOTLIN / "src/main/resources/native" / target / license_file.name)
-        if target in SWIFT_TARGETS:
-            copy(license_file, SWIFT / "Sources/WendyCore/native" / target / license_file.name)
-    if target in SWIFT_TARGETS:
-        copy(library, SWIFT / "Sources/WendyCore/native" / target / library.name)
     python_native = PYTHON / "wendy_core/native"
     shutil.rmtree(python_native, ignore_errors=True)
     copy(library, python_native / library.name)
@@ -108,14 +118,6 @@ def stage_native(target, directory):
         if path.exists():
             destination = JS / "assets/native" / target / name if name.endswith(".node") else KOTLIN / "src/main/resources/native" / target / name
             copy(path, destination)
-    # The standalone SwiftPM distribution gets a private copy of the same
-    # loader/header, so consumers need neither a Go toolchain nor this monorepo.
-    for name, source in {
-        "native_loader.h": ROOT / "internal/bridge/native_loader.h",
-        "WendyCore.h": ROOT / "include/WendyCore/WendyCore.h",
-    }.items():
-        copy(source, SWIFT / "Sources/CWendyCoreBridge" / name)
-        (SWIFT / "Sources/CWendyCoreBridge/include" / name).unlink(missing_ok=True)
 
 
 def native():
@@ -141,6 +143,93 @@ def native():
     goroot = Path(subprocess.check_output(["go", "env", "GOROOT"], text=True).strip())
     copy(go_license(goroot), directory / "LICENSE-Go.txt")
     stage_native(target, directory)
+
+
+def swift_headers(directory):
+    # The canonical public header, exposed to Swift as the CWendyCore module.
+    copy(ROOT / "include/WendyCore/WendyCore.h", directory / "WendyCore.h")
+    (directory / "module.modulemap").write_text('module CWendyCore {\n    header "WendyCore.h"\n    export *\n}\n')
+
+
+def swift_notices(directory, go_license_file):
+    for name in ("LICENSE", "NOTICE"):
+        copy(ROOT / name, directory / name)
+    copy(go_license_file, directory / "LICENSE-Go.txt")
+
+
+def go_archive(output, env):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    run("go", "build", "-trimpath", "-buildmode=c-archive", "-o", output, "./cmd/wendy-core-native", env=env)
+    output.with_suffix(".h").unlink()  # cgo's generated header; WendyCore.h is canonical
+
+
+def zip_directory(directory, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.unlink(missing_ok=True)
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(directory.rglob("*")):
+            archive.write(path, path.relative_to(directory.parent).as_posix())
+
+
+def artifact_bundle(libraries, destination, go_license_file):
+    """Write a SwiftPM static-library artifact bundle (SE-0482) for Linux."""
+    shutil.rmtree(destination, ignore_errors=True)
+    swift_headers(destination / "include")
+    swift_notices(destination, go_license_file)
+    variants = []
+    for target, library in sorted(libraries.items()):
+        triple = SWIFT_TRIPLES[target]
+        copy(library, destination / triple / "libCWendyCore.a")
+        variants.append({"path": f"{triple}/libCWendyCore.a", "supportedTriples": [triple],
+                         "staticLibraryMetadata": {"headerPaths": ["include"], "moduleMapPath": "include/module.modulemap"}})
+    info = {"schemaVersion": "1.0", "artifacts": {"CWendyCore": {"type": "staticLibrary", "version": version(), "variants": variants}}}
+    (destination / "info.json").write_text(json.dumps(info, indent=2) + "\n")
+
+
+def apple_environment():
+    # Each Apple build names its own SDK and minimum; ignore ambient ones such
+    # as the SDKROOT that Xcode's python3 shim exports.
+    return {name: value for name, value in os.environ.items()
+            if name != "SDKROOT" and not name.endswith("_DEPLOYMENT_TARGET")}
+
+
+def swift():
+    """Build the host's Swift binaries and install them for the root Package.swift."""
+    check_version()
+    target = host_target()
+    directory = BUILD / "native" / target
+    goroot = Path(subprocess.check_output(["go", "env", "GOROOT"], text=True).strip())
+    go_license_file = go_license(goroot)
+    if target.startswith("linux-"):
+        library = directory / "libCWendyCore.a"
+        go_archive(library, {**os.environ, "CGO_ENABLED": "1"})
+        artifact_bundle({target: library}, SWIFT_ARTIFACTS / "CWendyCore.artifactbundle", go_license_file)
+    elif target.startswith("darwin-"):
+        slices = BUILD / "swift/apple"
+        shutil.rmtree(slices, ignore_errors=True)
+        env = apple_environment()
+        for name, (goos, goarch, sdk, clang_target) in APPLE_SLICES.items():
+            sysroot = subprocess.check_output(["xcrun", "--sdk", sdk, "--show-sdk-path"], text=True).strip()
+            clang = subprocess.check_output(["xcrun", "--sdk", sdk, "-f", "clang"], text=True).strip()
+            flags = f"-isysroot {sysroot} -target {clang_target}"
+            go_archive(slices / name / "libCWendyCore.a", {**env, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "1",
+                                                          "CC": clang, "CGO_CFLAGS": "-O2 " + flags, "CGO_LDFLAGS": flags})
+        headers = slices / "Headers/CWendyCore"  # Subdirectory avoids module map clashes in Xcode
+        swift_headers(headers)
+        arguments = []
+        for family in ("macos", "ios", "ios-simulator"):
+            members = [slices / name / "libCWendyCore.a" for name in APPLE_SLICES if name.rsplit("-", 1)[0] == family]
+            library = slices / family / "libCWendyCore.a"
+            library.parent.mkdir(parents=True, exist_ok=True)
+            run("lipo", "-create", *members, "-output", library)
+            arguments += ["-library", library, "-headers", headers.parent]
+        framework = SWIFT_ARTIFACTS / "CWendyCore.xcframework"
+        shutil.rmtree(framework, ignore_errors=True)
+        run("xcodebuild", "-create-xcframework", *arguments, "-output", framework)
+        swift_notices(framework, go_license_file)
+        zip_directory(framework, directory / "CWendyCore.xcframework.zip")
+    else:
+        raise ValueError(f"Swift is not supported on {target}")
 
 
 def node_addon():
@@ -188,11 +277,9 @@ def wasm():
 def inventory():
     target = host_target()
     directory = BUILD / "native" / target
-    expected = (LIBRARIES[target.split("-")[0]], JNI[target.split("-")[0]], "wendy_core.node", "LICENSE-Go.txt")
+    expected = (LIBRARIES[target.split("-")[0]], JNI[target.split("-")[0]], "wendy_core.node", "LICENSE-Go.txt", *SWIFT_FILES.get(target, ()))
     if target.startswith("darwin-"):
-        for name in expected:
-            if name.endswith(".txt"):
-                continue
+        for name in expected[:3]:
             commands = subprocess.check_output(["otool", "-l", str(directory / name)], text=True)
             minimum = re.search(r"minos (\d+)\.(\d+)", commands)
             if minimum is None or tuple(int(x) for x in minimum.groups()) > (15, 0):
@@ -209,7 +296,7 @@ def assemble(artifacts):
         manifest = json.loads((directory / "manifest.json").read_text())
         if manifest["target"] != target or manifest["version"] != version() or manifest.get("identity") != identity():
             raise ValueError(f"Wrong native artifact identity: {target}")
-        expected = {LIBRARIES[target.split("-")[0]], JNI[target.split("-")[0]], "wendy_core.node", "LICENSE-Go.txt"}
+        expected = {LIBRARIES[target.split("-")[0]], JNI[target.split("-")[0]], "wendy_core.node", "LICENSE-Go.txt", *SWIFT_FILES.get(target, ())}
         if set(manifest["files"]) != expected:
             raise ValueError(f"Incomplete native artifact: {target}")
         for name, sha in manifest["files"].items():
@@ -224,7 +311,7 @@ def assemble(artifacts):
     for name, sha in wasm_manifest["files"].items():
         if digest(wasm_directory / name) != sha:
             raise ValueError(f"WASM checksum mismatch: {name}")
-    for destination in (JS / "assets", SWIFT / "Sources/WendyCore/native", KOTLIN / "src/main/resources/native"):
+    for destination in (JS / "assets", KOTLIN / "src/main/resources/native"):
         shutil.rmtree(destination, ignore_errors=True)
     for target in TARGETS:
         stage_native(target, artifacts / ("native-" + target))
@@ -272,13 +359,14 @@ def wheel():
         run(os.sys.executable, "-m", "build", "--wheel", "--outdir", BUILD / "wheels", directory, env=environment)
 
 
-def swift_archive(destination):
-    stage_licenses()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(destination, "w:gz") as archive:
-        for name in ("Package.swift", "Sources", "Tests", "README.md", "LICENSE", "NOTICE"):
-            archive.add(SWIFT / name, arcname=name)
-        archive_version(archive)
+def swift_release(artifacts, release):
+    """Name the Swift binaries as release assets; SwiftPM checksums are SHA-256."""
+    copy(artifacts / "native-darwin-arm64/CWendyCore.xcframework.zip", release / f"CWendyCore-{version()}.xcframework.zip")
+    with tempfile.TemporaryDirectory() as temp:
+        bundle = Path(temp) / "CWendyCore.artifactbundle"
+        libraries = {target: artifacts / ("native-" + target) / "libCWendyCore.a" for target in SWIFT_TRIPLES}
+        artifact_bundle(libraries, bundle, artifacts / "native-linux-x64/LICENSE-Go.txt")
+        zip_directory(bundle, release / f"CWendyCore-{version()}.artifactbundle.zip")
 
 
 def pack(artifacts):
@@ -299,8 +387,7 @@ def pack(artifacts):
             archive_version(archive)
             for name in ("LICENSE", "NOTICE"):
                 archive.add(ROOT / name, arcname=name)
-    # Complete, standalone SwiftPM source distribution (including native assets).
-    swift_archive(release / f"wendy-core-{version()}-swiftpm.tar.gz")
+    swift_release(artifacts, release)
     for target in TARGETS:
         wheels = list((artifacts / ("wheel-" + target)).glob("*.whl"))
         if len(wheels) != 1:
@@ -340,18 +427,16 @@ def test_packed_npm():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["version", "native", "node", "jni", "wasm", "wheel", "inventory", "assemble", "pack", "seal", "swift-archive", "test-npm"])
+    parser.add_argument("command", choices=["version", "native", "swift", "node", "jni", "wasm", "wheel", "inventory", "assemble", "pack", "seal", "test-npm"])
     parser.add_argument("--tag")
     parser.add_argument("--artifacts", type=Path, default=BUILD / "artifacts")
     arguments = parser.parse_args()
     if arguments.command == "version":
         print(check_version(arguments.tag))
-    elif arguments.command == "swift-archive":
-        swift_archive(BUILD / f"wendy-core-{version()}-swiftpm.tar.gz")
     elif arguments.command in ("assemble", "pack"):
         globals()[arguments.command](arguments.artifacts)
     else:
-        {"native": native, "node": node_addon, "jni": jni, "wasm": wasm, "wheel": wheel, "inventory": inventory, "test-npm": test_packed_npm, "seal": seal}[arguments.command]()
+        {"native": native, "swift": swift, "node": node_addon, "jni": jni, "wasm": wasm, "wheel": wheel, "inventory": inventory, "test-npm": test_packed_npm, "seal": seal}[arguments.command]()
 
 
 if __name__ == "__main__":
