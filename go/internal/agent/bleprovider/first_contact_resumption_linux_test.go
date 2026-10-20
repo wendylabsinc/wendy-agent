@@ -3,6 +3,7 @@
 package bleprovider
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -168,6 +169,43 @@ func TestBLEFirstReconnectResumes(t *testing.T) {
 	fresh := bleResumptionHandshake(t, discovery, server)
 	if fresh.err != nil || fresh.client.DidResume || fresh.server.DidResume {
 		t.Fatalf("unknown address reused an identity ticket: %v, resumed=%v", fresh.err, fresh.client.DidResume)
+	}
+}
+
+func TestBLEFirstReconnectResumesAfterProviderRestart(t *testing.T) {
+	issue, high, low := resumptionCredentials(t)
+	client := &runtime{cfg: Config{Credentials: high}}
+	peer := candidate{address: "02:00:00:00:00:01", addressType: "public", hint: deviceHint(low.Device.UUID())}
+	config, authenticated, err := client.clientTLS(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := bleResumptionHandshake(t, config, (&runtime{cfg: Config{Credentials: low}}).makeServerTLS())
+	if initial.err != nil || initial.client.DidResume || initial.server.DidResume || *authenticated != low.Device {
+		t.Fatalf("first contact: %+v, identity=%v", initial, authenticated)
+	}
+	client.known = map[string]meshid.Device{peer.key(): low.Device}
+	config, _, err = client.clientTLS(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct the BLE provider, as the supervisor does after adapter or
+	// BlueZ recovery, while retaining the enrolled credentials.
+	restarted := bleResumptionHandshake(t, config, (&runtime{cfg: Config{Credentials: low}}).makeServerTLS())
+	if restarted.err != nil || !restarted.client.DidResume || !restarted.server.DidResume {
+		t.Fatalf("provider restart discarded the first reconnect ticket: %+v", restarted)
+	}
+	// Reenrollment replaces the credential scope. It must still perform a
+	// full handshake and present the new leaf even for the same principal.
+	rotated := issue(low.Device)
+	config, _, err = client.clientTLS(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := bleResumptionHandshake(t, config, (&runtime{cfg: Config{Credentials: rotated}}).makeServerTLS())
+	if fresh.err != nil || fresh.client.DidResume || fresh.server.DidResume ||
+		len(fresh.client.PeerCertificates) == 0 || !bytes.Equal(fresh.client.PeerCertificates[0].Raw, rotated.Certificate.Certificate[0]) {
+		t.Fatalf("rotated credentials reused the old ticket or leaf: %+v", fresh)
 	}
 }
 
