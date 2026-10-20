@@ -1,4 +1,4 @@
-package meshgossip
+package netgossip
 
 import (
 	"bytes"

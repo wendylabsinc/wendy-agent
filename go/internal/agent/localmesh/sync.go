@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -23,7 +23,7 @@ type ControlMessage struct {
 	Manifest    *SignedManifest     `json:"manifest,omitempty"`
 	Principal   string              `json:"principal,omitempty"`
 	Certificate *CertificateMessage `json:"certificate,omitempty"`
-	Gossip      *meshgossip.Message `json:"gossip,omitempty"`
+	Gossip      *netgossip.Message  `json:"gossip,omitempty"`
 	Catalog     []byte              `json:"catalog,omitempty"`
 }
 
@@ -85,7 +85,7 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 	}
 	switch m.Kind {
 	case "gossip":
-		if m.Gossip == nil || m.Gossip.Type != meshgossip.Manifest || m.Hello != nil || m.Manifest != nil || len(m.Bundle) != 0 || m.Principal != "" {
+		if m.Gossip == nil || m.Gossip.Type != netgossip.Manifest || m.Hello != nil || m.Manifest != nil || len(m.Bundle) != 0 || m.Principal != "" {
 			return m, errors.New("invalid manifest gossip envelope")
 		}
 		if err := m.Gossip.Validate(); err != nil {
@@ -145,7 +145,7 @@ type pendingManifestRenewal struct {
 // certificate bytes are fetched individually only when missing. A bounded
 // number of manifests wait for independently verified identity completion.
 type Synchronizer struct {
-	gossip    *meshgossip.Session
+	gossip    *netgossip.Session
 	directory *Directory
 	cache     *IdentityCache
 	// leafBundles selects the negotiated Lite bundle role; routers use descriptors.
@@ -161,10 +161,10 @@ type Synchronizer struct {
 	reconcileRemaining int
 }
 
-func NewSynchronizer(d *Directory, c *IdentityCache, pools ...*meshgossip.Pool) *Synchronizer {
+func NewSynchronizer(d *Directory, c *IdentityCache, pools ...*netgossip.Pool) *Synchronizer {
 	s := &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingManifestRenewal{}, certificates: NewCertificateExchange(c, d.tenant)}
 	if len(pools) > 0 && pools[0] != nil {
-		s.gossip = pools[0].NewSession(meshgossip.Manifest)
+		s.gossip = pools[0].NewSession(netgossip.Manifest)
 	}
 	return s
 }

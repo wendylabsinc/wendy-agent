@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 func TestServiceHaveWantDiamondOneFullTransferIncludingWithdrawal(t *testing.T) {
 	n := newNeighbourNetwork(t, 4)
 	var mu sync.Mutex
 	partial := map[[2]int][]byte{}
-	full := map[int]map[meshgossip.ID]int{}
+	full := map[int]map[netgossip.ID]int{}
 	legacy := 0
 	n.observe = func(from, to int, fragment []byte) {
 		mu.Lock()
@@ -39,7 +39,7 @@ func TestServiceHaveWantDiamondOneFullTransferIncludingWithdrawal(t *testing.T) 
 		}
 		if m.Gossip != nil && m.Gossip.Op == "data" && m.Gossip.Offset+len(m.Gossip.Data) == m.Gossip.Total {
 			if full[to] == nil {
-				full[to] = make(map[meshgossip.ID]int)
+				full[to] = make(map[netgossip.ID]int)
 			}
 			full[to][m.Gossip.ID()]++
 		}
@@ -62,13 +62,13 @@ func TestServiceHaveWantDiamondOneFullTransferIncludingWithdrawal(t *testing.T) 
 		}
 		n.runtimes[0].Broadcast(w)
 		body, _ := json.Marshal(w)
-		id := meshgossip.Identify(meshgossip.Service, body)
+		id := netgossip.Identify(netgossip.Service, body)
 		eventually(t, func() bool {
 			for node := 1; node < 4; node++ {
 				found := false
 				for _, record := range n.catalogs[node].Records(time.Now()) {
 					b, _ := json.Marshal(record)
-					if meshgossip.Identify(meshgossip.Service, b) == id {
+					if netgossip.Identify(netgossip.Service, b) == id {
 						found = true
 					}
 				}
@@ -108,8 +108,8 @@ func TestServiceSnapshotBarrierWaitsForSharedVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sender := NewSynchronizer(source, cache, meshgossip.NewPool())
-	pool := meshgossip.NewPool()
+	sender := NewSynchronizer(source, cache, netgossip.NewPool())
+	pool := netgossip.NewPool()
 	a, b := NewSynchronizer(dest, destCache, pool), NewSynchronizer(dest, destCache, pool)
 	defer sender.Close()
 	defer a.Close()

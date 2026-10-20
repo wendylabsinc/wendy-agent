@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 func TestManifestHaveWantDiamondTransfersEachRevisionOnce(t *testing.T) {
 	source, chain, key, device, now := directoryFixture(t)
 	dirs := []*Directory{source}
-	pools := []*meshgossip.Pool{meshgossip.NewPool()}
+	pools := []*netgossip.Pool{netgossip.NewPool()}
 	for range 3 {
 		cache, err := OpenIdentityCache("", DefaultCacheLimits(), source.cache.verify, now)
 		if err != nil {
@@ -19,7 +19,7 @@ func TestManifestHaveWantDiamondTransfersEachRevisionOnce(t *testing.T) {
 		}
 		d, _ := NewDirectory(testTenant(t), 10, cache)
 		dirs = append(dirs, d)
-		pools = append(pools, meshgossip.NewPool())
+		pools = append(pools, netgossip.NewPool())
 	}
 	edges := [][2]int{{0, 1}, {0, 2}, {1, 3}, {2, 3}, {1, 2}}
 	sessions := make(map[[2]int]*Synchronizer)
@@ -146,7 +146,7 @@ func TestRouterGossipRejectsUnsolicitedManifestButLeafRemainsCompatible(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewSynchronizer(d, d.cache, meshgossip.NewPool())
+	router := NewSynchronizer(d, d.cache, netgossip.NewPool())
 	defer router.Close()
 	if _, _, err := router.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now); err == nil {
 		t.Fatal("router accepted full unsolicited manifest")
@@ -162,7 +162,7 @@ func TestManifestGossipQueueBudgetDoesNotConsumeAnnouncement(t *testing.T) {
 	d, chain, key, device, now := directoryFixture(t)
 	w, _ := SignManifest(routeManifest(device, now), chain, key, now)
 	d.Accept(w, now)
-	s := NewSynchronizer(d, d.cache, meshgossip.NewPool())
+	s := NewSynchronizer(d, d.cache, netgossip.NewPool())
 	defer s.Close()
 	if got := s.ReconcileBounded(now, 0); len(got) != 0 {
 		t.Fatal(got)

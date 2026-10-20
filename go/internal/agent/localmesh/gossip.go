@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 func (s *Synchronizer) offerManifest(w SignedManifest, now time.Time) []ControlMessage {
@@ -55,7 +55,7 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time, slots ...int) ([
 			// authoritative store still has it. A receipt alone is never a body.
 			for _, candidate := range s.directory.Records(now) {
 				b, _ := json.Marshal(candidate)
-				if meshgossip.Identify(meshgossip.Manifest, b) == m.Gossip.ID() {
+				if netgossip.Identify(netgossip.Manifest, b) == m.Gossip.ID() {
 					s.offerManifest(candidate, now)
 					payload = b
 					break
@@ -68,7 +68,7 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time, slots ...int) ([
 				return nil, nil, err
 			}
 			if _, _, ok := s.cache.Get(w.Principal, now); !ok {
-				return []ControlMessage{{Kind: "gossip", Gossip: meshgossip.Unavailable(*m.Gossip)}}, nil, nil
+				return []ControlMessage{{Kind: "gossip", Gossip: netgossip.Unavailable(*m.Gossip)}}, nil, nil
 			}
 		}
 	}

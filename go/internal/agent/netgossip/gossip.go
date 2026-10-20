@@ -1,6 +1,6 @@
-// Package meshgossip coalesces content-addressed announcement downloads across
+// Package netgossip coalesces content-addressed announcement downloads across
 // authenticated neighbours. It handles bytes and scheduling, never authorization.
-package meshgossip
+package netgossip
 
 import (
 	"bytes"

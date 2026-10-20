@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 
 	"github.com/wendylabsinc/WendyOS/go/babel"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
@@ -39,7 +39,7 @@ type ControlHub struct {
 	partial       map[babel.LinkID][]byte
 	totals        map[babel.LinkID]int
 	certificates  *CertificatePool
-	announcements *meshgossip.Pool
+	announcements *netgossip.Pool
 }
 
 func NewControlHub(pools ...*CertificatePool) *ControlHub {
@@ -47,12 +47,12 @@ func NewControlHub(pools ...*CertificatePool) *ControlHub {
 	if len(pools) != 0 && pools[0] != nil {
 		pool = pools[0]
 	}
-	return &ControlHub{peers: make(map[babel.LinkID]controlEndpoint), events: make(chan ControlEvent, 128), partial: make(map[babel.LinkID][]byte), totals: make(map[babel.LinkID]int), certificates: pool, announcements: meshgossip.NewPool()}
+	return &ControlHub{peers: make(map[babel.LinkID]controlEndpoint), events: make(chan ControlEvent, 128), partial: make(map[babel.LinkID][]byte), totals: make(map[babel.LinkID]int), certificates: pool, announcements: netgossip.NewPool()}
 }
 
 // Certificates shares public bytes, not identities or trust, with consumers of
 // this node's authenticated neighbour channels. The pool is immutable here.
-func (h *ControlHub) Announcements() *meshgossip.Pool { return h.announcements }
+func (h *ControlHub) Announcements() *netgossip.Pool { return h.announcements }
 func (h *ControlHub) Certificates() *CertificatePool  { return h.certificates }
 func (h *ControlHub) Events() <-chan ControlEvent     { return h.events }
 func (h *ControlHub) Add(p ControlPeer, send func(context.Context, []byte) error, closePeer func()) {

@@ -512,7 +512,7 @@ The kernel feature contract is checked by WendyOS-Builder's
 
 ## Shared HAVE/WANT announcements
 
-`meshgossip.Pool` is shared by every router neighbour and both announcement
+`netgossip.Pool` is shared by every router neighbour and both announcement
 classes through `ControlHub.Announcements()`. Transport-specific synchronizers
 only adapt signed device manifests and signed service records. A service record
 includes publications, renewals and withdrawal tombstones; a device manifest

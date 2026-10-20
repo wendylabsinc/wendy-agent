@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 const MaxMessageBytes = 64 << 10
@@ -25,6 +25,7 @@ var errPendingIdentities = errors.New("too many pending wendy net service identi
 // Signed records retain their origin proof across relays. Missing certificate
 // elements are requested after reordered announcements or cache misses.
 type Message struct {
+	Gossip      *netgossip.Message           `json:"gossip,omitempty"`
 	Kind        string                        `json:"kind"`
 	Record      *SignedRecord                 `json:"record,omitempty"`
 	Bundle      [][]byte                      `json:"bundle,omitempty"`
@@ -37,6 +38,11 @@ func (m Message) validate() error {
 		return errors.New("unexpected service certificate message")
 	}
 	switch m.Kind {
+	case "gossip":
+		if m.Gossip == nil || m.Gossip.Type != netgossip.Service || m.Record != nil || len(m.Bundle) != 0 || m.Principal != "" {
+			return errors.New("invalid service gossip envelope")
+		}
+		return m.Gossip.Validate()
 	case "certificate":
 		if m.Certificate == nil || m.Record != nil || len(m.Bundle) != 0 || m.Principal != "" {
 			return errors.New("invalid service certificate envelope")
@@ -123,7 +129,7 @@ func ReadMessage(r io.Reader) (Message, error) {
 // Synchronizer is owned by one peer link. Callers fan out changed signed
 // records and periodically Reconcile to repair a partition or dropped frame.
 type Synchronizer struct {
-	gossip  *meshgossip.Session
+	gossip  *netgossip.Session
 	catalog *Catalog
 	cache   *localmesh.IdentityCache
 	sent    map[string]bool
@@ -150,11 +156,11 @@ type sentRecordStamp struct {
 	digest     [32]byte
 }
 
-func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache, pools ...*meshgossip.Pool) *Synchronizer {
+func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache, pools ...*netgossip.Pool) *Synchronizer {
 	s := &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
 		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]pendingServiceRecord{}, certificates: localmesh.NewCertificateExchange(cache, c.device.Tenant())}
 	if len(pools) > 0 && pools[0] != nil {
-		s.gossip = pools[0].NewSession(meshgossip.Service)
+		s.gossip = pools[0].NewSession(netgossip.Service)
 	}
 	return s
 }

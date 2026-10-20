@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 func TestGossipReplySchedulerSurvivesSaturatedSlowControlQueue(t *testing.T) {
 	now := time.Now()
-	source := meshgossip.NewPool().NewSession(meshgossip.Manifest)
-	pool := meshgossip.NewPool()
-	receiver, alternate := pool.NewSession(meshgossip.Manifest), pool.NewSession(meshgossip.Manifest)
+	source := netgossip.NewPool().NewSession(netgossip.Manifest)
+	pool := netgossip.NewPool()
+	receiver, alternate := pool.NewSession(netgossip.Manifest), pool.NewSession(netgossip.Manifest)
 	body := bytes.Repeat([]byte("x"), 32<<10)
 	have := source.Offer(body, now.Add(time.Minute), now)
 	want, _, _ := receiver.Receive(*have, now)

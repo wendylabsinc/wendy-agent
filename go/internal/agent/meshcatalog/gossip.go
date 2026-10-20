@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/meshgossip"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 func (s *Synchronizer) offerService(w SignedRecord, now time.Time) []Message {
@@ -52,7 +52,7 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 			// authoritative store still has it. A receipt alone is never a body.
 			for _, candidate := range s.catalog.Records(now) {
 				b, _ := json.Marshal(candidate)
-				if meshgossip.Identify(meshgossip.Service, b) == m.Gossip.ID() {
+				if netgossip.Identify(netgossip.Service, b) == m.Gossip.ID() {
 					s.offerService(candidate, now)
 					payload = b
 					break
@@ -66,7 +66,7 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 				return nil, nil, errors.New("invalid cached service artifact")
 			}
 			if _, _, ok := s.cache.Get(r.Key.Device, now); !ok {
-				return []Message{{Kind: "gossip", Gossip: meshgossip.Unavailable(*m.Gossip)}}, nil, nil
+				return []Message{{Kind: "gossip", Gossip: netgossip.Unavailable(*m.Gossip)}}, nil, nil
 			}
 		}
 	}
