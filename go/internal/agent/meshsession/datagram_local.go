@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -27,9 +28,9 @@ func DialLocalUDP(ctx context.Context, auth UDPAuthorizer, port uint16) (*LocalD
 	}
 	token := auth.UDPToken(port)
 	var conn *net.UDPConn
-	err := auth.WithAuthorizedUDPToken(port, token, func() error {
+	err := auth.WithAuthorizedUDPToken(port, token, func(address netip.AddrPort) error {
 		var err error
-		conn, err = net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)})
+		conn, err = net.DialUDP("udp4", nil, net.UDPAddrFromAddrPort(address))
 		return err
 	})
 	if err != nil {
@@ -42,7 +43,7 @@ func (f *LocalDatagramFlow) Send(payload []byte) error {
 	if len(payload) == 0 || len(payload) > MaxUDPPayload {
 		return errors.New("invalid mesh UDP payload size")
 	}
-	return f.auth.WithAuthorizedUDPToken(f.port, f.token, func() error {
+	return f.auth.WithAuthorizedUDPToken(f.port, f.token, func(address netip.AddrPort) error {
 		if err := f.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
 			return err
 		}
@@ -59,7 +60,7 @@ func (f *LocalDatagramFlow) Receive(ctx context.Context) ([]byte, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := f.auth.WithAuthorizedUDPToken(f.port, f.token, func() error { return nil }); err != nil {
+		if err := f.auth.WithAuthorizedUDPToken(f.port, f.token, func(address netip.AddrPort) error { return nil }); err != nil {
 			return nil, err
 		}
 		deadline := time.Now().Add(100 * time.Millisecond)
@@ -79,7 +80,7 @@ func (f *LocalDatagramFlow) Receive(ctx context.Context) ([]byte, error) {
 		if n == 0 || n > MaxUDPPayload {
 			return nil, errors.New("invalid mesh UDP reply size")
 		}
-		if err := f.auth.WithAuthorizedUDPToken(f.port, f.token, func() error { return nil }); err != nil {
+		if err := f.auth.WithAuthorizedUDPToken(f.port, f.token, func(address netip.AddrPort) error { return nil }); err != nil {
 			return nil, err
 		}
 		return buf[:n], nil

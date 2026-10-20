@@ -36,7 +36,7 @@ func TestAppQUICLearnsDelayedPathAndQuiesces(t *testing.T) {
 	t.Cleanup(func() { _ = app.Close(); <-appDone })
 	port := uint16(app.LocalAddr().(*net.UDPAddr).Port)
 	registry := meshingress.NewRegistry()
-	if err := registry.ClaimUDPForApp("delayed", "com.wendy.delayed", port); err != nil {
+	if err := registry.ClaimUDPForApp("delayed", "com.wendy.delayed", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
 	server, err := NewServer(b, testUDPAuthorization{registry})

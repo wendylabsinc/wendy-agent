@@ -565,7 +565,7 @@ func (c *Client) applyMeshIngressPorts(containerName, appID, ip string, ports []
 		}
 		var err error
 		if pm.Protocol == "udp" {
-			err = c.meshIngress.ClaimUDPForApp(containerName, appID, pm.Host)
+			err = c.meshIngress.ClaimUDPForApp(containerName, appID, pm.Host, ip, pm.Container)
 		} else {
 			err = c.meshIngress.ClaimForApp(containerName, appID, pm.Host, ip, pm.Container)
 		}

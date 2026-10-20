@@ -25,6 +25,7 @@ type Registry struct {
 	appByPort      map[uint16]string
 	byOwner        map[string]map[uint16]struct{}
 	udpByPort      map[uint16]string
+	udpTargets     map[uint16]netip.AddrPort
 	udpAppByPort   map[uint16]string
 	udpByOwner     map[string]map[uint16]struct{}
 	udpTokenByPort map[uint16]uint64
@@ -201,16 +202,16 @@ func (r *Registry) UDPToken(port uint16) uint64 {
 	return r.udpTokenByPort[port]
 }
 
-func (r *Registry) WithAuthorizedUDPToken(port uint16, token uint64, write func() error) error {
+func (r *Registry) WithAuthorizedUDPToken(port uint16, token uint64, write func(netip.AddrPort) error) error {
 	if r == nil || port == 0 || token == 0 || write == nil {
 		return ErrPortDenied
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.udpByPort[port] == "" || r.udpTokenByPort[port] != token {
+	if r.udpByPort[port] == "" || r.udpTokenByPort[port] != token || !r.udpTargets[port].IsValid() {
 		return ErrPortDenied
 	}
-	return write()
+	return write(r.udpTargets[port])
 }
 
 func (r *Registry) CheckUDPAvailable(containerID string, port uint16) error {
@@ -222,20 +223,26 @@ func (r *Registry) CheckUDPAvailable(containerID string, port uint16) error {
 	return checkOwner(r.udpByPort[port], containerID, port)
 }
 
-func (r *Registry) ClaimUDPForApp(containerID, appID string, port uint16) error {
+func (r *Registry) ClaimUDPForApp(containerID, appID string, port uint16, containerIP string, containerPort uint16) error {
 	if r == nil || containerID == "" || port == 0 {
 		return ErrPortDenied
 	}
+	ip, err := netip.ParseAddr(containerIP)
+	if err != nil || !ip.Is4() || !ip.IsPrivate() || containerPort == 0 {
+		return ErrPortDenied
+	}
+	target := netip.AddrPortFrom(ip, containerPort)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := checkOwner(r.udpByPort[port], containerID, port); err != nil {
 		return err
 	}
-	if r.udpByPort[port] != "" && r.udpAppByPort[port] != appID {
+	if r.udpByPort[port] != "" && (r.udpAppByPort[port] != appID || r.udpTargets[port] != target) {
 		return ErrPortDenied
 	}
 	if r.udpByPort == nil {
 		r.udpByPort = make(map[uint16]string)
+		r.udpTargets = make(map[uint16]netip.AddrPort)
 		r.udpAppByPort = make(map[uint16]string)
 		r.udpByOwner = make(map[string]map[uint16]struct{})
 		r.udpTokenByPort = make(map[uint16]uint64)
@@ -244,6 +251,7 @@ func (r *Registry) ClaimUDPForApp(containerID, appID string, port uint16) error 
 		r.udpByOwner[containerID] = make(map[uint16]struct{})
 	}
 	r.udpByPort[port], r.udpAppByPort[port] = containerID, appID
+	r.udpTargets[port] = target
 	r.udpNext++
 	r.udpTokenByPort[port] = r.udpNext
 	r.udpByOwner[containerID][port] = struct{}{}
@@ -417,6 +425,7 @@ func (r *Registry) Release(containerID string) {
 	for port := range r.udpByOwner[containerID] {
 		if r.udpByPort[port] == containerID {
 			delete(r.udpByPort, port)
+			delete(r.udpTargets, port)
 			delete(r.udpAppByPort, port)
 			delete(r.udpTokenByPort, port)
 		}

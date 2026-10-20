@@ -113,12 +113,12 @@ func requireSessionClosed(t *testing.T, conn *quic.Conn) {
 
 func TestPooledAppTeardownRevokesOnlyItsStreams(t *testing.T) {
 	a, b := fixtureCredentials(t)
-	r := meshingress.NewRegistry()
+	r := &loopbackRegistry{Registry: meshingress.NewRegistry()}
 	p1, p2 := lifecycleEcho(t), lifecycleEcho(t)
-	if err := r.Claim("one", p1); err != nil {
+	if err := r.Claim("one", p1, "10.3.0.2", p1); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Claim("two", p2); err != nil {
+	if err := r.Claim("two", p2, "10.3.0.2", p2); err != nil {
 		t.Fatal(err)
 	}
 	endpoint := lifecycleServer(t, b, r, true)
@@ -145,7 +145,7 @@ func TestPooledAppTeardownRevokesOnlyItsStreams(t *testing.T) {
 		conn.Close()
 		t.Fatal("warm stream reused revoked grant")
 	}
-	if err := r.Claim("replacement", p1); err != nil {
+	if err := r.Claim("replacement", p1, "10.3.0.2", p1); err != nil {
 		t.Fatal(err)
 	}
 	replacement := lifecycleDial(t, client, b.Device, endpoint, p1)
@@ -310,8 +310,8 @@ func TestRegistryWrappedTCPPreservesHalfClose(t *testing.T) {
 		}
 	}()
 	port := uint16(listener.Addr().(*net.TCPAddr).Port)
-	registry := meshingress.NewRegistry()
-	if err := registry.Claim("half", port); err != nil {
+	registry := &loopbackRegistry{Registry: meshingress.NewRegistry()}
+	if err := registry.Claim("half", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
 	endpoint := lifecycleServer(t, b, registry, true)

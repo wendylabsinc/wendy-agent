@@ -15,7 +15,7 @@ import (
 type rejectedUDPAuthorizer struct{ allowPort }
 
 func (rejectedUDPAuthorizer) UDPToken(uint16) uint64 { return 0 }
-func (rejectedUDPAuthorizer) WithAuthorizedUDPToken(uint16, uint64, func() error) error {
+func (rejectedUDPAuthorizer) WithAuthorizedUDPToken(uint16, uint64, func(netip.AddrPort) error) error {
 	return ErrDenied
 }
 

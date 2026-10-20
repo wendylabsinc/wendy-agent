@@ -15,7 +15,7 @@ func TestUDPClaimsAreProtocolAndIncarnationScoped(t *testing.T) {
 	if r.AllowedUDP(7777) {
 		t.Fatal("TCP claim authorized UDP")
 	}
-	if err := r.ClaimUDPForApp("app-a", "com.wendy.a", 7777); err != nil {
+	if err := r.ClaimUDPForApp("app-a", "com.wendy.a", 7777, "10.3.0.2", 7777); err != nil {
 		t.Fatal(err)
 	}
 	a := r.UDPToken(7777)
@@ -38,7 +38,7 @@ func TestUDPClaimsAreProtocolAndIncarnationScoped(t *testing.T) {
 	if got := r.SourceIP("app-a"); got != "" {
 		t.Fatalf("stopped app retained source: %q", got)
 	}
-	if err := r.ClaimUDPForApp("app-b", "com.wendy.b", 7777); err != nil {
+	if err := r.ClaimUDPForApp("app-b", "com.wendy.b", 7777, "10.3.0.2", 7777); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.ClaimSource("app-b", "com.wendy.b", ip.String(), "10.99.0.0/16", 7); err != nil {
@@ -48,10 +48,10 @@ func TestUDPClaimsAreProtocolAndIncarnationScoped(t *testing.T) {
 		t.Fatal("replacement app inherited old flow token")
 	}
 	called := false
-	if err := r.WithAuthorizedUDPToken(7777, a, func() error { called = true; return nil }); !errors.Is(err, ErrPortDenied) || called {
+	if err := r.WithAuthorizedUDPToken(7777, a, func(address netip.AddrPort) error { called = true; return nil }); !errors.Is(err, ErrPortDenied) || called {
 		t.Fatal("old app UDP flow entered replacement app")
 	}
-	if err := r.WithAuthorizedUDPToken(7777, r.UDPToken(7777), func() error { called = true; return nil }); err != nil || !called {
+	if err := r.WithAuthorizedUDPToken(7777, r.UDPToken(7777), func(address netip.AddrPort) error { called = true; return nil }); err != nil || !called {
 		t.Fatal("replacement app was not authorized")
 	}
 }
@@ -89,5 +89,31 @@ func TestReleaseWaitsForInFlightUDPReplyAndRejectsReusedSource(t *testing.T) {
 	called := false
 	if err := r.WithSourceToken(ip, dst, 7, token, func() error { called = true; return nil }); !errors.Is(err, ErrPortDenied) || called {
 		t.Fatal("old UDP reply entered replacement app")
+	}
+}
+
+func TestUDPClaimPinsContainerEndpoint(t *testing.T) {
+	r := NewRegistry()
+	if err := r.ClaimUDPForApp("app", "app", 7777, "127.0.0.1", 80); err == nil {
+		t.Fatal("UDP authorized host loopback")
+	}
+	if err := r.ClaimUDPForApp("app", "app", 7777, "10.3.0.2", 80); err != nil {
+		t.Fatal(err)
+	}
+	token := r.UDPToken(7777)
+	if err := r.WithAuthorizedUDPToken(7777, token, func(address netip.AddrPort) error {
+		if address.String() != "10.3.0.2:80" {
+			t.Fatalf("wrong UDP endpoint %v", address)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ClaimUDPForApp("app", "app", 7777, "10.3.0.3", 81); err == nil {
+		t.Fatal("live UDP grant retargeted")
+	}
+	r.Release("app")
+	if err := r.WithAuthorizedUDPToken(7777, token, func(netip.AddrPort) error { t.Fatal("revoked UDP endpoint used"); return nil }); err == nil {
+		t.Fatal("UDP grant survived revocation")
 	}
 }

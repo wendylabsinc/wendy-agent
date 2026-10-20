@@ -37,7 +37,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	}()
 	port := uint16(app.LocalAddr().(*net.UDPAddr).Port)
 	registry := meshingress.NewRegistry()
-	if err := registry.ClaimUDPForApp("echo", "com.wendy.echo", port); err != nil {
+	if err := registry.ClaimUDPForApp("echo", "com.wendy.echo", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
 	server, err := NewServer(b, testUDPAuthorization{registry})
@@ -83,7 +83,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 		t.Fatal("wrong peer asset accepted")
 	}
 	registry.Release("echo")
-	if err := registry.ClaimUDPForApp("replacement", "com.wendy.replacement", port); err != nil {
+	if err := registry.ClaimUDPForApp("replacement", "com.wendy.replacement", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
 	if err := flow.Send([]byte("after stop")); err == nil {
@@ -108,4 +108,11 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Unit fixtures map the admitted private endpoint to their local UDP listener.
+func (a testUDPAuthorization) WithAuthorizedUDPToken(port uint16, token uint64, write func(netip.AddrPort) error) error {
+	return a.Registry.WithAuthorizedUDPToken(port, token, func(address netip.AddrPort) error {
+		return write(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), address.Port()))
+	})
 }

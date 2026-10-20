@@ -5,6 +5,7 @@ package meshingress
 import (
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -100,4 +101,78 @@ func TestAdmittedEndpointProcess(t *testing.T) {
 		t.Fatalf("unrelated host listener received %d dials", hostDials.Load())
 	}
 	t.Log("live app reached with and without DNAT; unavailable app failed closed while unrelated host listener stayed live")
+	testUDPEndpointWithoutDNAT(t, run)
+}
+
+func testUDPEndpointWithoutDNAT(t *testing.T, run func(string, ...string)) {
+	t.Helper()
+	var hostDials atomic.Int32
+	serve := func(ip, reply string) *net.UDPConn {
+		l, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(ip)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { l.Close() })
+		go func() {
+			buf := make([]byte, 32)
+			for {
+				_, from, err := l.ReadFromUDP(buf)
+				if err != nil {
+					return
+				}
+				if reply == "host" {
+					hostDials.Add(1)
+				}
+				_, _ = l.WriteToUDP([]byte(reply), from)
+			}
+		}()
+		return l
+	}
+	app, host := serve("10.201.150.2", "app"), serve("127.0.0.1", "host")
+	appPort := uint16(app.LocalAddr().(*net.UDPAddr).Port)
+	hostPort := uint16(host.LocalAddr().(*net.UDPAddr).Port)
+	rule := []string{"-d", "127.0.0.1/32", "-p", "udp", "--dport", strconv.Itoa(int(hostPort)), "-j", "DNAT", "--to-destination", app.LocalAddr().String()}
+	run("iptables", append([]string{"-t", "nat", "-A", "OUTPUT"}, rule...)...)
+	r := NewRegistry()
+	if err := r.ClaimUDPForApp("udp-app", "udp-app", hostPort, "10.201.150.2", appPort); err != nil {
+		t.Fatal(err)
+	}
+	token := r.UDPToken(hostPort)
+	exchange := func() error {
+		var conn *net.UDPConn
+		if err := r.WithAuthorizedUDPToken(hostPort, token, func(address netip.AddrPort) error {
+			var err error
+			conn, err = net.DialUDP("udp4", nil, net.UDPAddrFromAddrPort(address))
+			return err
+		}); err != nil {
+			return err
+		}
+		defer conn.Close()
+		if err := r.WithAuthorizedUDPToken(hostPort, token, func(netip.AddrPort) error { _, err := conn.Write([]byte("probe")); return err }); err != nil {
+			return err
+		}
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 16)
+		n, err := conn.Read(buf)
+		if err == nil && string(buf[:n]) != "app" {
+			t.Fatalf("UDP reached %q", buf[:n])
+		}
+		return err
+	}
+	for _, remove := range []bool{false, true} {
+		if remove {
+			run("iptables", append([]string{"-t", "nat", "-D", "OUTPUT"}, rule...)...)
+		}
+		if err := exchange(); err != nil {
+			t.Fatalf("UDP removed=%v: %v", remove, err)
+		}
+	}
+	app.Close()
+	if err := exchange(); err == nil {
+		t.Fatal("missing UDP container fell back to host listener")
+	}
+	if hostDials.Load() != 0 {
+		t.Fatal("UDP reached unrelated host listener")
+	}
+	t.Log("UDP uses admitted container endpoint with and without DNAT, and fails closed after app loss")
 }

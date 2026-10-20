@@ -24,7 +24,7 @@ var udpOpenMagic = [4]byte{'W', 'A', 'U', '1'}
 // protocol-specific host port. Revocation cannot race a local app write.
 type UDPAuthorizer interface {
 	UDPToken(uint16) uint64
-	WithAuthorizedUDPToken(uint16, uint64, func() error) error
+	WithAuthorizedUDPToken(uint16, uint64, func(netip.AddrPort) error) error
 }
 
 // DatagramFlow is one app UDP source/destination tuple. Its QUIC connection is
@@ -113,9 +113,9 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 	}
 	token := auth.UDPToken(port)
 	var local *net.UDPConn
-	err := auth.WithAuthorizedUDPToken(port, token, func() error {
+	err := auth.WithAuthorizedUDPToken(port, token, func(address netip.AddrPort) error {
 		var dialErr error
-		local, dialErr = net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)})
+		local, dialErr = net.DialUDP("udp4", nil, net.UDPAddrFromAddrPort(address))
 		return dialErr
 	})
 	if err != nil {
@@ -143,7 +143,7 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 				return
 			}
 			response := append([]byte(nil), buf[:n]...)
-			if err := auth.WithAuthorizedUDPToken(port, token, func() error {
+			if err := auth.WithAuthorizedUDPToken(port, token, func(address netip.AddrPort) error {
 				return conn.SendDatagram(response)
 			}); err != nil {
 				return
@@ -161,7 +161,7 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 		if len(payload) == 0 || len(payload) > MaxUDPPayload {
 			continue
 		}
-		if err := auth.WithAuthorizedUDPToken(port, token, func() error {
+		if err := auth.WithAuthorizedUDPToken(port, token, func(address netip.AddrPort) error {
 			_ = local.SetWriteDeadline(time.Now().Add(2 * time.Second))
 			_, writeErr := local.Write(payload)
 			return writeErr

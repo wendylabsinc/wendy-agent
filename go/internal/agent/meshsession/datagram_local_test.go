@@ -29,19 +29,19 @@ func TestLocalUDPAppEchoAndIncarnationRevocation(t *testing.T) {
 	}()
 	port := uint16(app.LocalAddr().(*net.UDPAddr).Port)
 	r := meshingress.NewRegistry()
-	if _, err := DialLocalUDP(context.Background(), r, port); err == nil {
+	if _, err := DialLocalUDP(context.Background(), testUDPAuthorization{r}, port); err == nil {
 		t.Fatal("host UDP listener admitted")
 	}
 	if err := r.ClaimForApp("tcp", "com.wendy.tcp", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DialLocalUDP(context.Background(), r, port); err == nil {
+	if _, err := DialLocalUDP(context.Background(), testUDPAuthorization{r}, port); err == nil {
 		t.Fatal("TCP claim admitted UDP")
 	}
-	if err := r.ClaimUDPForApp("echo", "com.wendy.echo", port); err != nil {
+	if err := r.ClaimUDPForApp("echo", "com.wendy.echo", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
-	flow, err := DialLocalUDP(context.Background(), r, port)
+	flow, err := DialLocalUDP(context.Background(), testUDPAuthorization{r}, port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestLocalUDPAppEchoAndIncarnationRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Release("echo")
-	if err := r.ClaimUDPForApp("replacement", "com.wendy.replacement", port); err != nil {
+	if err := r.ClaimUDPForApp("replacement", "com.wendy.replacement", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
 	if err := flow.Send([]byte("old flow")); !errors.Is(err, meshingress.ErrPortDenied) {
@@ -75,7 +75,7 @@ func TestLocalUDPAppEchoAndIncarnationRevocation(t *testing.T) {
 	if _, err := flow.Receive(ctx); !errors.Is(err, meshingress.ErrPortDenied) {
 		t.Fatalf("revoked receive: %v", err)
 	}
-	fresh, err := DialLocalUDP(ctx, r, port)
+	fresh, err := DialLocalUDP(ctx, testUDPAuthorization{r}, port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,17 +96,17 @@ func TestLocalUDPReceiveCancellationAndClose(t *testing.T) {
 	defer app.Close()
 	port := uint16(app.LocalAddr().(*net.UDPAddr).Port)
 	r := meshingress.NewRegistry()
-	if err := r.ClaimUDPForApp("silent", "com.wendy.silent", port); err != nil {
+	if err := r.ClaimUDPForApp("silent", "com.wendy.silent", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
-	flow, err := DialLocalUDP(context.Background(), r, port)
+	flow, err := DialLocalUDP(context.Background(), testUDPAuthorization{r}, port)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer flow.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := DialLocalUDP(ctx, r, port); !errors.Is(err, context.Canceled) {
+	if _, err := DialLocalUDP(ctx, testUDPAuthorization{r}, port); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	if _, err := flow.Receive(ctx); !errors.Is(err, context.Canceled) {
