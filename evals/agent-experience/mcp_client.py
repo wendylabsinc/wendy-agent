@@ -3,7 +3,10 @@ import json
 import os
 import select
 import subprocess
+import tempfile
 import time
+
+STDERR_TAIL = 2048  # bytes of the server's stderr quoted in an error
 
 
 class StdioMCP:
@@ -12,10 +15,17 @@ class StdioMCP:
         self.proc = None
         self._next_id = 0
         self._buffer = b""
+        self._stderr = None
 
     def __enter__(self):
-        self.proc = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, env=self.env, cwd=self.cwd)
+        # stderr goes to an anonymous file, so a server that fails at startup can say why.
+        self._stderr = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=self._stderr, env=self.env, cwd=self.cwd)
+        except BaseException:
+            self._stderr.close()
+            raise
         return self
 
     def __exit__(self, *exc):
@@ -35,6 +45,18 @@ class StdioMCP:
             proc.kill()
             proc.wait()
         proc.stdout.close()
+        self._stderr.close()
+
+    def _error(self, text):
+        """text plus the last STDERR_TAIL bytes the server wrote to stderr, if any."""
+        try:
+            fd = self._stderr.fileno()
+            # pread leaves the offset alone: the child shares this open file and still writes to it.
+            tail = os.pread(fd, STDERR_TAIL, max(0, os.fstat(fd).st_size - STDERR_TAIL))
+        except (AttributeError, OSError, ValueError):
+            tail = b""
+        tail = tail.decode(errors="replace").strip()
+        return f"{text}; server stderr: {tail}" if tail else text
 
     def _send(self, message):
         self.proc.stdin.write((json.dumps(message) + "\n").encode())
@@ -45,10 +67,10 @@ class StdioMCP:
         while b"\n" not in self._buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
-                raise TimeoutError(f"no MCP reply within {self.timeout:g}s")
+                raise TimeoutError(self._error(f"no MCP reply within {self.timeout:g}s"))
             chunk = os.read(fd, 65536)
             if not chunk:
-                raise RuntimeError("MCP server closed its output")
+                raise RuntimeError(self._error("MCP server closed its output"))
             self._buffer += chunk
         line, self._buffer = self._buffer.split(b"\n", 1)
         return line
@@ -68,7 +90,7 @@ class StdioMCP:
             if reply.get("id") != self._next_id or "method" in reply:
                 continue  # server notification or request; not our response
             if "error" in reply:
-                raise RuntimeError(f"MCP error for {method}: {reply['error']}")
+                raise RuntimeError(self._error(f"MCP error for {method}: {reply['error']}"))
             return reply.get("result", {})
 
     def initialize(self):

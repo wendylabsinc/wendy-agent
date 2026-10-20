@@ -47,6 +47,11 @@ def main():
     if "--version" in sys.argv[1:]:
         print("fake-wendy 0.0.0")
         return 0
+    if os.environ.get("FAKE_MCP_STDERR"):
+        sys.stderr.write(os.environ["FAKE_MCP_STDERR"])
+        sys.stderr.flush()
+    if os.environ.get("FAKE_MCP_EXIT"):
+        return int(os.environ["FAKE_MCP_EXIT"])  # a server that fails at startup
     log = os.environ.get("FAKE_MCP_LOG")
     for line in sys.stdin:
         if not line.strip():
