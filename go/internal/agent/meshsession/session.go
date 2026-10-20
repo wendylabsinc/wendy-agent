@@ -40,7 +40,7 @@ func quicConfig() *quic.Config {
 	// probe timeout. A measured RTT replaces this conservative estimate.
 	return &quic.Config{MaxCryptoStreamSize: localmesh.MaxQUICCryptoStreamSize, InitialRTT: time.Second, HandshakeIdleTimeout: 30 * time.Second, MaxIdleTimeout: 45 * time.Second,
 		MaxIncomingStreams: 8, MaxIncomingUniStreams: -1, Allow0RTT: false,
-		// The routed TUN carries at most 1280 bytes end to end. quic-go's
+		// The routed TUN carries at most 1320 bytes end to end. quic-go's
 		// default 1280-byte UDP payload exceeds that once IPv6/UDP headers
 		// are added; the kernel drops the Initial before it reaches the TUN.
 		InitialPacketSize: 1200, DisablePathMTUDiscovery: true}

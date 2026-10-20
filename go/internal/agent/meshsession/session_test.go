@@ -84,8 +84,8 @@ type allowPort func(uint16) bool
 
 func TestInitialPacketFitsRoutedMeshMTU(t *testing.T) {
 	cfg := quicConfig()
-	const ipv4UDPHeaders = 20 + 8
-	if int(cfg.InitialPacketSize)+ipv4UDPHeaders > localmesh.TunnelMTU || !cfg.DisablePathMTUDiscovery {
+	const ipv6UDPHeaders = 40 + 8
+	if int(cfg.InitialPacketSize)+ipv6UDPHeaders > localmesh.TunnelMTU || !cfg.DisablePathMTUDiscovery {
 		t.Fatalf("QUIC packet can exceed the routed mesh MTU: %+v", cfg)
 	}
 }
