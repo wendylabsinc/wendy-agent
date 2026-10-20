@@ -25,6 +25,12 @@ type AppScope struct {
 	Ports        map[uint16]uint16
 }
 
+// Bound raw observations independently of admitted services: an app can
+// advertise arbitrary incomplete RRsets. Bytes count DNS wire data; the entry
+// bound also limits map keys and Go object overhead.
+const maxCollectorRecords = 4096
+const maxCollectorBytes = 1 << 20
+
 type observedRR struct {
 	rr      dns.RR
 	expires time.Time
@@ -40,10 +46,11 @@ type publication struct {
 // its app bridge. It validates PTR/SRV/TXT/A ownership and declared host-port
 // mappings before signing. Call Observe and Sweep from one event loop.
 type Collector struct {
-	scope     AppScope
-	catalog   *Catalog
-	records   map[string]observedRR
-	published map[string]publication
+	scope       AppScope
+	catalog     *Catalog
+	records     map[string]observedRR
+	recordBytes int
+	published   map[string]publication
 }
 
 func NewCollector(scope AppScope, catalog *Catalog) (*Collector, error) {
@@ -92,6 +99,7 @@ func (c *Collector) Observe(msg *dns.Msg, source net.IP, bridgeIndex int, now ti
 	if msg == nil || !msg.Response || bridgeIndex != c.scope.BridgeIndex || !source.Equal(c.scope.AppIP) {
 		return nil, nil
 	}
+	c.pruneRecords(now)
 	for _, rr := range slices.Concat(msg.Answer, msg.Ns, msg.Extra) {
 		if rr == nil || rr.Header() == nil {
 			continue
@@ -105,7 +113,15 @@ func (c *Collector) Observe(msg *dns.Msg, source net.IP, bridgeIndex int, now ti
 		}
 		key := rrKey(rr)
 		if h.Ttl == 0 {
-			delete(c.records, key)
+			c.removeRecord(key)
+			continue
+		}
+		old, exists := c.records[key]
+		size, previous := dns.Len(rr), 0
+		if exists {
+			previous = dns.Len(old.rr)
+		}
+		if (!exists && len(c.records) >= maxCollectorRecords) || c.recordBytes-previous+size > maxCollectorBytes {
 			continue
 		}
 		ttl := time.Duration(h.Ttl) * time.Second
@@ -113,19 +129,31 @@ func (c *Collector) Observe(msg *dns.Msg, source net.IP, bridgeIndex int, now ti
 			ttl = MaxLease
 		}
 		c.records[key] = observedRR{rr: dns.Copy(rr), expires: now.Add(ttl)}
+		c.recordBytes += size - previous
 	}
 	return c.Sweep(now)
+}
+
+func (c *Collector) removeRecord(key string) {
+	if old, exists := c.records[key]; exists {
+		c.recordBytes -= dns.Len(old.rr)
+		delete(c.records, key)
+	}
+}
+
+func (c *Collector) pruneRecords(now time.Time) {
+	for key, rr := range c.records {
+		if !rr.expires.After(now) {
+			c.removeRecord(key)
+		}
+	}
 }
 
 // Sweep expires incomplete announcements, renews unchanged publications near
 // half-lease only when their signed expiry advances, and signs removals before
 // the ingress mapping is released.
 func (c *Collector) Sweep(now time.Time) ([]SignedRecord, error) {
-	for key, rr := range c.records {
-		if !rr.expires.After(now) {
-			delete(c.records, key)
-		}
-	}
+	c.pruneRecords(now)
 	active := map[string]bool{}
 	var changed []SignedRecord
 	for _, item := range c.records {
@@ -232,6 +260,7 @@ func (c *Collector) WithdrawAll(now time.Time) ([]SignedRecord, error) {
 		changed = append(changed, w)
 	}
 	c.records = map[string]observedRR{}
+	c.recordBytes = 0
 	c.published = map[string]publication{}
 	return changed, nil
 }

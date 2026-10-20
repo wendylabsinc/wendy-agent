@@ -174,7 +174,7 @@ func appendUniqueRR(dst []dns.RR, rr dns.RR) []dns.RR {
 
 func knownAnswer(query *dns.Msg, proposed dns.RR) bool {
 	for _, known := range query.Answer {
-		if dns.IsDuplicate(known, proposed) && known.Header().Ttl >= proposed.Header().Ttl/2 {
+		if dns.IsDuplicate(known, proposed) && uint64(known.Header().Ttl)*2 >= uint64(proposed.Header().Ttl) {
 			return true
 		}
 	}
