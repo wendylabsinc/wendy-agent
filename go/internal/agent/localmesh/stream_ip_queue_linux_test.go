@@ -260,7 +260,7 @@ func TestStreamIPQueueKeepsTwoFullSizeSourcesAtSlowRate(t *testing.T) {
 			t.Fatalf("second A packet lost: %+v ok=%t", packet, ok)
 		}
 	}
-	if stats := q.snapshot(); stats.AgeLimitMS < 490 || stats.AgeLimitMS > 510 || stats.MaxDequeuedWaitMS > 20 || stats.Bytes != 0 {
+	if stats := q.snapshot(); stats.AgeLimitMS != 1000 || stats.MaxDequeuedWaitMS > 20 || stats.Bytes != 0 {
 		t.Fatalf("slow-link sojourn/byte bound lost: %+v", stats)
 	}
 }
@@ -326,7 +326,7 @@ func TestStreamIPQueueAdaptsAgeToObservedWriteRate(t *testing.T) {
 		t.Fatalf("initial age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 50*time.Millisecond)
-	if got := q.snapshot().AgeLimitMS; got < 440 || got > 450 {
+	if got := q.snapshot().AgeLimitMS; got != 1000 {
 		t.Fatalf("fast age limit = %d ms", got)
 	}
 	q.recordWrite(1280, 400*time.Millisecond)

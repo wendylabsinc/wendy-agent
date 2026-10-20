@@ -21,9 +21,10 @@ const (
 	streamIPSourceByteBudget = streamIPByteBudget / 2
 	streamIPInitialQueueAge  = 2 * time.Second
 	streamIPMaxQueueAge      = 5 * time.Second
-	streamIPSlowQueueAge     = 50 * time.Millisecond
-	streamIPMidQueueAge      = 150 * time.Millisecond
-	streamIPFastQueueAge     = 200 * time.Millisecond
+	// Socket acceptance can be much faster than RF drain while a control
+	// frame owns the writer. Give waiting packets at least two of the former
+	// 500ms target intervals; the byte cap still bounds queue occupancy.
+	streamIPMinQueueAge = time.Second
 )
 
 type streamIPPacket struct {
@@ -33,6 +34,7 @@ type streamIPPacket struct {
 	bytes    int
 	fast     bool
 	queued   time.Time
+	grace    time.Duration // Never shorten a waiting packet's measured allowance.
 }
 
 type streamIPSendQueue struct {
@@ -65,6 +67,7 @@ func (q *streamIPSendQueue) enqueue(sequence uint32, data []byte, now time.Time)
 	p := streamIPPacket{sequence: sequence, data: append([]byte(nil), data...), source: source, bytes: streamIPFramedBytes(len(data)), fast: streamFastRoutedIP(data), queued: now}
 	q.mu.Lock()
 	q.expire(now)
+	p.grace = q.queueAgeLimit()
 	for q.stats.Bytes+p.bytes > q.byteBudget() || q.sourceBytes(p.source)+p.bytes > q.sourceByteBudget() || p.fast && q.fastBytes()+p.bytes > q.fastByteBudget() {
 		victim := q.victim(p)
 		if victim < 0 {
@@ -193,8 +196,14 @@ func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
 }
 
 func (q *streamIPSendQueue) expire(now time.Time) {
+	limit := q.queueAgeLimit()
 	for i := 0; i < len(q.pending); {
-		if now.Sub(q.pending[i].queued) >= q.queueAgeLimit() {
+		// A later short write may enter the kernel immediately even while RF
+		// and intervening control frames remain contended. Do not retroactively
+		// revoke a packet's allowance. A measured slowdown can extend it, still
+		// relative to its original enqueue time and within the fixed maximum.
+		q.pending[i].grace = max(q.pending[i].grace, limit)
+		if now.Sub(q.pending[i].queued) >= q.pending[i].grace {
 			q.remove(i)
 			q.stats.DroppedExpired++
 		} else {
@@ -214,16 +223,7 @@ func (q *streamIPSendQueue) queueAgeLimit() time.Duration {
 	// the bounded queue ahead of it. At low BLE rates even one packet can
 	// take hundreds of milliseconds, exceeding the former 50ms age limit.
 	service := time.Duration(q.byteBudget()+streamIPFullPacketBytes) * time.Second / time.Duration(q.writeRateBytesPerSec)
-	var floor time.Duration
-	switch {
-	case q.writeRateBytesPerSec >= 50*1024:
-		floor = streamIPFastQueueAge
-	case q.writeRateBytesPerSec >= 16*1024:
-		floor = streamIPMidQueueAge
-	default:
-		floor = streamIPSlowQueueAge
-	}
-	return min(streamIPMaxQueueAge, max(floor, service))
+	return min(streamIPMaxQueueAge, max(streamIPMinQueueAge, service))
 }
 
 // Write completion is only a proxy for RF drain because the CoC socket can
