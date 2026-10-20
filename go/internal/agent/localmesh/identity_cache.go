@@ -59,6 +59,7 @@ type IdentityCache struct {
 	limits  CacheLimits
 	verify  IdentityVerifier
 	entries map[string]cachedIdentity
+	parts   *CertificatePool
 	// A failed write must be retried even when a later Put is byte-identical.
 	pendingSave bool
 }
@@ -74,10 +75,19 @@ func principalOf(id Identity) (string, error) {
 }
 
 func OpenIdentityCache(path string, limits CacheLimits, verify IdentityVerifier, now time.Time) (*IdentityCache, error) {
+	return OpenIdentityCacheWithCertificates(path, limits, verify, now, NewCertificatePool())
+}
+
+// OpenIdentityCacheWithCertificates reuses public bytes from another cache
+// without sharing that cache's identities or trust decisions.
+func OpenIdentityCacheWithCertificates(path string, limits CacheLimits, verify IdentityVerifier, now time.Time, parts *CertificatePool) (*IdentityCache, error) {
 	if limits.Entries < 1 || limits.Bytes < 1 || limits.Age <= 0 || verify == nil {
 		return nil, errors.New("invalid identity cache configuration")
 	}
-	c := &IdentityCache{path: path, limits: limits, verify: verify, entries: make(map[string]cachedIdentity)}
+	if parts == nil {
+		return nil, errors.New("missing certificate pool")
+	}
+	c := &IdentityCache{path: path, limits: limits, verify: verify, entries: make(map[string]cachedIdentity), parts: parts}
 	if path == "" {
 		return c, nil
 	}
@@ -208,6 +218,10 @@ func sameChain(a, b [][]byte) bool {
 // for the same device replaces the previous one; a chain for a different device
 // never touches this device's entry.
 func (c *IdentityCache) Put(chain [][]byte, now time.Time) (string, error) {
+	return c.put(chain, "", now)
+}
+
+func (c *IdentityCache) put(chain [][]byte, expected string, now time.Time) (string, error) {
 	if len(chain) == 0 || len(chain) > 16 || chainSize(chain) > c.limits.Bytes {
 		return "", errors.New("identity bundle exceeds cache limits")
 	}
@@ -218,6 +232,9 @@ func (c *IdentityCache) Put(chain [][]byte, now time.Time) (string, error) {
 	principal, err := principalOf(id)
 	if err != nil {
 		return "", err
+	}
+	if expected != "" && principal != expected {
+		return "", errors.New("certificate chain principal mismatch")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -233,6 +250,7 @@ func (c *IdentityCache) Put(chain [][]byte, now time.Time) (string, error) {
 			old.Used = now
 			c.entries[principal] = old
 			c.pendingSave = true
+			c.rememberCertificates(chain, id.NotAfter, now)
 			return principal, nil
 		}
 		// A chain still live under current trust is only replaced by one that
@@ -256,7 +274,47 @@ func (c *IdentityCache) Put(chain [][]byte, now time.Time) (string, error) {
 		}
 		return "", err
 	}
+	c.rememberCertificates(chain, id.NotAfter, now)
 	return principal, nil
+}
+
+func (c *IdentityCache) rememberCertificates(chain [][]byte, expires, now time.Time) {
+	for _, data := range chain {
+		c.parts.put(data, minTime(expires, now.Add(c.limits.Age)), now)
+	}
+}
+
+// Certificates exposes only the bounded public-byte pool. All authorization
+// continues through this cache's own verifier and principal-keyed entries.
+func (c *IdentityCache) Certificates() *CertificatePool { return c.parts }
+
+func (c *IdentityCache) certificate(hash string, now time.Time) []byte {
+	if data := c.parts.get(hash, now); data != nil {
+		return data
+	}
+	// Reuse a still-retained identity even if its element left the byte pool.
+	// This also seeds our own enrolled issuers and public disk-cache entries.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for principal, entry := range c.entries {
+		for _, data := range entry.Chain {
+			if certificateHash(data) != hash {
+				continue
+			}
+			if id, valid := c.valid(principal, entry, now); valid {
+				c.parts.put(data, minTime(id.NotAfter, entry.Added.Add(c.limits.Age)), now)
+				return append([]byte(nil), data...)
+			}
+		}
+	}
+	return nil
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 // Get returns the chain and identity stored for a device principal. The key is

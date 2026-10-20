@@ -51,21 +51,7 @@ func TestDirectoryReconciliationProgressBeyondLinkQueue(t *testing.T) {
 	for round := 0; round < 6; round++ {
 		for len(peer.control) > 0 {
 			message := <-peer.control
-			replies, _, err := receiver.Receive(message, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, request := range replies {
-				responses, _, err := sender.Receive(request, now)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, response := range responses {
-					if _, _, err := receiver.Receive(response, now); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
+			exchangeDirectoryMessages(t, sender, receiver, []ControlMessage{message}, now)
 		}
 		node.continueReconcilePeer(peer, now)
 	}

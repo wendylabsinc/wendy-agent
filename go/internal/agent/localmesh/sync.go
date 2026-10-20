@@ -16,11 +16,12 @@ const MaxControlMessage = 64 << 10
 // Control messages use one bounded reliable stream per authenticated link;
 // routing and payload packets remain independent QUIC datagrams.
 type ControlMessage struct {
-	Kind      string          `json:"kind"`
-	Hello     *LinkHello      `json:"hello,omitempty"`
-	Bundle    [][]byte        `json:"bundle,omitempty"`
-	Manifest  *SignedManifest `json:"manifest,omitempty"`
-	Principal string          `json:"principal,omitempty"`
+	Kind        string              `json:"kind"`
+	Hello       *LinkHello          `json:"hello,omitempty"`
+	Bundle      [][]byte            `json:"bundle,omitempty"`
+	Manifest    *SignedManifest     `json:"manifest,omitempty"`
+	Principal   string              `json:"principal,omitempty"`
+	Certificate *CertificateMessage `json:"certificate,omitempty"`
 }
 
 func WriteControl(w io.Writer, m ControlMessage) error {
@@ -70,7 +71,17 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, err
 	}
+	if m.Kind != "certificate" && m.Certificate != nil {
+		return m, errors.New("unexpected certificate message")
+	}
 	switch m.Kind {
+	case "certificate":
+		if m.Certificate == nil || m.Hello != nil || m.Manifest != nil || len(m.Bundle) != 0 || m.Principal != "" {
+			return m, errors.New("invalid certificate envelope")
+		}
+		if err := m.Certificate.validate(); err != nil {
+			return m, err
+		}
 	case "hello":
 		if m.Hello == nil || len(m.Bundle) != 0 || m.Manifest != nil || m.Principal != "" {
 			return m, errors.New("invalid hello message")
@@ -106,10 +117,11 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 // service. Missing bundles hold a bounded number of manifests until validated
 // replies arrive; further manifests are requested again at reconciliation.
 type Synchronizer struct {
-	directory *Directory
-	cache     *IdentityCache
-	sent      map[string]bool
-	pending   map[string]SignedManifest
+	directory    *Directory
+	cache        *IdentityCache
+	sent         map[string]bool
+	pending      map[string]SignedManifest
+	certificates *CertificateExchange
 	// A repair pass resumes after the last admitted principal, rather than
 	// repeatedly filling a bounded neighbour queue with its sorted prefix.
 	reconcileAfter     string
@@ -117,7 +129,7 @@ type Synchronizer struct {
 }
 
 func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
-	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}}
+	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, certificates: NewCertificateExchange(c, d.tenant)}
 }
 
 // SeedKnownBundles uses only the sender's per-peer record of completed writes.
@@ -158,7 +170,7 @@ func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int)
 			s.sent = map[string]bool{}
 		}
 		s.sent[fp] = true
-		out = append(out, ControlMessage{Kind: "bundle", Bundle: chain})
+		out = append(out, ControlMessage{Kind: "certificate", Certificate: describeCertificates(w.Principal, chain)})
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
 	w.Signature = append([]byte(nil), w.Signature...)
@@ -215,10 +227,16 @@ func (s *Synchronizer) reconcileBatch(records []SignedManifest, now time.Time, s
 // Invalid signatures/identities are fatal to this link, not admitted as hints.
 func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []ControlMessage, changed []SignedManifest, err error) {
 	switch m.Kind {
+	case "certificate":
+		if m.Certificate == nil {
+			return nil, nil, errors.New("missing certificate message")
+		}
+		replies, completed, err := s.certificates.Receive(*m.Certificate, now)
+		return s.certificateResult(replies, completed, err, now)
 	case "identity-request":
 		chain, _, ok := s.cache.Get(m.Principal, now)
 		if ok {
-			replies = append(replies, ControlMessage{Kind: "bundle", Bundle: chain})
+			replies = append(replies, ControlMessage{Kind: "certificate", Certificate: describeCertificates(m.Principal, chain)})
 		}
 	case "bundle":
 		principal, e := s.cache.Put(m.Bundle, now)
@@ -259,3 +277,31 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 	}
 	return replies, changed, nil
 }
+
+func (s *Synchronizer) certificateResult(messages []*CertificateMessage, completed []string, err error, now time.Time) (replies []ControlMessage, changed []SignedManifest, result error) {
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, m := range messages {
+		replies = append(replies, ControlMessage{Kind: "certificate", Certificate: m})
+	}
+	for _, principal := range completed {
+		if w, ok := s.pending[principal]; ok {
+			delete(s.pending, principal)
+			out, admitted, err := s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
+			if err != nil {
+				return nil, nil, err
+			}
+			replies = append(replies, out...)
+			changed = append(changed, admitted...)
+		}
+	}
+	return replies, changed, nil
+}
+
+func (s *Synchronizer) ContinueCertificates(now time.Time) ([]ControlMessage, []SignedManifest, error) {
+	messages, completed, err := s.certificates.Poll(now)
+	return s.certificateResult(messages, completed, err, now)
+}
+
+func (s *Synchronizer) Close() { s.certificates.Close() }

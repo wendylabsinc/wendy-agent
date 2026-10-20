@@ -207,6 +207,7 @@ func (n *Node) Run() error {
 	defer func() {
 		_ = n.Stop()
 		for _, p := range n.peers {
+			p.sync.Close()
 			_ = p.link.Close()
 		}
 		_ = n.kernel.Close()
@@ -266,6 +267,19 @@ func (n *Node) Run() error {
 			// drains. This uses the existing maintenance tick, not a new scan
 			// interval, and stops once the pass completes.
 			for _, p := range n.peers {
+				replies, changed, err := p.sync.ContinueCertificates(time.Now())
+				if err != nil {
+					_ = p.link.Close()
+					continue
+				}
+				n.queue(p, replies)
+				for _, record := range changed {
+					for id, dest := range n.peers {
+						if id != p.id {
+							n.queue(dest, dest.sync.Record(record, time.Now()))
+						}
+					}
+				}
 				n.continueReconcilePeer(p, time.Now())
 			}
 		case <-renew.C:
@@ -315,7 +329,6 @@ func (n *Node) handle(e nodeEvent) error {
 		}
 		e.add.tun = tun
 		e.add.sync = NewSynchronizer(n.directory, n.cache)
-		e.add.sync.SeedKnownBundles(n.bundleHints.Known(e.add.device, time.Now()))
 		n.peers[e.add.id] = e.add
 		// Both ends derive the same complementary pair from the full UUIDs.
 		local, peer, err := meshid.LinkLocalAddresses(n.Credentials.Device, e.add.device)
@@ -333,6 +346,7 @@ func (n *Node) handle(e nodeEvent) error {
 		return nil
 	}
 	if e.remove {
+		p.sync.Close()
 		if err := n.step(babel.RemoveLink{ID: e.id}); err != nil {
 			return err
 		}
@@ -441,6 +455,9 @@ func (n *Node) Attach(ctx context.Context, peer meshid.Device, conn *quic.Conn) 
 // TCP uses 256, NAN 512, and slower carriers may supply a higher cost.
 func (n *Node) AttachWithCost(ctx context.Context, peer meshid.Device, conn *quic.Conn, cost uint16) error {
 	defer conn.CloseWithError(0, "wendy net link ended")
+	if err := n.verifyPeerCertificates(peer, conn.ConnectionState().TLS.PeerCertificates); err != nil {
+		return err
+	}
 	stream, err := OpenControl(ctx, conn, n.Credentials.Device, peer)
 	if err != nil {
 		return err
@@ -479,6 +496,12 @@ func (n *Node) verifyPeerCertificates(peer meshid.Device, certs []*x509.Certific
 	}
 	if id.Device != peer {
 		return errors.New("wendy net peer certificate does not match expected device")
+	}
+	if n.cache != nil {
+		// The authenticated handshake already supplied these exact bytes.
+		// Retain them for descriptors rather than requesting the peer's leaf
+		// and issuers again on the control channel.
+		n.cache.rememberCertificates(chain, id.NotAfter, time.Now())
 	}
 	return nil
 }

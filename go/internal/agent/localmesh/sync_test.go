@@ -41,10 +41,10 @@ func TestDirectorySyncBundleOnceAndMissingBundleRecovery(t *testing.T) {
 	dest, _ := NewDirectory(testTenant(t), 10, cache)
 	sender, receiver := NewSynchronizer(source, source.cache), NewSynchronizer(dest, cache)
 	msgs := sender.Reconcile(now)
-	if len(msgs) != 2 || msgs[0].Kind != "bundle" || msgs[1].Kind != "manifest" {
+	if len(msgs) != 2 || msgs[0].Kind != "certificate" || msgs[1].Kind != "manifest" {
 		t.Fatal(msgs)
 	}
-	// Deliberately omit the proactively sent bundle.
+	// Omit the descriptor to exercise principal-scoped repair.
 	replies, changed, err := receiver.Receive(msgs[1], now)
 	if err != nil || len(changed) != 0 || len(replies) != 1 || replies[0].Kind != "identity-request" {
 		t.Fatal(replies, changed, err)
@@ -53,8 +53,8 @@ func TestDirectorySyncBundleOnceAndMissingBundleRecovery(t *testing.T) {
 	if err != nil || len(bundles) != 1 {
 		t.Fatal(err)
 	}
-	_, changed, err = receiver.Receive(bundles[0], now)
-	if err != nil || len(changed) != 1 || len(dest.Snapshot(now)) != 1 {
+	changed = exchangeDirectoryMessages(t, sender, receiver, bundles, now)
+	if len(changed) != 1 || len(dest.Snapshot(now)) != 1 {
 		t.Fatal("bundle recovery failed", err)
 	}
 	if len(sender.Reconcile(now)) != 1 {
@@ -92,7 +92,7 @@ func TestSyncIdentityRequestIsPrincipalScoped(t *testing.T) {
 		t.Fatal("receiver answered a bundle it does not hold", err)
 	}
 	replies, _, err = sender.Receive(ControlMessage{Kind: "identity-request", Principal: device.Principal()}, now)
-	if err != nil || len(replies) != 1 || replies[0].Kind != "bundle" {
+	if err != nil || len(replies) != 1 || replies[0].Kind != "certificate" {
 		t.Fatal("known principal unanswered", err)
 	}
 	replies, _, err = sender.Receive(ControlMessage{Kind: "identity-request", Principal: testPrincipal(testOtherTenant, testDeviceAID)}, now)
@@ -120,10 +120,55 @@ func TestBoundedReconcileDoesNotConsumeUnqueuedBundleHint(t *testing.T) {
 		t.Fatal("split a bundle and its manifest across an insufficient queue budget")
 	}
 	got := sender.ContinueReconcile(now, 2)
-	if len(got) != 2 || got[0].Kind != "bundle" || got[1].Kind != "manifest" {
+	if len(got) != 2 || got[0].Kind != "certificate" || got[1].Kind != "manifest" {
 		t.Fatalf("unqueued bundle was suppressed: %#v", got)
 	}
 	if got := sender.ContinueReconcile(now, 2); len(got) != 0 {
 		t.Fatal("finished repair pass repeated records")
 	}
+}
+
+// Drive the real bidirectional protocol to quiescence, including multiple
+// certificate chunks. A received reply may itself require a response.
+func exchangeDirectoryMessages(t *testing.T, sender, receiver *Synchronizer, initial []ControlMessage, now time.Time) []SignedManifest {
+	t.Helper()
+	type delivery struct {
+		message    ControlMessage
+		toReceiver bool
+	}
+	var queue []delivery
+	for _, m := range initial {
+		queue = append(queue, delivery{m, true})
+	}
+	var changed []SignedManifest
+	for steps := 0; len(queue) > 0; steps++ {
+		if steps > 100000 {
+			t.Fatal("directory exchange did not quiesce")
+		}
+		d := queue[0]
+		queue = queue[1:]
+		target := sender
+		if d.toReceiver {
+			target = receiver
+		}
+		var wire bytes.Buffer
+		if err := WriteControl(&wire, d.message); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := ReadControl(&wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replies, admitted, err := target.Receive(decoded, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.toReceiver {
+			changed = append(changed, admitted...)
+		}
+		for _, reply := range replies {
+			queue = append(queue, delivery{reply, !d.toReceiver})
+		}
+	}
+	return changed
 }
