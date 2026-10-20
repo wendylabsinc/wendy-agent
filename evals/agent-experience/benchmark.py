@@ -297,6 +297,10 @@ def rescore(results_dir, tasks, scenarios):
         live = metrics(adapter, events)
         row["metrics"]["tool_trace"] = trace = build_trace(adapter, events, **extra)
         scenario = row.get("kind") == "scenario"
+        if scenario:
+            mcp_routing(live, extra["proxy_records"])
+            for key in ("transcript_mcp_calls", "proxy_calls"):
+                row["metrics"][key] = live[key]
         item = expects[scenario].get(row.get("task"), {})
         row["tool_choice"] = (grade(trace, item["expect"], live["final_text"], live["agent_completed"],
                                     group=row.get("group") if scenario else None, adapter=adapter)
@@ -551,13 +555,24 @@ def attempt_status(result):
             if result["interrupted"] else "timeout" if result["timed_out"] else "failed")
 
 
+def mcp_routing(metric, proxy_records):
+    """Count the Wendy MCP calls the transcript shows (metric's trace, before the proxy's records
+    replace them) and the calls the recording proxy logged; None when there is no proxy log."""
+    metric["transcript_mcp_calls"] = sum(e["channel"] == "mcp" for e in metric["tool_trace"])
+    metric["proxy_calls"] = None if proxy_records is None else len(proxy_records)
+
+
+def unrouted(metric):
+    """The transcript shows Wendy MCP calls and the proxy logged none: another server answered them."""
+    return bool(metric.get("transcript_mcp_calls")) and metric.get("proxy_calls") == 0
+
+
 def mcp_status(adapter, metric):
-    """Claude must show exactly one Wendy server, the one the runner configured."""
-    if adapter != "claude":
-        return None
-    if extra_wendy_servers(metric):
+    """Claude must show exactly one Wendy server, the one the runner configured, and any agent's
+    Wendy MCP calls must reach the recording proxy when there is one."""
+    if adapter == "claude" and extra_wendy_servers(metric):
         return "mcp_contaminated"
-    if metric["mcp_servers_observed"] is None:
+    if unrouted(metric) or (adapter == "claude" and metric["mcp_servers_observed"] is None):
         return "mcp_unverified"
     return None
 
@@ -1036,7 +1051,10 @@ def main():
                 print("Another Wendy MCP server was loaded into Claude; stopping.")
                 break
             if row["status"] == "mcp_unverified":
-                print("Claude reported no MCP server list; stopping because a second Wendy server can't be ruled out.")
+                if unrouted(row["metrics"]):
+                    print("The agent's Wendy MCP calls never reached the recording proxy; stopping.")
+                else:
+                    print("Claude reported no MCP server list; stopping because a second Wendy server can't be ruled out.")
                 break
             if any(stage.get("interrupted") for stage in row["stages"].values()):
                 print("Experiment interrupted; logs and cleanup result retained.")

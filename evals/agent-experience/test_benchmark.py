@@ -401,6 +401,26 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(got, [("right", False, "mcp_unverified"), ("right", True, "passed"),
                                    ("wrong", False, "failed")])
 
+    def test_rescore_flags_mcp_calls_the_proxy_never_saw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            agent = {"exit_code": 0, "timed_out": False, "interrupted": False, "seconds": 1.0}
+            init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+            call = {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "1", "name": "mcp__wendy__run", "input": {}}]}}
+            for name, proxy in (("unrouted", []), ("routed", [{"tool": "run"}])):
+                d = make(name, kind="scenario", group="core", task="s", stages={"agent": agent},
+                         status="passed", success=True)
+                (d / "agent.stdout").write_text("".join(json.dumps(e) + "\n" for e in (init, call, {"type": "result"})))
+                (d / "proxy.jsonl").write_text("".join(json.dumps(r) + "\n" for r in proxy))
+                (d / "cli.jsonl").write_text("")
+            out = b.rescore(path, [], [{"id": "s", "expect": {"right": [{"tool": "run"}], "wrong": []}}])
+            rows = {r["id"]: r for r in (json.loads(l) for l in (out / "results.jsonl").read_text().splitlines())}
+            self.assertEqual((rows["unrouted"]["status"], rows["unrouted"]["success"]), ("mcp_unverified", False))
+            self.assertEqual((rows["routed"]["status"], rows["routed"]["success"]), ("passed", True))
+            self.assertEqual(rows["unrouted"]["metrics"]["proxy_calls"], 0)
+
     def test_rescore_keeps_a_scenario_row_that_aborted_before_its_verdict(self):
         # scenario_trial raised after run_process (e.g. bad prices): stages.agent exists, metrics is {}.
         with tempfile.TemporaryDirectory() as directory:

@@ -26,8 +26,9 @@ sys.path.insert(0, {here!r})
 from mcp_client import StdioMCP
 with StdioMCP([os.environ.get("WENDY_EVAL_SHIM", "wendy"), "mcp", "serve"], timeout=20) as mcp:
     mcp.initialize()
-    mcp.call("write_thing", {{"path": "x"}})
-    mcp.call("read_thing", {{}})
+    for i, (name, args) in enumerate((("write_thing", {{"path": "x"}}), ("read_thing", {{}}))):
+        print(json.dumps({{"type": "tool_start", "id": str(i), "tool": name, "arguments": args}}), flush=True)
+        mcp.call(name, args)
     if os.environ.get("FAKE_AGENT_HANG"):
         import time; time.sleep(30)
 print(json.dumps({{"type": "usage", "usage": {{"input_tokens": 10, "output_tokens": 2, "complete": True}}}}))
@@ -432,6 +433,7 @@ class TrialTests(unittest.TestCase):
         self.assertIs(row["cleanup_ok"], True)
         self.assertEqual((row["kind"], row["group"], row["task"]), ("scenario", "core", "probe"))
         self.assertIs(row["metrics"]["usage_complete"], True)
+        self.assertEqual((row["metrics"]["transcript_mcp_calls"], row["metrics"]["proxy_calls"]), (2, 2))
         self.assertEqual(row["device_selector"], "vm:wendy-eval-run")
         directory = self.attempt_dir(row)
         self.assertEqual(json.loads((directory / "result.json").read_text())["status"], "passed")
@@ -534,6 +536,29 @@ class TrialTests(unittest.TestCase):
                 self.assertEqual(server["command"], str(self.shim))
                 self.assertEqual(server["env"]["WENDY_EVAL_SCENARIO"], str(directory / "scenario.json"))
 
+
+    def test_mcp_calls_the_proxy_never_saw_are_unverified(self):
+        # A transcript with Wendy MCP calls and an empty proxy log means another server answered them.
+        call = {"id": "1", "name": "mcp__wendy__write_thing", "input": {"path": "x"}}
+        init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+        transcripts = {
+            "wendy": [{"type": "tool_start", "id": "1", "tool": "write_thing", "arguments": {"path": "x"}},
+                      {"type": "done", "text": "done"}],
+            "claude": [init, {"type": "assistant", "message": {"content": [{"type": "tool_use", **call}]}},
+                       {"type": "result", "result": "done"}],
+            "codex": [{"type": "item.completed", "item": {"id": "1", "type": "mcp_tool_call", "server": "wendy",
+                                                           "tool": "write_thing", "arguments": {"path": "x"}}},
+                      {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}]}
+        for adapter, events in transcripts.items():
+            with self.subTest(adapter=adapter):
+                code = "import json\n" + "".join(f"print(json.dumps({e!r}))\n" for e in events)
+                row, _ = self.run_trial(self.config([sys.executable, "-c", code], adapter=adapter), self.scenario())
+                self.assertEqual((row["status"], row["success"]), ("mcp_unverified", False))
+                self.assertEqual((row["metrics"]["transcript_mcp_calls"], row["metrics"]["proxy_calls"]), (1, 0))
+        # No MCP call in the transcript, no proxy record: nothing to cross-check.
+        code = "import json; print(json.dumps({'type': 'done', 'text': 'ok'}))"
+        row, _ = self.run_trial(self.config([sys.executable, "-c", code]), self.scenario())
+        self.assertEqual(row["status"], "failed")
 
     def test_shared_command_templates_expand_in_scenarios_and_tasks(self):
         code = "import json,sys; print(json.dumps({'type': 'done', 'text': json.dumps(sys.argv[1:])}))"

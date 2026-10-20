@@ -522,7 +522,9 @@ def scenario_trial(config, agent_name, target_name, scenario, output, real_wendy
         row["stages"]["agent"] = result
         row["metrics"], events = b.agent_metrics(adapter, directory / "agent.stdout", result,
                                                  agent.get("prices_per_million"))
-        trace = build_trace(adapter, events, proxy_records=read_jsonl(proxy_log), cli_records=read_jsonl(cli_log))
+        proxy_records = read_jsonl(proxy_log)
+        b.mcp_routing(row["metrics"], proxy_records)  # before the proxy's records replace the transcript's
+        trace = build_trace(adapter, events, proxy_records=proxy_records, cli_records=read_jsonl(cli_log))
         row["metrics"]["tool_trace"] = trace
         row["task_seconds"] = result["seconds"]
         row["tool_choice"] = grade(trace, expect, row["metrics"]["final_text"], row["metrics"]["agent_completed"],
