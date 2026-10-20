@@ -69,35 +69,14 @@ func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, networkNa
 		if !ok {
 			continue
 		}
-		// Raw CoC sockets bypass Device1.Connect. Respect the local BlueZ
-		// block policy before consuming a dial slot, even while advertisements
-		// from that radio continue to arrive.
-		if policy, present := props["Blocked"]; present {
-			blocked, valid := policy.Value().(bool)
-			if !valid || blocked {
-				continue
-			}
-		}
-		address, ok := variantString(props["Address"])
-		if !ok {
-			continue
-		}
-		kind, ok := variantString(props["AddressType"])
-		if !ok {
-			continue
-		}
 		adv, ok := matchingServiceData(serviceData(props["ServiceData"]), uuid, networkName)
 		if !ok {
 			continue
 		}
-		if !mayDial(adv.DeviceHint, self) {
-			continue
+		peer, ok := candidateFromProperties(path, props, adv, self)
+		if ok {
+			peers[peer.key()] = peer
 		}
-		if _, _, err := parseAddress(address, kind, adv.PSM); err != nil {
-			continue
-		}
-		key := kind + ":" + strings.ToUpper(address)
-		peers[key] = candidate{hint: adv.DeviceHint, address: address, addressType: kind, path: path, psm: adv.PSM}
 	}
 	out := make([]candidate, 0, len(peers))
 	for _, p := range peers {
@@ -107,7 +86,29 @@ func candidates(objects managedObjects, adapter dbus.ObjectPath, uuid, networkNa
 	return out
 }
 
-func (p candidate) key() string { return p.addressType + ":" + strings.ToUpper(p.address) }
+func candidateFromProperties(path dbus.ObjectPath, props map[string]dbus.Variant, adv Advertisement, self meshid.Device) (candidate, bool) {
+	// Raw CoC sockets bypass Device1.Connect. Apply BlueZ's local policy
+	// equally to binary service data and live local-name candidates.
+	if policy, present := props["Blocked"]; present {
+		blocked, valid := policy.Value().(bool)
+		if !valid || blocked {
+			return candidate{}, false
+		}
+	}
+
+	address, ok := variantString(props["Address"])
+	if !ok {
+		return candidate{}, false
+	}
+	kind, ok := variantString(props["AddressType"])
+	if !ok || !mayDial(adv.DeviceHint, self) {
+		return candidate{}, false
+	}
+	if _, _, err := parseAddress(address, kind, adv.PSM); err != nil {
+		return candidate{}, false
+	}
+	return candidate{hint: adv.DeviceHint, address: address, addressType: kind, path: path, psm: adv.PSM}, true
+}
 
 func variantString(v dbus.Variant) (string, bool) {
 	s, ok := v.Value().(string)
@@ -295,3 +296,5 @@ func cleanupBlueZ(bus *dbus.Conn, adapter dbus.ObjectPath, logger *zap.Logger) {
 		logger.Debug("BLE UnregisterAdvertisement failed", zap.Error(err))
 	}
 }
+
+func (p candidate) key() string { return p.addressType + ":" + strings.ToUpper(p.address) }

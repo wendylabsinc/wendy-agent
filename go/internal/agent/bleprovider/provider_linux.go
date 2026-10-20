@@ -43,6 +43,9 @@ type runtime struct {
 	advertisementRefresh chan struct{}
 	tlsGate              tlsHandshakeAdmission
 	discovery            discoveryRecovery
+	reportErrors         <-chan error
+	reportErr            error
+	scanErr              error
 	discoveryErr         error // owned by the scan loop; cached object reads cannot clear it
 	restartScan          func(context.Context, *dbus.Conn, dbus.ObjectPath) error
 }
@@ -311,6 +314,17 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer listener.Close()
+	hciIndex, parseErr := adapterHCIIndex(adapter)
+	if parseErr != nil {
+		return parseErr
+	}
+	// Subscribe before StartDiscovery. A setup error leaves binary reception
+	// usable and is retried by the report loop, with degraded health reported.
+	reportSource, reportErr := openManagementReports()
+	if reportSource != nil {
+		defer reportSource.Close()
+	}
+	reportErrors := make(chan error, 8)
 	freshness := newAdvertisementFreshness(adapter, uuid, cfg.NetworkName, cfg.Credentials.Device)
 	stopWatching, err := watchAdvertisements(runCtx, bus, owner, freshness)
 	if err != nil {
@@ -330,20 +344,20 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := verifyBlueZOwner(owner, currentOwner); err != nil {
 		return err
 	}
-	hciIndex, parseErr := adapterHCIIndex(adapter)
-	if parseErr != nil {
-		cfg.Logger.Debug("BLE connection interval tuning unavailable", zap.Error(parseErr))
-	}
-	r := &runtime{cfg: cfg, uuid: uuid, owner: owner, hciIndex: hciIndex, local: local, ownerLookup: bluezOwner, bus: bus, freshness: freshness, active: make(map[meshid.Device]struct{}), nextAttempt: make(map[meshid.Device]time.Time), dialSlot: make(chan struct{}, 1), tlsGate: newTLSHandshakeAdmission()}
+	r := &runtime{cfg: cfg, uuid: uuid, owner: owner, hciIndex: hciIndex, local: local, ownerLookup: bluezOwner, bus: bus, freshness: freshness, reportErrors: reportErrors, reportErr: reportErr, active: make(map[meshid.Device]struct{}), nextAttempt: make(map[meshid.Device]time.Time), dialSlot: make(chan struct{}, 1), tlsGate: newTLSHandshakeAdmission()}
 	r.serverTLS = r.makeServerTLS()
 	r.advertisementRefresh = make(chan struct{}, 1)
 	var loops sync.WaitGroup
-	loopErrors := make(chan error, 3)
+	loopErrors := make(chan error, 4)
 	// Publish setup completion before the loops can report a discovery failure.
 	if cfg.Status != nil {
-		cfg.Status(localmesh.CarrierStatus{Ready: true})
+		cfg.Status(localmesh.CarrierStatus{Ready: true, Err: reportErr})
 	}
-	loops.Add(3)
+	loops.Add(4)
+	go func() {
+		defer loops.Done()
+		loopErrors <- runManagementReports(runCtx, hciIndex, freshness, reportSource, openManagementReports, reportErrors)
+	}()
 	go func() { defer loops.Done(); loopErrors <- r.acceptLoop(runCtx, listener) }()
 	go func() { defer loops.Done(); loopErrors <- r.scanLoop(runCtx, bus, adapter) }()
 	go func() {
@@ -522,6 +536,9 @@ func (r *runtime) scanLoop(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 		select {
 		case <-ctx.Done():
 			return nil
+		case err := <-r.reportErrors:
+			r.reportErr = err
+			r.publishDiscoveryHealth(ctx)
 		case <-ticker.C:
 		}
 	}
@@ -556,6 +573,9 @@ func (r *runtime) governDiscovery(ctx context.Context, bus *dbus.Conn, adapter d
 				return !paused
 			}
 			r.reportDiscoveryHealth(ctx, nil)
+			if r.freshness != nil {
+				r.freshness.clearReports()
+			}
 			paused = wantPaused
 			r.scanPaused = paused
 			r.lastScanToggle = now
@@ -631,8 +651,8 @@ func (r *runtime) scanOnce(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 
 func (r *runtime) discoveredCandidates(objects managedObjects, at time.Time) []candidate {
 	// Device1.ServiceData is retained by BlueZ after an advertiser stops.
-	// Only live ServiceData discovery signals may refresh radio selection or
-	// initiate a new CoC dial.
+	// Only live validated advertising observations may refresh radio selection
+	// or initiate a new CoC dial.
 	peers, newlySeen := r.freshness.candidates(objects, at)
 	if len(newlySeen) > 0 {
 		r.discovery.observed(at)
@@ -691,6 +711,9 @@ func (r *runtime) maybeRestartDiscovery(ctx context.Context, bus *dbus.Conn, ada
 		return
 	}
 	r.reportDiscoveryHealth(ctx, nil)
+	if r.freshness != nil {
+		r.freshness.clearReports()
+	}
 	r.cfg.Logger.Info("BLE discovery restarted after wendy net advertisement silence", zap.Duration("wendy_net_advert_silence", now.Sub(r.discovery.lastMeshSignal)))
 }
 

@@ -5,6 +5,7 @@ package bleprovider
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,16 +16,18 @@ import (
 )
 
 // GetManagedObjects retains ServiceData after an advertiser disappears. Only
-// a discovery signal with the mesh ServiceData proves that an advertisement
-// was heard recently. DuplicateData=true in our discovery filter makes BlueZ
-// emit PropertiesChanged for each received ServiceData advertisement.
+// live mesh ServiceData signals or validated management advertising reports
+// prove that an announcement was heard recently. Names and UUIDs read from
+// Device1 are never freshness evidence.
 const advertisementFreshnessTTL = 15 * time.Second
-const maxFreshAdvertisements = 256
+const maxFreshAdvertisements = maxAdvertisementObservations
 
 type freshAdvertisement struct {
-	data    []byte
-	seen    time.Time
-	pending bool
+	advert               Advertisement
+	fromName             bool
+	address, addressType string
+	seen                 time.Time
+	pending              bool
 }
 
 type advertisementFreshness struct {
@@ -33,10 +36,11 @@ type advertisementFreshness struct {
 	self              meshid.Device
 	mu                sync.Mutex
 	seen              map[dbus.ObjectPath]freshAdvertisement
+	partial           map[localNameKey]localNameParts
 }
 
 func newAdvertisementFreshness(adapter dbus.ObjectPath, uuid, networkName string, self meshid.Device) *advertisementFreshness {
-	return &advertisementFreshness{adapter: adapter, uuid: uuid, networkName: networkName, self: self, seen: make(map[dbus.ObjectPath]freshAdvertisement)}
+	return &advertisementFreshness{adapter: adapter, uuid: uuid, networkName: networkName, self: self, seen: make(map[dbus.ObjectPath]freshAdvertisement), partial: make(map[localNameKey]localNameParts)}
 }
 
 func (f *advertisementFreshness) devicePath(path dbus.ObjectPath) bool {
@@ -67,22 +71,11 @@ func (f *advertisementFreshness) observe(path dbus.ObjectPath, props map[string]
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	// Limit churn between cache polls too. A rotating advertiser must not
-	// allocate an unbounded set of radio addresses during the freshness TTL.
-	for priorPath, entry := range f.seen {
-		if at.Before(entry.seen) || at.Sub(entry.seen) >= advertisementFreshnessTTL {
-			delete(f.seen, priorPath)
-		}
-	}
 	if !mayDial(adv.DeviceHint, f.self) {
 		delete(f.seen, path)
 		return
 	}
-	if _, exists := f.seen[path]; !exists && len(f.seen) >= maxFreshAdvertisements {
-		return
-	}
-	raw, _ := adv.MarshalBinary()
-	f.seen[path] = freshAdvertisement{data: raw, seen: at, pending: true}
+	f.recordLocked(path, adv, at, false)
 }
 
 func (f *advertisementFreshness) handle(signal *dbus.Signal, at time.Time) {
@@ -131,6 +124,11 @@ func (f *advertisementFreshness) handle(signal *dbus.Signal, at time.Time) {
 func (f *advertisementFreshness) forget(path dbus.ObjectPath) {
 	f.mu.Lock()
 	delete(f.seen, path)
+	for key := range f.partial {
+		if key.path == path {
+			delete(f.partial, key)
+		}
+	}
 	f.mu.Unlock()
 }
 
@@ -139,35 +137,39 @@ func (f *advertisementFreshness) forget(path dbus.ObjectPath) {
 func (f *advertisementFreshness) candidates(objects managedObjects, at time.Time) ([]candidate, []dbus.ObjectPath) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	fresh := make(managedObjects)
+	byAddress := make(map[string]candidate)
 	pendingDevices := make(map[dbus.ObjectPath]struct{})
 	for path, entry := range f.seen {
 		if at.Before(entry.seen) || at.Sub(entry.seen) >= advertisementFreshnessTTL {
 			delete(f.seen, path)
 			continue
 		}
-		ifaces := objects[path]
-		props := ifaces[deviceInterface]
-		if props == nil {
-			delete(f.seen, path)
+		props := objects[path][deviceInterface]
+		// A live kernel report can precede creation of BlueZ's Device1 object.
+		// Wait for the next poll without extending or discarding the observation.
+		if entry.address != "" {
+			address, _ := variantString(props["Address"])
+			kind, _ := variantString(props["AddressType"])
+			if !strings.EqualFold(address, entry.address) || kind != entry.addressType {
+				continue
+			}
+		}
+		peer, ok := candidateFromProperties(path, props, entry.advert, f.self)
+		if !ok {
 			continue
 		}
-		// The live signal holds the advertisement; the BlueZ object supplies
-		// only its current address. Its ServiceData may now show a different
-		// concurrent advertisement (for example SensorLink).
-		device := make(map[string]dbus.Variant, len(props)+1)
-		for key, value := range props {
-			device[key] = value
-		}
-		device["ServiceData"] = dbus.MakeVariant(map[string]dbus.Variant{f.uuid: dbus.MakeVariant(entry.data)})
-		fresh[path] = map[string]map[string]dbus.Variant{deviceInterface: device}
+		byAddress[peer.key()] = peer
 		if entry.pending {
 			pendingDevices[path] = struct{}{}
 			entry.pending = false
 			f.seen[path] = entry
 		}
 	}
-	peers := candidates(fresh, f.adapter, f.uuid, f.networkName, f.self)
+	peers := make([]candidate, 0, len(byAddress))
+	for _, peer := range byAddress {
+		peers = append(peers, peer)
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].key() < peers[j].key() })
 	updates := make([]dbus.ObjectPath, 0, len(pendingDevices))
 	for _, peer := range peers {
 		if _, pending := pendingDevices[peer.path]; pending {

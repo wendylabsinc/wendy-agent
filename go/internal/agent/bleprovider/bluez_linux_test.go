@@ -3,6 +3,7 @@
 package bleprovider
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -288,5 +289,24 @@ func TestCandidatesDoNotDeduplicateCollidingHints(t *testing.T) {
 	}
 	if peers := candidates(objects, "/org/bluez/hci0", ServiceUUID(testTenant), "field", selfFixture); len(peers) != 2 {
 		t.Fatalf("colliding candidates lost: %+v", peers)
+	}
+}
+
+func TestVersionedBinaryAdvertisementHasNoNameOrUUIDList(t *testing.T) {
+	a, err := NewAdvertisement(lowDevice, "field", DefaultPSM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := a.MarshalBinary()
+	props := advertisementProperties(ServiceUUID(testTenant), raw, nil)
+	if len(props) != 2 || props["Type"].Value != "peripheral" {
+		t.Fatalf("unexpected advertised properties: %+v", props)
+	}
+	data := props["ServiceData"].Value.(map[string]dbus.Variant)
+	if len(data) != 1 || !bytes.Equal(data[ServiceUUID(testTenant)].Value().([]byte), raw) {
+		t.Fatal("versioned payload changed in registration")
+	}
+	if len(raw) != 9 || 3+2+16+len(raw) != 30 {
+		t.Fatal("binary advertisement exceeds primary packet budget")
 	}
 }

@@ -30,6 +30,12 @@ type discoveryRecovery struct {
 // this error: a successful cached object read says nothing about controller I/O.
 // Called only by the scan loop; peer absence alone is not a local failure.
 func (r *runtime) reportDiscoveryHealth(ctx context.Context, err error) {
+	r.scanErr = err
+	r.publishDiscoveryHealth(ctx)
+}
+
+func (r *runtime) publishDiscoveryHealth(ctx context.Context) {
+	err := errors.Join(r.scanErr, r.reportErr)
 	if ctx.Err() != nil || (err == nil && r.discoveryErr == nil) {
 		return
 	}
