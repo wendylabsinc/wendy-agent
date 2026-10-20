@@ -146,9 +146,11 @@ code alone never establishes success.
 - Missing or partial usage is unknown, never zero. Aggregate token statistics
   remain unknown if any included attempt has incomplete accounting. Timeouts may
   incur provider charges that the final event stream never reports.
-- Tool calls, model names when exposed, permission denials when exposed, raw logs,
-  and final text help explain failures. Tool event granularity differs by client,
-  so tool-call counts are diagnostic rather than a cross-agent quality score.
+- Tool choice is graded per task as right, wrong, missed or asked (see
+  [Tool choice](#tool-choice)). Tool-call counts remain diagnostic rather than a
+  cross-agent quality score, because event granularity differs by client. Model
+  names when exposed, permission denials when exposed, raw logs, and final text
+  help explain failures.
 
 `results/<experiment>/summary.md` compares each agent, target, and task.
 `summary.json` includes p90 successful time, timeout counts, setup failures, and
@@ -221,6 +223,230 @@ runs. Review failed transcripts for missing capabilities, tool errors, permissio
 blocks, wrong target selection, premature completion, and requests for steering.
 If a human intervenes during a diagnostic rerun, record it as a separate assisted
 run; never replace the original unassisted result.
+
+## Tool choice
+
+Besides the verified outcome, each attempt records whether the agent chose the
+right Wendy tool. Every attempt gets an ordered `tool_trace`: one entry per MCP
+call, `wendy` CLI invocation, or other shell command, with its channel, name,
+arguments and source. Claude and Codex entries come from their transcripts, Wendy
+chat from its event stream, and short scenarios add the proxy and shim logs.
+
+A task or scenario carries an `expect` block with `right` and `wrong` matchers
+(`tool`, `cli`, or `shell`, optionally with `args_regex`; a `wrong` matcher with
+`block: true` also makes the shim can that call instead of running it). The outcome is one of:
+
+| Outcome | Meaning |
+| --- | --- |
+| `wrong` | A `wrong` matcher hit |
+| `right` | A `right` matcher hit and no `wrong` matcher did |
+| `asked` | The agent finished its turn and asked the user instead of acting |
+| `missed` | None of the above |
+
+Precedence is wrong, then right, then asked, then missed. A right path is a single
+call, not a sequence: Wendy chat starts with every tool group enabled and never
+calls `wendy_tools`, so a `wendy_tools` step can't be required. When the right
+tool sits in a group that was not enabled, `hidden_group` is set. It is set only
+for Claude and Codex, since Wendy chat has every group from the start. Help
+lookups (`--help` and `-h`) are never graded. End-to-end success rules are
+unchanged; the tool-choice outcome is reported next to them.
+
+```sh
+python3 evals/agent-experience/benchmark.py --rescore results/<experiment>
+```
+
+`--rescore DIR` regrades a saved results directory from its logs and writes a new
+`rescored-*` directory, with no model or device calls. It never changes saved
+accounting (tokens, cost, time), and scenario rows follow the same success rule
+as live runs. It cannot be combined with `--execute`.
+
+## Short scenarios
+
+A scenario is a short ask (`scenarios.json`) graded only on tool choice. The agent
+works against a faked or private environment, so a run takes seconds rather than a
+deployment. Select scenarios with `--scenario ID` (repeatable) or `--scenario all`.
+By default they run against the simulator targets and are not part of the
+end-to-end suite.
+
+### Host safety
+
+A scenario run refuses to start (exit 2) unless `preflight.py` passes. The checks:
+
+- Only the shim `wendy` is reachable, in plain and login shells, including `PATH`
+  entries that resolve in the working directory.
+- No passwordless `sudo`.
+- No network-settings rights (NetworkManager settings, network-control and
+  enable-disable-wifi). If those rights can't be verified, that counts as a failure.
+
+A dedicated OS account is the expected way to pass. A machine with an installed
+`wendy` (for example `/usr/bin/wendy`) or NetworkManager settings rights fails by
+design.
+
+### The shim, proxy and canned replies
+
+The agent's `wendy` is a shim (`eval_wendy.py`) first on `PATH` and named in the
+prompt; the config's `{wendy}` variable becomes the shim, so agent command
+templates are unchanged. The shim sends `mcp serve` to the recording proxy
+(`mcp_proxy.py`), sends `chat` to the real binary with its MCP command pointed back
+at the shim, and handles every other command as a CLI call. Everything is logged.
+
+MCP: a tool whose `readOnlyHint` is not `true` is canned, unless it is in the
+proxy's `ALWAYS_REAL` set (`wendy_tools`, `wendy_status`, `device_list`,
+`device_connect`, `device_disconnect`) or in the scenario's `allow_real`. Tools
+the proxy does not recognize are canned, so new tools are covered with no list to
+maintain.
+
+CLI: deny by default. A subcommand runs for real only if it is on the read-only
+allowlist in `cli_safe.json`; everything else is canned. Real commands run with
+stdin closed. `--help` and `-h` become `wendy help WORDS`. A scenario's
+`cli_canned` lists allowlisted reads that are canned anyway, because a real answer
+would contradict canned MCP state.
+
+Canned replies:
+
+- They are captured from real output, never hand-written, and never return an
+  error to the agent.
+- A call to a canned tool with no capture gets a flagged `{}` fallback and is
+  recorded with `captured: false`. A scenario is `unconfigured` only when a tool in
+  its own `captures` list has no capture.
+- Optional `after` states serve post-action replies once an action has been canned,
+  so a listing taken after a stop can show the app stopped.
+
+### Environment and targets
+
+The scenario environment drops `WENDY_DEVICE` and `WENDY_AGENT_SOCKET`. Each run
+prepares one shared private VM (unscored): generic, or go2 or g1 for robotics
+scenarios. Each attempt checks the VM's app state before and after, and a mismatch
+stops the run. The VM is removed at the end.
+
+`--device SELECTOR` names a spare board and requires `--scenario`. It can't be a
+`vm:` selector, and the config can't already have a target called `board`. Its
+capabilities are detected during unscored preparation: wifi and bluetooth are
+inferred, a camera counts only on a `usb` or `csi` transport without
+memory-to-memory codec drivers, and cloud comes only from a `cloud://` selector.
+Scenarios in the `cloud` group must require `cloud`.
+
+### Agent configuration
+
+- Codex needs `-c 'mcp_servers.wendy.env.WENDY_EVAL_SCENARIO="{scenario_config}"'`
+  and `--add-dir {wendy_vm_home}`. `config.example.json` has both; the runner
+  refuses to start without them.
+- Claude must use `--plugin-dir {plugin_dir}`, the staged plugin copy with
+  `mcpServers` removed, so the shim's proxy is the only Wendy MCP server. If the
+  `system`/`init` event shows another Wendy server, the attempt is
+  `mcp_contaminated` and the run stops. If it lists no servers at all, the attempt
+  is `mcp_unverified` and the run stops.
+
+### Caps and budget
+
+The cap trips when an attempt's calls exceed the scenario's `max_tool_calls`
+(default 20). A capped attempt, or one with unknown usage, is charged
+`scenario_reserve_usd` (default 0.5) against `budget_usd`, and the run continues.
+End-to-end trials keep `trial_reserve_usd`.
+
+### Captures
+
+Canned replies are recorded with `capture.py` against a real device, into
+`canned/<set>/`. Put options before `--cli`; everything after it belongs to the
+command.
+
+```sh
+# an MCP tool (read-only tools need no --yes)
+WENDY_CONFIG_DIR=$(mktemp -d) python3 evals/agent-experience/capture.py \
+  --wendy /path/to/wendy --device vm:NAME --set generic \
+  --tool container_list --args '{}'
+
+# a CLI command (always needs --yes)
+WENDY_CONFIG_DIR=$(mktemp -d) python3 evals/agent-experience/capture.py \
+  --wendy /path/to/wendy --device vm:NAME --set generic --yes \
+  --cli device ps
+```
+
+- `--yes` is required for a non-read-only MCP tool and for every CLI command.
+- `--prefix-words N` keys a CLI capture on its first N subcommand words.
+- `--no-connect` skips `device_connect`, for host-side tools (it would boot a
+  stopped VM).
+- `--after ACTIONS` records the state after comma-separated actions
+  (`tool:NAME` or `cli:WORDS`) were canned. For a CLI command, capture the
+  "before" state first.
+- `--interrupt-after SECONDS` sends Ctrl+C to a CLI command that streams.
+- Always capture in a private `WENDY_CONFIG_DIR`, so the capture can't touch your
+  saved devices or logins.
+- Captures are scrubbed. Replace values that came from your arguments with
+  placeholders: `{{args.X}}`, `{{reply.TOOL.KEY}}`, `{{device}}` and `{{vm_name}}`.
+- Error replies are never saved.
+
+### Captures still needed
+
+`benchmark.py --scenario all --repetitions 1` (plan only; no model or device calls)
+reports these scenarios as `unconfigured`.
+
+Board scenarios with no configured target (they need `--device` or a board target
+with the matching capability): `flash-sd-card`, `os-upgrade`, `wifi-connect`,
+`wifi-scan`, `wifi-saved-networks`, `cloud-enroll`, `provision-with-token`,
+`bt-scan`, `bt-connect`, `bt-disconnect`, `camera-list`, `camera-controls`,
+`camera-exposure`, `camera-snapshot`, `cloud-devices-all`, `cloud-ping`,
+`cloud-tunnel-web`, `cloud-tunnel-udp`.
+
+Missing captures: `ros-sample` (`device ros2 echo`) and `ros-rate`
+(`device ros2 hz`). Both need a docker buildx host to run the robot VM.
+
+## Comparing a branch
+
+Compare a candidate branch against `main` with the same agents, models and
+scenarios. The baseline run's agents learn from main's skills and plugin, through a
+worktree:
+
+```sh
+git worktree add ../wendy-main main
+make -C go build-cli                    # the candidate
+make -C ../wendy-main/go build-cli      # the baseline
+python3 evals/agent-experience/benchmark.py --config evals/agent-experience/experiment.local.json \
+  --scenario all --treatment-root ../wendy-main --wendy ../wendy-main/go/bin/wendy --execute
+python3 evals/agent-experience/benchmark.py --config evals/agent-experience/experiment.local.json \
+  --scenario all --execute        # from the branch
+python3 evals/agent-experience/compare.py --baseline results/<baseline> --candidate results/<candidate>
+```
+
+`compare.py` writes `compare.json` and `compare.md` (default `<candidate>/compare`)
+and prints the table. A row is one kind, task, target and agent. A row is flagged:
+
+- `tool_choice`: every baseline attempt was good (right or asked) and no candidate
+  attempt was.
+- `tokens` or `time`: the candidate median exceeds the baseline maximum by more
+  than `--margin` (default 0.25), with at least two known values per side. Fewer is
+  reported as insufficient. Unknown usage is counted, never zero.
+
+A row present on one side only is marked and never flagged. When a run has a
+`rescored-*` directory, the latest one is read.
+
+Exit codes: 2 when the runs differ in non-treatment fields (runner, task and
+scenario hashes, agent version and model, target kind and device), 1 when any row
+is flagged, 0 otherwise. `--allow-mismatch` compares despite a mismatch.
+
+`--confirm N` reruns each flagged row N times with the candidate's recorded
+invocation, then compares again. A flag is confirmed only when the rerun added
+scored attempts for that row (setup errors don't count); otherwise it stays
+flagged as unconfirmed, with the reason. The rerun's exit code doesn't decide. When
+a canned tool's reply text is shared between runs, the table lists it under "Not
+measured": recapture it against the candidate.
+
+## Reference check
+
+Two Go tests keep agent-facing text honest:
+
+```sh
+go -C go test ./internal/cli/mcp -run 'TestAgentFacingTextNamesOnlyRealTools|TestToolReferenceAllowlistIsStillNeeded'
+```
+
+`TestAgentFacingTextNamesOnlyRealTools` scans every text Wendy ships to agents (MCP
+instructions, the guide, the chat prompt, the skill bundles and `AGENTS.md`). Each
+snake_case word that shares a prefix with a real tool must be an advertised tool,
+a tool parameter, or an entry in `toolReferenceAllowlist`; each `groups=[...]`
+name must be a real tool group. `TestToolReferenceAllowlistIsStillNeeded` fails on
+an allowlist entry that is now a real tool, appears in no text, or has no reason.
+An intentionally retired name (such as `container_attach`) stays allowed only with
+a reason that says so.
 
 ## Verify the benchmark implementation
 
