@@ -11,6 +11,9 @@ SHELLS = ("sh", "bash", "zsh", "fish")
 NETWORK_PERMISSIONS = ("org.freedesktop.NetworkManager.settings.modify.system",
                        "org.freedesktop.NetworkManager.network-control",
                        "org.freedesktop.NetworkManager.enable-disable-wifi")
+# macOS lets a standard user join networks and toggle Wi-Fi unless both are set (airport prefs).
+AIRPORT_PREFS = "/Library/Preferences/SystemConfiguration/com.apple.airport.preferences"
+AIRPORT_ADMIN_KEYS = ("RequireAdminNetworkChange", "RequireAdminPowerToggle")
 
 
 def _which(name, env):
@@ -26,6 +29,7 @@ def _run(argv, env, timeout):
     return done
 
 
+PLATFORM = sys.platform  # read at call time, so tests can check the macOS branch on Linux and back
 SHELL_TIMEOUT = 10
 SUDO_TIMEOUT = 5
 NETWORK_TIMEOUT = 10
@@ -86,14 +90,29 @@ def passwordless_sudo(env):
     return done is not None and done.returncode == 0
 
 
-def network_rights(env):
-    if sys.platform == "darwin":
-        done = _run(["id", "-Gn"], env, SUDO_TIMEOUT)
+def macos_network_rights(env):
+    done = _run(["id", "-Gn"], env, SUDO_TIMEOUT)
+    if done is None or done.returncode != 0:
+        return "id -Gn failed"
+    if "admin" in done.stdout.split():
+        return "admin group"
+    # Unverified on a real Mac: `defaults read` of the airport preferences needs no sudo, and a
+    # boolean prints as 1. Any key that can't be read, or isn't on, fails closed.
+    for key in AIRPORT_ADMIN_KEYS:
+        done = _run(["defaults", "read", AIRPORT_PREFS, key], env, NETWORK_TIMEOUT)
         if done is None or done.returncode != 0:
-            return "id -Gn failed"
-        return "admin group" if "admin" in done.stdout.split() else None
+            return "cannot verify Wi-Fi change rights on macOS"
+        if done.stdout.strip().lower() not in ("1", "yes", "true"):
+            return f"{key} is not enabled in {AIRPORT_PREFS}"
+    return None
+
+
+def network_rights(env):
+    """None when this account verifiably can't change network settings, else why it fails."""
+    if PLATFORM == "darwin":
+        return macos_network_rights(env)
     if _which("nmcli", env) is None:
-        return None
+        return "no NetworkManager to check; cannot verify network rights"
     done = _run(["nmcli", "-t", "-f", "PERMISSION,VALUE", "general", "permissions"],
                 env, NETWORK_TIMEOUT)
     if done is None or done.returncode != 0:

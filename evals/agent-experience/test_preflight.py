@@ -1,6 +1,5 @@
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -35,9 +34,16 @@ class PreflightTest(unittest.TestCase):
         self.shim = eval_wendy.write_shim(self.shimdir)
         # a fake zsh that reports the PATH it was given, standing in for a login shell
         fake(self.bin, "zsh", 'printf %s "$PATH"')
+        # Linux with NetworkManager granting nothing, unless a test says otherwise
+        self.nm = self.tmp / "nm"
+        self.nm.mkdir()
+        fake(self.nm, "nmcli", "".join(f"echo '{p}:no'\n" for p in preflight.NETWORK_PERMISSIONS))
+        platform = mock.patch.object(preflight, "PLATFORM", "linux")
+        platform.start()
+        self.addCleanup(platform.stop)
 
     def env(self, *dirs, **extra):
-        path = os.pathsep.join(str(d) for d in (self.shimdir, *dirs, self.bin))
+        path = os.pathsep.join(str(d) for d in (self.shimdir, *dirs, self.bin, self.nm))
         return {"PATH": path, "HOME": str(self.home), "SHELL": str(self.bin / "zsh"), **extra}
 
     def check(self, env, known=(), cwd=None):
@@ -68,7 +74,6 @@ class PreflightTest(unittest.TestCase):
         sudo.write_text("#!/bin/sh\nexit 1\n")
         self.assertNotIn(msg, self.check(self.env(self.stray)))
 
-    @unittest.skipIf(sys.platform == "darwin", "nmcli is Linux only")
     def test_nmcli_permission_yes_fails(self):
         perm = "org.freedesktop.NetworkManager.network-control"
         fake(self.stray, "nmcli", f"echo 'org.freedesktop.NetworkManager.settings.modify.system:no'\n"
@@ -109,6 +114,49 @@ class PreflightTest(unittest.TestCase):
         with mock.patch.object(preflight, "NETWORK_TIMEOUT", 0.3):
             msgs = self.check(self.env(self.stray))
         self.assertTrue(any("nmcli general permissions failed" in m for m in msgs), msgs)
+
+    def network_failure(self, detail):
+        return f"this account can change network settings ({detail}); use an account without that right"
+
+    def test_linux_without_nmcli_fails_closed(self):
+        env = self.env()
+        env["PATH"] = os.pathsep.join(str(d) for d in (self.shimdir, self.bin))  # no NetworkManager
+        self.assertEqual(self.check(env),
+                         [self.network_failure("no NetworkManager to check; cannot verify network rights")])
+
+    def mac(self, groups="staff everyone", values=None, defaults=True):
+        """A macOS host: fake id and defaults (values maps an airport key to what defaults prints)."""
+        mac = self.tmp / "mac"
+        mac.mkdir(exist_ok=True)
+        fake(mac, "id", f"echo '{groups}'")
+        log = self.tmp / "defaults.log"
+        if defaults:
+            values = {"RequireAdminNetworkChange": "1", "RequireAdminPowerToggle": "1"} if values is None else values
+            cases = "".join(f'  {key}) echo {value};;\n' for key, value in values.items())
+            fake(mac, "defaults", f'echo "$@" >> "{log}"\ncase "$3" in\n{cases}  *) echo "does not exist" >&2; exit 1;;\nesac')
+        else:
+            (mac / "defaults").unlink(missing_ok=True)
+        with mock.patch.object(preflight, "PLATFORM", "darwin"):
+            env = self.env()
+            env["PATH"] = os.pathsep.join(str(d) for d in (self.shimdir, mac, self.bin))
+            return self.check(env), (log.read_text().splitlines() if log.exists() else [])
+
+    def test_macos_passes_only_when_wifi_changes_need_an_admin(self):
+        msgs, reads = self.mac()
+        self.assertEqual(msgs, [])
+        self.assertEqual(reads, [f"read {preflight.AIRPORT_PREFS} RequireAdminNetworkChange",
+                                 f"read {preflight.AIRPORT_PREFS} RequireAdminPowerToggle"])
+
+    def test_macos_admin_or_unrestricted_wifi_fails(self):
+        self.assertEqual(self.mac(groups="staff admin")[0], [self.network_failure("admin group")])
+        msgs, _ = self.mac(values={"RequireAdminNetworkChange": "1", "RequireAdminPowerToggle": "0"})
+        self.assertEqual(msgs, [self.network_failure(
+            f"RequireAdminPowerToggle is not enabled in {preflight.AIRPORT_PREFS}")])
+
+    def test_macos_unreadable_airport_preferences_fail_closed(self):
+        unverified = [self.network_failure("cannot verify Wi-Fi change rights on macOS")]
+        self.assertEqual(self.mac(values={"RequireAdminNetworkChange": "1"})[0], unverified)  # key missing
+        self.assertEqual(self.mac(defaults=False)[0], unverified)  # no defaults command
 
     def test_login_shell_path_differs_from_env(self):
         fake(self.stray, "wendy", "exit 0")

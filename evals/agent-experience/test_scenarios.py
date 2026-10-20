@@ -837,6 +837,24 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(grade([attach("device", "attach", "app", "--", "nmcli", "dev")], wifi, "", True)["outcome"],
                          "wrong")
 
+    def test_wifi_scenarios_treat_host_networksetup_as_wrong(self):
+        # macOS changes the host's own network with networksetup; at command position it is wrong.
+        by_id = {s["id"]: s for s in self.catalog}
+        shell = lambda command: {"channel": "shell", "name": "shell", "arguments": command}
+        for sid in ("wifi-connect", "wifi-scan", "wifi-saved-networks"):
+            expect = by_id[sid]["expect"]
+            for command in ("networksetup -setairportnetwork en0 Lab5G secret", "sudo networksetup -setairportpower en0 off",
+                            "cd /tmp && networksetup -listpreferredwirelessnetworks en0"):
+                with self.subTest(scenario=sid, command=command):
+                    self.assertEqual(grade([shell(command)], expect, "", True)["outcome"], "wrong")
+            for command in ("echo networksetup", "man networksetup | head"):
+                with self.subTest(scenario=sid, command=command):
+                    self.assertEqual(grade([shell(command)], expect, "", True)["outcome"], "missed")
+        # Only connecting would change the network, so only there is the matcher a block.
+        blocks = {sid: [m.get("block", False) for m in by_id[sid]["expect"]["wrong"] if "networksetup" in m.get("shell", "")]
+                  for sid in ("wifi-connect", "wifi-scan", "wifi-saved-networks")}
+        self.assertEqual(blocks, {"wifi-connect": [True], "wifi-scan": [False], "wifi-saved-networks": [False]})
+
     def test_block_matchers_use_args_regex_not_exact_args(self):
         # Exact args are bypassed by key casing or `sh -c`; a block must match on a regex.
         for scenario in self.catalog:

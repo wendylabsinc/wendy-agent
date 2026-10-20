@@ -1001,6 +1001,10 @@
           "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:nmcli|wpa_cli|iwctl|iw|iwconfig|ifconfig|rfkill)\\b"
         },
         {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?networksetup\\b",
+          "block": true
+        },
+        {
           "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
         }
       ],
@@ -1094,6 +1098,9 @@
           "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:nmcli|wpa_cli|iwctl|iw|iwconfig|ifconfig|rfkill)\\b"
         },
         {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?networksetup\\b"
+        },
+        {
           "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
         }
       ]
@@ -1139,6 +1146,9 @@
         {
           "cli": "cloud device shell",
           "block": true
+        },
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?networksetup\\b"
         },
         {
           "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
