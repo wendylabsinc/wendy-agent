@@ -6,9 +6,11 @@ on:
     branches: [main]
     paths:
       - 'go/**'
-      - 'web-client/mcp-app/**'
       - 'web-client/public/**'
       - 'web-client/package.json'
+      - 'web-client/package-lock.json'
+      - 'web-client/tests/credential-store.test.mjs'
+      - 'web-client/tests/wendy-web-bridge.test.mjs'
       - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
       - 'Proto/**'
@@ -27,9 +29,11 @@ on:
   pull_request:
     paths:
       - 'go/**'
-      - 'web-client/mcp-app/**'
       - 'web-client/public/**'
       - 'web-client/package.json'
+      - 'web-client/package-lock.json'
+      - 'web-client/tests/credential-store.test.mjs'
+      - 'web-client/tests/wendy-web-bridge.test.mjs'
       - 'web-client/scripts/build-wasm.mjs'
       - 'go/simulator/go2/go2_sim/**'
       - 'Proto/**'
@@ -124,8 +128,23 @@ jobs:
         with:
           cache-name: wasm
 
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web-client/package-lock.json
+
       - name: Build browser WASM assets
         run: npm --prefix web-client run build:wasm
+
+      # The worker and credential store as a page loads them. Lifecycle
+      # scripts are skipped: only fake-indexeddb is needed, not Electron.
+      - name: Run browser bridge tests
+        run: |
+          npm --prefix web-client ci --ignore-scripts --no-audit --no-fund
+          node web-client/tests/credential-store.test.mjs
+          node web-client/tests/wendy-web-bridge.test.mjs
 
       - name: Run WASM tests in Node
         env:
@@ -148,19 +167,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-
-      - name: Generate embedded MCP app
-        shell: pwsh
-        run: |
-          npm --prefix web-client/mcp-app ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm --prefix web-client/mcp-app run build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Native execution covers Windows identity files and process shutdown.
       # Delivery tests redirect requests to local HTTP receivers.
