@@ -208,7 +208,7 @@ security boundary.
 Freeze prompts, CLI and plugin revisions, agent versions, model and effort,
 permissions, device OS/agent versions, host resources, transport, and cache policy.
 The manifest records versions, configuration, and task hashes; setup logs capture
-target information. The manifest also hashes the CLI binary, runner, and fixtures, and saves the chat/config source and diff.
+target information. The manifest also hashes the CLI binary, runner, fixtures and scenario harness, and saves the chat/config source and diff.
 It copies fixture scripts and app source. Robot verification reads passive runtime
 status before connecting to the device, because a Wendy device connection can
 automatically provision a missing robot runtime. A grader must never complete the
@@ -240,16 +240,21 @@ A task or scenario carries an `expect` block with `right` and `wrong` matchers
 | --- | --- |
 | `wrong` | A `wrong` matcher hit |
 | `right` | A `right` matcher hit and no `wrong` matcher did |
-| `asked` | The agent finished its turn and asked the user instead of acting |
+| `asked` | `expect.ask` is true, the agent finished its turn, and its final text contains `?` |
 | `missed` | None of the above |
 
-Precedence is wrong, then right, then asked, then missed. A right path is a single
-call, not a sequence: Wendy chat starts with every tool group enabled and never
-calls `wendy_tools`, so a `wendy_tools` step can't be required. When the right
-tool sits in a group that was not enabled, `hidden_group` is set. It is set only
-for Claude and Codex, since Wendy chat has every group from the start. Help
-lookups (`--help` and `-h`) are never graded. End-to-end success rules are
-unchanged; the tool-choice outcome is reported next to them.
+Precedence is wrong, then right, then asked, then missed. `asked` happens only when
+`expect.ask` is true. An ask scenario may list `right` paths too; then doing the job
+and asking first both pass. A right path is a single call, not a sequence: Wendy
+chat starts with every tool group enabled and never calls `wendy_tools`, so a
+`wendy_tools` step can't be required. Instead, a `missed` scenario attempt by
+Claude or Codex sets `hidden_group` when the scenario's group isn't `core` and no
+`wendy_tools` call enabled that group or `all`. Wendy chat never sets it, since it
+has every group from the start. Help lookups (`--help` and `-h`) are never graded.
+A `cli` matcher compares whole words from the start of the subcommand path, either
+as written up to the first flag or with flags skipped, so `wendy vm --yes create`
+matches `vm create`. End-to-end success rules are unchanged; the tool-choice
+outcome is reported next to them.
 
 ```sh
 python3 evals/agent-experience/benchmark.py --rescore results/<experiment>
@@ -275,12 +280,37 @@ A scenario run refuses to start (exit 2) unless `preflight.py` passes. The check
 - Only the shim `wendy` is reachable, in plain and login shells, including `PATH`
   entries that resolve in the working directory.
 - No passwordless `sudo`.
-- No network-settings rights (NetworkManager settings, network-control and
-  enable-disable-wifi). If those rights can't be verified, that counts as a failure.
+- No network-settings rights. If those rights can't be verified, that counts as a
+  failure.
+  - Linux: NetworkManager must grant none of settings, network-control and
+    enable-disable-wifi. Without `nmcli` on `PATH` there is nothing to check, so
+    the check fails.
+  - macOS: the account must not be in the `admin` group. The airport preferences
+    (`/Library/Preferences/SystemConfiguration/com.apple.airport.preferences`, read
+    with `defaults read`) must also have `RequireAdminNetworkChange` and
+    `RequireAdminPowerToggle` enabled. If either can't be read, the check fails.
+    This check has not yet been tried on a real Mac.
 
 A dedicated OS account is the expected way to pass. A machine with an installed
 `wendy` (for example `/usr/bin/wendy`) or NetworkManager settings rights fails by
 design.
+
+Set up the account once before its first run:
+
+- Build the candidate (`make -C go build-cli`) where the account can read it, and
+  pass that binary with `--wendy`. No `wendy` may be on its `PATH`, so the
+  config's default `"wendy"` can't resolve.
+- Pre-cache the WendyOS VM image from a terminal on that account:
+  `go/bin/wendy vm create cache-warm`, then `go/bin/wendy vm rm cache-warm --force`.
+  `wendy vm create` needs a terminal when the image isn't cached, and the runner
+  starts every command without a controlling terminal.
+
+A one-attempt smoke run, from the checkout as that account:
+
+```sh
+python3 evals/agent-experience/benchmark.py --config evals/agent-experience/experiment.local.json \
+  --scenario apps-overview --agent claude --repetitions 1 --wendy go/bin/wendy --execute
+```
 
 ### The shim, proxy and canned replies
 
@@ -289,6 +319,18 @@ prompt; the config's `{wendy}` variable becomes the shim, so agent command
 templates are unchanged. The shim sends `mcp serve` to the recording proxy
 (`mcp_proxy.py`), sends `chat` to the real binary with its MCP command pointed back
 at the shim, and handles every other command as a CLI call. Everything is logged.
+
+Chat honors that pointer only when the binary was built with the
+`WENDY_CHAT_MCP_COMMAND` hook. An older chat starts its own `wendy mcp serve`,
+outside the proxy, and runs risky tools for real. So a scenario run with a Wendy
+chat agent refuses to start (exit 2) unless the real binary's bytes contain
+`WENDY_CHAT_MCP_COMMAND`, and the shim refuses `chat` from such a binary (exit 2).
+Neither check runs chat.
+
+The real binary's path is visible to agents, in `$WENDY_EVAL_SCENARIO` and in the
+shim itself. A transcript that runs `wendy` by an absolute path other than the
+shim's bypasses recording and canning. This is a known limit of the non-sandboxed
+design; the host checks above limit what such a call can reach.
 
 MCP: a tool whose `readOnlyHint` is not `true` is canned, unless it is in the
 proxy's `ALWAYS_REAL` set (`wendy_tools`, `wendy_status`, `device_list`,
@@ -315,9 +357,17 @@ Canned replies:
 ### Environment and targets
 
 The scenario environment drops `WENDY_DEVICE` and `WENDY_AGENT_SOCKET`. Each run
-prepares one shared private VM (unscored): generic, or go2 or g1 for robotics
-scenarios. Each attempt checks the VM's app state before and after, and a mismatch
-stops the run. The VM is removed at the end.
+prepares one shared private VM (unscored) per profile: generic, or go2 or g1 for
+robotics scenarios. Each attempt checks the VM's app state before and after, and a
+mismatch stops the run. The VMs are removed at the end.
+
+A go2 or g1 VM needs the Linux ARM64 agent that preparation installs (config
+`agent_binary`, else `go/bin/wendy-agent-linux-arm64`; build it with
+`make -C go build-agent-linux-arm64`) and `docker buildx` (`docker buildx version`
+must succeed). Without them, the plan reports those scenarios as `unconfigured`
+with `robot VM prerequisites missing: ...`. If a profile's VM still fails to prepare,
+its attempts are recorded as `setup_error`, outside every denominator, with the
+reason. The other profiles' scenarios still run.
 
 `--device SELECTOR` names a spare board and requires `--scenario`. It can't be a
 `vm:` selector, and the config can't already have a target called `board`. Its
@@ -328,14 +378,23 @@ Scenarios in the `cloud` group must require `cloud`.
 
 ### Agent configuration
 
-- Codex needs `-c 'mcp_servers.wendy.env.WENDY_EVAL_SCENARIO="{scenario_config}"'`
-  and `--add-dir {wendy_vm_home}`. `config.example.json` has both; the runner
-  refuses to start without them.
-- Claude must use `--plugin-dir {plugin_dir}`, the staged plugin copy with
-  `mcpServers` removed, so the shim's proxy is the only Wendy MCP server. If the
+`config.example.json` meets every rule below. A scenario run refuses to start
+without them.
+
+- Codex needs `-c 'mcp_servers.wendy.command="{wendy}"'`,
+  `-c 'mcp_servers.wendy.env.WENDY_EVAL_SCENARIO="{scenario_config}"'` and
+  `--add-dir {wendy_vm_home}`.
+- Claude needs `--plugin-dir {plugin_dir}` (in every run), `--strict-mcp-config`,
+  and `--mcp-config {workspace}/mcp.json`. The staged plugin copy has `mcpServers`
+  removed, so the shim's proxy is the only Wendy MCP server. If the
   `system`/`init` event shows another Wendy server, the attempt is
-  `mcp_contaminated` and the run stops. If it lists no servers at all, the attempt
-  is `mcp_unverified` and the run stops.
+  `mcp_contaminated` and the run stops. If there is no `system`/`init` event, the
+  attempt is `mcp_unverified` and the run stops.
+- Wendy chat's command must start with `{wendy}`, so chat starts through the shim.
+
+After every attempt, the runner checks the routing. If the transcript shows Wendy
+MCP calls but the proxy logged none, the calls went to another server. The attempt
+is then `mcp_unverified`, never a success, and the run stops.
 
 ### Caps and budget
 
@@ -352,12 +411,12 @@ command.
 
 ```sh
 # an MCP tool (read-only tools need no --yes)
-WENDY_CONFIG_DIR=$(mktemp -d) python3 evals/agent-experience/capture.py \
+python3 evals/agent-experience/capture.py \
   --wendy /path/to/wendy --device vm:NAME --set generic \
   --tool container_list --args '{}'
 
 # a CLI command (always needs --yes)
-WENDY_CONFIG_DIR=$(mktemp -d) python3 evals/agent-experience/capture.py \
+python3 evals/agent-experience/capture.py \
   --wendy /path/to/wendy --device vm:NAME --set generic --yes \
   --cli device ps
 ```
@@ -370,8 +429,10 @@ WENDY_CONFIG_DIR=$(mktemp -d) python3 evals/agent-experience/capture.py \
   (`tool:NAME` or `cli:WORDS`) were canned. For a CLI command, capture the
   "before" state first.
 - `--interrupt-after SECONDS` sends Ctrl+C to a CLI command that streams.
-- Always capture in a private `WENDY_CONFIG_DIR`, so the capture can't touch your
-  saved devices or logins.
+- A capture never touches your saved devices or logins. Without
+  `WENDY_CONFIG_DIR`, `capture.py` makes a throwaway private state and removes it
+  afterwards. For a cloud or LAN device, that state gets a copy of your cloud
+  login, as trials do. A `WENDY_CONFIG_DIR` you set is used as is.
 - Captures are scrubbed. Replace values that came from your arguments with
   placeholders: `{{args.X}}`, `{{reply.TOOL.KEY}}`, `{{device}}` and `{{vm_name}}`.
 - Error replies are never saved.
@@ -391,6 +452,10 @@ with the matching capability): `flash-sd-card`, `os-upgrade`, `wifi-connect`,
 Missing captures: `ros-sample` (`device ros2 echo`) and `ros-rate`
 (`device ros2 hz`). Both need a docker buildx host to run the robot VM.
 
+On a host without `docker buildx` (or without the ARM64 agent), every robotics
+scenario (`ros-topics`, `ros-rate`, `ros-sample`, `ros-lidar`, `ros-endpoints`) is
+also reported with `robot VM prerequisites missing: docker buildx`.
+
 ## Comparing a branch
 
 Compare a candidate branch against `main` with the same agents, models and
@@ -404,15 +469,20 @@ make -C ../wendy-main/go build-cli      # the baseline
 python3 evals/agent-experience/benchmark.py --config evals/agent-experience/experiment.local.json \
   --scenario all --treatment-root ../wendy-main --wendy ../wendy-main/go/bin/wendy --execute
 python3 evals/agent-experience/benchmark.py --config evals/agent-experience/experiment.local.json \
-  --scenario all --execute        # from the branch
+  --scenario all --wendy go/bin/wendy --execute        # the candidate, from the branch
 python3 evals/agent-experience/compare.py --baseline results/<baseline> --candidate results/<candidate>
 ```
+
+Both runs name their binary with `--wendy`: on a host that passes the preflight, no
+`wendy` is on `PATH`, so the config's default `"wendy"` can't resolve.
 
 `compare.py` writes `compare.json` and `compare.md` (default `<candidate>/compare`)
 and prints the table. A row is one kind, task, target and agent. A row is flagged:
 
-- `tool_choice`: every baseline attempt was good (right or asked) and no candidate
-  attempt was.
+- `tool_choice`: every baseline attempt was good and no candidate attempt was. An
+  attempt is good when its outcome is right or asked and it didn't end as
+  `host_state_changed`, `interrupted`, `mcp_contaminated` or `mcp_unverified`, the
+  same rule as a scenario's success.
 - `tokens` or `time`: the candidate median exceeds the baseline maximum by more
   than `--margin` (default 0.25), with at least two known values per side. Fewer is
   reported as insufficient. Unknown usage is counted, never zero.
@@ -420,9 +490,11 @@ and prints the table. A row is one kind, task, target and agent. A row is flagge
 A row present on one side only is marked and never flagged. When a run has a
 `rescored-*` directory, the latest one is read.
 
-Exit codes: 2 when the runs differ in non-treatment fields (runner, task and
-scenario hashes, agent version and model, target kind and device), 1 when any row
-is flagged, 0 otherwise. `--allow-mismatch` compares despite a mismatch.
+Exit codes: 2 when the runs differ in non-treatment fields, 1 when any row is
+flagged, 0 otherwise. The fields are the runner, harness, task and scenario hashes,
+the agent version and model, and the target kind and device. The harness hash
+(`harness_sha256`) covers every `*.py` here, `cli_safe.json` and the `canned/`
+tree. `--allow-mismatch` compares despite a mismatch.
 
 `--confirm N` reruns each flagged row N times with the candidate's recorded
 invocation, then compares again. A flag is confirmed only when the rerun added
@@ -433,10 +505,11 @@ measured": recapture it against the candidate.
 
 ## Reference check
 
-Two Go tests keep agent-facing text honest:
+Four Go tests keep agent-facing text honest, two for tools and two for CLI commands:
 
 ```sh
 go -C go test ./internal/cli/mcp -run 'TestAgentFacingTextNamesOnlyRealTools|TestToolReferenceAllowlistIsStillNeeded'
+go -C go test ./internal/cli/commands -run 'TestAgentFacingTextNamesOnlyRealCLIFlags|TestCLIReferenceAllowlistIsStillNeeded'
 ```
 
 `TestAgentFacingTextNamesOnlyRealTools` scans every text Wendy ships to agents (MCP
@@ -447,6 +520,12 @@ name must be a real tool group. `TestToolReferenceAllowlistIsStillNeeded` fails 
 an allowlist entry that is now a real tool, appears in no text, or has no reason.
 An intentionally retired name (such as `container_attach`) stays allowed only with
 a reason that says so.
+
+`TestAgentFacingTextNamesOnlyRealCLIFlags` reads the same texts for `wendy ...`
+invocations. Each one is resolved against the CLI's command tree: an unknown
+subcommand or flag fails, unless the invocation matches an entry in
+`cliReferenceAllowlist`. `TestCLIReferenceAllowlistIsStillNeeded` fails on an
+allowlist entry that matches no invocation or has no reason.
 
 ## Verify the benchmark implementation
 
