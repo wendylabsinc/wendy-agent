@@ -15,6 +15,8 @@ import sys
 import time
 import uuid
 
+from benchmark import SCENARIO_NOT_SUCCESS
+
 OUTCOMES = ("right", "wrong", "missed", "asked")
 TRACKED = ("runner_sha256", "task_sha256", "scenarios_sha256")
 
@@ -87,6 +89,9 @@ def side_stats(rows):
         outcomes[outcome if outcome in OUTCOMES else "ungraded"] += 1
     tokens = [t for t in map(_tokens, rows) if t is not None]
     seconds = [s for s in map(_seconds, rows) if s is not None]
+    # Good as scenario_verdict counts success: right or asked, and not ended by a status that rules it out.
+    good = sum((r.get("tool_choice") or {}).get("outcome") in ("right", "asked")
+               and r.get("status") not in SCENARIO_NOT_SUCCESS for r in rows)
     calls = [(r.get("metrics") or {}).get("tool_calls") for r in rows]
     calls = [x for x in calls if isinstance(x, int) and not isinstance(x, bool)]
     used = set()
@@ -94,7 +99,7 @@ def side_stats(rows):
         for e in ((r.get("metrics") or {}).get("tool_trace") or []):
             if isinstance(e, dict) and e.get("channel") in ("mcp", "cli") and e.get("name"):
                 used.add(e["name"])
-    return {"attempts": len(rows), "setup_errors": setup_errors, "outcomes": outcomes, "good": outcomes["right"] + outcomes["asked"],
+    return {"attempts": len(rows), "setup_errors": setup_errors, "outcomes": outcomes, "good": good,
             "median_tokens": _median(tokens), "max_tokens": max(tokens, default=None),
             "known_usage": len(tokens), "unknown_usage": len(rows) - len(tokens),
             "median_seconds": _median(seconds), "max_seconds": max(seconds, default=None),

@@ -54,6 +54,19 @@ class CompareTest(unittest.TestCase):
         r = self.run_compare([row("s1", "right")] * 3, [row("s1", "right"), row("s1", "wrong"), row("s1", "wrong")])
         self.assertNotIn("tool_choice", r["rows"][0]["flags"])
 
+    def test_good_follows_the_scenario_verdict(self):
+        # A right or asked attempt that ended host_state_changed, interrupted or mcp_* is not a success.
+        import benchmark
+        self.assertTrue({"host_state_changed", "interrupted", "mcp_unverified", "mcp_contaminated"}
+                        <= benchmark.SCENARIO_NOT_SUCCESS)
+        for status in sorted(benchmark.SCENARIO_NOT_SUCCESS):
+            with self.subTest(status=status):
+                bad = [dict(row("s1", outcome), status=status, success=False) for outcome in ("right", "asked", "right")]
+                self.assertEqual(c.side_stats(bad)["good"], 0)
+                self.assertIn("tool_choice", self.run_compare([row("s1", "right")] * 3, bad)["rows"][0]["flags"])
+                self.assertNotIn("tool_choice", self.run_compare(bad, [row("s1", "wrong")] * 3)["rows"][0]["flags"])
+        self.assertEqual(c.side_stats([dict(row("s1", "right"), status="passed"), row("s1", "asked")])["good"], 2)
+
     def test_flags_tokens_beyond_margin_over_baseline_max(self):
         base = [row("s1", "right", tokens=t) for t in (100, 110, 120)]
         r = self.run_compare(base, [row("s1", "right", tokens=t) for t in (160, 170, 180)])
