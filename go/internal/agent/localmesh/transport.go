@@ -21,8 +21,12 @@ type LinkHello struct {
 	Datagram int       `json:"datagram"`
 }
 
+// MaxQUICCryptoStreamSize bounds TLS data at each encryption level while
+// allowing enrolled Cloud v2 certificate chains without weakening verification.
+const MaxQUICCryptoStreamSize = 64 << 10
+
 func QUICConfig() *quic.Config {
-	return &quic.Config{EnableDatagrams: true, Allow0RTT: false, HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: 20 * time.Second, KeepAlivePeriod: 5 * time.Second,
+	return &quic.Config{MaxCryptoStreamSize: MaxQUICCryptoStreamSize, EnableDatagrams: true, Allow0RTT: false, HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: 20 * time.Second, KeepAlivePeriod: 5 * time.Second,
 		MaxIncomingStreams: 1, MaxIncomingUniStreams: -1, InitialStreamReceiveWindow: MaxControlMessage + 4, MaxStreamReceiveWindow: 2 * MaxControlMessage,
 		InitialConnectionReceiveWindow: 2 * MaxControlMessage, MaxConnectionReceiveWindow: 2 * MaxControlMessage}
 }
