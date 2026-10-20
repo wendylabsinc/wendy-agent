@@ -10,14 +10,19 @@ import (
 )
 
 const (
-	// An accepted CoC still has the controller's four-second supervision
-	// timeout while it waits. Close and retry rather than queueing a handshake
-	// behind a second slow peer for most of that interval.
-	meshTLSAdmissionWait = 4 * time.Second
+	// A busy adapter may still be authenticating another neighbour. Let its
+	// bounded accepted-CoC queue wait for that certificate flight instead of
+	// repeatedly closing and recreating radio connections. Link-layer
+	// supervision is independent of this application admission wait.
+	meshTLSAdmissionWait = 30 * time.Second
 	// Once admitted, allow an mTLS certificate flight to progress over a busy
 	// multi-ACL adapter. The CoC's write-idle and ACL supervision limits remain
 	// independent bounds when the controller stops making progress.
-	meshTLSHandshakeTimeout = 15 * time.Second
+	meshTLSHandshakeTimeout = 30 * time.Second
+	// A client cannot observe remote admission. Its total budget covers that
+	// wait followed by the peer's bounded authentication flight. Runtime or
+	// caller cancellation still interrupts either phase immediately.
+	meshTLSOutboundTimeout = meshTLSAdmissionWait + meshTLSHandshakeTimeout
 )
 
 // One gate belongs to one BLE adapter runtime's accepted CoCs. Outgoing setup
