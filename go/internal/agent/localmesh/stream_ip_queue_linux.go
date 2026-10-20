@@ -10,14 +10,14 @@ import (
 
 const (
 	// Budget about 150 ms of user-space bytes at the observed write rate.
-	// Keep room for one full packet and a short ACK from each of two senders even
-	// at the slowest observed rate. With only one packet slot, a busy sender
-	// could evict another sender's packet before the round-robin dequeue saw
-	// it. The age limit still drops stale packets before transmission.
-	// The socket and active packet are separate and require hardware timing.
+	// Keep room for two full packets and a short ACK per sender at the
+	// slowest observed rate. QUIC ClientHello/ServerHello flights can span two
+	// Initial datagrams; repeatedly admitting only the first loses the same
+	// crypto suffix on every retry. The fixed maximum stays at 8 KiB, and already
+	// admitted prefixes retain their order. Socket/active bytes are separate.
 	streamIPByteBudget       = 8 * 1024
 	streamIPFullPacketBytes  = TunnelMTU + 2*(fragmentHeader+5)
-	streamIPMinByteBudget    = 2 * (streamIPFullPacketBytes + streamFastIPMax + fragmentHeader + 5)
+	streamIPMinByteBudget    = 2 * (2*streamIPFullPacketBytes + streamFastIPMax + fragmentHeader + 5)
 	streamIPSourceByteBudget = streamIPByteBudget / 2
 	streamIPInitialQueueAge  = 2 * time.Second
 	streamIPMaxQueueAge      = 5 * time.Second
@@ -103,9 +103,8 @@ func (q *streamIPSendQueue) fastByteBudget() int {
 }
 
 // QUIC's Initial and TLS flight can fill an entire IP packet. During a
-// same-source ICMP flood they otherwise compete for the same single bulk
-// slot and are repeatedly evicted before transmission. Reserve at most one
-// full-size fast slot for the end-to-end app session UDP port, in either
+// same-source ICMP flood they otherwise compete for the bulk
+// capacity. Reserve bounded fast capacity for the end-to-end app session UDP port, in either
 // direction. The remaining full-size slot and the four-fast burst limit keep
 // bulk traffic moving. Only inspect UDP immediately after the IPv6 base header. Extension
 // headers, including fragmentation, remain in the ordinary size-based lane.
@@ -206,7 +205,7 @@ func (q *streamIPSendQueue) expire(now time.Time) {
 
 func (q *streamIPSendQueue) queueAgeLimit() time.Duration {
 	// Before the first write completes there is no drain-rate estimate. The
-	// conservative startup bound applies; the two-packet byte
+	// conservative startup bound applies; the fixed byte
 	// cap still bounds memory and latency behind the active packet.
 	if q.writeRateBytesPerSec == 0 {
 		return streamIPInitialQueueAge

@@ -21,24 +21,34 @@ import (
 // is an offline queue regression, not a radio or multihop qualification.
 type queuedHandshakeSocket struct {
 	net.PacketConn
-	queue     *streamIPSendQueue
-	source    byte
-	sequence  atomic.Uint32
-	lastWrite atomic.Int64
-	mu        sync.Mutex
-	target    *net.UDPAddr
-	stop      chan struct{}
-	done      chan struct{}
-	once      sync.Once
+	queue         *streamIPSendQueue
+	hops          []*streamIPSendQueue
+	drainInterval time.Duration
+	source        byte
+	sequence      atomic.Uint32
+	lastWrite     atomic.Int64
+	mu            sync.Mutex
+	target        *net.UDPAddr
+	stop          chan struct{}
+	done          chan struct{}
+	once          sync.Once
 }
 
-func newQueuedHandshakeSocket(t *testing.T, source byte) *queuedHandshakeSocket {
+func newQueuedHandshakeSocket(t *testing.T, source byte, hops int, interval time.Duration, rate int) *queuedHandshakeSocket {
 	t.Helper()
 	raw, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := &queuedHandshakeSocket{PacketConn: raw, queue: newStreamIPSendQueue(), source: source, stop: make(chan struct{}), done: make(chan struct{})}
+	s.drainInterval = interval
+	s.hops = []*streamIPSendQueue{s.queue}
+	for len(s.hops) < hops {
+		s.hops = append(s.hops, newStreamIPSendQueue())
+	}
+	for _, q := range s.hops {
+		q.writeRateBytesPerSec = rate
+	}
 	go s.drain()
 	t.Cleanup(func() { _ = s.Close() })
 	return s
@@ -56,29 +66,41 @@ func (s *queuedHandshakeSocket) WriteTo(data []byte, addr net.Addr) (int, error)
 }
 func (s *queuedHandshakeSocket) drain() {
 	defer close(s.done)
-	tick := time.NewTicker(20 * time.Millisecond)
-	defer tick.Stop()
-	served := 0
-	for {
-		select {
-		case <-s.stop:
-			return
-		case at := <-tick.C:
-			if at.Sub(time.Unix(0, s.lastWrite.Load())) < 10*time.Millisecond {
-				continue
+	var workers sync.WaitGroup
+	for index, q := range s.hops {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			tick := time.NewTicker(s.drainInterval)
+			defer tick.Stop()
+			served := 0
+			for {
+				select {
+				case <-s.stop:
+					return
+				case at := <-tick.C:
+					if index == 0 && at.Sub(time.Unix(0, s.lastWrite.Load())) < 10*time.Millisecond {
+						continue
+					}
+					p, ok := q.pop(at, &served)
+					if !ok {
+						continue
+					}
+					if index+1 < len(s.hops) {
+						s.hops[index+1].enqueue(p.sequence, p.data, at)
+						continue
+					}
+					s.mu.Lock()
+					target := s.target
+					s.mu.Unlock()
+					if target != nil {
+						_, _ = s.PacketConn.WriteTo(p.data[48:], target)
+					}
+				}
 			}
-			p, ok := s.queue.pop(at, &served)
-			if !ok {
-				continue
-			}
-			s.mu.Lock()
-			target := s.target
-			s.mu.Unlock()
-			if target != nil {
-				_, _ = s.PacketConn.WriteTo(p.data[48:], target)
-			}
-		}
+		}()
 	}
+	workers.Wait()
 }
 func (s *queuedHandshakeSocket) Close() error {
 	var err error
@@ -87,6 +109,18 @@ func (s *queuedHandshakeSocket) Close() error {
 }
 
 func TestStreamQueueFullCertificateQUICHandshake(t *testing.T) {
+	testStreamQueueCertificateQUICHandshake(t, 1, 20*time.Millisecond, 0, 3*time.Second)
+}
+
+// Three independent production queues per direction model a slow BLE chain.
+// This includes mutual large-chain TLS and an authenticated application echo;
+// queue-only packet-count assertions cannot detect a stalled TLS crypto suffix.
+// Radio scheduling, Babel and control-channel contention still need hardware.
+func TestStreamQueueLowRateThreeHopMutualTLS(t *testing.T) {
+	testStreamQueueCertificateQUICHandshake(t, 3, 250*time.Millisecond, 4096, 35*time.Second)
+}
+
+func testStreamQueueCertificateQUICHandshake(t *testing.T, hops int, interval time.Duration, rate int, idle time.Duration) {
 	a, b := largeChainCredentials(t, 6500)
 	clientTLS, err := a.PeerTLS(b.Device)
 	if err != nil {
@@ -100,11 +134,19 @@ func TestStreamQueueFullCertificateQUICHandshake(t *testing.T) {
 		c := QUICConfig()
 		c.InitialPacketSize = 1200
 		c.DisablePathMTUDiscovery = true
-		c.HandshakeIdleTimeout = 3 * time.Second
+		c.HandshakeIdleTimeout = idle
 		return c
 	}
-	clientSocket := newQueuedHandshakeSocket(t, 1)
-	serverSocket := newQueuedHandshakeSocket(t, 2)
+	clientSocket := newQueuedHandshakeSocket(t, 1, hops, interval, rate)
+	serverSocket := newQueuedHandshakeSocket(t, 2, hops, interval, rate)
+	started := time.Now()
+	t.Cleanup(func() {
+		for side, socket := range map[string]*queuedHandshakeSocket{"client": clientSocket, "server": serverSocket} {
+			for index, q := range socket.hops {
+				t.Logf("elapsed=%s side=%s hop=%d queue=%+v", time.Since(started), side, index, q.snapshot())
+			}
+		}
+	})
 	clientTransport := &quic.Transport{Conn: clientSocket}
 	serverTransport := &quic.Transport{Conn: serverSocket}
 	defer clientTransport.Close()
@@ -114,7 +156,7 @@ func TestStreamQueueFullCertificateQUICHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*idle)
 	defer cancel()
 	type result struct {
 		state tls.ConnectionState
@@ -152,7 +194,7 @@ func TestStreamQueueFullCertificateQUICHandshake(t *testing.T) {
 		<-done
 		t.Fatal(err)
 	}
-	_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = stream.SetDeadline(time.Now().Add(idle))
 	nonce := [16]byte{1, 3, 5, 7, 9, 11, 13, 15}
 	if _, err = stream.Write(nonce[:]); err != nil {
 		cancel()
