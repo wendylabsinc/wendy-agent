@@ -23,13 +23,15 @@ TOOLS = [{"name": "device_info", "description": "d", "inputSchema": {}},
          {"name": "container_list", "description": "c", "inputSchema": {}}]
 
 
-def make(root, name, rows, model="m1", tools=TOOLS, scenarios=(SCENARIO,), version="1.0", argv=None, kind="simulator"):
+def make(root, name, rows, model="m1", tools=TOOLS, scenarios=(SCENARIO,), version="1.0", argv=None, kind="simulator",
+         harness="h"):
     d = Path(root) / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     (d / "claude-version.stdout").write_text(version)
     manifest = {"config": {"agents": {"claude": {"model": model}}, "targets": {"sim": {"kind": kind, "device": "vm:x"}}},
-                "runner_sha256": "r", "task_sha256": "t", "scenarios_sha256": "s", "scenarios": list(scenarios),
+                "runner_sha256": "r", "task_sha256": "t", "scenarios_sha256": "s", "harness_sha256": harness,
+                "scenarios": list(scenarios),
                 "claude_version": {"argv": ["claude", "--version"], "exit_code": 0},
                 "argv": argv or ["benchmark.py", "--scenario", "all", "--treatment-root", "/t", "--wendy", "/w", "--execute"],
                 "cwd": "/cwd", "tools_sha256": name, "treatment": {"revision": name}}
@@ -96,6 +98,12 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(c.main(["--baseline", str(b), "--candidate", str(n), "--output", str(out)]), 2)
         self.assertEqual(c.main(["--baseline", str(b), "--candidate", str(n), "--output", str(out), "--allow-mismatch"]), 0)
         self.assertTrue((out / "compare.json").exists() and (out / "compare.md").exists())
+
+    def test_harness_mismatch_is_reported(self):
+        # A changed shim, proxy, allowlist or canned reply changes what the agents saw.
+        r = self.run_compare([row("s1", "right")], [row("s1", "right")], harness="other")
+        self.assertIn("harness_sha256", r["mismatches"])
+        self.assertEqual(self.run_compare([row("s1", "right")], [row("s1", "right")])["mismatches"], [])
 
     def test_version_and_target_mismatches(self):
         r = self.run_compare([row("s1", "right")], [row("s1", "right")], version="2.0", kind="physical")

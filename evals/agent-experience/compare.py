@@ -18,7 +18,7 @@ import uuid
 from benchmark import SCENARIO_NOT_SUCCESS
 
 OUTCOMES = ("right", "wrong", "missed", "asked")
-TRACKED = ("runner_sha256", "task_sha256", "scenarios_sha256")
+TRACKED = ("runner_sha256", "harness_sha256", "task_sha256", "scenarios_sha256")
 
 
 def _read_json(path, default=None):

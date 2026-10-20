@@ -329,6 +329,16 @@ def tree_sha256(path):
     return digest.hexdigest()
 
 
+def harness_sha256(here=HERE):
+    """One hash over what scenario agents run against: every *.py here, cli_safe.json and the canned/ tree."""
+    here = Path(here)
+    files = list(here.glob("*.py")) + [here / "cli_safe.json"] + list((here / "canned").rglob("*"))
+    digest = hashlib.sha256()
+    for file in sorted((f for f in files if f.is_file()), key=lambda f: f.relative_to(here).as_posix()):
+        digest.update(file.relative_to(here).as_posix().encode() + b"\0" + file.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
 def treatment_git(root):
     """(HEAD revision, sha256 of `git diff HEAD`); None for each when git fails."""
     def git(*args):
@@ -910,6 +920,7 @@ def main():
                 "task_sha256": hashlib.sha256(args.tasks.read_bytes()).hexdigest()}
     snapshot["runner_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     snapshot["fixtures_sha256"] = hashlib.sha256((HERE / "fixtures.py").read_bytes()).hexdigest()
+    snapshot["harness_sha256"] = harness_sha256()
     snapshot["wendy_binary_sha256"] = hashlib.sha256(Path(wendy).read_bytes()).hexdigest()
     snapshot["scenarios"] = scenarios
     snapshot["scenarios_sha256"] = hashlib.sha256(scenario_file.read_bytes()).hexdigest() if args.scenario else None

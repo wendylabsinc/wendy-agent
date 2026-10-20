@@ -242,6 +242,27 @@ class MetricsTests(unittest.TestCase):
             (root / "a/f").rename(root / "a/g")
             self.assertEqual(len({first, second, b.tree_sha256(root / "a")}), 3)
 
+    def test_harness_hash_covers_python_cli_safe_and_canned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            for name, text in (("a.py", "x"), ("cli_safe.json", "{}"), ("canned/s/tool.json", "{}"),
+                               ("README.md", "doc"), ("__pycache__/a.cpython.pyc", "c"), ("results/r/result.json", "r")):
+                (here / name).parent.mkdir(parents=True, exist_ok=True)
+                (here / name).write_text(text)
+            first = b.harness_sha256(here)
+            for name in ("README.md", "__pycache__/a.cpython.pyc", "results/r/result.json"):
+                (here / name).write_text("changed")
+            self.assertEqual(b.harness_sha256(here), first)
+            seen = {first}
+            for name in ("a.py", "cli_safe.json", "canned/s/tool.json", "canned/s/cli/new.json", "b.py"):
+                with self.subTest(changed=name):
+                    (here / name).parent.mkdir(parents=True, exist_ok=True)
+                    (here / name).write_text("changed " + name)
+                    value = b.harness_sha256(here)
+                    self.assertNotIn(value, seen)
+                    seen.add(value)
+        self.assertEqual(b.harness_sha256(), b.harness_sha256(b.HERE))
+
     def test_skills_come_from_treatment_root(self):
         with tempfile.TemporaryDirectory() as directory:
             treatment, workspace = Path(directory, "t"), Path(directory, "w")

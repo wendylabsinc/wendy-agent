@@ -682,6 +682,7 @@ class ExecuteTests(unittest.TestCase):
         self.assertEqual(text.count("Usage unknown; charged the scenario reserve of $0.50."), 2)
         manifest = json.loads((output / "manifest.json").read_text())
         self.assertEqual(manifest["scenarios_sha256"], b.hashlib.sha256(self.scenarios.read_bytes()).hexdigest())
+        self.assertEqual(manifest["harness_sha256"], b.harness_sha256())
         self.assertEqual(manifest["config"]["targets"]["board"]["capabilities"], ["wifi"])
         self.assertEqual(manifest["run_vms"], {"generic": {"name": "wendy-eval-run", "device": "vm:wendy-eval-run"}})
         self.assertTrue((output / "bin/wendy").exists() and (output / "tools.json").exists())
