@@ -62,3 +62,21 @@ func TestCatalogueControlMalformedFragmentsAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClosedCatalogueHubAllowsReentrantPeerCleanup(t *testing.T) {
+	hub := NewControlHub()
+	hub.Close()
+	done := make(chan struct{})
+	go func() {
+		hub.Add(ControlPeer{ID: 1}, func(context.Context, []byte) error { return nil }, func() {
+			// Transport cleanup may remove its endpoint from the same hub.
+			hub.Remove(1)
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("late peer registration deadlocked transport cleanup")
+	}
+}

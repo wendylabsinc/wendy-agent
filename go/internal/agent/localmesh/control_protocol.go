@@ -53,11 +53,12 @@ func (h *ControlHub) Certificates() *CertificatePool { return h.certificates }
 func (h *ControlHub) Events() <-chan ControlEvent    { return h.events }
 func (h *ControlHub) Add(p ControlPeer, send func(context.Context, []byte) error, closePeer func()) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.closed {
+		h.mu.Unlock()
 		closePeer()
 		return
 	}
+	defer h.mu.Unlock()
 	h.peers[p.ID] = controlEndpoint{p, send, closePeer}
 	select {
 	case h.events <- ControlEvent{Peer: p}:
