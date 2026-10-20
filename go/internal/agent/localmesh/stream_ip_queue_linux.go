@@ -191,6 +191,13 @@ func (q *streamIPSendQueue) sourceBytes(source [16]byte) int {
 }
 
 func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
+	// TCP retransmissions can arrive after a later segment. Preserve the
+	// earliest logical prefix in that flow, including when it arrives later.
+	for i := len(q.pending) - 1; i >= 0; i-- {
+		if tcpQueuedBefore(incoming.data, q.pending[i].data) {
+			return i
+		}
+	}
 	// Preserve each sender's admitted prefix within a priority class. Replacing
 	// it with each later datagram can discard the start of every TLS flight.
 	// Existing priority reservation may displace bulk tails, but an arrival
