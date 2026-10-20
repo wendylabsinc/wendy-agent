@@ -373,15 +373,6 @@ func proofCloudNotificationRequest() *cloudpb.CreateNotificationV2Request {
 
 const deviceProofTestCertificateSerial = "01a2b3c4d5e6f708"
 
-// The two identity spellings the canonical preimage has to cover. The int URN is
-// what a device signs today; the UUID URN is the shape WDY-2808 moves every
-// boundary to. Both are lowercase because Cloud's parser re-renders a parsed
-// uuid and compares, so an upper-case variant is rejected, not accepted as a
-// second spelling.
-// deviceProofV2FullMethod is Cloud's 2.0 verifier method name. It is defined
-// here rather than in the package because this agent does not invoke it: the
-// generated client calls wendycloud.v1, so v1 is what a device signs. It exists
-// so the fixture can pin the bytes Cloud will verify once wendyos migrates.
 func TestCloudNotificationRequestV2MapsTrustedAppAndAudience(t *testing.T) {
 	request := proofCloudNotificationRequest()
 	request.Audience.UserIds = []string{"user-1"}
@@ -438,6 +429,8 @@ func TestValidateNotificationDevicePrincipal(t *testing.T) {
 	}
 }
 
+// Pin the historical v2 header-proof preimage for compatibility. ACME forwarding
+// uses the v2 service over device mTLS without these legacy proof headers.
 const deviceProofV2FullMethod = "wendycloud.v2.NotificationService/CreateNotificationV2"
 
 const (

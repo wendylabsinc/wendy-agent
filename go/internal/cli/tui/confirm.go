@@ -21,10 +21,17 @@ type ConfirmModel struct {
 	// danger renders the question in the error (red) style to flag a
 	// security-sensitive decision the user must look at carefully.
 	danger bool
+	// compact uses a single [y/N] hint and ignores option navigation.
+	compact bool
 }
 
 func NewConfirm(question string) ConfirmModel {
 	return ConfirmModel{Question: question}
+}
+
+// NewConfirmDefaultNo builds a compact prompt defaulting to No.
+func NewConfirmDefaultNo(question string) ConfirmModel {
+	return ConfirmModel{Question: question, compact: true}
 }
 
 func NewConfirmDefaultYes(question string) ConfirmModel {
@@ -64,19 +71,19 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.answered = true
 			return m, tea.Quit
 		case "left", "h":
-			if m.requireExplicit {
+			if m.requireExplicit || m.compact {
 				return m, nil
 			}
 			m.choice = true
 			return m, nil
 		case "right", "l":
-			if m.requireExplicit {
+			if m.requireExplicit || m.compact {
 				return m, nil
 			}
 			m.choice = false
 			return m, nil
 		case "tab":
-			if m.requireExplicit {
+			if m.requireExplicit || m.compact {
 				return m, nil
 			}
 			m.choice = !m.choice
@@ -100,6 +107,10 @@ var (
 func (m ConfirmModel) View() string {
 	if m.answered || m.quitting {
 		return ""
+	}
+
+	if m.compact {
+		return fmt.Sprintf("%s %s\n", confirmQuestion.Render(m.Question), confirmHint.Render("[y/N]"))
 	}
 
 	if m.requireExplicit {
@@ -163,6 +174,12 @@ func runConfirm(m ConfirmModel, programOpts []tea.ProgramOption) (bool, error) {
 // tea.WithInput / tea.WithOutput).
 func Confirm(question string, programOpts ...tea.ProgramOption) (bool, error) {
 	return runConfirm(NewConfirm(question), programOpts)
+}
+
+// ConfirmDefaultNo runs a compact [y/N] prompt defaulting to No.
+// Pass the question without the [y/N] suffix. Returns ErrCancelled on Ctrl+C / q.
+func ConfirmDefaultNo(question string, programOpts ...tea.ProgramOption) (bool, error) {
+	return runConfirm(NewConfirmDefaultNo(question), programOpts)
 }
 
 // ConfirmDefaultYes runs a styled yes/no prompt defaulting to Yes.

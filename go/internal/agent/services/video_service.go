@@ -203,9 +203,33 @@ func bestDefaultFrameSize(fd int, pixfmt uint32) (uint32, uint32) {
 	return fallbackW, fallbackH
 }
 
+// frameSizeProbeFormats lists the pixel formats worth asking a camera about when
+// enumerating its frame sizes: every raw format the capture path can actually
+// negotiate (rawPixelFormats), plus MJPEG.
+//
+// It used to be a hardcoded {YUYV, MJPEG}. A camera offering neither answered
+// nothing, so the agent concluded it had no sizes at all — and a thermal module
+// offers neither: a FLIR Lepton behind a PureThermal advertises Y16, UYVY and
+// GREY. Zero dimensions then propagate: the caps get no width or height, the
+// GStreamer pipeline has nothing to negotiate with, no frame ever arrives, and
+// the raw tap is declined for "no discrete frame size". rawPixelFormats already
+// names the formats the tap handles, Y16 among them, so the two lists were
+// describing the same capability and disagreeing about it.
+//
+// A camera offering YUYV or MJPEG still takes its default size from those (see
+// bestDefaultFrameSizeAcrossFormats), so the webcam path is unchanged.
+func frameSizeProbeFormats() []uint32 {
+	formats := make([]uint32, 0, len(rawPixelFormats)+1)
+	for _, f := range rawPixelFormats {
+		formats = append(formats, f.v4l2)
+	}
+	return append(formats, v4l2PixFmtMJPEG)
+}
+
 // bestDefaultFrameSizeForDevice opens path just long enough to ask what the
-// camera can do, and returns the largest discrete size across the pixel formats
-// the GStreamer path can negotiate. (0,0) when the device cannot be opened or
+// camera can do, and returns the largest discrete size in the pixel formats the
+// GStreamer path can negotiate (bestDefaultFrameSizeAcrossFormats says which
+// formats count). (0,0) when the device cannot be opened or
 // advertises nothing discrete, in which case the caller leaves caps unset and
 // gets the old behaviour.
 //
@@ -222,14 +246,33 @@ var bestDefaultFrameSizeForDevice = func(path string) (uint32, uint32) {
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
-	var bestW, bestH uint32
-	for _, pixfmt := range []uint32{v4l2PixFmtYUYV, v4l2PixFmtMJPEG} {
-		w, h := bestDefaultFrameSize(fd, pixfmt)
-		if uint64(w)*uint64(h) > uint64(bestW)*uint64(bestH) {
-			bestW, bestH = w, h
+	return bestDefaultFrameSizeAcrossFormats(func(pixfmt uint32) (uint32, uint32) {
+		return bestDefaultFrameSize(fd, pixfmt)
+	})
+}
+
+// bestDefaultFrameSizeAcrossFormats picks the default size from sizeFor, which
+// answers bestDefaultFrameSize for one pixel format. Split from the device open
+// so tests can describe a camera's formats without a V4L2 node.
+//
+// YUYV and MJPEG are asked first, and the wider frameSizeProbeFormats only when
+// neither offers anything. Taking the largest across every format at once would
+// move cameras that already had a default: one offering a bigger mode only in
+// GREY would switch to it, and the raw tap would then pin GRAY8.
+func bestDefaultFrameSizeAcrossFormats(sizeFor func(pixfmt uint32) (uint32, uint32)) (uint32, uint32) {
+	for _, formats := range [][]uint32{{v4l2PixFmtYUYV, v4l2PixFmtMJPEG}, frameSizeProbeFormats()} {
+		var bestW, bestH uint32
+		for _, pixfmt := range formats {
+			w, h := sizeFor(pixfmt)
+			if uint64(w)*uint64(h) > uint64(bestW)*uint64(bestH) {
+				bestW, bestH = w, h
+			}
+		}
+		if bestW > 0 && bestH > 0 {
+			return bestW, bestH
 		}
 	}
-	return bestW, bestH
+	return 0, 0
 }
 
 // deviceSupportsMJPEGSize reports whether the device advertises MJPEG output at
@@ -899,6 +942,10 @@ type VideoService struct {
 	links       *ipcam.LinkManager
 	loopback    cameraLoopback
 	ros2Cameras *ros2camera.Manager
+	// sensorFrames carries SensorLink camera frames to the hub in-process, so
+	// the hub never opens an MCU-band node (see sensorlink_camera_feed.go). Nil
+	// in tests and builds without sensor pairing, which read the node as before.
+	sensorFrames *SensorFrameFeed
 
 	// twoPlaneState holds the two-plane camera data path's nodes and pumps.
 	twoPlaneState
@@ -1027,6 +1074,9 @@ func NewVideoService(ctx context.Context, logger *zap.Logger, pool *rtps.Pool, r
 		logger.Warn("loading camera controls failed", zap.Error(err))
 	}
 	svc.discoverer = ipcam.NewDiscoverer(svc.registry, logger)
+	// ONVIF stream-path lookups use the same login `camera login` stored, so a
+	// camera that protects ONVIF still tells us its paths once it has one.
+	svc.discoverer.Credentials = svc.credentials.Get
 	svc.links = ipcam.NewLinkManager(svc.registry, logger)
 	svc.runGStreamer = svc.gstreamerFrames
 	svc.cameraReachable = ipcam.Reachable
@@ -1952,26 +2002,14 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 		// holding a decoded frame, so there is nothing raw to offer.
 		h.rawNotOffered("network cameras deliver encoded video only")
 		err = s.runIPProducer(ctx, broadcast, path, req)
-	} else {
-		transport, _ := s.classifyTransport(filepath.Base(path))
-		libcameraID := s.lookupLibcameraID(ctx, transport)
-
-		// Re-assert any persisted exposure/gain before the pipeline opens the
-		// node, so a stream reconnect does not revert to the firmware default.
-		s.applyStoredCameraControls(path)
-
-		// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
-		// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
-		// nvarguscamerasrc on Jetson).
-		if transport == camera.TransportCSI {
-			s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
-			// The ISP pipeline (libcamerasrc / Argus) produces processed video for
-			// the encoder; the sensor's own frames never reach the agent as bytes.
-			h.rawNotOffered("CSI cameras are captured through the ISP pipeline; raw frames are not offered")
-			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID, pipeWireSource{}, noRawSink{})
-		} else {
-			err = s.captureLocalCamera(ctx, broadcast, path, req, transport, libcameraID, h)
+	} else if s.sensorFrames != nil && isSensorLinkCameraPath(path) {
+		err = s.streamSensorLinkCamera(ctx, broadcast, path, req, h)
+		if errors.Is(err, errSensorFeedNotJPEG) {
+			s.logger.Info("SensorLink camera sends H.264, reading its node", zap.String("device", path))
+			err = s.captureNode(ctx, broadcast, path, req, h)
 		}
+	} else {
+		err = s.captureNode(ctx, broadcast, path, req, h)
 	}
 	if err != nil && ctx.Err() == nil {
 		s.logger.Error("video producer exited with error", zap.String("device", path), zap.Error(err))
@@ -2004,6 +2042,28 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	// Signal that the device fd is fully released. getOrCreateHub waits on
 	// this before opening a new producer to avoid EBUSY on reconnect.
 	close(h.done)
+}
+
+// captureNode captures a camera by opening its /dev/video node.
+func (s *VideoService) captureNode(ctx context.Context, broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, h *deviceHub) error {
+	transport, _ := s.classifyTransport(filepath.Base(path))
+	libcameraID := s.lookupLibcameraID(ctx, transport)
+
+	// Re-assert any persisted exposure/gain before the pipeline opens the
+	// node, so a stream reconnect does not revert to the firmware default.
+	s.applyStoredCameraControls(path)
+
+	// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
+	// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
+	// nvarguscamerasrc on Jetson).
+	if transport == camera.TransportCSI {
+		s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
+		// The ISP pipeline (libcamerasrc / Argus) produces processed video for
+		// the encoder; the sensor's own frames never reach the agent as bytes.
+		h.rawNotOffered("CSI cameras are captured through the ISP pipeline; raw frames are not offered")
+		return s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID, pipeWireSource{}, noRawSink{})
+	}
+	return s.captureLocalCamera(ctx, broadcast, path, req, transport, libcameraID, h)
 }
 
 // captureLocalCamera reads a USB/unknown camera, preferring the cheapest source: raw V4L2
@@ -2155,7 +2215,7 @@ func deviceAdvertisesFrameSize(path string, w, h uint32) (advertised, known bool
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
-	for _, pixfmt := range []uint32{v4l2PixFmtYUYV, v4l2PixFmtMJPEG} {
+	for _, pixfmt := range frameSizeProbeFormats() {
 		for index := uint32(0); index < 64; index++ {
 			fse := v4l2FrmSizeEnum{Index: index, PixelFormat: pixfmt}
 			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,

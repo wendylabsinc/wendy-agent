@@ -5,19 +5,13 @@ For users who do not yet know Wendy or have its CLI, the skills-only
 local hardware, a simulator, or an existing hosted connection. It can be used
 before any Wendy MCP server is connected. Hosted use needs no local CLI.
 
-`wendy mcp setup chatgpt` creates the local ChatGPT package and personal
-marketplace with a restricted first-run policy. `--connection both --app-id
-<registered-MCP-app-id>` adds a separate hosted package bound to an existing
-registered connection. The broader developer server is opt-in through
-`--developer-tools`. See the [ChatGPT setup instructions](wendy-chatgpt/README.md).
-
-The separate [Wendy ChatGPT robot plugin](wendy-chatgpt/README.md) provides a
-robot panel, scoped device operations, and reviewed app tools. Its gateway is
-configured separately from the agentic coding skill groups below.
+The [Wendy ChatGPT plugin](wendy-chatgpt/README.md) is the hosted plugin. It
+reaches devices through the Cloud relay and a `wendy cloud mcp` session, and is
+packaged separately from the agentic coding skill groups below.
 
 `wendy-agentic-coding` is the single end-user group. It covers CLI and MCP setup,
-device installation and first boot, app creation, deployment, debugging, and
-robot verification. Its `skills/` directory is the source for both the plugin
+device installation and first boot, app creation, deployment, debugging, Wendy
+Data campaigns and recordings, and robot verification. Its `skills/` directory is the source for both the plugin
 and the CLI's bundled skills. Edit skills there and run:
 
 ```sh
@@ -28,6 +22,14 @@ python3 scripts/sync-agent-skills.py --check
 `skill-group.json` lists the complete group. Setup installs only those entries,
 including their references, regardless of what other skills the CLI embeds.
 CI checks the manifest against the plugin directory and generated CLI copies.
+
+[`wendy-data`](wendy-agentic-coding/skills/wendy-data/SKILL.md) covers source
+selection, campaign capture and triggers, episode verification, application
+recording streams, and model detection. The same workflow ships to Claude Code,
+Codex, Wendy Chat, and the OpenAI/ChatGPT bundles. It distinguishes local CLI
+operations from the narrower hosted gateway tools; installing a skill does not
+add missing tools or connect a device. Start with the
+[Wendy Data guide](https://docs.wendy.dev/latest/data/).
 
 The sync script also builds one `wendy` bundle for the ChatGPT plugin and MCP
 server. It includes the whole end-user group under `references/skills/`, with
@@ -62,6 +64,8 @@ The installer preserves pre-existing or edited skill files and reports conflicts
 It does not manage Claude's private plugin registry. The optional
 `wendy-agentic-coding` plugin packages these same skills for plugin installation.
 Choose CLI-managed skills or the plugin to avoid duplicate skill entries.
+The Claude Code plugin also starts `wendy mcp serve` from the `wendy` on `PATH`,
+so remove a `wendy` server added by `wendy mcp setup` to avoid duplicate tools.
 
 `wendy-engineering` is a separate, opt-in group for changing Wendy itself. It
 holds repository orientation, PR workflows, and implementation debugging. CLI

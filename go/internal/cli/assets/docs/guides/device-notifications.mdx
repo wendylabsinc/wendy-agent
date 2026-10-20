@@ -17,8 +17,9 @@ and there is currently no `wendy notification send` CLI command.
 You need:
 
 1. A Wendy device enrolled in the recipients' Wendy Cloud organization.
-2. An app that exists in the organization's Cloud Apps catalog. On Cloud v2,
-   `wendy run` registers the app before deploying it.
+2. An app that exists in the organization's Cloud Apps catalog and is deployed
+   and running on that device. On Cloud v2, `wendy run` registers the catalog
+   entry; it does not create the Cloud deployment assignment.
 3. The `notifications` app entitlement.
 4. The app's Cloud Notification grant enabled.
 5. Recipients with [Wendy Companion installed from the App Store](https://apps.apple.com/app/wendy-companion/id6761771159)
@@ -62,13 +63,14 @@ Notification sending**
 The app page has this form:
 
 ```text
-https://cloud.wendy.sh/organizations/<org-id>/apps/<app-id>
+https://cloud.wendy.dev/organizations/<org-id>/apps/<app-id>
 ```
 
 Wendy super-admins can also change the grant. The card controls the app's
-`can_send_notifications` Cloud grant. This is an organization-wide grant for
-that trusted app ID; a deployment assignment is not required. On Cloud v2,
-redeploy a local-only app with `wendy run` to register it in the Apps catalog.
+`can_send_notifications` Cloud grant. The app must also be assigned and running
+on the sending device. On Cloud v2, `wendy run` registers the Apps catalog
+entry but does not create that assignment; deploy the app through Cloud to
+meet the device assignment requirement.
 
 ### Offline or air-gapped deployments
 

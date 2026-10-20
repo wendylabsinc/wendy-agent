@@ -165,9 +165,17 @@ The WASM worker follows the CLI's flow:
 - A CSR and operator certificate from `identity.dev.pki.wendy.sh`.
 - Refresh-token rotation to the Cloud API resource, then paginated v2 device discovery.
 
-The worker saves the private key, certificates, profile, and refresh token in
-IndexedDB for this browser origin. Reloading or reopening the browser restores
-the same certificate, and expired access tokens are refreshed. These credentials
+The worker saves the certificates, profile, and refresh token in IndexedDB for
+this browser origin, and the operator key the way the Wendy console does: its
+ML-DSA-65 seed, AES-GCM-encrypted under a non-extractable WebCrypto key stored
+beside it, with the tenant and operator as additional data so a seed moved into
+another operator's record does not decrypt. The seed is decrypted only inside
+the worker on restore, crosses into the WASM module as bytes that are zeroed
+once copied, and is never a JS string. This protects the key at rest, not
+against script running in this origin, which can call the same decrypt. A
+record saved before this held the key in plaintext; the first restore rewraps it
+and removes the plaintext. Reloading or reopening the browser restores the same
+certificate, and expired access tokens are refreshed. These credentials
 are not sent to the UI thread or stored in localStorage. The
 same-origin `/api/wendy-auth` proxy forwards only allowlisted Wendy auth/PKI
 requests and Cloud grant signing keys; tokens and public CSRs pass through it, but private keys do not.
@@ -231,6 +239,54 @@ Hosted Cloud discovery additionally needs a trusted WSS Cloud relay and its
 configuration in the worker. Until these exist, the hosted UI explains the local
 sign-in requirement. It does not pretend to be signed in or substitute fake data.
 
+## Embedding the signer
+
+Other Wendy pages (the Cloud console) run this worker to sign in and sign
+with the operator key. Each release publishes `wendy-web-<version>.tar.gz`:
+the worker, `wendy-credentials.js`, `wasm_exec.js`, `wendy.wasm.gz` and a
+`MANIFEST` of sha256 sums. Serve the files from one directory on the page's own
+origin and start `new Worker("<dir>/wendy-worker.js?sha256=<hex>")`, with the
+MANIFEST's `wendy.wasm` line (the decompressed module) as the pin. A mismatch
+posts `{fatal: "sha256 mismatch"}` and nothing runs. MANIFEST's first line
+names the Go toolchain; `npm run build:wasm` with that toolchain at the
+release commit reproduces the pin.
+
+| Call | Params | Result |
+|---|---|---|
+| `init` | `browserauth.Settings` JSON | `true`; once, before sign-in. Services are then called directly, not through `/api/wendy-auth` |
+| `auth-begin` | `{redirect, email?, issuer?}`; `issuer` pins an organization's realm | authorize URL |
+| `auth-complete` | `{code, state, issuer}` | profile |
+| `auth-restore` | `{tenant?, subject?, refresh?}` | that organization's profile, or `null`; `refresh: true` always rotates the refresh token once and fails the restore if that exchange fails |
+| `credential` | `{tenant?}` | `{profile, algorithm, chainDER, accessToken, publicJWK}`; refreshes a token with under a minute left |
+| `sign` | `{tenant?, bytes: Uint8Array}` | `{signature: Uint8Array}` with the operator key |
+| `auth-signout` | `{tenant?}` | `true`; no tenant signs out of every organization |
+
+Call `init` once, first, before any sign-in, `credential` or `sign` call; a
+second `init` fails. Without it the worker keeps the development dashboard's
+defaults and its `/api/wendy-auth` proxy. Every service URL must be explicit
+HTTPS (the Cloud gRPC authority on port 443). There is no host allowlist, by
+design: the page owns this worker's origin and its saved sign-ins, and a
+self-hosted deployment names its own services. Saved sign-ins from another
+auth host do not restore.
+
+`sign` takes the bytes as the request's second argument, a non-empty
+`Uint8Array`; anything else fails with `Nothing to sign`. The bytes are signed
+as given, with no prefix.
+
+An `issuer` for `auth-begin` must be a Wendy auth realm,
+`<auth_base>/realms/<name>` on the configured auth host. The system realm is
+rejected, compared without case. The callback must return from that same realm;
+`auth-complete` with a different `issuer` fails, and sign-in must start again.
+
+Each organization keeps its own saved sign-in, keyed by tenant and operator.
+The operator key never leaves the worker. Cloud device sessions still require
+the local browser relay.
+
+Upgrading from an older wendy-web: its single `session` slot moves to its
+organization's slot on first load, and the old slot is removed. No action is
+needed. A legacy record without a tenant and operator is dropped, so that
+operator signs in again.
+
 ## Validation
 
 ```sh
@@ -238,6 +294,8 @@ sign-in requirement. It does not pretend to be signed in or substitute fake data
 go test -race ./go/internal/cli/browserauth
 node go/experiments/wasmgrpc/auth-worker.mjs
 node web-client/tests/credential-store.test.mjs
+node web-client/tests/wendy-web-bridge.test.mjs   # after npm run build:wasm
+GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth
 node --experimental-strip-types web-client/tests/telemetry.test.mjs
 node --experimental-strip-types --test web-client/tests/auth-proxy.test.mjs
 

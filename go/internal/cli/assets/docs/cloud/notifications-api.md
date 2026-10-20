@@ -159,8 +159,8 @@ the Wendy agent stamps `app_id` from trusted container state.
 
 | Field | Type | Description |
 |---|---|---|
-| `organization_id` | `optional int32` | Required for user-authenticated callers; omitted by provisioned devices. |
-| `audience` | `NotificationAudience` | Union of repeated `user_ids`, UUID `team_ids`, and `roles`; see below. |
+| `organization_id` | `optional int32` (v1), `optional string` (v2) | Required for user-authenticated callers; omitted by provisioned devices. |
+| `audience` | `NotificationAudience` | Union of repeated `user_ids`, `team_ids`, and `roles`; numeric team IDs on Cloud v1, UUIDs on Cloud v2. |
 | `title` | `string` | Notification title. |
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |

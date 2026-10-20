@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
@@ -21,6 +22,17 @@ import (
 // named a local VM, and quietly deploying to a cloud device instead would land
 // the app on an entirely different machine.
 var errSimulatorUnavailable = errors.New("simulator unavailable")
+
+var vmDetachSupportedFn = vm.DetachSupported
+
+func simulatorForegroundHint(name string, create bool) string {
+	command := fmt.Sprintf("'wendy vm start %s'", name)
+	if create {
+		command = fmt.Sprintf("'wendy vm create %s --profile generic', then %s", name, command)
+	}
+	return "Run " + command + " in a separate terminal and keep it open. " +
+		"Local app builds, managed robot simulators, and automatic port forwarding require macOS or Linux; on Windows, run Wendy inside WSL2."
+}
 
 // markSimulatorUnavailable tags err so resolveWithCloudFallback will not answer
 // it by deploying to a cloud device -- without stacking a second copy of the
@@ -83,6 +95,9 @@ func ensureSimulatorRunning(ctx context.Context, name string) (addr string, star
 		// candidate and would otherwise run for a VM that was never created.
 		return "", false, fmt.Errorf("%w: no VM named %q; create it with 'wendy vm create %s'",
 			errSimulatorUnavailable, name, name)
+	}
+	if !vmDetachSupportedFn() {
+		return "", false, fmt.Errorf("%w; %s", vm.ErrDetachUnsupported, simulatorForegroundHint(name, false))
 	}
 
 	// resolveVMSpec re-checks the winner, so this only has to find a candidate.
@@ -245,9 +260,6 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 	if choice == nil {
 		return nil, fmt.Errorf("no simulator selected")
 	}
-	if err := ensureQEMUFn(ctx); err != nil {
-		return nil, fmt.Errorf("%w: %w", errSimulatorUnavailable, err)
-	}
 
 	if choice.Create {
 		if err := createSimulator(choice.Name); err != nil {
@@ -261,6 +273,9 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 		// doing it twice printed "simulator unavailable: simulator
 		// unavailable: ...".
 		return nil, markSimulatorUnavailable(err)
+	}
+	if isLiteSimulator(choice.Name) {
+		return connectLiteSimulator(ctx, choice.Name, addr)
 	}
 	conn, err := awaitSimulator(ctx, choice.Name, addr, started)
 	if err != nil {
@@ -289,8 +304,8 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 // The caller must not be inside a Bubble Tea program -- the download runs its
 // own, and two cannot share a terminal.
 var createSimulator = func(name string) error {
-	if !vm.DetachSupported() {
-		return fmt.Errorf("%w: %w", errSimulatorUnavailable, vm.ErrDetachUnsupported)
+	if !vmDetachSupportedFn() {
+		return fmt.Errorf("%w: %w; %s", errSimulatorUnavailable, vm.ErrDetachUnsupported, simulatorForegroundHint(name, true))
 	}
 	if !isInteractiveTerminalFn() && !vmAssumeYes {
 		return fmt.Errorf("%w: no simulator yet; create one with 'wendy vm create %s'",
@@ -303,6 +318,14 @@ var createSimulator = func(name string) error {
 		if err != nil {
 			return err
 		}
+	}
+	if vm.IsLiteProfile(profile) {
+		store, err := vm.NewStore()
+		if err != nil {
+			return err
+		}
+		_, err = createLiteSimulator(context.Background(), store, wendymcp.SimulatorCreateOptions{Name: name, Profile: profile})
+		return err
 	}
 	if !vmAssumeYes && !confirmFn("Download the WendyOS simulator image and create a VM? This is a one-time download of a few hundred MB.") {
 		return ErrUserCancelled
@@ -332,6 +355,12 @@ func awaitSimulatorWith(ctx context.Context, name, addr string, booting bool,
 	label := fmt.Sprintf("Connecting to simulator %s...", name)
 	if booting {
 		label = fmt.Sprintf("Booting simulator %s (first boot under emulation takes a few minutes)...", name)
+	}
+	if isRobotTour(ctx) {
+		label = "Connecting to your robot..."
+		if booting {
+			label = "Starting your robot..."
+		}
 	}
 
 	var conn *grpcclient.AgentConnection

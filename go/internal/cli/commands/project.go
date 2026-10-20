@@ -37,7 +37,7 @@ var entitlementDescriptions = map[string]string{
 // same quality of discoverability `wendy project entitlements list --show-all`
 // already gives for entitlements.
 var frameworkDescriptions = map[string]string{
-	appconfig.FrameworkROS2: "ROS 2 runtime config (RMW implementation, distro, domain ID, discovery scope) — see `wendy docs ros2`",
+	appconfig.FrameworkROS2: "ROS 2 runtime config (RMW implementation, distro, domain ID, scope) — see `wendy docs ros2`",
 }
 
 func newProjectCmd() *cobra.Command {
