@@ -233,7 +233,9 @@ func TestSteadyIntervalRelaxUses45ms(t *testing.T) {
 		t.Fatalf("negotiated interval=%s err=%v, want 15ms", interval, err)
 	}
 	_, err = waitForLEUpdate(context.Background(), 0x0800, meshSteadyIntervalUnits, eventReader(
-		leConnectionUpdateCommand(0x0800, meshIntervalUnits),
+		// Keep the negative request distinct even when initial and steady
+		// traffic use the same preferred interval.
+		leConnectionUpdateCommand(0x0800, meshSteadyIntervalUnits+1),
 		statusPacket(0),
 		completePacket(0x0800, 36, 0, 400, 0),
 	))
