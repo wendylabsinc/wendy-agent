@@ -862,8 +862,11 @@ func (r *runtime) clientTLS(peer candidate) (*tls.Config, *meshid.Device, error)
 	firstContact := &firstContactSessionCache{}
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
-		Certificates:       []tls.Certificate{r.cfg.Credentials.Certificate},
-		InsecureSkipVerify: true, // VerifyConnection validates the device PKI below.
+		Certificates: []tls.Certificate{r.cfg.Credentials.Certificate},
+		// SECURITY: VerifyConnection below enforces current PKI trust, tenant
+		// and device identity on full and resumed handshakes. DNS-name
+		// verification cannot authenticate a device discovered by radio hint.
+		InsecureSkipVerify: true,
 		NextProtos:         []string{ALPN},
 		ClientSessionCache: firstContact,
 	}

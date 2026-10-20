@@ -30,10 +30,10 @@ You can also set it directly in `wendy.json`:
 
 Use `kernel` for low-level HCI socket access. Use `bluez` for standard Linux Bluetooth workflows through BlueZ.
 
-## Wendy net over Bluetooth
+## Wendy Net over Bluetooth
 
 The Wendy agent can use BLE as a low-bandwidth fallback link between enrolled
-wendy net devices. It discovers nearby peers automatically and carries routing
+Wendy Net devices. It discovers nearby peers automatically and carries routing
 and relay traffic over LE L2CAP credit-based channels secured with TLS 1.3.
 Compact advertisements identify the tenant and provide a peer hint; the agent
 verifies the complete device certificate and tenant before accepting a link.
@@ -41,7 +41,7 @@ Manual Bluetooth pairing is not required.
 
 This carrier is separate from Bluetooth discovery in the CLI device picker and
 from the peripheral commands below. Apps do not need a Bluetooth entitlement
-for the agent's own wendy net links. An app that accesses a sensor or other
+for the agent's own Wendy Net links. An app that accesses a sensor or other
 Bluetooth peripheral still needs its entitlement.
 
 ### Enable the BLE carrier
@@ -54,12 +54,21 @@ settings:
 { "ble": true }
 ```
 
+NAN and BLE can run independently or together. To enable both carriers, use:
+
+```json
+{ "nan": true, "ble": true }
+```
+
+Only devices enrolled in the same tenant can form links, even when other
+tenants' advertisements are visible nearby.
+
 Keep the configuration owned by the agent's system user, with no group or other
 write access, and restart `wendyos-agent.service` after editing it. The file and
 its directory must meet those ownership and permission requirements; a missing
-file leaves wendy net disabled.
+file leaves Wendy Net disabled.
 
-Use a WendyOS image with full wendy net support: the Linux Bluetooth stack must
+Use a WendyOS image with full Wendy Net support: the Linux Bluetooth stack must
 support LE L2CAP channels, and BlueZ must expose the adapter and LE advertising
 manager. The system agent also needs its normal TUN/routing privileges and raw
 Bluetooth socket access (`CAP_NET_ADMIN` and `CAP_NET_RAW`). Granting an app a
@@ -69,6 +78,24 @@ BLE has less capacity than the other carriers. Direct and multihop reliability,
 controller recovery and four-device operation remain under hardware validation.
 Keep an independent management connection during testing and inspect agent
 logs for discovery, authentication and controller errors.
+
+The agent detects adapter power loss even while discovery is paused and retries
+BLE provider startup after five seconds. Links can recover when the adapter is
+available again; the agent does not guarantee that a powered-off controller
+will turn back on. Peers attempt to reconnect after provider recovery.
+Scoped TLS tickets can survive that recovery within the running agent, subject
+to expiry and cache limits. A full agent restart discards them, and any
+reconnect may require a full authenticated handshake.
+
+Some controllers consume their connectable advertising set when a peer joins.
+After authenticated inbound admission, the agent requests an advertising refresh.
+Requests are coalesced and limited to once per second. A transient refresh error
+is tolerated; another admission can request a later refresh.
+
+The provider normally targets three simultaneous neighbours, with bounded
+connection attempts. This is an internal provider limit, not a CLI setting.
+BLE currently uses classical X25519 key exchange to keep handshake traffic
+small, while still verifying the enrolled device certificates and signatures.
 
 ## Scan for Devices
 
