@@ -12,74 +12,66 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"go.uber.org/zap"
-
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 func TestRuntimeRetryHistoryBoundsAndExpires(t *testing.T) {
-	r := &runtime{cfg: Config{TargetPeers: 3}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}}
-	for i := range 4096 {
-		device := fixtureDevice(fmt.Sprintf("00000000-0000-4000-8000-%012x", i))
-		if !r.claim(device) {
-			t.Fatal("released peer consumed active capacity")
-		}
-		r.release(device)
+	r := &runtime{}
+	for i := 0; i < 4096; i++ {
+		r.failedCandidate(candidate{address: fmt.Sprintf("02:00:00:%02X:%02X:%02X", i>>16&255, i>>8&255, i&255), addressType: "public"})
 	}
-	if len(r.nextAttempt) > 128 {
-		t.Fatalf("retry history retained %d distinct peers", len(r.nextAttempt))
-	}
-	for device := range r.nextAttempt {
-		r.nextAttempt[device] = time.Now().Add(-time.Second)
-	}
-	peer := candidate{hint: deviceHint(lowDevice), address: "02:00:00:00:00:01", addressType: "public", psm: DefaultPSM}
-	if !r.claimCandidate(peer) || len(r.nextAttempt) != 0 {
-		t.Fatalf("expired cooldowns block a new peer or remain retained: %d", len(r.nextAttempt))
-	}
-}
-
-func TestCandidateAdmissionKeepsEqualHintsDistinctAndBoundsRetries(t *testing.T) {
-	r := &runtime{cfg: Config{TargetPeers: 2}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}}
-	peer := func(i int) candidate {
-		return candidate{hint: deviceHint(lowDevice), addressType: "public", address: fmt.Sprintf("02:00:00:%02X:%02X:%02X", i>>16&255, i>>8&255, i&255)}
-	}
-	first, second := peer(1), peer(2)
-	if !r.claimCandidate(first) || !r.claimCandidate(second) || r.claimCandidate(peer(3)) {
-		t.Fatal("equal hints were merged or pending setup exceeded capacity")
-	}
-	r.releaseCandidate(first)
-	r.releaseCandidate(second)
-	if r.claimCandidate(first) {
-		t.Fatal("released radio bypassed its retry cooldown")
-	}
-	for i := 3; i < 4096; i++ {
-		p := peer(i)
-		if r.claimCandidate(p) {
-			r.releaseCandidate(p)
-		}
-	}
-	if len(r.pending) != 0 || len(r.radioRetry) > maxPeerRetryHistory {
-		t.Fatalf("pending=%d retry history=%d", len(r.pending), len(r.radioRetry))
+	if len(r.radioRetry) > maxPeerRetryHistory {
+		t.Fatal("unbounded failure history")
 	}
 	for key := range r.radioRetry {
 		r.radioRetry[key] = time.Now().Add(-time.Second)
 	}
-	if !r.claimCandidate(peer(4096)) || len(r.radioRetry) != 0 {
-		t.Fatal("expired radio attempts prevented a new candidate")
+	r.expireRadioRetries(time.Now())
+	if len(r.radioRetry) != 0 {
+		t.Fatal("expired retries retained")
 	}
-	r.releaseCandidate(peer(4096))
+}
+
+func TestCandidateAdmissionKeepsEqualHintsDistinctAndBoundsRetries(t *testing.T) {
+	r := &runtime{cfg: Config{Credentials: &localmesh.Credentials{Device: selfFixture}}}
+	first := candidate{hint: deviceHint(lowDevice), address: "02:00:00:00:00:01", addressType: "public"}
+	second := first
+	second.address = "02:00:00:00:00:02"
+	a := r.reserveCandidate(first)
+	if a == nil || r.reserveCandidate(second) != nil {
+		t.Fatal("outgoing attempt budget not enforced")
+	}
+	if !a.Ready(lowFixture, func() {}) {
+		t.Fatal("ready failed")
+	}
+	b := r.reserveCandidate(second)
+	if b == nil {
+		t.Fatal("equal prefixes merged distinct addresses")
+	}
+	b.Release()
+	a.Release()
+	r.failedCandidate(first)
+	if r.reserveCandidate(first) != nil {
+		t.Fatal("failure bypassed cooldown")
+	}
+	if l := r.reserveCandidate(second); l == nil {
+		t.Fatal("failed peer blocked another address")
+	} else {
+		l.Release()
+	}
 	r.known[first.key()] = lowFixture
-	r.active[lowFixture] = struct{}{}
-	if r.claimCandidate(first) {
-		t.Fatal("known active principal was dialed again")
-	}
-	delete(r.active, lowFixture)
 	first.hint[0]++
-	if !r.claimCandidate(first) {
-		t.Fatal("changed discovery hint could not start fresh authentication")
+	for key := range r.radioRetry {
+		r.radioRetry[key] = time.Now().Add(-time.Second)
+	}
+	if l := r.reserveCandidate(first); l == nil {
+		t.Fatal("changed prefix could not authenticate")
+	} else {
+		l.Release()
 	}
 	if _, exists := r.known[first.key()]; exists {
-		t.Fatal("changed radio hint retained a previous principal pin")
+		t.Fatal("changed prefix retained old principal pin")
 	}
 }
 
@@ -131,20 +123,22 @@ func TestBlueZOwnerChangeRequiresProviderRestart(t *testing.T) {
 }
 
 func TestRuntimeClaimsTargetAndSuppressesDuplicate(t *testing.T) {
-	r := &runtime{cfg: Config{TargetPeers: 3}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}}
-	peers := []meshid.Device{fixtureDevice("00000000-0000-4000-8000-000000000001"), fixtureDevice("00000000-0000-4000-8000-000000000002"), fixtureDevice("00000000-0000-4000-8000-000000000003")}
-	fourth := fixtureDevice("00000000-0000-4000-8000-000000000004")
-	for _, device := range peers {
-		if !r.claim(device) {
-			t.Fatalf("could not claim %s", device.UUID())
+	r := &runtime{cfg: Config{Credentials: &localmesh.Credentials{Device: selfFixture}}}
+	p := r.connectionPolicy()
+	var leases []*localmesh.ConnectionLease
+	for i := 0; i < localmesh.BLEMaxConnections; i++ {
+		l := p.Reserve(fmt.Sprint(i), numberedBLEDevice(i+1), false)
+		if l == nil {
+			t.Fatal("incoming capacity denied")
 		}
+		leases = append(leases, l)
 	}
-	if r.claim(peers[0]) || r.claim(fourth) {
-		t.Fatal("duplicate or fourth peer accepted")
+	if p.Reserve("fourth", lowFixture, false) != nil {
+		t.Fatal("fourth incoming accepted")
 	}
-	r.release(peers[0])
-	if !r.claim(fourth) {
-		t.Fatal("slot not reusable")
+	leases[0].Release()
+	if p.Reserve("replacement", lowFixture, false) == nil {
+		t.Fatal("released slot not reusable")
 	}
 }
 

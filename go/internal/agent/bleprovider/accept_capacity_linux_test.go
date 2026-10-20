@@ -29,7 +29,7 @@ func (n *capacityTestNode) AttachStream(ctx context.Context, peer meshid.Device,
 // Unix sequenced packets substitute only for the Bluetooth listener's radio;
 // distinct fixture keys prove possession, while PKI trust has separate suites.
 func TestAcceptLoopHonorsConfiguredPeerCapacity(t *testing.T) {
-	const target = 16
+	const target = localmesh.BLEMaxConnections
 	self := fixtureDevice("00000001-1234-4000-8000-000000000001")
 	serverCert, _ := testTLSIdentity(t)
 	certificates := make([]tls.Certificate, target)
@@ -51,8 +51,8 @@ func TestAcceptLoopHonorsConfiguredPeerCapacity(t *testing.T) {
 		return localmesh.Identity{}, errors.New("untrusted fixture certificate")
 	}}
 	node := &capacityTestNode{attached: make(chan meshid.Device, target)}
-	r := &runtime{cfg: Config{Credentials: credentials, Node: node, NetworkName: "capacity-test", TargetPeers: target, Logger: zap.NewNop()},
-		active: make(map[meshid.Device]struct{}), nextAttempt: make(map[meshid.Device]time.Time), advertisementRefresh: make(chan struct{}, 1)}
+	r := &runtime{cfg: Config{Credentials: credentials, Node: node, NetworkName: "capacity-test", Logger: zap.NewNop()},
+		advertisementRefresh: make(chan struct{}, 1)}
 	if err := r.cfg.defaults(); err != nil {
 		t.Fatal(err)
 	}

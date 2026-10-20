@@ -35,8 +35,8 @@ func TestAuthenticatedInboundRadioSuppressesEqualHintRedial(t *testing.T) {
 		return localmesh.Identity{Device: peer}, nil
 	}}
 	node := &refreshTestNode{attached: make(chan struct{})}
-	r := &runtime{cfg: Config{Credentials: credentials, Node: node, TargetPeers: 3, Logger: zap.NewNop()},
-		active: make(map[meshid.Device]struct{}), nextAttempt: make(map[meshid.Device]time.Time), advertisementRefresh: make(chan struct{}, 1)}
+	r := &runtime{cfg: Config{Credentials: credentials, Node: node, Logger: zap.NewNop()},
+		advertisementRefresh: make(chan struct{}, 1)}
 	r.serverTLS = r.makeServerTLS()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -58,12 +58,10 @@ func TestAuthenticatedInboundRadioSuppressesEqualHintRedial(t *testing.T) {
 		t.Fatal("inbound fixture did not authenticate and attach")
 	}
 	candidate := candidate{hint: deviceHint(higher), address: radio.Address, addressType: "public", psm: DefaultPSM}
-	if !mayDial(candidate.hint, selfFixture) {
-		t.Fatal("fixture must exercise equal-hint discovery")
-	}
-	if r.claimCandidate(candidate) {
-		t.Error("already authenticated inbound radio reserved another dial slot")
-		r.releaseCandidate(candidate)
+
+	if l := r.reserveCandidate(candidate); l != nil {
+		l.Release()
+		t.Error("already authenticated preferred inbound reserved another dial slot")
 	}
 	cancel()
 	_ = b.Close()
@@ -76,15 +74,10 @@ func TestAuthenticatedInboundRadioSuppressesEqualHintRedial(t *testing.T) {
 	// A remembered radio is not permanent authorization or a direction ban.
 	// After the active link and cooldown end, certificate/UUID rotation must
 	// still reach authentication, even if its advertisement prefix is unchanged.
-	r.mu.Lock()
-	for device := range r.nextAttempt {
-		r.nextAttempt[device] = time.Now().Add(-time.Second)
-	}
-	for key := range r.radioRetry {
-		r.radioRetry[key] = time.Now().Add(-time.Second)
-	}
-	r.mu.Unlock()
-	if !r.claimCandidate(candidate) {
+	l := r.reserveCandidate(candidate)
+	if l == nil {
 		t.Fatal("inactive remembered radio could not reauthenticate")
 	}
+	l.Release()
+
 }

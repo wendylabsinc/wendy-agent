@@ -54,7 +54,7 @@ func (f *advertisementFreshness) observeReport(address, addressType string, data
 	}
 	if fields.servicePresent {
 		adv, err := ParseAdvertisement(fields.service, f.networkName)
-		if err != nil || !mayDial(adv.DeviceHint, f.self) {
+		if err != nil {
 			delete(f.seen, path)
 			for key := range f.partial {
 				if key.path == path {
@@ -90,7 +90,7 @@ func (f *advertisementFreshness) observeReport(address, addressType string, data
 	// that primary packet so a subsequent complete scan response can join it.
 	if fields.namePresent && !fields.shortened && !at.Before(parts.nameSeen) {
 		adv, err := ParseLocalName(fields.name, f.networkName)
-		if err != nil || !mayDial(adv.DeviceHint, f.self) {
+		if err != nil {
 			if !fields.tenant {
 				// Other apps can advertise different names on the same radio.
 				// Without our UUID in this report, ignore rather than withdraw

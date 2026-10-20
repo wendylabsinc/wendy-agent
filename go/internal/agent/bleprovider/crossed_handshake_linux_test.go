@@ -27,19 +27,17 @@ func (c *firstFlightConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
-func TestEqualHintCrossedHandshakesEstablishAuthorizedDirection(t *testing.T) {
+func TestEqualHintCrossedHandshakesAuthenticateBothDirections(t *testing.T) {
 	low := fixtureDevice("12345678-1234-4000-8000-000000000001")
 	high := fixtureDevice("12345678-1234-4000-8000-000000000002")
-	if !mayDial(deviceHint(low.UUID()), high) || !mayDial(deviceHint(high.UUID()), low) {
-		t.Fatal("fixture must allow both discovery directions")
-	}
+
 	lowCert, _ := testTLSIdentity(t)
 	highCert, _ := testTLSIdentity(t)
 	identities := map[string]meshid.Device{string(lowCert.Certificate[0]): low, string(highCert.Certificate[0]): high}
 	makeRuntime := func(device meshid.Device, cert tls.Certificate) *runtime {
 		credentials := &localmesh.Credentials{Device: device, Certificate: cert, Verify: func(chain [][]byte, _ time.Time) (localmesh.Identity, error) {
 			// The PKI suites cover chain trust. Here real TLS proves possession
-			// of each distinct fixture key and exercises admission/UUID ordering.
+			// of each distinct fixture key in both directions.
 			if len(chain) != 1 {
 				return localmesh.Identity{}, errors.New("missing fixture certificate")
 			}
@@ -49,8 +47,7 @@ func TestEqualHintCrossedHandshakesEstablishAuthorizedDirection(t *testing.T) {
 			}
 			return localmesh.Identity{Device: peer}, nil
 		}}
-		r := &runtime{cfg: Config{Credentials: credentials, Node: &refreshTestNode{attached: make(chan struct{})}, TargetPeers: 1, Logger: zap.NewNop()},
-			active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{},
+		r := &runtime{cfg: Config{Credentials: credentials, Node: &refreshTestNode{attached: make(chan struct{})}, Logger: zap.NewNop()},
 			tlsGate: newTLSHandshakeAdmission(), advertisementRefresh: make(chan struct{}, 1)}
 		r.serverTLS = r.makeServerTLS()
 		return r
@@ -97,19 +94,18 @@ func TestEqualHintCrossedHandshakesEstablishAuthorizedDirection(t *testing.T) {
 	var servers sync.WaitGroup
 	servers.Go(func() { a.acceptLink(ctx, aServer) })
 	servers.Go(func() { b.acceptLink(ctx, bServer) })
-	var authorized outcome
 	for range 2 {
 		result := <-results
-		if result.device == high {
-			authorized = result
-		} else if result.err == nil {
-			t.Error("lower device's outbound direction was accepted")
+		expected := low
+		if result.device == low {
+			expected = high
+		}
+		if result.err != nil || result.peer != expected {
+			t.Errorf("crossed authentication: peer=%s err=%v", result.peer.Principal(), result.err)
 		}
 	}
 	cancel()
 	clients.Wait()
 	servers.Wait()
-	if authorized.err != nil || authorized.peer != low {
-		t.Fatalf("crossed discovery prevented the authorized full-UUID link: peer=%s err=%v", authorized.peer.Principal(), authorized.err)
-	}
+
 }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -63,31 +64,10 @@ type lanInterface struct {
 	cost  uint16
 }
 
-type lanClaim struct {
-	asset meshid.Device
-	cost  uint16
-}
-
 type lanClaims struct {
-	mu     sync.Mutex
-	active map[lanClaim]bool
-}
-
-func (c *lanClaims) claim(asset meshid.Device, cost uint16) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	key := lanClaim{asset, cost}
-	if c.active[key] || len(c.active) >= 64 {
-		return false
-	}
-	c.active[key] = true
-	return true
-}
-
-func (c *lanClaims) release(asset meshid.Device, cost uint16) {
-	c.mu.Lock()
-	delete(c.active, lanClaim{asset, cost})
-	c.mu.Unlock()
+	policy     *ConnectionPolicy
+	candidates CandidateQueue
+	incoming   atomic.Uint64
 }
 
 func (i lanInterface) key() string {
@@ -110,7 +90,7 @@ func runLANWithScan(ctx context.Context, cfg LANConfig, scan func() ([]lanInterf
 	if cfg.Selection == nil {
 		cfg.Selection = NewPeerSelection(cfg.Node.Snapshot)
 	}
-	claims := &lanClaims{active: make(map[lanClaim]bool)}
+	claims := &lanClaims{policy: NewConnectionPolicy(cfg.Credentials.Device, true, ConnectionLimits{LANMaxOutgoing, LANMaxOutgoingAttempts, LANMaxConnections})}
 	health := &lanCarrierHealth{report: cfg.Status}
 	type worker struct {
 		cancel context.CancelFunc
@@ -298,23 +278,21 @@ func listenLANQUIC(ctx context.Context, selected lanInterface, address string) (
 	return (&net.ListenConfig{Control: bindToInterface(selected.iface.Name)}).ListenPacket(ctx, "udp4", address)
 }
 
-// Bound unauthenticated QUIC state before TLS allocates a connection. Slots are
-// held for the connection lifetime, including stalled/failed handshakes. Source
-// subnet and QUIC Retry are admission checks, never authentication.
-func lanIncomingContext(selected lanInterface) func(context.Context, *quic.ClientInfo) (context.Context, error) {
-	slots := make(chan struct{}, maxLANIncoming)
+// Reserve the shared LAN budget before TLS allocates a connection. The peer
+// stays unknown until verified TLS, so a spoofed hint cannot suppress its dials.
+// QUIC's connection context ends after failed handshakes and peer teardown.
+func lanIncomingContext(selected lanInterface, claims *lanClaims) func(context.Context, *quic.ClientInfo) (context.Context, error) {
 	return func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
 		source, ok := info.RemoteAddr.(*net.UDPAddr)
 		if !ok || selected.net == nil || !selected.net.Contains(source.IP) {
 			return nil, errors.New("LAN source outside selected interface subnet")
 		}
-		select {
-		case slots <- struct{}{}:
-			context.AfterFunc(ctx, func() { <-slots })
-			return ctx, nil
-		default:
+		lease := claims.policy.ReserveGroup(fmt.Sprintf("incoming:%d", claims.incoming.Add(1)), meshid.Device{}, false, strconv.Itoa(int(selected.cost)))
+		if lease == nil {
 			return nil, errors.New("LAN incoming connection limit")
 		}
+		context.AfterFunc(ctx, lease.Release)
+		return WithConnectionLease(ctx, lease), nil
 	}
 }
 
@@ -326,7 +304,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 	defer cancel()
 	defer socket.Close()
 	defer mdnsConn.Close()
-	transport := &quic.Transport{Conn: socket, ConnContext: lanIncomingContext(selected), VerifySourceAddress: func(net.Addr) bool { return true }}
+	transport := &quic.Transport{Conn: socket, ConnContext: lanIncomingContext(selected, claims), VerifySourceAddress: func(net.Addr) bool { return true }}
 	defer transport.Close()
 	tlsConfig, err := lanServerTLS(cfg.Credentials)
 	if err != nil {
@@ -376,18 +354,27 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 				fail(errors.New("LAN QUIC listener returned no authenticated connection"))
 				return
 			}
+			lease, _ := conn.Context().Value(connectionLeaseKey{}).(*ConnectionLease)
 			asset, err := lanAuthenticatedPeer(cfg.Credentials, conn.ConnectionState().TLS)
-			// Only the lower full identity initiates. Derive it after mTLS, so
-			// crossed/duplicate attempts and forged hints cannot choose the peer.
-			if err != nil || meshid.Compare(asset, cfg.Credentials.Device) >= 0 || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
+			if err != nil || lease == nil || !cfg.allow(asset, selected.cost) {
 				conn.CloseWithError(1, "LAN peer not admitted")
 				continue
 			}
+			// The first identity associated with this inbound lease is the
+			// authenticated full principal, never an mDNS address or preface.
+			lease.Identify(asset)
+			lease.Progress()
+			lease.ObserveReady(func() { claims.candidates.Succeeded(asset.Principal()) })
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				defer claims.release(asset, selected.cost)
-				_ = attachLAN(ctx, cfg, selected, asset, conn)
+				defer lease.Release()
+				defer func() {
+					if lease.WasReady() && !lease.Retired() && ctx.Err() == nil && cfg.allow(asset, selected.cost) && !cfg.Node.HasCheaperLink(asset, selected.cost) {
+						claims.candidates.Failed(asset.Principal(), time.Now())
+					}
+				}()
+				_ = attachLAN(WithConnectionLease(ctx, lease), cfg, selected, asset, conn)
 			}()
 		}
 	}()
@@ -407,20 +394,45 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 		if err != nil && ctx.Err() == nil && cfg.Logger != nil {
 			cfg.Logger.Debug("LAN mDNS query failed", zap.String("interface", selected.iface.Name), zap.Error(err))
 		}
+		byKey := make(map[string]*mdns.ServiceEntry)
+		var keys []string
 		for _, entry := range entries {
-			asset, ip, ok := parseLANEntry(entry, cfg.Credentials.Device)
-			if !ok || ctx.Err() != nil || selected.net == nil || !selected.net.Contains(ip) || cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
+			asset, _, ok := parseLANEntry(entry, cfg.Credentials.Device)
+			if !ok {
 				continue
 			}
+			key := asset.Principal()
+			if _, exists := byKey[key]; !exists {
+				keys = append(keys, key)
+			}
+			byKey[key] = entry
+		}
+		for _, candidateKey := range claims.candidates.Order(keys, time.Now()) {
+			entry := byKey[candidateKey]
+			asset, ip, ok := parseLANEntry(entry, cfg.Credentials.Device)
+			if !ok || ctx.Err() != nil || selected.net == nil || !selected.net.Contains(ip) || cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) {
+				continue
+			}
+			lease := claims.policy.ReserveGroup(asset.Principal()+"/"+strconv.Itoa(int(selected.cost)), asset, true, strconv.Itoa(int(selected.cost)))
+			if lease == nil {
+				continue
+			}
+			lease.ObserveReady(func() { claims.candidates.Succeeded(candidateKey) })
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				defer claims.release(asset, selected.cost)
+				defer lease.Release()
+				attemptCtx := WithConnectionLease(ctx, lease)
+				defer func() {
+					if ctx.Err() == nil && !lease.Retired() && cfg.allow(asset, selected.cost) && !cfg.Node.HasCheaperLink(asset, selected.cost) {
+						claims.candidates.Failed(candidateKey, time.Now())
+					}
+				}()
 				tlsConfig, err := cfg.Credentials.PeerTLSWithTickets(asset, LinkALPN, LinkQUICSessionScope)
 				if err != nil {
 					return
 				}
-				handshake, cancel := context.WithTimeout(ctx, 8*time.Second)
+				handshake, cancel := context.WithTimeout(attemptCtx, 8*time.Second)
 				conn, err := transport.Dial(handshake, &net.UDPAddr{IP: ip, Port: LANPort}, tlsConfig, QUICConfig())
 				cancel()
 				if err != nil {
@@ -429,7 +441,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 					}
 					return
 				}
-				if err := attachLAN(ctx, cfg, selected, asset, conn); err != nil && ctx.Err() == nil && cfg.Logger != nil {
+				if err := attachLAN(attemptCtx, cfg, selected, asset, conn); err != nil && ctx.Err() == nil && cfg.Logger != nil {
 					cfg.Logger.Debug("LAN peer link ended", zap.String("device", asset.Principal()), zap.Error(err))
 				}
 			}()
@@ -673,7 +685,7 @@ func parseLANEntry(entry *mdns.ServiceEntry, self meshid.Device) (meshid.Device,
 		fields[key] = value
 	}
 	device, err := meshid.DeviceFromPrincipal(fields["principal"])
-	if err != nil || device.Tenant() != self.Tenant() || fields["mesh"] != lanMeshHash(self.Tenant()) || fields["protocol"] != lanProtocol || meshid.Compare(device, self) <= 0 {
+	if err != nil || device.Tenant() != self.Tenant() || fields["mesh"] != lanMeshHash(self.Tenant()) || fields["protocol"] != lanProtocol || device == self {
 		return meshid.Device{}, nil, false
 	}
 	return device, ip, true

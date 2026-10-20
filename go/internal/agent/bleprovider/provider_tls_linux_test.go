@@ -35,9 +35,9 @@ func TestBLEServerRevalidatesResumedClient(t *testing.T) {
 	if err := config.VerifyConnection(state); err != nil {
 		t.Fatalf("valid resumed device rejected: %v", err)
 	}
-	state.PeerCertificates[0].Raw[0] = 0x04 // lower device is never BLE inbound
-	if err := config.VerifyConnection(state); err == nil {
-		t.Fatal("resumed lower device accepted")
+	state.PeerCertificates[0].Raw[0] = 0x04 // UUID order does not gate authenticated inbound peers
+	if err := config.VerifyConnection(state); err != nil {
+		t.Fatal("resumed lower device rejected")
 	}
 	state.PeerCertificates[0].Raw[0] = 0x60
 	valid = false // current trust/expiry check must still run on resumption
@@ -75,8 +75,8 @@ func TestBLEDiscoveryAuthenticatesFullUUIDWithCollidingHint(t *testing.T) {
 		}
 		peer[15] += 2
 		identity = meshid.NewDevice(testTenant, peer)
-		if err := config.VerifyConnection(state); err == nil {
-			t.Fatal("accepted higher UUID with same hint")
+		if err := config.VerifyConnection(state); err != nil {
+			t.Fatal("rejected higher UUID with same hint")
 		}
 		peer[15] -= 2
 		identity = meshid.NewDevice(otherTenant, peer)

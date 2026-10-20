@@ -245,7 +245,7 @@ func TestBLEFirstReconnectRevalidatesTrust(t *testing.T) {
 }
 
 func TestBLEFirstContactRejectsIdentityBeforeCaching(t *testing.T) {
-	for _, name := range []string{"other tenant", "self", "higher UUID", "wrong hint", "untrusted", "wrong ALPN", "missing ALPN"} {
+	for _, name := range []string{"other tenant", "self", "wrong hint", "untrusted", "wrong ALPN", "missing ALPN"} {
 		t.Run(name, func(t *testing.T) {
 			issue, high, low := resumptionCredentials(t)
 			client := &runtime{cfg: Config{Credentials: high}}
@@ -257,8 +257,6 @@ func TestBLEFirstContactRejectsIdentityBeforeCaching(t *testing.T) {
 				server.Certificates = []tls.Certificate{foreign.Certificate}
 			case "self":
 				server.Certificates = []tls.Certificate{high.Certificate}
-			case "higher UUID":
-				server.Certificates = []tls.Certificate{issue(peerFixture).Certificate}
 			case "wrong hint":
 				peer.hint[0] ^= 1
 			case "untrusted":

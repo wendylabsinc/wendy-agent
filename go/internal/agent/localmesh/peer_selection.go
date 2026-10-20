@@ -2,7 +2,6 @@ package localmesh
 
 import (
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -126,7 +125,7 @@ func (p *PeerSelection) HasLAN(asset meshid.Device) bool {
 	return false
 }
 
-// AllowLAN keeps every discovered LAN neighbor, preferring a cheaper carrier
+// AllowLAN admits eligible LAN candidates, preferring a cheaper carrier
 // only for the same principal. Ranking unrelated peers at both ends can form
 // a closed clique that permanently excludes another reachable device.
 // The LAN carrier separately bounds concurrent connections and handshakes.
@@ -145,10 +144,9 @@ func (p *PeerSelection) AllowLAN(asset meshid.Device, cost uint16) bool {
 	return true
 }
 
-// AllowRadio limits radio-only neighbors to three distinct principals. LAN
-// and configured TCP neighbors do not consume radio slots, so a populated
-// LAN can still connect to a different LAN through a radio-only neighbor.
-// A spare BLE link can provide failover while no other candidate needs it.
+// AllowRadio preserves preferences between carriers reaching the same peer.
+// Each provider independently limits outgoing attempts, outgoing connections
+// and total connections. Unrelated neighbours never share a radio budget.
 func (p *PeerSelection) AllowRadio(asset meshid.Device, medium RadioMedium) bool {
 	allow, _ := p.AllowRadioReason(asset, medium)
 	return allow
@@ -167,43 +165,14 @@ func (p *PeerSelection) AllowRadioReason(asset meshid.Device, medium RadioMedium
 	}
 	s := p.snapshot()
 	connected := make(map[meshid.Device]bool, len(s.Links))
-	lan := make(map[meshid.Device]bool)
-	radio := make(map[meshid.Device]bool)
 	otherRadio := false
 	for _, link := range s.Links {
 		connected[link.Device] = true
-		if link.Cost <= MaxLANCost {
-			lan[link.Device] = true
-		} else if link.Cost >= 512 {
-			radio[link.Device] = true
-		}
 		if link.Device == asset && link.Cost <= MaxLANCost {
 			return false, fmt.Sprintf("lan-supersedes(cost=%d)", link.Cost)
 		}
 		if link.Device == asset && ((medium == RadioNAN && link.Cost > 512) || (medium == RadioBLE && link.Cost == 512)) {
 			otherRadio = true
-		}
-	}
-	for device := range lan {
-		delete(radio, device)
-	}
-	if !radio[asset] && len(radio) >= 3 {
-		return false, fmt.Sprintf("peer-cap-no-slot(connected=%d)", len(radio))
-	}
-	if len(radio) > 3 {
-		// Concurrent radio handshakes can briefly exceed the hardware budget.
-		// Shed only excess radio-only neighbors, independently of LAN degree.
-		keep := make([]meshid.Device, 0, len(radio))
-		for candidate := range radio {
-			keep = append(keep, candidate)
-		}
-		sort.Slice(keep, func(i, j int) bool { return meshid.Compare(keep[i], keep[j]) < 0 })
-		selected := false
-		for _, candidate := range keep[:3] {
-			selected = selected || candidate == asset
-		}
-		if !selected {
-			return false, fmt.Sprintf("convergence-not-selected(connected=%d)", len(radio))
 		}
 	}
 	if !otherRadio {
@@ -214,9 +183,6 @@ func (p *PeerSelection) AllowRadioReason(asset meshid.Device, medium RadioMedium
 	// to a retained neighbor. BLE is shed only after NAN is authenticated.
 	if medium == RadioNAN {
 		return true, "preferred-radio"
-	}
-	if len(radio) >= 3 {
-		return false, fmt.Sprintf("second-radio-slots-full(connected=%d)", len(radio))
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

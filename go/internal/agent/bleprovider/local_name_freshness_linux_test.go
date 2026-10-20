@@ -134,7 +134,6 @@ func TestLocalNameRejectsWrongIdentityAndMalformedBinaryFallback(t *testing.T) {
 		"shortened name":                    append(bytes.Clone(u), adField(8, n[2:])...),
 		"truncated name":                    append(bytes.Clone(u), adField(9, n[2:len(n)-1])...),
 		"unknown version":                   append(bytes.Clone(u), adField(9, []byte(unknownName))...),
-		"higher UUID":                       func() []byte { u, n := nameFields(peerDevice, "field"); return append(u, n...) }(),
 		"malformed service with valid name": append(append(bytes.Clone(u), n...), adField(0x21, append(wireUUID(testTenant.UUID()), 0))...),
 		"legacy service with valid name":    append(append(bytes.Clone(u), n...), adField(0x21, append(wireUUID(testTenant.UUID()), make([]byte, 10)...))...),
 	}
@@ -361,9 +360,9 @@ func TestBlueZIneligibleBinaryClearsTextCorrelation(t *testing.T) {
 	if peers, _ := f.candidates(objects, at); len(peers) != 1 {
 		t.Fatal("missing initial text candidate")
 	}
-	// The newer binary identity is not dialable. A later name alone must not
+	// The newer binary payload is for another mesh. A later name alone must not
 	// join the tenant component from before that binary announcement.
-	adv, _ := NewAdvertisement(peerDevice, "field", DefaultPSM)
+	adv, _ := NewAdvertisement(peerDevice, "other-field", DefaultPSM)
 	raw, _ := adv.MarshalBinary()
 	f.observe(path, map[string]dbus.Variant{"ServiceData": dbus.MakeVariant(map[string]dbus.Variant{ServiceUUID(testTenant): dbus.MakeVariant(raw)})}, at.Add(time.Second))
 	f.observeReport("AA:BB:CC:DD:EE:01", "public", name, at.Add(2*time.Second))

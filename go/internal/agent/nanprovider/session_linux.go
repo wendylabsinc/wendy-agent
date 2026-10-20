@@ -47,6 +47,7 @@ const NANLinkCost uint16 = 512
 // instead of letting a caller restart that budget. It drains owned NDPs before
 // removing the NDI; the caller may retry initial setup and radio failures.
 type Provider struct {
+	neighbors   *nanNeighborRefs
 	Credentials *localmesh.Credentials
 	Node        LinkNode
 	Selection   *localmesh.PeerSelection
@@ -379,7 +380,8 @@ func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *
 		cancel context.CancelFunc
 		done   chan struct{}
 	}
-	running := map[meshid.Device]worker{}
+	running := map[radioWorkerKey]worker{}
+	p.neighbors = &nanNeighborRefs{}
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
@@ -398,7 +400,8 @@ func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *
 			radioDone <- err
 			return err
 		case peer := <-peers:
-			if previous, ok := running[peer.Device]; ok {
+			key := radioWorkerKey{peer.NMI, peer.ID, peer.Outgoing}
+			if previous, ok := running[key]; ok {
 				if previous.peer == peer {
 					continue
 				}
@@ -408,35 +411,29 @@ func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *
 				}
 				previous.cancel()
 				<-previous.done
-				delete(running, peer.Device)
+				delete(running, key)
 			}
-			if peer.NDI == "" || len(running) >= 3 || (p.Selection != nil && !p.Selection.AllowRadio(peer.Device, localmesh.RadioNAN)) {
+			if peer.NDI == "" || len(running) >= localmesh.NANMaxConnections || (p.Selection != nil && !p.Selection.AllowRadio(peer.Device, localmesh.RadioNAN)) {
 				continue
 			}
 			peerCtx, peerCancel := context.WithCancel(ctx)
 			done := make(chan struct{})
-			running[peer.Device] = worker{peer, peerCancel, done}
+			running[key] = worker{peer, peerCancel, done}
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
 				defer close(done)
 				defer peerCancel()
-				for peerCtx.Err() == nil {
-					err := p.attachPeer(peerCtx, id, peer, ndi, func(up bool) {
-						select {
-						case health <- radioHealth{Peer: peer, Up: up}:
-						case <-peerCtx.Done():
-						}
-					})
-					if err != nil && peerCtx.Err() == nil {
-						logger.Warn("NAN peer session failed", zap.String("device", peer.Device.UUID().String()), zap.Error(err))
-					}
+				err := p.attachPeer(peerCtx, id, peer, ndi, func(up bool) {
 					select {
-					case <-peerCtx.Done():
-						return
-					case <-time.After(3 * time.Second):
+					case health <- radioHealth{Peer: peer, Up: up}:
+					case <-ctx.Done():
 					}
+				})
+				if err != nil && peerCtx.Err() == nil {
+					logger.Warn("NAN peer session failed", zap.String("device", peer.Device.UUID().String()), zap.Error(err))
 				}
+
 			}()
 		}
 	}
@@ -512,6 +509,7 @@ func boundSocket(iface string) func(string, string, syscall.RawConn) error {
 }
 
 func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPeer, ndi netlink.Link, connected func(bool)) error {
+	defer connected(false)
 	mac, err := net.ParseMAC(peer.NDI)
 	if err != nil {
 		return err
@@ -525,22 +523,23 @@ func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPe
 		return err
 	}
 	neighbor := &netlink.Neigh{LinkIndex: ndi.Attrs().Index, IP: net.IP(remote.AsSlice()), HardwareAddr: mac, State: netlink.NUD_PERMANENT}
-	if err = netlink.NeighSet(neighbor); err != nil {
+	releaseNeighbor, err := p.neighbors.acquire(neighbor)
+	if err != nil {
 		return err
 	}
-	defer func() { _ = netlink.NeighDel(neighbor) }()
+	defer releaseNeighbor()
 	// Presence SSI only proposes a device UUID. The enrolled certificate pins
 	// the full device principal during this QUIC handshake.
 	tlsConfig, err := p.Credentials.PeerTLSWithTickets(peer.Device, localmesh.LinkALPN, localmesh.LinkQUICSessionScope)
 	if err != nil {
 		return err
 	}
-	initiator := meshid.Compare(id, peer.Device) < 0
-	lower := id.UUID()
+	initiator := peer.Outgoing
+	initiatorUUID := id.UUID()
 	if !initiator {
-		lower = peer.Device.UUID()
+		initiatorUUID = peer.Device.UUID()
 	}
-	port := 20000 + (int(lower[14])<<8|int(lower[15]))%40000
+	port := 20000 + (int(initiatorUUID[14])<<8|int(initiatorUUID[15]))%40000
 	localPort := 0
 	if !initiator {
 		localPort = port
@@ -554,6 +553,7 @@ func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPe
 	transport := &quic.Transport{Conn: udp}
 	defer transport.Close()
 	var conn *quic.Conn
+	peer.Lease.Progress()
 	if initiator {
 		dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -572,7 +572,7 @@ func (p Provider) attachPeer(ctx context.Context, id meshid.Device, peer radioPe
 		return fmt.Errorf("NAN QUIC peer %s: %w", peer.Device.UUID(), err)
 	}
 	defer conn.CloseWithError(0, "NAN path stopped")
-	connected(true)
-	defer connected(false)
-	return p.Node.AttachWithCost(ctx, peer.Device, conn, NANLinkCost)
+	peer.Lease.Progress()
+	peer.Lease.ObserveReady(func() { connected(true) })
+	return p.Node.AttachWithCost(localmesh.WithConnectionLease(ctx, peer.Lease), peer.Device, conn, NANLinkCost)
 }

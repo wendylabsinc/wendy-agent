@@ -23,10 +23,12 @@ type Config struct {
 	Node        StreamNode
 	NetworkName string
 	PSM         uint16                   // zero selects DefaultPSM
-	TargetPeers int                      // zero selects DefaultTargetPeers
 	AdapterPath string                   // empty selects the first advertising-capable BlueZ adapter
 	Selection   *localmesh.PeerSelection // shared authenticated LAN and radio diversity policy
-	Logger      *zap.Logger
+	// Policy may be shared with other consumers of the same physical adapter.
+	// A nil policy creates the standard router BLE limits.
+	Policy *localmesh.ConnectionPolicy
+	Logger *zap.Logger
 	// Status receives local setup readiness and discovery failures/recovery,
 	// not peer reachability. Discovery failures preserve established links.
 	// The optional callback must return promptly.
@@ -42,12 +44,6 @@ func (c *Config) defaults() error {
 	}
 	if !ValidPSM(c.PSM) {
 		return errors.New("BLE PSM must be an LE dynamic PSM (0x0080–0x00ff)")
-	}
-	if c.TargetPeers == 0 {
-		c.TargetPeers = DefaultTargetPeers
-	}
-	if c.TargetPeers < 1 || c.TargetPeers > 16 {
-		return errors.New("BLE target peers must be 1–16")
 	}
 	if c.Logger == nil {
 		c.Logger = zap.NewNop()

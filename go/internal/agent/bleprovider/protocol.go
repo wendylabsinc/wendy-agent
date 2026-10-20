@@ -3,7 +3,6 @@
 package bleprovider
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -21,9 +20,8 @@ const (
 	ALPN = localmesh.StreamALPN
 	// LinkCost keeps BLE available as a fallback while preferring TCP (256)
 	// and NAN (512) routes when they exist.
-	LinkCost           uint16 = 4096
-	DefaultPSM         uint16 = 0x0081
-	DefaultTargetPeers        = 3
+	LinkCost   uint16 = 4096
+	DefaultPSM uint16 = 0x0081
 	// AdvertisementSize leaves room for flags (3), ServiceData header (2),
 	// and the 128-bit tenant service UUID (16) in a legacy 31-byte packet.
 	AdvertisementSize         = 9
@@ -153,10 +151,5 @@ func matchingServiceData(data map[string][]byte, serviceUUID, networkName string
 	return Advertisement{}, false
 }
 
-// The leading bytes preserve UUID ordering only when hints differ. Equal
-// hints (common with UUIDv7) must reach TLS to compare the complete UUIDs.
+// The prefix is a discovery hint only; complete identity is checked by TLS.
 func deviceHint(device uuid.UUID) [4]byte { return [4]byte(device[:4]) }
-func mayDial(hint [4]byte, self meshid.Device) bool {
-	own := deviceHint(self.UUID())
-	return bytes.Compare(hint[:], own[:]) <= 0
-}

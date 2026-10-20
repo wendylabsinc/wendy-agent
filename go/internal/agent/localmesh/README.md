@@ -24,12 +24,11 @@ For a chosen test topology, configure both ends of each edge:
 }
 ```
 
-The lower device UUID initiates the connection. The listener checks the
-configured peer list, then QUIC mutual authentication pins the complete peer
-principal. The unauthenticated TCP preface is only an ordering/admission hint.
-The framed TCP carrier is an optional way to configure simulated graph edges.
-Automatically discovered Ethernet, infrastructure Wi-Fi, NAN and BLE attach to
-the same node through their own providers.
+Configured peers and discovered candidates are eligible regardless of UUID
+ordering. The listener checks the configured peer list, where applicable, and
+mutual TLS pins the full peer principal. The unauthenticated TCP preface is an
+identity hint, never authorization. The framed TCP carrier simulates graph
+topologies; automatically discovered LAN, NAN and BLE have their own providers.
 
 Production Ethernet and infrastructure Wi-Fi discovery uses native QUIC over
 IPv4 UDP port 43023, bound to each eligible physical interface and local address.
@@ -40,15 +39,15 @@ not compatible. Permit UDP port 43023 for neighbour QUIC and UDP port 5353 for m
 selected LAN. IPv6 LAN discovery is not added here. Wi-Fi Aware/NAN already
 uses native UDP QUIC and is unchanged.
 
-The lower full identity initiates. Outbound mTLS pins the discovered complete
+Either full identity may initiate. Outbound mTLS pins the discovered complete
 tenant/device principal. Inbound mTLS accepts an unknown enrolled same-tenant
 device, derives its identity only from the verified certificate chain and then
-checks ordering, selection, duplicate claims and the identity-bound link hello.
+checks selection, duplicate convergence and the identity-bound link hello.
 Discovery, source IP and hello do not authenticate a peer. Every handshake,
 including resumption, rechecks current trust and identity expiry. The unknown
 LAN listener has a separate bounded server ticket domain. QUIC Retry verifies
-source reachability; a 64-slot per-interface gate bounds incoming handshakes and
-live connections before TLS. Stalled handshakes retain a slot only until the
+source reachability; the shared 64-connection LAN policy bounds incoming
+handshakes and live connections before TLS across all interfaces. Stalled handshakes retain a slot only until the
 existing QUIC handshake timeout. No 0-RTT application data is accepted.
 
 Each interface owns a single UDP socket/QUIC transport shared by all its peers.
@@ -57,15 +56,48 @@ removal, cancellation or listener/mDNS failure closes the worker's endpoint,
 pending handshakes and attached links before restart. Existing link costs,
 control stream, carrier DATAGRAM framing, Babel/TUN and MTU remain unchanged.
 
-Discovered Ethernet and infrastructure Wi-Fi neighbors are not ranked against
-unrelated principals. Every eligible LAN edge can authenticate, subject to the
-carrier's existing 64-connection/handshake resource bound. A cheaper link replaces
-a slower link only to the same principal. Capping every node's LAN degree by
-UUID rank can form a closed clique and permanently exclude another reachable
-device. Radio-only neighbors have a separate three-principal budget; LAN and
-configured TCP neighbors do not consume those slots. When shedding duplicate
-radios to the same principal, an authenticated NAN link is retained before BLE
-is removed.
+Connection scheduling shares `ConnectionPolicy` and `CandidateQueue` across all
+providers, with separate limits:
+
+| Transport | Outgoing connections | Concurrent outgoing setup | Total incoming + outgoing |
+| --- | ---: | ---: | ---: |
+| BLE | 2 | 1 | 3 |
+| Wi-Fi Aware | 2 | 2 | 4 |
+| Ethernet + infrastructure Wi-Fi | 2 | 2 | 64 |
+
+Ethernet and infrastructure Wi-Fi share their budget across interfaces. The
+configured TCP test carrier uses the LAN limits in its own policy instance.
+Pending setup reserves outgoing and total capacity, preventing concurrent
+attempts from overshooting the established-connection limits. Incoming attempts
+can use remaining total capacity after the outgoing target is reached. The node
+also retains its existing 64-link global resource bound.
+
+Candidate selection shuffles unpenalised candidates. Failed connections move
+behind them for 30 seconds; penalised candidates are ordered oldest failure
+first, so another failure moves a peer to the bottom again. Capacity or pacing
+skips do not penalise a candidate. BLE retains its existing five-second outbound
+start pacing, independently of its one-setup-at-a-time limit.
+
+A progressing incoming attempt suppresses new outgoing setup to that peer once
+its address or identity can be associated with a candidate. Stream transports
+observe successful handshake reads/writes; NAN reports negotiation milestones.
+Suppression expires after five idle seconds and ends on teardown. This is a
+bounded hint, independent of certificate verification and existing handshake
+deadlines. There is no UUID eligibility filter or isolated-node grace timer.
+
+Crossed connections may still race. After certificate verification, mesh hello
+and local node admission, both ends retain the same preferred connection:
+lower UUID initiates for LAN/configured TCP/NAN, higher UUID for BLE. A sole
+reverse connection remains usable; no existing connection is retired just
+because a preferred attempt started. Only the losing stream/QUIC connection is
+closed. BLE never disconnects the whole BlueZ device/ACL during this decision.
+NAN tracks NDP incarnations independently and reference-counts shared underlay
+neighbours, so one path cannot remove another path's neighbour entry. Ambiguous
+firmware events do not select an arbitrary path for teardown.
+
+A cheaper LAN link still replaces a slower link only to the same principal;
+LAN does not consume radio capacity. The shared carrier preference can retain
+NAN when shedding duplicate BLE links, independently of connection limits.
 
 Before changing kernel networking state, the router checks actual IPv6 policy
 routing and TUN APIs. Setup failures identify the failed operation and relevant
@@ -201,7 +233,7 @@ counts size-refused whole attempts that try the fixed form. Counters reset on
 link replacement. Diagnostics are off by default and add no wire traffic.
 
 BLE first contact always performs a full TLS handshake because discovery has
-only a UUID hint. Once the certificate, tenant, UUID ordering, hint and ALPN
+only a UUID hint. Once the certificate, tenant, self-identity, hint and ALPN
 checks succeed, its post-handshake ticket is collected into the verified full
 principal's existing bounded session cache. The first reconnect to that known
 peer can therefore resume. An unidentified radio never receives a cached ticket.

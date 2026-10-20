@@ -53,21 +53,23 @@ func TestDiscoveryRecoveryRequiresSilenceAndMissingPeers(t *testing.T) {
 	}
 }
 
-func TestDiscoveryRecoveryCountsDistinctActiveAndAuthenticatedPeers(t *testing.T) {
-	dev10, dev20, dev30 := fixtureDevice("00000000-0000-4000-8000-000000000010"), fixtureDevice("00000000-0000-4000-8000-000000000020"), fixtureDevice("00000000-0000-4000-8000-000000000030")
-	node := &recoveryTestNode{links: []localmesh.PeerLink{{Device: dev10}, {Device: dev20}}}
-	r := &runtime{cfg: Config{Node: node, TargetPeers: 3}, active: map[meshid.Device]struct{}{dev10: {}}}
+func TestDiscoveryRecoveryCountsOnlyThisTransportReservations(t *testing.T) {
+	r := &runtime{cfg: Config{Credentials: &localmesh.Credentials{Device: selfFixture}}}
+	p := r.connectionPolicy()
+	a := p.Reserve("first", numberedBLEDevice(10), true)
+	if a == nil || !a.Ready(numberedBLEDevice(10), func() {}) {
+		t.Fatal("fixture failed")
+	}
 	if !r.missingPeerSlots() {
-		t.Fatal("two distinct peers did not leave a slot")
+		t.Fatal("one outgoing must leave a slot")
 	}
-	r.active[dev30] = struct{}{}
-	if r.missingPeerSlots() {
-		t.Fatal("an in-flight third peer triggered discovery restart")
+	b := p.Reserve("second", numberedBLEDevice(20), true)
+	if b == nil || r.missingPeerSlots() {
+		t.Fatal("pending second outgoing not counted")
 	}
-	delete(r.active, dev30)
-	node.links = append(node.links, localmesh.PeerLink{Device: dev30})
-	if r.missingPeerSlots() {
-		t.Fatal("three authenticated peers triggered discovery restart")
+	b.Release()
+	if !r.missingPeerSlots() {
+		t.Fatal("failed attempt did not release slot")
 	}
 }
 
@@ -106,8 +108,7 @@ func TestDiscoveryRestartIsBoundedAfterFailure(t *testing.T) {
 	base := time.Unix(1_000, 0)
 	var attempts int
 	r := &runtime{
-		cfg:    Config{Node: &recoveryTestNode{}, TargetPeers: 3, Logger: zap.NewNop()},
-		active: map[meshid.Device]struct{}{},
+		cfg: Config{Node: &recoveryTestNode{}, Logger: zap.NewNop()},
 		restartScan: func(context.Context, *dbus.Conn, dbus.ObjectPath) error {
 			attempts++
 			return errors.New("controller busy")
@@ -133,10 +134,10 @@ func TestDiscoveryRestartFailureDegradesWithoutDroppingPeers(t *testing.T) {
 	var updates []localmesh.CarrierStatus
 	var attempts int
 	r := &runtime{
-		cfg: Config{Node: node, TargetPeers: 3, Logger: zap.NewNop(), Status: func(s localmesh.CarrierStatus) {
+		cfg: Config{Node: node, Logger: zap.NewNop(), Status: func(s localmesh.CarrierStatus) {
 			updates = append(updates, s)
 		}},
-		active: map[meshid.Device]struct{}{peer: {}},
+
 		restartScan: func(context.Context, *dbus.Conn, dbus.ObjectPath) error {
 			attempts++
 			if attempts == 1 {
@@ -145,13 +146,15 @@ func TestDiscoveryRestartFailureDegradesWithoutDroppingPeers(t *testing.T) {
 			return nil
 		},
 	}
+	held := r.connectionPolicy().Reserve("held", peer, false)
+	defer held.Release()
 	r.discovery.observed(base)
 	first := base.Add(discoverySilenceLimit)
 	r.maybeRestartDiscovery(context.Background(), nil, "/org/bluez/hci0", first)
 	if len(updates) != 1 || !updates[0].Ready || !errors.Is(updates[0].Err, failed) {
 		t.Fatalf("discovery failure did not degrade local readiness: %+v", updates)
 	}
-	if len(r.active) != 1 || r.blePeerCount() != 1 {
+	if r.connectionPolicy().Counts().Total != 1 || r.blePeerCount() != 1 {
 		t.Fatal("discovery failure removed an established peer")
 	}
 	// A normal governor pass does not clear the error, and the failed restart
@@ -175,14 +178,14 @@ func TestDiscoveryRestartFailureDegradesWithoutDroppingPeers(t *testing.T) {
 	if attempts != 2 || len(updates) != 2 || !updates[1].Ready || updates[1].Err != nil || r.discoveryErr != nil {
 		t.Fatalf("successful session restart did not restore readiness: %+v", updates)
 	}
-	if len(r.active) != 1 || r.blePeerCount() != 1 {
+	if r.connectionPolicy().Counts().Total != 1 || r.blePeerCount() != 1 {
 		t.Fatal("discovery recovery removed an established peer")
 	}
 }
 
 func TestDiscoveryHealthIgnoresCancellationAndPeerAbsence(t *testing.T) {
 	var updates []localmesh.CarrierStatus
-	r := &runtime{cfg: Config{Node: &recoveryTestNode{}, TargetPeers: 3, Status: func(s localmesh.CarrierStatus) {
+	r := &runtime{cfg: Config{Node: &recoveryTestNode{}, Status: func(s localmesh.CarrierStatus) {
 		updates = append(updates, s)
 	}}}
 	// No first live advertisement: do not turn a healthy isolated node into a

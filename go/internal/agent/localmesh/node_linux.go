@@ -662,12 +662,16 @@ func (n *Node) writeControls(ctx context.Context, p *nodePeer) error {
 }
 
 func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, link nodeLink) error {
+	defer link.Close()
 	if cost == 0 || cost == ^uint16(0) {
 		return errors.New("invalid wendy net link cost")
 	}
 	p := &nodePeer{device: peer, cost: cost, link: link, control: make(chan ControlMessage, 128), catalog: make(chan ControlMessage, 16), done: make(chan struct{})}
 	if err := n.request(ctx, nodeEvent{add: p}); err != nil {
 		return err
+	}
+	if !ConnectionReady(ctx, peer, func() { _ = link.Close() }) {
+		return n.request(n.ctx, nodeEvent{id: p.id, remove: true})
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

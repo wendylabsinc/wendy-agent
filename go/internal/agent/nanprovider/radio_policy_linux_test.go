@@ -30,12 +30,12 @@ func testDevice(t *testing.T, n uint16) meshid.Device {
 	return id
 }
 
-func TestRadioThreeNeighborBoundAndUUIDOrdering(t *testing.T) {
+func TestRadioFourNeighborBoundWithoutUUIDOrdering(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	active := map[string]*radioLink{}
 	attempts := map[string]time.Time{}
 	self := testDevice(t, 460)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		nmi := "02:00:00:00:00:0" + string(rune('1'+i))
 		peer := testDevice(t, 461+uint16(i))
 		if !shouldInitiate(self, peer, nmi, active, attempts, now) {
@@ -43,14 +43,14 @@ func TestRadioThreeNeighborBoundAndUUIDOrdering(t *testing.T) {
 		}
 		active[nmi] = &radioLink{peer: radioPeer{Device: peer, NMI: nmi}}
 	}
-	if shouldInitiate(self, testDevice(t, 464), "02:00:00:00:00:04", active, attempts, now) ||
-		shouldAccept(self, testDevice(t, 459), "02:00:00:00:00:04", active) ||
+	if shouldInitiate(self, testDevice(t, 465), "02:00:00:00:00:05", active, attempts, now) ||
+		shouldAccept(self, testDevice(t, 459), "02:00:00:00:00:05", active) ||
 		shouldConnect("02:00:00:00:00:04", testDevice(t, 459), active) {
-		t.Fatal("fourth neighbor admitted")
+		t.Fatal("fifth neighbor admitted")
 	}
-	if shouldInitiate(self, testDevice(t, 459), "02:00:00:00:00:04", nil, attempts, now) ||
-		shouldAccept(self, testDevice(t, 461), "02:00:00:00:00:04", nil) {
-		t.Fatal("wrong initiator ordering admitted")
+	if !shouldInitiate(self, testDevice(t, 459), "02:00:00:00:00:04", nil, attempts, now) ||
+		!shouldAccept(self, testDevice(t, 461), "02:00:00:00:00:04", nil) {
+		t.Fatal("UUID order incorrectly gates admission")
 	}
 	if !shouldConnect("02:00:00:00:00:01", testDevice(t, 461), active) ||
 		shouldConnect("02:00:00:00:00:01", testDevice(t, 462), active) {

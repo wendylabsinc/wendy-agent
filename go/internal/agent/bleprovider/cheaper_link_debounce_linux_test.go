@@ -5,6 +5,7 @@ package bleprovider
 import (
 	"context"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
 
@@ -36,31 +36,40 @@ func (c *closeFlagConn) SetDeadline(time.Time) error      { return nil }
 func (c *closeFlagConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *closeFlagConn) SetWriteDeadline(time.Time) error { return nil }
 
-// vetoFixture drives the provider's cheaper-link interface without depending
-// on the LAN selection policy introduced later in the stack.
+// vetoFixture drives AllowRadio deterministically: while vetoed the snapshot
+// holds a cheaper LAN link to the same peer, so
+// AllowRadio returns false; clearing the snapshot lifts the veto.
 type vetoFixture struct {
-	mu     sync.Mutex
-	vetoed bool
+	mu       sync.Mutex
+	snapshot localmesh.NodeSnapshot
+	sel      *localmesh.PeerSelection
 }
 
 func newVetoFixture(vetoed bool) *vetoFixture {
-	return &vetoFixture{vetoed: vetoed}
+	f := &vetoFixture{}
+	if vetoed {
+		f.snapshot = localmesh.NodeSnapshot{Links: []localmesh.PeerLink{
+			{Device: numberedBLEDevice(358), Cost: 64},
+		}}
+	}
+	f.sel = localmesh.NewPeerSelection(func() localmesh.NodeSnapshot {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.snapshot
+	})
+	return f
 }
 
 func (f *vetoFixture) setVeto(vetoed bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.vetoed = vetoed
-}
-
-func (f *vetoFixture) HasCheaperLink(meshid.Device, uint16) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.vetoed
-}
-
-func (f *vetoFixture) AttachStream(context.Context, meshid.Device, net.Conn, uint16) error {
-	return nil
+	if vetoed {
+		f.snapshot = localmesh.NodeSnapshot{Links: []localmesh.PeerLink{
+			{Device: numberedBLEDevice(358), Cost: 64},
+		}}
+	} else {
+		f.snapshot = localmesh.NodeSnapshot{}
+	}
 }
 
 func waitForClosed(t *testing.T, c *closeFlagConn, want bool, timeout time.Duration) {
@@ -81,7 +90,7 @@ func TestCheaperLinkDebounceRidesTransientVeto(t *testing.T) {
 	if testing.Short() {
 		t.Skip("debounce timing test needs real time")
 	}
-	r := &runtime{cfg: Config{Node: f, Logger: zap.NewNop()}}
+	r := &runtime{cfg: Config{Selection: f.sel, Logger: zap.NewNop()}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	conn := &closeFlagConn{}
@@ -109,7 +118,7 @@ func TestCheaperLinkDebounceStillShedsPersistentVeto(t *testing.T) {
 	if testing.Short() {
 		t.Skip("debounce timing test needs real time")
 	}
-	r := &runtime{cfg: Config{Node: f, Logger: zap.NewNop()}}
+	r := &runtime{cfg: Config{Selection: f.sel, Logger: zap.NewNop()}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	conn := &closeFlagConn{}
@@ -148,7 +157,7 @@ func (n *countSnapshotNode) AttachStream(context.Context, meshid.Device, net.Con
 }
 
 func TestBlePeerCountExcludesPendingClaims(t *testing.T) {
-	r := &runtime{cfg: Config{Logger: zap.NewNop()}, active: map[meshid.Device]struct{}{numberedBLEDevice(10): {}, numberedBLEDevice(11): {}}}
+	r := &runtime{cfg: Config{Logger: zap.NewNop()}}
 	if got := r.blePeerCount(); got != 0 {
 		t.Fatalf("pending claims counted as established links: %d", got)
 	}
@@ -158,24 +167,21 @@ func TestBlePeerCountExcludesPendingClaims(t *testing.T) {
 	}
 }
 
-func TestBlePeerCountKeepsScanningForPendingThirdPeer(t *testing.T) {
-	node := &countSnapshotNode{links: []localmesh.PeerLink{
-		{Device: numberedBLEDevice(358), Cost: LinkCost}, {Device: numberedBLEDevice(536), Cost: LinkCost},
-		{Device: numberedBLEDevice(577), Cost: 512}, // A different carrier cannot fill the BLE target.
-	}}
-	r := &runtime{cfg: Config{Node: node, TargetPeers: 3, Logger: zap.NewNop()},
-		active: map[meshid.Device]struct{}{numberedBLEDevice(358): {}, numberedBLEDevice(536): {}, numberedBLEDevice(577): {}}}
-	if r.blePeerCount() >= r.cfg.TargetPeers {
-		t.Fatal("governor would pause discovery with the third BLE dial still pending")
+func TestBLEOutgoingBudgetLeavesIncomingCapacity(t *testing.T) {
+	r := &runtime{cfg: Config{Credentials: &localmesh.Credentials{Device: selfFixture}, Logger: zap.NewNop()}}
+	p := r.connectionPolicy()
+	for i := 0; i < localmesh.BLEMaxOutgoing; i++ {
+		peer := numberedBLEDevice(i + 1)
+		l := p.Reserve(fmt.Sprint(i), peer, true)
+		if l == nil || !l.Ready(peer, func() {}) {
+			t.Fatal("outgoing denied")
+		}
 	}
-	// Capacity admission remains bounded while discovery continues.
-	if r.claim(numberedBLEDevice(460)) {
-		t.Fatal("excluding claims from the scan count allowed an extra dial")
+	if r.missingPeerSlots() {
+		t.Fatal("outgoing target should stop initiating")
 	}
-	node.links = append(node.links, localmesh.PeerLink{Device: numberedBLEDevice(577), Cost: LinkCost},
-		localmesh.PeerLink{Device: numberedBLEDevice(536), Cost: LinkCost})
-	if got := r.blePeerCount(); got != r.cfg.TargetPeers {
-		t.Fatalf("full BLE complement, counting each asset once: %d", got)
+	if p.Reserve("in", numberedBLEDevice(3), false) == nil {
+		t.Fatal("outgoing target consumed incoming slot")
 	}
 }
 

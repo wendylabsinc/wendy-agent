@@ -69,28 +69,14 @@ func TestPeerSelectionConfiguredTCPAndDirectLAN(t *testing.T) {
 	}
 }
 
-func TestPeerSelectionCapsOnlyDistinctRadioPeers(t *testing.T) {
-	snapshot := NodeSnapshot{Links: []PeerLink{
-		{Device: selectionDevice(10), Cost: 512}, {Device: selectionDevice(11), Cost: 4096}, {Device: selectionDevice(12), Cost: 512},
-		{Device: selectionDevice(1), Cost: 64}, {Device: selectionDevice(2), Cost: 64},
-		{Device: selectionDevice(3), Cost: 128}, {Device: selectionDevice(4), Cost: 256},
-	}}
+func TestPeerSelectionDoesNotShareTransportBudgets(t *testing.T) {
+	snapshot := NodeSnapshot{}
+	for i := 1; i <= 12; i++ {
+		snapshot.Links = append(snapshot.Links, PeerLink{Device: selectionDevice(i), Cost: 512})
+	}
 	p := NewPeerSelection(func() NodeSnapshot { return snapshot })
-	if p.AllowRadio(selectionDevice(13), RadioBLE) || p.AllowRadio(selectionDevice(4), RadioNAN) {
-		t.Fatal("radio selection exceeded the three-distinct-peer target")
-	}
-	if !p.AllowRadio(selectionDevice(10), RadioNAN) {
-		t.Fatal("an existing sole radio link must be retained")
-	}
-	// If simultaneous handshakes temporarily add a fourth asset, the
-	// periodic radio watchers shed the excess radio peer independently of LAN.
-	snapshot.Links = append(snapshot.Links, PeerLink{Device: selectionDevice(13), Cost: 4096})
-	if p.AllowRadio(selectionDevice(13), RadioBLE) || !p.AllowRadio(selectionDevice(10), RadioNAN) {
-		t.Fatal("four-peer overshoot did not converge toward three")
-	}
-	snapshot.Links = append(snapshot.Links, PeerLink{Device: selectionDevice(12), Cost: 64})
-	if p.AllowRadio(selectionDevice(12), RadioNAN) || !p.AllowRadio(selectionDevice(13), RadioBLE) {
-		t.Fatal("a direct LAN link must replace only its own radio and free that radio slot")
+	if !p.AllowRadio(selectionDevice(50), RadioBLE) || !p.AllowRadio(selectionDevice(50), RadioNAN) {
+		t.Fatal("unrelated peers consumed a shared radio budget")
 	}
 }
 
@@ -124,7 +110,7 @@ func TestPeerSelectionLANReplacesRadioAndSlowerLAN(t *testing.T) {
 // Exercise admission at both endpoints and periodic pruning, including a
 // highest-UUID late join. The old local top-three rule leaves that node isolated
 // even though every pair has a working Ethernet path.
-func TestLANFleetRemainsConnectedThroughJoinsAndPruning(t *testing.T) {
+func TestLANEligibilityDoesNotRankUnrelatedPeersThroughJoinsAndPruning(t *testing.T) {
 	for _, size := range []int{5, 8, 16} {
 		for seed := int64(0); seed < 4; seed++ {
 			t.Run(fmt.Sprintf("nodes=%d/order=%d", size, seed), func(t *testing.T) {
@@ -254,35 +240,13 @@ func TestAllowRadioReasonNamesVetoBranch(t *testing.T) {
 		t.Fatalf("LAN veto: allow=%v reason=%q", allow, reason)
 	}
 
-	// Peer cap: three distinct peers, asset absent.
-	snapshot.Links = []PeerLink{{Device: selectionDevice(1), Cost: 512}, {Device: selectionDevice(2), Cost: 512}, {Device: selectionDevice(3), Cost: 512}}
-	if allow, reason := p.AllowRadioReason(selectionDevice(10), RadioBLE); allow || reason != "peer-cap-no-slot(connected=3)" {
-		t.Fatalf("cap veto: allow=%v reason=%q", allow, reason)
-	}
-
-	// Second radio with full slots: asset present via NAN (cost 512), BLE queried.
-	snapshot.Links = []PeerLink{{Device: selectionDevice(10), Cost: 512}, {Device: selectionDevice(1), Cost: 512}, {Device: selectionDevice(2), Cost: 512}}
-	if allow, reason := p.AllowRadioReason(selectionDevice(10), RadioBLE); allow || reason != "second-radio-slots-full(connected=3)" {
-		t.Fatalf("second-radio veto: allow=%v reason=%q", allow, reason)
-	}
-
-	// Second radio displaced by a fresh different candidate.
-	snapshot.Links = []PeerLink{{Device: selectionDevice(10), Cost: 512}, {Device: selectionDevice(1), Cost: 512}}
-	p.Seen(selectionDevice(2), RadioBLE)
-	if allow, reason := p.AllowRadioReason(selectionDevice(10), RadioBLE); allow || !strings.HasPrefix(reason, "second-radio-fresh-candidate(") {
-		t.Fatalf("hint veto: allow=%v reason=%q", allow, reason)
-	}
-
-	// Failover kept once the hint expires.
-	now = now.Add(61 * time.Second)
+	snapshot.Links = []PeerLink{{Device: selectionDevice(10), Cost: 512}}
 	if allow, reason := p.AllowRadioReason(selectionDevice(10), RadioBLE); !allow || reason != "second-radio-failover-kept" {
-		t.Fatalf("failover: allow=%v reason=%q", allow, reason)
+		t.Fatalf("NAN failover: %v %s", allow, reason)
 	}
-
-	// Convergence: four concurrent assets, lowest-numbered radio loses.
-	snapshot.Links = []PeerLink{{Device: selectionDevice(1), Cost: 512}, {Device: selectionDevice(2), Cost: 512}, {Device: selectionDevice(3), Cost: 512}, {Device: selectionDevice(4), Cost: 512}}
-	if allow, reason := p.AllowRadioReason(selectionDevice(4), RadioBLE); allow || !strings.HasPrefix(reason, "convergence-not-selected") {
-		t.Fatalf("convergence veto: allow=%v reason=%q", allow, reason)
+	snapshot.Links = []PeerLink{{Device: selectionDevice(1), Cost: 512}, {Device: selectionDevice(2), Cost: 512}, {Device: selectionDevice(3), Cost: 512}}
+	if allow, _ := p.AllowRadioReason(selectionDevice(10), RadioBLE); !allow {
+		t.Fatal("unrelated radio neighbours vetoed admission")
 	}
 
 	// AllowRadio stays consistent with the reasoned decision everywhere above.

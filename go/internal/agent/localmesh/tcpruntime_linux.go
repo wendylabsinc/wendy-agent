@@ -21,9 +21,9 @@ import (
 
 const tcpConfigName = "local-mesh.json"
 
-// RunConfiguredTCP runs the explicitly configured topology. The device with the
-// lower UUID initiates each edge, so a symmetric peer list creates one
-// connection. A missing config leaves the local mesh disabled.
+// RunConfiguredTCP runs the explicitly configured topology. The configured
+// peer list controls eligibility; crossed authenticated connections converge
+// to one preferred direction. A missing config leaves the local mesh disabled.
 func RunConfiguredTCP(parent context.Context, configDir string, id TCPIdentity) error {
 	return RunConfiguredTCPObserved(parent, configDir, id, nil)
 }
@@ -88,56 +88,62 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 	for _, peer := range cfg.devices {
 		allowed[peer.Principal()] = peer
 	}
-	active := make(map[string]bool)
-	var activeMu sync.Mutex
-	claim := func(device meshid.Device) bool {
-		activeMu.Lock()
-		defer activeMu.Unlock()
-		if active[device.Principal()] {
-			return false
-		}
-		active[device.Principal()] = true
-		return true
-	}
-	release := func(device meshid.Device) { activeMu.Lock(); delete(active, device.Principal()); activeMu.Unlock() }
+	policy := NewConnectionPolicy(credentials.Device, true, ConnectionLimits{LANMaxOutgoing, LANMaxOutgoingAttempts, LANMaxConnections})
+	queue := &CandidateQueue{}
 	var wg sync.WaitGroup
-	for _, peer := range cfg.devices {
-		if meshid.Compare(credentials.Device, peer) >= 0 {
-			continue
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		keys := make([]string, 0, len(allowed))
+		for key := range allowed {
+			keys = append(keys, key)
 		}
-		wg.Add(1)
-		go func(peer meshid.Device) {
-			defer wg.Done()
-			address := cfg.Peers[indexOfDevice(cfg.devices, peer)].Address
-			backoff := time.Second
-			for ctx.Err() == nil {
-				if claim(peer) {
-					conn, err := net.DialTimeout("tcp", address, 5*time.Second)
-					if err == nil {
-						err = writeTCPPreface(conn, credentials.Device)
-						if err == nil {
-							joined := time.Now()
-							err = attachTCP(ctx, node, credentials, peer, conn, false)
-							if time.Since(joined) >= 10*time.Second {
-								// A stable session should reconnect promptly after a
-								// later link loss. Keep exponential delay for flapping.
-								backoff = time.Second
-							}
+		for ctx.Err() == nil {
+			for _, key := range queue.Order(keys, time.Now()) {
+				peer := allowed[key]
+				lease := policy.Reserve(key, peer, true)
+				if lease == nil {
+					continue
+				}
+				lease.ObserveReady(func() { queue.Succeeded(key) })
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer lease.Release()
+					defer func() {
+						if ctx.Err() == nil && !lease.Retired() {
+							queue.Failed(key, time.Now())
 						}
-						conn.Close()
+					}()
+					address := cfg.Peers[indexOfDevice(cfg.devices, peer)].Address
+					dialer := net.Dialer{Timeout: 5 * time.Second}
+					conn, err := dialer.DialContext(ctx, "tcp", address)
+					if err != nil {
+						return
 					}
-					release(peer)
-				}
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return
-				}
-				backoff = min(backoff*2, 30*time.Second)
+					defer conn.Close()
+					if writeTCPPreface(conn, credentials.Device) == nil {
+						lease.Identify(peer)
+						lease.ObserveReady(func() { queue.Succeeded(peer.Principal()) })
+						defer func() {
+							if lease.WasReady() && !lease.Retired() && ctx.Err() == nil {
+								queue.Failed(peer.Principal(), time.Now())
+							}
+						}()
+						_ = attachTCP(WithConnectionLease(ctx, lease), node, credentials, peer, conn, false)
+					}
+				}()
 			}
-		}(peer)
-	}
-	sem := make(chan struct{}, 64)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	sem := make(chan struct{}, LANMaxConnections)
 	acceptDone := make(chan struct{})
 	if listener == nil {
 		close(acceptDone)
@@ -156,21 +162,24 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 						defer wg.Done()
 						defer func() { <-sem }()
 						defer conn.Close()
+						lease := policy.Reserve(fmt.Sprintf("incoming:%p", conn), meshid.Device{}, false)
+						if lease == nil {
+							return
+						}
+						defer lease.Release()
+						conn = lease.TrackIncoming(conn)
 						id, err := readTCPPreface(conn, credentials.Device.Tenant())
 						if err != nil {
 							return
 						}
 						peer, err := meshid.ParseDevice(credentials.Device.Tenant(), id.String())
-						if err != nil || meshid.Compare(peer, credentials.Device) >= 0 {
-							// Only the lower UUID of an edge dials; anything else is a
-							// duplicate or a peer that did not read its own ordering.
+						if err != nil || peer == credentials.Device {
 							return
 						}
-						if _, ok := allowed[peer.Principal()]; !ok || !claim(peer) {
+						if _, ok := allowed[peer.Principal()]; !ok {
 							return
 						}
-						defer release(peer)
-						_ = attachTCP(ctx, node, credentials, peer, conn, true)
+						_ = attachTCP(WithConnectionLease(ctx, lease), node, credentials, peer, conn, true)
 					}()
 				default:
 					conn.Close()

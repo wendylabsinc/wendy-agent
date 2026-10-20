@@ -18,6 +18,8 @@ import (
 )
 
 type runtime struct {
+	policy               *localmesh.ConnectionPolicy
+	candidates           localmesh.CandidateQueue
 	nextDial             time.Time
 	dialTimeouts         map[string]int
 	cfg                  Config
@@ -29,9 +31,6 @@ type runtime struct {
 	bus                  *dbus.Conn
 	freshness            *advertisementFreshness
 	mu                   sync.Mutex
-	active               map[meshid.Device]struct{}
-	nextAttempt          map[meshid.Device]time.Time
-	pending              map[string]bool
 	radioRetry           map[string]time.Time
 	known                map[string]meshid.Device
 	scanPaused           bool
@@ -177,70 +176,38 @@ func (r *runtime) watchCheaperLink(ctx context.Context, device meshid.Device, co
 	return func() { close(stop) }
 }
 
-func (r *runtime) claim(device meshid.Device) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.active[device]; exists || len(r.active) >= r.cfg.TargetPeers {
-		return false
-	}
-	r.active[device] = struct{}{}
-	return true
-}
-
 const maxPeerRetryHistory = 128
 
-// Caller holds mu. Discovery claims can rotate through arbitrary identities;
-// completed attempts must not accumulate for the provider's entire lifetime.
-func (r *runtime) expirePeerRetries(now time.Time) {
-	for device, until := range r.nextAttempt {
-		if !now.Before(until) {
-			delete(r.nextAttempt, device)
-		}
-	}
-}
-
-func (r *runtime) release(device meshid.Device) {
+func (r *runtime) reserveCandidate(peer candidate) *localmesh.ConnectionLease {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.active, device)
-	now := time.Now()
-	r.expirePeerRetries(now)
-	if _, exists := r.nextAttempt[device]; exists || len(r.nextAttempt) < maxPeerRetryHistory {
-		r.nextAttempt[device] = now.Add(5 * time.Second)
-	}
-}
-
-// A truncated hint cannot reserve a device identity. Reserve an address until
-// TLS authenticates its complete principal, then claim that principal normally.
-func (r *runtime) claimCandidate(peer candidate) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.pending == nil {
-		r.pending = make(map[string]bool)
-	}
-	if r.radioRetry == nil {
-		r.radioRetry = make(map[string]time.Time)
-	}
 	if r.known == nil {
 		r.known = make(map[string]meshid.Device)
 	}
-	now := time.Now()
-	r.expireRadioRetries(now)
-	r.expirePeerRetries(now)
-	key := peer.key()
-	if r.pending[key] || len(r.pending)+len(r.active) >= r.cfg.TargetPeers ||
-		len(r.radioRetry) >= maxPeerRetryHistory || now.Before(r.radioRetry[key]) {
-		return false
+	r.expireRadioRetries(time.Now())
+	known := r.known[peer.key()]
+	if known != (meshid.Device{}) && deviceHint(known.UUID()) != peer.hint {
+		delete(r.known, peer.key())
+		known = meshid.Device{}
 	}
-	if known, ok := r.known[key]; ok {
-		if deviceHint(known.UUID()) != peer.hint {
-			delete(r.known, key)
-		} else if _, active := r.active[known]; active || now.Before(r.nextAttempt[known]) {
-			return false
-		}
+	cooling := time.Now().Before(r.radioRetry[peer.key()])
+	r.mu.Unlock()
+	if cooling || (known != (meshid.Device{}) && r.hasCheaperLink(known)) {
+		return nil
 	}
-	r.pending[key] = true
-	return true
+	return r.connectionPolicy().Reserve(peer.key(), known, true)
+}
+
+func (r *runtime) failedCandidate(peer candidate) {
+	r.candidates.Failed(peer.key(), time.Now())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.radioRetry == nil {
+		r.radioRetry = make(map[string]time.Time)
+	}
+	r.expireRadioRetries(time.Now())
+	if len(r.radioRetry) < maxPeerRetryHistory {
+		r.radioRetry[peer.key()] = time.Now().Add(5 * time.Second)
+	}
 }
 
 // Caller holds mu. Radio-address churn is untrusted and has the same bounded
@@ -253,18 +220,6 @@ func (r *runtime) expireRadioRetries(now time.Time) {
 	}
 }
 
-func (r *runtime) releaseCandidate(peer candidate) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := peer.key()
-	delete(r.pending, key)
-	now := time.Now()
-	r.expireRadioRetries(now)
-	if _, exists := r.radioRetry[key]; exists || len(r.radioRetry) < maxPeerRetryHistory {
-		r.radioRetry[key] = now.Add(5 * time.Second)
-	}
-}
-
 func (r *runtime) knownCandidate(peer candidate) (meshid.Device, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -272,8 +227,25 @@ func (r *runtime) knownCandidate(peer candidate) (meshid.Device, bool) {
 	return device, ok && deviceHint(device.UUID()) == peer.hint
 }
 
+func (r *runtime) connectionPolicy() *localmesh.ConnectionPolicy {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.policy == nil {
+		if r.cfg.Policy != nil {
+			r.policy = r.cfg.Policy
+			return r.policy
+		}
+		self := meshid.Device{}
+		if r.cfg.Credentials != nil {
+			self = r.cfg.Credentials.Device
+		}
+		r.policy = localmesh.NewConnectionPolicy(self, false, localmesh.ConnectionLimits{Outgoing: localmesh.BLEMaxOutgoing, Attempts: localmesh.BLEMaxOutgoingAttempts, Total: localmesh.BLEMaxConnections})
+	}
+	return r.policy
+}
+
 // Run advertises, scans, listens for CoC channels, and initiates channels to
-// lower device UUIDs concurrently. It blocks until ctx ends. BlueZ data is
+// eligible devices without UUID ordering. It blocks until ctx ends. BlueZ data is
 // only a discovery hint: every link requires a verified same-tenant device
 // certificate and complete UUID before AttachStream is called.
 func Run(ctx context.Context, cfg Config) error {
@@ -344,7 +316,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := verifyBlueZOwner(owner, currentOwner); err != nil {
 		return err
 	}
-	r := &runtime{cfg: cfg, uuid: uuid, owner: owner, hciIndex: hciIndex, local: local, ownerLookup: bluezOwner, bus: bus, freshness: freshness, reportErrors: reportErrors, reportErr: reportErr, active: make(map[meshid.Device]struct{}), nextAttempt: make(map[meshid.Device]time.Time), dialSlot: make(chan struct{}, 1), tlsGate: newTLSHandshakeAdmission()}
+	r := &runtime{cfg: cfg, uuid: uuid, owner: owner, hciIndex: hciIndex, local: local, ownerLookup: bluezOwner, bus: bus, freshness: freshness, reportErrors: reportErrors, reportErr: reportErr, dialSlot: make(chan struct{}, 1), tlsGate: newTLSHandshakeAdmission()}
 	r.serverTLS = r.makeServerTLS()
 	r.advertisementRefresh = make(chan struct{}, 1)
 	var loops sync.WaitGroup
@@ -380,10 +352,9 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 func (r *runtime) acceptLoop(ctx context.Context, listener *l2Listener) error {
-	// A token covers the established link's lifetime too. The worker bound
-	// must accommodate the configured peer target, while retaining room for
-	// several pending handshakes when the target is small.
-	sem := make(chan struct{}, max(8, r.cfg.TargetPeers))
+	// Bound unauthenticated workers too; policy reservations also include
+	// established and pending outgoing connections.
+	sem := make(chan struct{}, localmesh.BLEMaxConnections)
 	for ctx.Err() == nil {
 		conn, err := listener.Accept(ctx)
 		if err != nil {
@@ -425,8 +396,8 @@ func (r *runtime) makeServerTLS() *tls.Config {
 			if id.Device.Tenant() != r.cfg.Credentials.Device.Tenant() {
 				return errors.New("BLE inbound peer is outside the tenant")
 			}
-			if meshid.Compare(r.cfg.Credentials.Device, id.Device) >= 0 {
-				return errors.New("BLE inbound peer must be a higher device in this tenant")
+			if id.Device == r.cfg.Credentials.Device {
+				return errors.New("BLE self connection")
 			}
 			return nil
 		},
@@ -437,9 +408,25 @@ func (r *runtime) makeServerTLS() *tls.Config {
 
 func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 	defer raw.Close()
+	key := fmt.Sprintf("incoming:%p", raw)
+	var incomingCandidate *candidate
+	if radio, ok := raw.RemoteAddr().(l2addr); ok {
+		kind := map[uint8]string{btAddrLEPublic: "public", btAddrLERandom: "random"}[radio.Type]
+		if _, _, err := parseAddress(radio.Address, kind, radio.PSM); err == nil {
+			c := candidate{address: radio.Address, addressType: kind}
+			incomingCandidate = &c
+			key = c.key()
+		}
+	}
+	lease := r.connectionPolicy().Reserve(key, meshid.Device{}, false)
+	if lease == nil {
+		return
+	}
+	defer lease.Release()
+	ctx = localmesh.WithConnectionLease(ctx, lease)
 	stopWatch := watchLinkContext(ctx, raw)
 	defer stopWatch()
-	measured, meter := meterHandshake(raw, r.cfg.Logger)
+	measured, meter := meterHandshake(lease.TrackIncoming(raw), r.cfg.Logger)
 	secure := tls.Server(measured, r.serverTLS)
 	meter.start()
 	wait, elapsed, err := r.tlsGate.run(ctx, meshTLSAdmissionWait, meshTLSHandshakeTimeout, secure.HandshakeContext)
@@ -451,7 +438,7 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 		for _, cert := range state.PeerCertificates {
 			chain = append(chain, cert.Raw)
 		}
-		if id, verifyErr := r.cfg.Credentials.Verify(chain, time.Now()); verifyErr == nil && id.Device.Tenant() == r.cfg.Credentials.Device.Tenant() && meshid.Compare(r.cfg.Credentials.Device, id.Device) < 0 {
+		if id, verifyErr := r.cfg.Credentials.Verify(chain, time.Now()); verifyErr == nil && id.Device.Tenant() == r.cfg.Credentials.Device.Tenant() && id.Device != r.cfg.Credentials.Device {
 			peer = id.Device
 		}
 	}
@@ -460,6 +447,15 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 		r.cfg.Logger.Warn("BLE inbound TLS rejected", zap.Duration("admission_wait", wait), zap.Duration("handshake_time", elapsed), zap.Error(err))
 		_ = secure.Close()
 		return
+	}
+	lease.Identify(peer)
+	if incomingCandidate != nil {
+		lease.ObserveReady(func() { r.candidates.Succeeded(key) })
+		defer func() {
+			if ctx.Err() == nil && !lease.Retired() && !r.hasCheaperLink(peer) {
+				r.failedCandidate(*incomingCandidate)
+			}
+		}()
 	}
 	if r.cfg.Selection != nil {
 		r.cfg.Selection.Connected(peer, localmesh.RadioBLE)
@@ -470,12 +466,6 @@ func (r *runtime) acceptLink(ctx context.Context, raw net.Conn) {
 		_ = secure.Close()
 		return
 	}
-	if !r.claim(peer) {
-		r.cfg.Logger.Debug("BLE closing inbound CoC on claim conflict", zap.Stringer("peer", peer.UUID()))
-		_ = secure.Close()
-		return
-	}
-	defer r.release(peer)
 	defer secure.Close()
 	r.rememberInboundRadio(raw, peer)
 	r.requestAdvertisementRefresh()
@@ -547,18 +537,16 @@ func (r *runtime) scanLoop(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 // dwell, link flaps would churn it every few seconds.
 const scanToggleDwell = 10 * time.Second
 
-// governDiscovery pauses BlueZ discovery once this device holds its full
-// peer complement and resumes it when a slot opens. Paused devices keep
+// governDiscovery pauses discovery when the outgoing target or total capacity
+// is occupied, and resumes it when a slot opens. Paused devices keep
 // advertising (inbound joins still work) but stop spending ~half the radio
 // on active scanning. Returns whether scanning is currently enabled.
 func (r *runtime) governDiscovery(ctx context.Context, bus *dbus.Conn, adapter dbus.ObjectPath) bool {
-	target := r.cfg.TargetPeers
-	if target < 1 {
-		target = DefaultTargetPeers
-	}
+	target := localmesh.BLEMaxOutgoing
 	paused := r.scanPaused
 	if now := time.Now(); now.Sub(r.lastScanToggle) >= scanToggleDwell {
-		if wantPaused := r.blePeerCount() >= target; wantPaused != paused {
+		if counts := r.connectionPolicy().Counts(); (counts.Outgoing >= target || counts.Total >= localmesh.BLEMaxConnections) != paused {
+			wantPaused := counts.Outgoing >= target || counts.Total >= localmesh.BLEMaxConnections
 			if wantPaused {
 				if err := stopBlueZDiscovery(ctx, bus, adapter); err != nil {
 					r.reportDiscoveryHealth(ctx, fmt.Errorf("pausing BLE discovery: %w", err))
@@ -583,10 +571,7 @@ func (r *runtime) governDiscovery(ctx context.Context, bus *dbus.Conn, adapter d
 	return !paused
 }
 
-// blePeerCount counts distinct established BLE links. Admission claims also
-// cover queued dials, kernel scan-phase connections and TLS handshakes; they
-// reserve capacity but must not stop discovery before those links exist.
-// In particular, two links plus a pending third dial still need scanning.
+// blePeerCount reports distinct established BLE neighbours for diagnostics.
 func (r *runtime) blePeerCount() int {
 	seen := make(map[meshid.Device]struct{})
 	if node, ok := r.cfg.Node.(interface{ Snapshot() localmesh.NodeSnapshot }); ok {
@@ -628,23 +613,43 @@ func (r *runtime) scanOnce(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 	}
 	now := time.Now()
 	peers := r.discoveredCandidates(objects, now)
-	for _, peer := range peers {
-		if known, ok := r.knownCandidate(peer); ok && r.hasCheaperLink(known) {
-			continue
-		}
-		if !r.claimCandidate(peer) {
-			continue
-		}
-		if !r.admitDial(now) {
-			r.releaseCandidate(peer)
-			continue
-		}
-		r.links.Add(1)
-		go func(peer candidate) { defer r.links.Done(); defer r.releaseCandidate(peer); r.dialLink(ctx, peer) }(peer)
-	}
+	r.startCandidates(ctx, peers, now)
 
 	r.maybeRestartDiscovery(ctx, bus, adapter, now)
 	return nil
+}
+
+// startCandidates never penalises a candidate skipped by capacity or pacing.
+func (r *runtime) startCandidates(ctx context.Context, peers []candidate, now time.Time) {
+	byKey := make(map[string]candidate, len(peers))
+	keys := make([]string, 0, len(peers))
+	for _, peer := range peers {
+		byKey[peer.key()] = peer
+		keys = append(keys, peer.key())
+	}
+	for _, key := range r.candidates.Order(keys, now) {
+		peer := byKey[key]
+		lease := r.reserveCandidate(peer)
+		if lease == nil {
+			continue
+		}
+		if !r.admitDial(now) {
+			lease.Release()
+			break
+		}
+		lease.ObserveReady(func() { r.candidates.Succeeded(key) })
+		r.links.Add(1)
+		go func() {
+			defer r.links.Done()
+			defer lease.Release()
+			r.dialLink(localmesh.WithConnectionLease(ctx, lease), peer)
+			known, _ := r.knownCandidate(peer)
+			if ctx.Err() == nil && !lease.Retired() && (known == (meshid.Device{}) || !r.hasCheaperLink(known)) {
+				r.failedCandidate(peer)
+			}
+		}()
+	}
+
 }
 
 func (r *runtime) discoveredCandidates(objects managedObjects, at time.Time) []candidate {
@@ -670,21 +675,8 @@ func (r *runtime) discoveredCandidates(objects managedObjects, at time.Time) []c
 }
 
 func (r *runtime) missingPeerSlots() bool {
-	if r.cfg.TargetPeers <= 0 {
-		return false
-	}
-	devices := make(map[meshid.Device]struct{}, r.cfg.TargetPeers)
-	r.mu.Lock()
-	for device := range r.active {
-		devices[device] = struct{}{}
-	}
-	r.mu.Unlock()
-	if node, ok := r.cfg.Node.(interface{ Snapshot() localmesh.NodeSnapshot }); ok {
-		for _, link := range node.Snapshot().Links {
-			devices[link.Device] = struct{}{}
-		}
-	}
-	return len(devices) < r.cfg.TargetPeers
+	counts := r.connectionPolicy().Counts()
+	return counts.Outgoing < localmesh.BLEMaxOutgoing && counts.Total < localmesh.BLEMaxConnections
 }
 
 func (r *runtime) maybeRestartDiscovery(ctx context.Context, bus *dbus.Conn, adapter dbus.ObjectPath, now time.Time) {
@@ -814,17 +806,15 @@ func (r *runtime) dialLink(ctx context.Context, peer candidate) {
 		return
 	}
 	device := *authenticated
-	if !r.claim(device) {
-		return
-	}
-	defer r.release(device)
 	r.mu.Lock()
+	if r.known == nil {
+		r.known = make(map[string]meshid.Device)
+	}
 	// At capacity, omit the reconnect optimization. A new address still gets
 	// a full verified handshake; it never inherits another address's pin.
 	if _, exists := r.known[peer.key()]; exists || len(r.known) < maxPeerRetryHistory {
 		r.known[peer.key()] = device
 	}
-	delete(r.pending, peer.key())
 	r.mu.Unlock()
 	if r.cfg.Selection != nil {
 		r.cfg.Selection.Connected(device, localmesh.RadioBLE)
@@ -939,8 +929,8 @@ func (r *runtime) clientTLS(peer candidate) (*tls.Config, *meshid.Device, error)
 			return err
 		}
 		device := identity.Device
-		if device.Tenant() != r.cfg.Credentials.Device.Tenant() || meshid.Compare(device, r.cfg.Credentials.Device) >= 0 {
-			return errors.New("BLE outbound peer must be a lower device UUID in this tenant")
+		if device.Tenant() != r.cfg.Credentials.Device.Tenant() || device == r.cfg.Credentials.Device {
+			return errors.New("BLE outbound peer must be a different device in this tenant")
 		}
 		if deviceHint(device.UUID()) != peer.hint {
 			return errors.New("BLE certificate does not match discovery hint")

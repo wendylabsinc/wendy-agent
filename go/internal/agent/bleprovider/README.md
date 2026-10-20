@@ -108,3 +108,18 @@ established streams, report degraded discovery health, and retry every five
 seconds. Recovery of scanning does not clear an independent report-source
 failure, or vice versa. Only authenticated full principals enter peer identity
 and radio-selection state.
+
+## Connection scheduling
+
+The provider uses the shared `localmesh.ConnectionPolicy` and `CandidateQueue`:
+2 outgoing connections, 1 outgoing setup at a time, 3 total connections. Live
+candidates of either UUID order participate in shuffled selection. Only actual
+failures receive a retry penalty; capacity/pacing skips do not. An active
+incoming handshake from the same radio address suppresses an outgoing attempt
+while its socket I/O is progressing, with a five-second idle escape.
+
+TLS validates the full peer principal without an ordering restriction. Both
+endpoints use higher-UUID-initiates solely to retire a crossed duplicate after
+the mesh hello succeeds. Closing the losing TLS stream closes only its CoC;
+no `Device1.Disconnect`, management disconnect or ACL abort is issued. The
+provider aliases `localmesh.StreamALPN` so TLS and stream admission cannot drift.

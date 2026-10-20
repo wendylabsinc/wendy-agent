@@ -101,7 +101,7 @@ func candidateFromProperties(path dbus.ObjectPath, props map[string]dbus.Variant
 		return candidate{}, false
 	}
 	kind, ok := variantString(props["AddressType"])
-	if !ok || !mayDial(adv.DeviceHint, self) {
+	if !ok {
 		return candidate{}, false
 	}
 	if _, _, err := parseAddress(address, kind, adv.PSM); err != nil {

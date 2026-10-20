@@ -258,7 +258,10 @@ type refreshTestNode struct {
 }
 
 func (n *refreshTestNode) HasCheaperLink(meshid.Device, uint16) bool { return n.cheaper }
-func (n *refreshTestNode) AttachStream(ctx context.Context, _ meshid.Device, _ net.Conn, _ uint16) error {
+func (n *refreshTestNode) AttachStream(ctx context.Context, peer meshid.Device, conn net.Conn, _ uint16) error {
+	if !localmesh.ConnectionReady(ctx, peer, func() { _ = conn.Close() }) {
+		return nil
+	}
 	close(n.attached)
 	<-ctx.Done()
 	return ctx.Err()
@@ -274,9 +277,13 @@ func TestAdvertisementRefreshOnlyAfterAuthenticatedInboundAdmission(t *testing.T
 				return localmesh.Identity{Device: peerFixture}, nil
 			}}
 			node := &refreshTestNode{attached: make(chan struct{}), cheaper: kind == "cheaper"}
-			r := &runtime{cfg: Config{Credentials: credentials, Node: node, TargetPeers: 1, Logger: zap.NewNop()}, active: map[meshid.Device]struct{}{}, nextAttempt: map[meshid.Device]time.Time{}, advertisementRefresh: make(chan struct{}, 1)}
+			r := &runtime{cfg: Config{Credentials: credentials, Node: node, Logger: zap.NewNop()}, advertisementRefresh: make(chan struct{}, 1)}
 			if kind == "full" {
-				r.active[lowFixture] = struct{}{}
+				for i := 0; i < localmesh.BLEMaxConnections; i++ {
+					if r.connectionPolicy().Reserve(fmt.Sprint(i), numberedBLEDevice(i+1), false) == nil {
+						t.Fatal("fixture capacity reservation failed")
+					}
+				}
 			}
 			r.serverTLS = r.makeServerTLS()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
