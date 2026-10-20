@@ -95,6 +95,10 @@ func (r *runtime) clearDialTimeouts(asset string) {
 // cheaperLinkReason reports the veto branch behind a cheaper-link decision so
 // a torn-down link names the exact clause that fired.
 func (r *runtime) cheaperLinkReason(asset meshid.Device) string {
+	if r.cfg.Selection != nil {
+		_, reason := r.cfg.Selection.AllowRadioReason(asset, localmesh.RadioBLE)
+		return reason
+	}
 	return "legacy-checker"
 }
 
