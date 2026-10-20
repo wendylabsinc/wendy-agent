@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import shutil
 
+from benchmark import isolated_device_state
 from canned import _ACTION as ACTION, scrub, scrub_output
 from mcp_client import StdioMCP
 from tool_trace import cli_path
@@ -25,8 +27,8 @@ def device_kind(selector):
     return "physical"
 
 
-def _version(wendy):
-    out = subprocess.run([wendy, "--version"], capture_output=True, text=True, timeout=30)
+def _version(wendy, env=None):
+    out = subprocess.run([wendy, "--version"], env=env, capture_output=True, text=True, timeout=30)
     return (out.stdout or out.stderr).strip()
 
 
@@ -34,11 +36,11 @@ def _sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def capture_mcp(args, canned_dir, provenance):
+def capture_mcp(args, canned_dir, provenance, env=None):
     # Not `mcp serve --device`: its startup connection is asynchronous, so a call made right after
     # initialize could capture NOT_CONNECTED. device_connect below waits for the connection.
     argv = [args.wendy, "mcp", "serve", "--tool-groups", "all"]
-    with StdioMCP(argv, timeout=args.timeout) as mcp:
+    with StdioMCP(argv, env=env, timeout=args.timeout) as mcp:
         mcp.initialize()
         tools = {t["name"]: t for t in mcp.list_tools()}
         if args.tool not in tools:
@@ -78,11 +80,11 @@ def capture_mcp(args, canned_dir, provenance):
     return 0
 
 
-def _run_cli(argv, interrupt_after=None):
+def _run_cli(argv, interrupt_after=None, env=None):
     """Run argv with no stdin, as the shim does. With interrupt_after, a command that streams until
     Ctrl+C gets SIGINT after that many seconds and keeps what it printed."""
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True)
+                            text=True, env=env)
     try:
         stdout, stderr = proc.communicate(timeout=interrupt_after or 120)
     except subprocess.TimeoutExpired:
@@ -100,7 +102,7 @@ def _run_cli(argv, interrupt_after=None):
     return (code if code >= 0 else 128 - code), stdout, stderr
 
 
-def capture_cli(args, canned_dir):
+def capture_cli(args, canned_dir, env=None):
     words = args.cli
     prefix = cli_path(words)
     if args.prefix_words:
@@ -115,7 +117,7 @@ def capture_cli(args, canned_dir):
         print("capture the before state of this command first, then its --after state", file=sys.stderr)
         return 2
     try:
-        code, stdout, stderr = _run_cli([args.wendy, "--device", args.device, *words], args.interrupt_after)
+        code, stdout, stderr = _run_cli([args.wendy, "--device", args.device, *words], args.interrupt_after, env)
     except subprocess.TimeoutExpired:
         print("the command did not exit within 120s; pass --interrupt-after for a streaming command",
               file=sys.stderr)
@@ -173,15 +175,24 @@ def main(argv=None):
         print(f"cannot resolve --wendy {args.wendy}", file=sys.stderr)
         return 2
     args.wendy = resolved
+    env, state = dict(os.environ), None
+    if not env.get("WENDY_CONFIG_DIR"):
+        # Never the developer's ~/.wendy: a throwaway state, as the runner uses for its own reads.
+        state = isolated_device_state({"kind": device_kind(args.device)})
+        env.update(WENDY_CONFIG_DIR=str(state), WENDY_SECRET_STORE="file")
     try:
-        provenance = {"wendy_version": _version(resolved), "wendy_sha256": _sha256(resolved),
-                      "device_kind": device_kind(args.device)}
-    except (OSError, subprocess.SubprocessError) as e:
-        print(f"cannot inspect wendy binary: {e}", file=sys.stderr)
-        return 2
-    if args.cli is not None:
-        return capture_cli(args, args.canned_dir)
-    return capture_mcp(args, args.canned_dir, provenance)
+        try:
+            provenance = {"wendy_version": _version(resolved, env), "wendy_sha256": _sha256(resolved),
+                          "device_kind": device_kind(args.device)}
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"cannot inspect wendy binary: {e}", file=sys.stderr)
+            return 2
+        if args.cli is not None:
+            return capture_cli(args, args.canned_dir, env)
+        return capture_mcp(args, args.canned_dir, provenance, env)
+    finally:
+        if state is not None:
+            shutil.rmtree(state, ignore_errors=True)
 
 
 if __name__ == "__main__":

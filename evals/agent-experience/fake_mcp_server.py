@@ -44,6 +44,11 @@ def handle(message):
 
 
 def main():
+    if os.environ.get("FAKE_MCP_ENV_LOG"):
+        state = os.environ.get("WENDY_CONFIG_DIR")
+        with open(os.environ["FAKE_MCP_ENV_LOG"], "a") as f:
+            f.write(json.dumps({"argv": sys.argv[1:], "config_dir": state, "exists": bool(state) and os.path.isdir(state),
+                                "secret_store": os.environ.get("WENDY_SECRET_STORE")}) + "\n")
     if "--version" in sys.argv[1:]:
         print("fake-wendy 0.0.0")
         return 0

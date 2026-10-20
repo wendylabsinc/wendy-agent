@@ -192,6 +192,37 @@ class CannedTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertFalse((self.root / "s" / "read_thing.json").exists())
 
+    def _captured_states(self, argv, config_dir=None, errors=""):
+        log = self.root / "env.log"
+        log.unlink(missing_ok=True)
+        with mock.patch.dict(os.environ, {"FAKE_MCP_ENV_LOG": str(log), "FAKE_MCP_ERROR_TOOLS": errors}):
+            os.environ.pop("WENDY_CONFIG_DIR", None)
+            if config_dir:
+                os.environ["WENDY_CONFIG_DIR"] = config_dir
+            code = capture.main(argv)
+        return code, [json.loads(line) for line in log.read_text().splitlines()]
+
+    def test_capture_uses_a_private_state_unless_one_is_given(self):
+        # Without WENDY_CONFIG_DIR a capture would read and write the developer's ~/.wendy.
+        mcp = ["--wendy", FAKE, "--device", "vm:test", "--set", "s", "--canned-dir", str(self.root), "--tool", "read_thing"]
+        cli = ["--wendy", FAKE, "--device", "vm:test", "--set", "s", "--canned-dir", str(self.root),
+               "--yes", "--cli", "device", "list"]
+        for argv, errors, want in ((mcp, "", 0), (cli, "", 0), (mcp, "read_thing", 1)):
+            with self.subTest(mode=argv[-1], errors=errors):
+                code, seen = self._captured_states(argv, errors=errors)
+                self.assertEqual(code, want)
+                self.assertEqual(len({s["config_dir"] for s in seen}), 1, seen)  # --version and the capture
+                state = seen[-1]["config_dir"]
+                self.assertRegex(state, r"^(/private)?/tmp/we-state-")
+                self.assertTrue(all(s["exists"] and s["secret_store"] == "file" for s in seen), seen)
+                self.assertFalse(Path(state).exists())
+        given = self.root / "given-state"
+        given.mkdir()
+        code, seen = self._captured_states(mcp, config_dir=str(given))
+        self.assertEqual(code, 0)
+        self.assertEqual({s["config_dir"] for s in seen}, {str(given)})
+        self.assertTrue(given.is_dir())
+
     def _fake_cli(self, out):
         marker = self.root / "marker"
         script = self.root / "fakewendy"
