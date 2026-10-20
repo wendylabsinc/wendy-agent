@@ -53,8 +53,8 @@ func NewControlHub(pools ...*CertificatePool) *ControlHub {
 // Certificates shares public bytes, not identities or trust, with consumers of
 // this node's authenticated neighbour channels. The pool is immutable here.
 func (h *ControlHub) Announcements() *netgossip.Pool { return h.announcements }
-func (h *ControlHub) Certificates() *CertificatePool  { return h.certificates }
-func (h *ControlHub) Events() <-chan ControlEvent     { return h.events }
+func (h *ControlHub) Certificates() *CertificatePool { return h.certificates }
+func (h *ControlHub) Events() <-chan ControlEvent    { return h.events }
 func (h *ControlHub) Add(p ControlPeer, send func(context.Context, []byte) error, closePeer func()) {
 	h.mu.Lock()
 	if h.closed {

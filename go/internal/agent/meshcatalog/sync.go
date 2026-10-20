@@ -25,7 +25,7 @@ var errPendingIdentities = errors.New("too many pending wendy net service identi
 // Signed records retain their origin proof across relays. Missing certificate
 // elements are requested after reordered announcements or cache misses.
 type Message struct {
-	Gossip      *netgossip.Message           `json:"gossip,omitempty"`
+	Gossip      *netgossip.Message            `json:"gossip,omitempty"`
 	Kind        string                        `json:"kind"`
 	Record      *SignedRecord                 `json:"record,omitempty"`
 	Bundle      [][]byte                      `json:"bundle,omitempty"`
