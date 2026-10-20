@@ -11,6 +11,9 @@ import (
 
 const Infinity uint16 = 65535
 
+// DefaultHelloInterval is used when Config leaves HelloInterval unspecified.
+const DefaultHelloInterval = 4 * time.Second
+
 type RouterID uint64
 
 // LinkID identifies an incarnation, not a reusable interface number. IDs must
@@ -39,6 +42,10 @@ type Link struct {
 	Local, Peer netip.Addr // unzoned IPv6 link-local; scope is ID
 	Cost        uint16     // strictly positive receive cost
 	MaxPacket   int        // Babel payload budget, >=512
+	// HelloInterval optionally overrides Config for this link. Zero inherits
+	// Config. Slower carriers can advertise an appropriate liveness interval
+	// without changing faster neighbours on the same router.
+	HelloInterval time.Duration
 	// IPv4 is optional, for ordinary IPv4 next-hop advertisements.
 	IPv4 netip.Addr
 }
@@ -123,7 +130,7 @@ func New(c Config) (*Engine, error) {
 		return nil, ErrConfig
 	}
 	if c.HelloInterval == 0 {
-		c.HelloInterval = 4 * time.Second
+		c.HelloInterval = DefaultHelloInterval
 	}
 	if c.UpdateInterval == 0 {
 		c.UpdateInterval = 16 * time.Second

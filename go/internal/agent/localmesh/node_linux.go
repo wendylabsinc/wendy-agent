@@ -340,7 +340,7 @@ func (n *Node) handle(e nodeEvent) error {
 		if err != nil {
 			return err
 		}
-		if err = n.step(babel.AddLink{Link: babel.Link{ID: e.add.id, Local: local, Peer: peer, Cost: e.add.cost, MaxPacket: DatagramLimit - 1}}); err != nil {
+		if err = n.step(babel.AddLink{Link: babelLinkForPeer(e.add, local, peer)}); err != nil {
 			return err
 		}
 		n.reconcilePeer(e.add, time.Now())

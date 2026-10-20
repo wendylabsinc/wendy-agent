@@ -191,6 +191,9 @@ func (e *Engine) validate(event Event) error {
 		if l.ID == 0 || l.ID <= e.lastLink || !l.Local.Is6() || !l.Peer.Is6() || !l.Local.IsLinkLocalUnicast() || !l.Peer.IsLinkLocalUnicast() || l.Local == l.Peer || l.Local.Zone() != "" || l.Peer.Zone() != "" || l.Cost == 0 {
 			return ErrConfig
 		}
+		if l.HelloInterval != 0 && (l.HelloInterval < 100*time.Millisecond || l.HelloInterval > 32767*10*time.Millisecond || l.HelloInterval%(10*time.Millisecond) != 0) {
+			return ErrConfig
+		}
 		if l.MaxPacket != 0 && (l.MaxPacket < 512 || l.MaxPacket > 65487) {
 			return ErrConfig
 		}
@@ -249,6 +252,13 @@ func (e *Engine) metric(r *candidate) uint16 {
 	return sum(r.advertised, e.cost(e.links[r.link]))
 }
 
+func (e *Engine) helloInterval(l *linkState) time.Duration {
+	if l.HelloInterval != 0 {
+		return l.HelloInterval
+	}
+	return e.cfg.HelloInterval
+}
+
 func (e *Engine) receive(l *linkState, m wireMessage) {
 	switch m.Type {
 	case wire.Hello:
@@ -275,7 +285,7 @@ func (e *Engine) receive(l *linkState, m wireMessage) {
 		e.update(l, m)
 	case wire.Request:
 		if m.Wildcard {
-			if !l.dumped || e.now-l.lastDump >= e.cfg.HelloInterval {
+			if !l.dumped || e.now-l.lastDump >= e.helloInterval(l) {
 				e.dump(l.ID, true)
 				l.lastDump = e.now
 				l.dumped = true
@@ -587,17 +597,17 @@ func (e *Engine) timers() {
 		if l.nextHello <= e.now {
 			// Multicast-kind Hello over unicast: a Link has exactly one peer.
 			// This also interoperates with wired-cost peers that use multicast history.
-			e.queue(id, wireMessage{Type: wire.Hello, Seqno: l.helloSeq, Interval: centis(e.cfg.HelloInterval)})
+			e.queue(id, wireMessage{Type: wire.Hello, Seqno: l.helloSeq, Interval: centis(e.helloInterval(l))})
 			l.helloSeq++
-			l.nextHello = e.now + e.cfg.HelloInterval - e.jitter(e.cfg.HelloInterval/8)
+			l.nextHello = e.now + e.helloInterval(l) - e.jitter(e.helloInterval(l)/8)
 		}
 		if l.nextIHU <= e.now {
 			rx := l.Cost
 			if l.hellos[0].expires <= e.now && l.hellos[1].expires <= e.now {
 				rx = Infinity
 			}
-			e.queue(id, wireMessage{Type: wire.IHU, Metric: rx, Interval: centis(e.cfg.HelloInterval * 2)})
-			l.nextIHU = e.now + e.cfg.HelloInterval*2 - e.jitter(e.cfg.HelloInterval/8)
+			e.queue(id, wireMessage{Type: wire.IHU, Metric: rx, Interval: centis(e.helloInterval(l) * 2)})
+			l.nextIHU = e.now + e.helloInterval(l)*2 - e.jitter(e.helloInterval(l)/8)
 		}
 		if l.nextUpdate <= e.now {
 			e.dump(id, false)
