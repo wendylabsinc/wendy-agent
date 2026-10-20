@@ -44,11 +44,11 @@ func TestAdapterAndACLIdentity(t *testing.T) {
 
 func TestLEConnectionUpdateEncoding(t *testing.T) {
 	got := leConnectionUpdateCommand(0x0800, meshIntervalUnits)
-	want := []byte{0x01, 0x13, 0x20, 14, 0x00, 0x08, 12, 0, 12, 0, 0, 0, 0x90, 0x01, 0, 0, 8, 0}
+	want := []byte{0x01, 0x13, 0x20, 14, 0x00, 0x08, 36, 0, 36, 0, 0, 0, 0x90, 0x01, 0, 0, 8, 0}
 	if string(got) != string(want) {
 		t.Fatalf("command=%x, want %x", got, want)
 	}
-	// Pi 5's mesh ACL handle 64 must encode the same 30 ms / 5 ms request.
+	// Pi 5's ACL handle 64 must encode the same 45 ms / 5 ms request.
 	wantHandle64 := append([]byte(nil), want...)
 	wantHandle64[4], wantHandle64[5] = 64, 0
 	if got := leConnectionUpdateCommand(64, meshIntervalUnits); string(got) != string(wantHandle64) {

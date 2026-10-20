@@ -23,13 +23,10 @@ const (
 	// 0.625 ms connection-event length units. Request short events to leave
 	// headroom for concurrent CoCs, discovery and advertising. Event lengths
 	// are controller scheduling hints, not guaranteed airtime allocations.
-	meshIntervalUnits = 12 // 15 ms
-	// Steady-state bulk interval: the 15 ms handshake tune triples anchor
-	// demand versus the negotiated ~45 ms. Under two-link bulk plus active
-	// scan, controllers stop servicing most anchors for seconds (measured
-	// gap histograms), collapsing drain to ~1% on all nodes at once. Once
-	// TLS is established, relax to 45 ms: fewer anchors, longer events for
-	// the same bulk, supervision unchanged.
+	// Use the established interval during authentication too: three centrals
+	// can authenticate to one peripheral concurrently, and a 15 ms interval
+	// would triple their anchor demand during the certificate transfer.
+	meshIntervalUnits       = 36 // 45 ms
 	meshSteadyIntervalUnits = 36 // 45 ms
 	// A multi-peer adapter can miss several connection events while it scans,
 	// advertises, and services another CoC. The former 2 s timeout caused
