@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 func TestControlBoundAndFraming(t *testing.T) {
