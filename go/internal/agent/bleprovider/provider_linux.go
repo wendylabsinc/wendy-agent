@@ -400,7 +400,7 @@ func (r *runtime) scanLoop(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 			if ctx.Err() != nil {
 				return nil
 			}
-			if errors.Is(err, errBlueZOwnerChanged) {
+			if errors.Is(err, errBlueZOwnerChanged) || errors.Is(err, errBLEAdapterUnavailable) {
 				return err
 			}
 			consecutiveErrors++
@@ -437,6 +437,9 @@ func (r *runtime) scanOnce(ctx context.Context, bus *dbus.Conn, adapter dbus.Obj
 	objects, err := getManaged(query, bus)
 	cancel()
 	if err != nil {
+		return err
+	}
+	if err := requirePoweredAdapter(objects, adapter); err != nil {
 		return err
 	}
 	now := time.Now()
