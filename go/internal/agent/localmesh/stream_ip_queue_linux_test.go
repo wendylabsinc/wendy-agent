@@ -147,14 +147,21 @@ func TestStreamIPQueueBoundsBytesAndSources(t *testing.T) {
 		}
 	}
 	stats := q.snapshot()
-	if stats.Bytes > streamIPByteBudget || stats.Packets == 0 || stats.DroppedCapacity == 0 {
+	if stats.Bytes > stats.ByteLimit || stats.Packets != 2 || stats.DroppedCapacity == 0 {
 		t.Fatalf("byte cap/overload counters: %+v", stats)
 	}
-	if q.sourceBytes(queueTestSource(4)) == 0 {
-		t.Fatal("new sender was starved by older sender backlog")
+	if q.sourceBytes(queueTestSource(1)) == 0 || q.sourceBytes(queueTestSource(2)) == 0 {
+		t.Fatal("later senders evicted admitted packets")
+	}
+	served := 0
+	if _, ok := q.pop(now, &served); !ok {
+		t.Fatal("queued source could not drain")
+	}
+	if !q.enqueue(400, queueTestIP(1200, 4), now) {
+		t.Fatal("new sender could not use released capacity")
 	}
 	for _, p := range q.pending {
-		if q.sourceBytes(p.source) > streamIPSourceByteBudget {
+		if q.sourceBytes(p.source) > stats.ByteLimit/2 {
 			t.Fatalf("source %x exceeded budget: %+v", p.source, stats)
 		}
 	}

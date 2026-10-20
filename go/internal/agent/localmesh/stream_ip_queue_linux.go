@@ -148,8 +148,8 @@ func (q *streamIPSendQueue) sourceBytes(source [16]byte) int {
 func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
 	// Preserve each sender's admitted prefix within a priority class. Replacing
 	// it with each later datagram can discard the start of every TLS flight.
-	// Existing priority reservation may displace that sender's bulk tail; a new
-	// sender may trim another sender's tail to obtain its first fair-share slot.
+	// Existing priority reservation may displace bulk tails, but an arrival
+	// from a different sender must not discard another flight's opening bytes.
 	source := incoming.source
 	needSourceSpace := q.sourceBytes(source)+incoming.bytes > q.sourceByteBudget()
 	needFastSpace := incoming.fast && q.fastBytes()+incoming.bytes > q.fastByteBudget()
@@ -174,26 +174,6 @@ func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
 	}
 	if ownClassBytes != 0 {
 		return -1
-	}
-	counts := make(map[[16]byte]int)
-	for _, p := range q.pending {
-		if p.fast == incoming.fast {
-			counts[p.source] += p.bytes
-		}
-	}
-	var largest int
-	for _, p := range q.pending {
-		if p.source != incoming.source && p.fast == incoming.fast && counts[p.source] > largest {
-			largest, source = counts[p.source], p.source
-		}
-	}
-	if largest > 0 {
-		for i := len(q.pending) - 1; i >= 0; i-- {
-			p := q.pending[i]
-			if p.source == source && p.fast == incoming.fast {
-				return i
-			}
-		}
 	}
 	if incoming.fast && !needFastSpace {
 		bulk := 0
