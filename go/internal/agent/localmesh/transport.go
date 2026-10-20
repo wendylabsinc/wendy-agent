@@ -10,9 +10,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-// StreamALPN is shared with the BLE provider so TLS and the mesh hello agree.
-const StreamALPN = "wendy-local-mesh-ble/2-catalog-1-cert-1"
-
 // LinkHello names both ends by device UUID. The TLS handshake already pinned the
 // full principal, so the hello only has to prove the peer read the pinned
 // identity correctly - there is no numeric identity to announce.
