@@ -92,8 +92,9 @@ After authenticated inbound admission, the agent requests an advertising refresh
 Requests are coalesced and limited to once per second. A transient refresh error
 is tolerated; another admission can request a later refresh.
 
-The provider normally targets three simultaneous neighbours, with bounded
-connection attempts. This is an internal provider limit, not a CLI setting.
+The router admits up to three simultaneous BLE neighbours, including at most
+two outgoing connections and one outgoing setup attempt at a time. These are
+internal transport limits, not CLI settings.
 BLE currently uses classical X25519 key exchange to keep handshake traffic
 small, while still verifying the enrolled device certificates and signatures.
 
