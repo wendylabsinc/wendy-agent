@@ -146,47 +146,56 @@ func (q *streamIPSendQueue) sourceBytes(source [16]byte) int {
 }
 
 func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
-	// Replace old packets from the incoming sender first at its source cap.
-	// Otherwise evict from the largest sender in the same priority class.
-	// A full-size app QUIC flight is fast: it may replace a bulk packet,
-	// but ordinary bulk from the same sender must never evict that flight.
-	// The fast byte cap always reserves one maximum-size bulk slot.
+	// Preserve each sender's admitted prefix within a priority class. Replacing
+	// it with each later datagram can discard the start of every TLS flight.
+	// Existing priority reservation may displace that sender's bulk tail; a new
+	// sender may trim another sender's tail to obtain its first fair-share slot.
 	source := incoming.source
 	needSourceSpace := q.sourceBytes(source)+incoming.bytes > q.sourceByteBudget()
 	needFastSpace := incoming.fast && q.fastBytes()+incoming.bytes > q.fastByteBudget()
-	if !needSourceSpace {
-		counts := make(map[[16]byte]int)
-		for _, p := range q.pending {
-			if p.fast == incoming.fast {
-				counts[p.source] += p.bytes
-			}
-		}
-		var largest int
-		for _, p := range q.pending {
-			if p.source == incoming.source || p.fast != incoming.fast {
-				continue
-			}
-			if bytes := counts[p.source]; bytes > largest {
-				largest, source = bytes, p.source
-			}
-		}
-		if largest == 0 {
-			source = incoming.source
-		}
-	}
-	for i, p := range q.pending {
+	ownClassBytes := 0
+	for _, p := range q.pending {
 		if p.source == source && p.fast == incoming.fast {
-			return i
+			ownClassBytes += p.bytes
 		}
 	}
-	if needSourceSpace && incoming.fast && !needFastSpace {
-		for i, p := range q.pending {
+	if needSourceSpace {
+		// Do not discard bulk unless doing so can actually admit this packet.
+		if !incoming.fast || needFastSpace || ownClassBytes+incoming.bytes > q.sourceByteBudget() {
+			return -1
+		}
+		for i := len(q.pending) - 1; i >= 0; i-- {
+			p := q.pending[i]
 			if p.source == source && !p.fast {
 				return i
 			}
 		}
+		return -1
 	}
-	if !needSourceSpace && incoming.fast && !needFastSpace {
+	if ownClassBytes != 0 {
+		return -1
+	}
+	counts := make(map[[16]byte]int)
+	for _, p := range q.pending {
+		if p.fast == incoming.fast {
+			counts[p.source] += p.bytes
+		}
+	}
+	var largest int
+	for _, p := range q.pending {
+		if p.source != incoming.source && p.fast == incoming.fast && counts[p.source] > largest {
+			largest, source = counts[p.source], p.source
+		}
+	}
+	if largest > 0 {
+		for i := len(q.pending) - 1; i >= 0; i-- {
+			p := q.pending[i]
+			if p.source == source && p.fast == incoming.fast {
+				return i
+			}
+		}
+	}
+	if incoming.fast && !needFastSpace {
 		bulk := 0
 		for _, p := range q.pending {
 			if !p.fast {
@@ -194,17 +203,10 @@ func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
 			}
 		}
 		if bulk > 1 {
-			for i, p := range q.pending {
-				if !p.fast {
+			for i := len(q.pending) - 1; i >= 0; i-- {
+				if !q.pending[i].fast {
 					return i
 				}
-			}
-		}
-	}
-	if needSourceSpace && !incoming.fast {
-		for i, p := range q.pending {
-			if p.source == source && !p.fast {
-				return i
 			}
 		}
 	}
@@ -266,16 +268,18 @@ func (q *streamIPSendQueue) recordWrite(bytes int, elapsed time.Duration) {
 	}
 	q.expire(time.Now())
 	for q.stats.Bytes > q.byteBudget() || q.fastBytes() > q.fastByteBudget() {
-		victim := 0
+		victim := len(q.pending) - 1
 		if q.fastBytes() > q.fastByteBudget() {
-			for i, p := range q.pending {
+			for i := len(q.pending) - 1; i >= 0; i-- {
+				p := q.pending[i]
 				if p.fast {
 					victim = i
 					break
 				}
 			}
 		} else {
-			for i, p := range q.pending {
+			for i := len(q.pending) - 1; i >= 0; i-- {
+				p := q.pending[i]
 				if !p.fast {
 					victim = i
 					break

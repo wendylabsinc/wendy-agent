@@ -630,3 +630,82 @@ func TestStreamFastRoutedIPv6Bounds(t *testing.T) {
 		t.Fatal("incomplete IPv6 payload got UDP priority")
 	}
 }
+
+// A QUIC ClientHello spans multiple datagrams, and a certificate flight is a
+// larger burst. Before its first bytes arrive, later bytes cannot advance TLS.
+// With the writer occupied, overload must preserve the admitted flight prefix.
+func TestStreamIPQueueKeepsAdmittedFlightPrefix(t *testing.T) {
+	for _, rate := range []string{"startup", "slow", "fast"} {
+		for _, count := range []int{2, 13} {
+			t.Run(fmt.Sprintf("%s/%d_datagrams", rate, count), func(t *testing.T) {
+				q := newStreamIPSendQueue()
+				if rate == "slow" {
+					q.recordWrite(TunnelMTU, 90*time.Millisecond)
+				}
+				if rate == "fast" {
+					for range 10 {
+						q.recordWrite(TunnelMTU, 10*time.Millisecond)
+					}
+				}
+				now := time.Now()
+				packet := queueTestAppUDP(1248, 1, 49200, AppSessionPort)
+				for i := 1; i <= count; i++ {
+					q.enqueue(uint32(i), packet, now)
+				}
+				served := 0
+				for want := uint32(1); ; want++ {
+					got, ok := q.pop(now, &served)
+					if !ok {
+						if want == 1 {
+							t.Fatal("no admitted datagram made progress")
+						}
+						break
+					}
+					if got.sequence != want {
+						t.Fatalf("flight prefix lost before writer had a turn: got datagram %d, want %d; stats=%+v", got.sequence, want, q.snapshot())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestStreamIPQueueRateReductionKeepsAdmittedPrefixes(t *testing.T) {
+	q := newStreamIPSendQueue()
+	for range 10 {
+		q.recordWrite(TunnelMTU, 10*time.Millisecond)
+	}
+	now := time.Now()
+	for i := 0; i < 6; i++ {
+		q.enqueue(uint32(i+1), queueTestIP(TunnelMTU, byte(i%2+1)), now)
+	}
+	q.recordWrite(TunnelMTU, 400*time.Millisecond)
+	served := 0
+	for want := uint32(1); want <= 2; want++ {
+		p, ok := q.pop(now, &served)
+		if !ok || p.sequence != want {
+			t.Fatalf("rate reduction discarded a sender's admitted prefix: got %d ok=%t want=%d", p.sequence, ok, want)
+		}
+	}
+	if stats := q.snapshot(); stats.Bytes != 0 || stats.DroppedCapacity != 4 {
+		t.Fatalf("rate reduction did not retain bounded first packets: %+v", stats)
+	}
+}
+
+func TestStreamIPQueueRejectedFlightDoesNotDiscardOwnBulk(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	if !q.enqueue(1, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) || !q.enqueue(2, queueTestIP(300, 1), now) {
+		t.Fatal("fixture does not fit bounded source share")
+	}
+	if q.enqueue(3, queueTestAppUDP(1248, 1, 49200, AppSessionPort), now) {
+		t.Fatal("second full flight exceeded its source share")
+	}
+	served := 0
+	for want := uint32(1); want <= 2; want++ {
+		p, ok := q.pop(now, &served)
+		if !ok || p.sequence != want {
+			t.Fatalf("rejected packet discarded admitted traffic: got %d ok=%t want=%d", p.sequence, ok, want)
+		}
+	}
+}
