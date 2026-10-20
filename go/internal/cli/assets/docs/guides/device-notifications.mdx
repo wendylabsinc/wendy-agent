@@ -91,7 +91,6 @@ import WendyKit
 let request = try WendyNotificationSendRequest(
     audience: WendyAudience(
         userIDs: ["<cloud-user-id>"],
-        teamUUIDs: ["<cloud-team-uuid>"],
         roles: [.owner, .admin]
     ),
     title: "Robot needs help",
@@ -109,7 +108,9 @@ organization role selectors have union semantics: a user matching more than one
 selector receives one Notification. UUID team selectors require an ACME-enrolled
 Cloud v2 device. On a legacy-enrolled device, use legacy numeric `teamIDs` /
 `team_ids`; setting `team_uuids` returns `FAILED_PRECONDITION`. Do not combine the
-two team-ID namespaces in one request.
+two team-ID namespaces in one request. The current WendyKit API exposes only
+numeric `teamIDs`; for UUID team selectors, use the app-facing gRPC
+`team_uuids` field shown below.
 
 See the
 [wendy-app-sdk README](https://github.com/wendylabsinc/wendy-app-sdk#send-a-notification)
