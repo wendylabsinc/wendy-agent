@@ -2,6 +2,8 @@
 import json
 import re
 
+from tool_trace import cli_path, command_words
+
 OUTCOMES = ("right", "wrong", "missed", "asked")
 EXPECT_KEYS = {"right", "wrong", "ask"}
 MATCHER_KEYS = {"tool", "cli", "shell", "args", "args_regex", "agents", "block"}
@@ -70,7 +72,13 @@ def matches(matcher, entry, adapter=None):
         text = json.dumps(arguments, sort_keys=True)
     elif "cli" in matcher:
         # A help lookup is informational, so it is neither a right nor a wrong path.
-        if channel != "cli" or is_help(arguments) or name.split()[:len(matcher["cli"].split())] != matcher["cli"].split():
+        if channel != "cli" or is_help(arguments):
+            return False
+        # The words prefix-match the strict path (stops at the first flag) or the flag-skipping words the
+        # shim cans and looks captures up by, so `vm --yes create` grades like the `vm create` it canned.
+        want = matcher["cli"].split()
+        paths = [cli_path(arguments), command_words(arguments)] if isinstance(arguments, list) else [name.split()]
+        if not any(words[:len(want)] == want for words in paths):
             return False
         text = " ".join(arguments) if isinstance(arguments, list) else ""
     else:

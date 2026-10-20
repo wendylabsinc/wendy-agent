@@ -36,6 +36,28 @@ class GradeTests(unittest.TestCase):
         self.assertFalse(g.matches({"cli": "os"}, cli("osx")))
         self.assertTrue(g.matches({"cli": "wifi", "args_regex": "Lab5G"}, cli("wifi", "connect", "Lab5G")))
 
+    def test_cli_matcher_skips_flags_like_capture_lookup(self):
+        # The shim cans and looks up captures by command_words (flags skipped), so grading must too.
+        import tool_trace
+        def traced(command):
+            events = [{"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "1", "name": "Bash", "input": {"command": command}}]}}]
+            return tool_trace.build_trace("claude", events)
+        sim = {"right": [{"tool": "simulator_create"}, {"cli": "vm create"}]}
+        stop = {"right": [{"tool": "container_stop"}, {"cli": "device apps stop"}]}
+        for command, expect in (("wendy vm create dog --profile go2", sim),
+                                ("wendy vm --yes create dog --profile go2", sim),
+                                ("wendy vm -y create dog", sim),
+                                ("wendy device --yes apps stop sensor-dashboard", stop),
+                                ("wendy --json device apps stop sensor-dashboard", stop)):
+            with self.subTest(command=command):
+                self.assertEqual(g.grade(traced(command), expect, "", True)["outcome"], "right")
+        # Still whole words from the start, and help is still not graded.
+        self.assertEqual(g.grade(traced("wendy device --yes apps list"), stop, "", True)["outcome"], "missed")
+        self.assertEqual(g.grade(traced("wendy vm --yes create --help"), sim, "", True)["outcome"], "missed")
+        self.assertFalse(g.matches({"cli": "apps stop"}, {"channel": "cli", "name": "device",
+                                                          "arguments": ["device", "--yes", "apps", "stop"]}))
+
     def test_help_lookups_never_match(self):
         # Reading help is informational: it is neither the job done nor the wrong way to do it.
         expect = {"right": [{"cli": "os update-status"}], "wrong": [{"cli": "os update", "block": True}]}
