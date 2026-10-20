@@ -19,7 +19,7 @@ func TestDirectoryCertificateExchangeAvoidsWholeChainFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, _ := NewDirectory(a.Device.Tenant(), 10, sourceCache)
-	w, err := SignManifest(Manifest{Version: 1, Device: a.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, a.Certificate.Certificate, a.Signer, now)
+	w, err := SignManifest(routeManifest(a.Device, now), a.Certificate.Certificate, a.Signer, now)
 	if err != nil {
 		t.Fatal(err)
 	}
