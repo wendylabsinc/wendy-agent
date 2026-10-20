@@ -274,6 +274,10 @@ func TestOriginInventoryBindsNonceAndFencesWithdrawnGeneration(t *testing.T) {
 	if b.acceptInventory(data, changed, f.now) == nil {
 		t.Fatal("replayed response accepted for new challenge")
 	}
+	if err := b.acceptInventory(data, q, f.now); !errors.Is(err, ErrIdentityNeeded) {
+		t.Fatal("uncached proof must request certificate elements", err)
+	}
+	synchronizeServiceIdentity(t, a, b, f.now)
 	if err := b.acceptInventory(data, q, f.now); err != nil {
 		t.Fatal(err)
 	}
@@ -307,6 +311,7 @@ func TestOriginInventoryPersistenceFailureAndConcurrentPublication(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	synchronizeServiceIdentity(t, a, b, f.now)
 	b.persist = func([]Receipt) error { return errors.New("disk failed") }
 	if b.acceptInventory(data, q, f.now) == nil {
 		t.Fatal("persistence failure accepted")
@@ -375,9 +380,28 @@ func TestIdentityRepairFromAlternateNeighbour(t *testing.T) {
 	if len(r.peers[1].out) == 0 {
 		t.Fatal("missing certificate was not requested from alternate neighbour")
 	}
-	bundle, _ := inventoryWire(inventoryMessage{Message: Message{Kind: "bundle", Bundle: f.creds[p533].Certificate.Certificate}})
-	if err := r.receive(r.peers[1], bundle); err != nil {
-		t.Fatal(err)
+	source := NewSynchronizer(origin, origin.cache)
+	for steps := 0; len(r.peers[1].out) > 0; steps++ {
+		if steps > 1000 {
+			t.Fatal("alternate neighbour repair did not finish")
+		}
+		var request inventoryMessage
+		if err := json.Unmarshal(<-r.peers[1].out, &request); err != nil {
+			t.Fatal(err)
+		}
+		replies, _, err := source.Receive(request.Message, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, reply := range replies {
+			wire, err := inventoryWire(inventoryMessage{Message: reply})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.receive(r.peers[1], wire); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	if len(relay.Snapshot(time.Now())) != 1 || r.peers[2].syncer.PendingIdentity() {
 		t.Fatalf("alternate neighbour bundle failed: records=%v pending=%v cache=%v", relay.Snapshot(time.Now()), r.peers[2].syncer.pending, cache.Fingerprints(time.Now(), 10))

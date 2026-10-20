@@ -37,7 +37,7 @@ func (r *Runtime) requestIdentity(from babel.LinkID, principal string, now time.
 		}
 	}
 }
-func (r *Runtime) deliverIdentity(principal string, bundle [][]byte) {
+func (r *Runtime) deliverIdentity(principal string) {
 	repair := r.identityRepairs[principal]
 	if repair == nil {
 		return
@@ -45,7 +45,7 @@ func (r *Runtime) deliverIdentity(principal string, bundle [][]byte) {
 	delete(r.identityRepairs, principal)
 	for id := range repair.waiters {
 		if p := r.peers[id]; p != nil {
-			r.queueMessages(p, []Message{{Kind: "bundle", Bundle: bundle}})
+			r.queueReplies(p, []Message{{Kind: "certificate", Certificate: p.syncer.certificates.Describe(principal, time.Now())}})
 		}
 	}
 }
@@ -55,13 +55,13 @@ func (r *Runtime) repairIdentityMessage(p *catalogPeer, m Message, now time.Time
 			r.requestIdentity(p.id, m.Principal, now)
 		}
 	}
-	if m.Kind == "bundle" {
-		// Synchronizer.Receive has already authenticated the bundle before this call.
+	if m.Kind == "bundle" || m.Kind == "certificate" {
+		// Only independently verified complete identities can satisfy waiters.
 		r.repairKnownIdentities(now)
 		for principal := range r.identityRepairs {
 			chain, _, ok := r.catalog.cache.Get(principal, now)
 			if ok && len(chain) > 0 {
-				r.deliverIdentity(principal, chain)
+				r.deliverIdentity(principal)
 			}
 		}
 	}
@@ -79,6 +79,22 @@ func (r *Runtime) repairIdentityMessage(p *catalogPeer, m Message, now time.Time
 // not remain stuck merely because the bundle arrived on another protocol path.
 func (r *Runtime) repairKnownIdentities(now time.Time) {
 	for id, peer := range r.peers {
+		replies, admitted, err := peer.syncer.ContinueCertificates(now)
+		if err != nil {
+			if r.hub != nil {
+				r.hub.ClosePeer(id)
+			}
+			continue
+		}
+		if !r.queueReplies(peer, replies) {
+			if r.hub != nil {
+				r.hub.ClosePeer(id)
+			}
+			continue
+		}
+		for _, w := range admitted {
+			r.broadcastExcept(w, id)
+		}
 		for principal := range peer.syncer.pending {
 			chain, _, ok := r.catalog.cache.Get(principal, now)
 			if !ok {

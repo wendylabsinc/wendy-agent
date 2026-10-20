@@ -57,7 +57,7 @@ func newMeshCatalogManager(dir string, ingress *meshingress.Registry, logger *za
 }
 
 func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmesh.Credentials, snapshot func() localmesh.NodeSnapshot, vips *mesh.VIPTable, hub *localmesh.ControlHub) error {
-	if credentials == nil || snapshot == nil {
+	if credentials == nil || snapshot == nil || hub == nil {
 		return errors.New("mesh catalog requires a running node")
 	}
 	stateDir := filepath.Join(m.dir, "local-mesh", "catalog-"+credentials.Device.UUID().String())
@@ -65,7 +65,7 @@ func (m *meshCatalogManager) Activate(ctx context.Context, credentials *localmes
 		return err
 	}
 	now := time.Now()
-	cache, err := localmesh.OpenIdentityCache(filepath.Join(stateDir, "identities.json"), localmesh.DefaultCacheLimits(), credentials.Verify, now)
+	cache, err := localmesh.OpenIdentityCacheWithCertificates(filepath.Join(stateDir, "identities.json"), localmesh.DefaultCacheLimits(), credentials.Verify, now, hub.Certificates())
 	if err != nil {
 		return err
 	}

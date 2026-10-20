@@ -232,7 +232,14 @@ service snapshot. Accepted origin signatures are preserved on relay. Verified
 supplier records seed per-link send stamps to prevent echoes. Failed queue
 admission does not consume a send stamp. The existing 15-second repair scan
 sends unqueued generations only. Certificate cache misses can be repaired through
-other neighbours with bounded, coalesced requests. Ordinary signed-record formats,
+other neighbours with bounded, coalesced requests. Directory, authenticated
+handshake and catalogue paths share the same public certificate-element pool.
+Service announcements and freshness proofs describe certificate hashes instead
+of embedding whole chains; only missing bytes are requested, one chunk at a time.
+A burst of records from the same unknown origin requests its identity once.
+Pending unverified records are bounded to128 records/128 KiB and their signed
+expiry, and requested replies have a separate16-frame/128-KiB reserve.
+Ordinary signed-record formats,
 service leases and device-directory renewal/repair intervals are unchanged.
 
 Projection readiness uses a fresh origin-signed inventory challenge instead of an

@@ -55,6 +55,7 @@ func (r *Runtime) Run(ctx context.Context, hubs ...*localmesh.ControlHub) error 
 	defer func() {
 		for _, p := range r.peers {
 			p.cancel()
+			p.syncer.Close()
 		}
 		r.mu.Lock()
 		clear(r.fresh)
@@ -152,7 +153,7 @@ func (r *Runtime) receive(p *catalogPeer, data []byte) error {
 	if m.Kind == "fresh-request" || m.Kind == "fresh-chunk" {
 		return r.receiveFresh(p, m, time.Now())
 	}
-	if !p.inventory.done {
+	if !p.inventory.done && m.Kind != "certificate" {
 		if err := p.inventory.receive(m); err != nil {
 			return err
 		}
@@ -170,7 +171,7 @@ func (r *Runtime) receive(p *catalogPeer, data []byte) error {
 		return err
 	}
 	r.repairIdentityMessage(p, m.Message, time.Now())
-	if !r.queueMessages(p, replies) {
+	if !r.queueReplies(p, replies) {
 		return errors.New("catalogue reply queue full")
 	}
 	if p.syncer.PendingIdentity() {

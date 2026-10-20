@@ -14,20 +14,32 @@ import (
 
 const MaxMessageBytes = 64 << 10
 
+const maxPendingRecords = 128
+const maxPendingRecordBytes = 128 << 10
+
 var errPendingIdentities = errors.New("too many pending mesh service identities")
 
 // Message is carried on a reliable, authenticated mesh control stream.
-// Signed records retain their origin proof across relays. The bundle request
-// path repairs reordered announcements and cache misses after restart.
+// Signed records retain their origin proof across relays. Missing certificate
+// elements are requested after reordered announcements or cache misses.
 type Message struct {
-	Kind      string        `json:"kind"`
-	Record    *SignedRecord `json:"record,omitempty"`
-	Bundle    [][]byte      `json:"bundle,omitempty"`
-	Principal string        `json:"principal,omitempty"`
+	Kind        string                        `json:"kind"`
+	Record      *SignedRecord                 `json:"record,omitempty"`
+	Bundle      [][]byte                      `json:"bundle,omitempty"`
+	Principal   string                        `json:"principal,omitempty"`
+	Certificate *localmesh.CertificateMessage `json:"certificate,omitempty"`
 }
 
 func (m Message) validate() error {
+	if m.Kind != "certificate" && m.Certificate != nil {
+		return errors.New("unexpected service certificate message")
+	}
 	switch m.Kind {
+	case "certificate":
+		if m.Certificate == nil || m.Record != nil || len(m.Bundle) != 0 || m.Principal != "" {
+			return errors.New("invalid service certificate envelope")
+		}
+		return m.Certificate.Validate()
 	case "record":
 		if m.Record == nil || len(m.Bundle) != 0 || m.Principal != "" {
 			return errors.New("invalid service record message")
@@ -115,8 +127,9 @@ type Synchronizer struct {
 	// One authenticated neighbour control stream delivers records in order. Remember the
 	// exact signed body last queued for each service so the periodic repair
 	// pass sends only records that a dropped Broadcast never queued.
-	sentRecords map[Key]sentRecordStamp
-	pending     map[string][]SignedRecord
+	sentRecords  map[Key]sentRecordStamp
+	pending      map[string][]SignedRecord
+	certificates *localmesh.CertificateExchange
 }
 
 type sentRecordStamp struct {
@@ -126,7 +139,7 @@ type sentRecordStamp struct {
 
 func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache) *Synchronizer {
 	return &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
-		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]SignedRecord{}}
+		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]SignedRecord{}, certificates: localmesh.NewCertificateExchange(cache, c.device.Tenant())}
 }
 
 func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
@@ -143,7 +156,7 @@ func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
 	// transmit data. Check the stamp first; every record actually transmitted
 	// still needs a current-trust lookup below. Catalog.Records independently
 	// validates origins before reconciliation/projection.
-	chain, _, ok := s.cache.Get(record.Key.Device, now)
+	_, _, ok := s.cache.Get(record.Key.Device, now)
 	if !ok {
 		return nil
 	}
@@ -153,7 +166,7 @@ func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
 			s.sent = map[string]bool{}
 		}
 		s.sent[w.Fingerprint] = true
-		out = append(out, Message{Kind: "bundle", Bundle: chain})
+		out = append(out, Message{Kind: "certificate", Certificate: s.certificates.Describe(record.Key.Device, now)})
 	}
 	w = cloneWire(w)
 	s.sentRecords[record.Key] = sentRecordStamp{record.Generation, stamp}
@@ -198,7 +211,7 @@ func (s *Synchronizer) snapshotRecords(now time.Time) []SignedRecord {
 }
 
 // PendingIdentity reports whether a record from this peer still awaits its
-// signed origin's certificate bundle. A snapshot is not safe to project until
+// signed origin's certificate chain. A snapshot is not safe to project until
 // all records sent before its completion marker have been verified.
 func (s *Synchronizer) PendingIdentity() bool { return len(s.pending) != 0 }
 
@@ -210,12 +223,15 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 		return nil, nil, err
 	}
 	switch m.Kind {
+	case "certificate":
+		replies, completed, err := s.certificates.Receive(*m.Certificate, now)
+		return s.certificateResult(replies, completed, err, now)
 	case "snapshot-done":
 		// Runtime consumes this marker after all preceding records on the
 		// ordered stream have been admitted or queued for identity repair.
 	case "identity-request":
-		if chain, _, ok := s.cache.Get(m.Principal, now); ok {
-			return []Message{{Kind: "bundle", Bundle: chain}}, nil, nil
+		if descriptor := s.certificates.Describe(m.Principal, now); descriptor != nil {
+			return []Message{{Kind: "certificate", Certificate: descriptor}}, nil, nil
 		}
 	case "bundle":
 		principal, err := s.cache.Put(m.Bundle, now)
@@ -237,19 +253,27 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 			return nil, nil, nil
 		}
 		if errors.Is(err, ErrIdentityNeeded) {
-			count := 0
+			count, retainedBytes := 0, 0
 			for _, entries := range s.pending {
 				count += len(entries)
+				for _, wire := range entries {
+					retainedBytes += len(wire.Body) + len(wire.Signature) + len(wire.Fingerprint)
+				}
 			}
-			if count >= 8 {
+			incomingBytes := len(m.Record.Body) + len(m.Record.Signature) + len(m.Record.Fingerprint)
+			if count >= maxPendingRecords || retainedBytes+incomingBytes > maxPendingRecordBytes {
 				return nil, nil, errPendingIdentities
 			}
 			var record Record
 			if json.Unmarshal(m.Record.Body, &record) != nil {
 				return nil, nil, errors.New("invalid mesh service record body")
 			}
+			first := len(s.pending[record.Key.Device]) == 0
 			s.pending[record.Key.Device] = append(s.pending[record.Key.Device], cloneWire(*m.Record))
-			return []Message{{Kind: "identity-request", Principal: record.Key.Device}}, nil, nil
+			if first {
+				return []Message{{Kind: "identity-request", Principal: record.Key.Device}}, nil, nil
+			}
+			return nil, nil, nil
 		}
 		if err != nil {
 			return nil, nil, err
@@ -261,6 +285,50 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 	}
 	return replies, changed, nil
 }
+
+func (s *Synchronizer) certificateResult(messages []*localmesh.CertificateMessage, completed []string, err error, now time.Time) (replies []Message, changed []SignedRecord, result error) {
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, m := range messages {
+		replies = append(replies, Message{Kind: "certificate", Certificate: m})
+	}
+	for _, principal := range completed {
+		pending := s.pending[principal]
+		delete(s.pending, principal)
+		for _, w := range pending {
+			out, admitted, err := s.Receive(Message{Kind: "record", Record: &w}, now)
+			if err != nil {
+				return nil, nil, err
+			}
+			replies = append(replies, out...)
+			changed = append(changed, admitted...)
+		}
+	}
+	return replies, changed, nil
+}
+
+func (s *Synchronizer) ContinueCertificates(now time.Time) ([]Message, []SignedRecord, error) {
+	for principal, records := range s.pending {
+		keep := records[:0]
+		for _, wire := range records {
+			var record Record
+			if json.Unmarshal(wire.Body, &record) == nil && time.UnixMilli(record.Expires).After(now) {
+				keep = append(keep, wire)
+			}
+		}
+		clear(records[len(keep):])
+		if len(keep) == 0 {
+			delete(s.pending, principal)
+		} else {
+			s.pending[principal] = keep
+		}
+	}
+	messages, completed, err := s.certificates.Poll(now)
+	return s.certificateResult(messages, completed, err, now)
+}
+
+func (s *Synchronizer) Close() { s.certificates.Close() }
 
 // Only called after Catalog.Accept has verified the artifact, including duplicates.
 // A supplier already possesses its exact body and signing certificate.

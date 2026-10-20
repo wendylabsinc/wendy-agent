@@ -18,7 +18,7 @@ func TestWarmReconnectSkipsBundleAndColdReceiverRepairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := NewSynchronizer(senderCatalog, senderCache).Record(w, f.now)
-	if len(first) != 2 || first[0].Kind != "bundle" {
+	if len(first) != 2 || first[0].Kind != "certificate" {
 		t.Fatalf("cold session = %+v", first)
 	}
 	warmSender := NewSynchronizer(senderCatalog, senderCache)
@@ -49,11 +49,11 @@ func TestWarmReconnectSkipsBundleAndColdReceiverRepairs(t *testing.T) {
 		t.Fatalf("cold receiver request = %+v %+v %v", request, changed, err)
 	}
 	bundle, _, err := warmSender.Receive(request[0], f.now.Add(time.Second))
-	if err != nil || len(bundle) != 1 || bundle[0].Kind != "bundle" {
+	if err != nil || len(bundle) != 1 || bundle[0].Kind != "certificate" {
 		t.Fatalf("identity repair reply = %+v %v", bundle, err)
 	}
-	_, changed, err = receiver.Receive(bundle[0], f.now.Add(time.Second))
-	if err != nil || len(changed) != 1 || len(freshCatalog.Snapshot(f.now.Add(time.Second))) != 1 {
+	changed = exchangeServiceMessages(t, warmSender, receiver, bundle, f.now.Add(time.Second))
+	if len(changed) != 1 || len(freshCatalog.Snapshot(f.now.Add(time.Second))) != 1 {
 		t.Fatalf("repaired record = %+v %v", changed, err)
 	}
 	tampered := cloneWire(w)
@@ -74,7 +74,7 @@ func TestSynchronizationRepairsReorderAndReconnect(t *testing.T) {
 	}
 	sender := NewSynchronizer(c, cCache)
 	frames := sender.Record(w, f.now)
-	if len(frames) != 2 || frames[0].Kind != "bundle" || frames[1].Kind != "record" {
+	if len(frames) != 2 || frames[0].Kind != "certificate" || frames[1].Kind != "record" {
 		t.Fatalf("first send = %+v", frames)
 	}
 	if again := sender.Record(w, f.now); len(again) != 0 {
@@ -85,8 +85,8 @@ func TestSynchronizationRepairsReorderAndReconnect(t *testing.T) {
 	if err != nil || len(changed) != 0 || len(replies) != 1 || replies[0].Kind != "identity-request" {
 		t.Fatalf("record before bundle = %+v %+v %v", replies, changed, err)
 	}
-	replies, changed, err = toB.Receive(frames[0], f.now)
-	if err != nil || len(replies) != 0 || len(changed) != 1 {
+	changed = exchangeServiceMessages(t, sender, toB, frames[:1], f.now)
+	if len(changed) != 1 {
 		t.Fatalf("bundle repair = %+v %+v %v", replies, changed, err)
 	}
 	if got := b.Snapshot(f.now); len(got) != 1 || got[0].Key.Device != p535 {
@@ -97,12 +97,7 @@ func TestSynchronizationRepairsReorderAndReconnect(t *testing.T) {
 	if got := toB.Record(changed[0], f.now); len(got) != 0 {
 		t.Fatal("echoed record to its supplier")
 	}
-	for _, frame := range fromBToA.Record(changed[0], f.now) {
-		_, _, err = toA.Receive(frame, f.now)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
+	exchangeServiceMessages(t, fromBToA, toA, fromBToA.Record(changed[0], f.now), f.now)
 	if got := a.Snapshot(f.now); len(got) != 1 || got[0].Key.Device != p535 {
 		t.Fatalf("two-hop snapshot = %+v", got)
 	}
@@ -148,14 +143,10 @@ func TestSynchronizerReconcileSendsOnlyUnsentGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Reconcile(f.now); len(got) != 2 || got[0].Kind != "bundle" || got[1].Kind != "record" {
+	if got := s.Reconcile(f.now); len(got) != 2 || got[0].Kind != "certificate" || got[1].Kind != "record" {
 		t.Fatalf("initial snapshot = %+v", got)
 	} else {
-		for _, m := range got {
-			if _, _, err := receiver.Receive(m, f.now); err != nil {
-				t.Fatal(err)
-			}
-		}
+		exchangeServiceMessages(t, s, receiver, got, f.now)
 	}
 	for i := 0; i < 3; i++ {
 		if got := s.Reconcile(f.now.Add(time.Duration(i+1) * time.Second)); len(got) != 0 {
@@ -263,4 +254,54 @@ func TestAlreadySentRecordSkipsUnusedIdentityButNewRecordRevalidates(t *testing.
 	if len(c.Records(f.now.Add(time.Second))) != 0 || len(c.Snapshot(f.now.Add(time.Second))) != 0 {
 		t.Fatal("revoked records remained eligible")
 	}
+}
+
+func exchangeServiceMessages(t *testing.T, sender, receiver *Synchronizer, initial []Message, now time.Time) []SignedRecord {
+	t.Helper()
+	type delivery struct {
+		message    Message
+		toReceiver bool
+	}
+	var queue []delivery
+	for _, m := range initial {
+		queue = append(queue, delivery{m, true})
+	}
+	var changed []SignedRecord
+	for steps := 0; len(queue) > 0; steps++ {
+		if steps > 10000 {
+			t.Fatal("service certificate exchange did not quiesce")
+		}
+		d := queue[0]
+		queue = queue[1:]
+		var wire bytes.Buffer
+		if err := WriteMessage(&wire, d.message); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := ReadMessage(&wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := sender
+		if d.toReceiver {
+			target = receiver
+		}
+		out, admitted, err := target.Receive(decoded, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.toReceiver {
+			changed = append(changed, admitted...)
+		}
+		for _, m := range out {
+			queue = append(queue, delivery{m, !d.toReceiver})
+		}
+	}
+	return changed
+}
+
+func synchronizeServiceIdentity(t *testing.T, source, receiver *Catalog, now time.Time) {
+	t.Helper()
+	sender := NewSynchronizer(source, source.cache)
+	dest := NewSynchronizer(receiver, receiver.cache)
+	exchangeServiceMessages(t, sender, dest, []Message{{Kind: "certificate", Certificate: sender.certificates.Describe(source.principal, now)}}, now)
 }

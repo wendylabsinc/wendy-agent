@@ -21,6 +21,9 @@ type inventoryMessage struct {
 }
 
 func (m inventoryMessage) validate() error {
+	if m.Kind != "certificate" && m.Certificate != nil {
+		return errors.New("unexpected inventory certificate message")
+	}
 	if m.Kind != "fresh-request" && m.Request != nil {
 		return errors.New("unexpected freshness request")
 	}

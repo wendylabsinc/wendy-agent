@@ -3,11 +3,13 @@ package meshcatalog
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"time"
 
 	"github.com/wendylabsinc/WendyOS/go/babel"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -51,7 +53,7 @@ func (r *Runtime) checkFreshness(now time.Time) {
 		}
 	}
 	for _, p := range r.peers {
-		if (!p.inventory.done && now.Sub(p.started) > 30*time.Second) || (!p.pendingSince.IsZero() && now.Sub(p.pendingSince) >= inventoryRepairTimeout) {
+		if (!p.inventory.done && now.Sub(p.started) > 30*time.Second) || (!p.pendingSince.IsZero() && now.Sub(p.pendingSince) >= inventoryRepairTimeout && !p.syncer.certificates.Pending()) {
 			r.hub.ClosePeer(p.id)
 		}
 	}
@@ -65,6 +67,15 @@ func (r *Runtime) checkFreshness(now time.Time) {
 					delete(r.pendingFresh, origin)
 				}
 				r.mu.Unlock()
+			}
+		}
+	}
+	for nonce, state := range r.requests {
+		if state.upstream == 0 && state.total > 0 && state.next == state.total {
+			if p := r.peers[state.downstream]; p != nil {
+				if err := r.finishFresh(p, nonce, state, now); err != nil && r.hub != nil {
+					r.hub.ClosePeer(p.id)
+				}
 			}
 		}
 	}
@@ -206,17 +217,53 @@ func (r *Runtime) receiveFresh(p *catalogPeer, m inventoryMessage, now time.Time
 	state.next++
 	state.total = chunk.Total
 	if state.next == state.total {
-		if err := r.catalog.acceptInventory(state.data, state.query, now); err != nil {
+		return r.finishFresh(p, chunk.Nonce, state, now)
+	}
+	return nil
+}
+
+func (r *Runtime) finishFresh(p *catalogPeer, nonce string, state *freshRequestState, now time.Time) error {
+	if !state.expires.After(now) {
+		return nil
+	}
+	origin, _ := meshid.DeviceFromPrincipal(state.query.Origin)
+	r.mu.Lock()
+	expected := r.pendingFresh[origin] == nonce
+	r.mu.Unlock()
+	if !expected {
+		delete(r.requests, nonce)
+		return nil
+	}
+	if err := r.catalog.acceptInventory(state.data, state.query, now); err != nil {
+		if !errors.Is(err, ErrIdentityNeeded) {
 			return err
 		}
-		r.mu.Lock()
-		if r.pendingFresh[origin] == chunk.Nonce {
-			r.fresh[origin] = true
-			delete(r.pendingFresh, origin)
+		// The proof already passed requester/nonce/expiry/origin binding.
+		// Fetch missing elements from the neighbour that supplied it, using
+		// the same coalesced pool as directory and service identity repair.
+		var signed signedInventory
+		if err := json.Unmarshal(state.data, &signed); err != nil || signed.Chain == nil {
+			return errors.New("invalid origin certificate description")
 		}
-		r.mu.Unlock()
-		delete(r.requests, chunk.Nonce)
+		replies, changed, err := p.syncer.Receive(Message{Kind: "certificate", Certificate: &localmesh.CertificateMessage{Chain: signed.Chain}}, now)
+		if err != nil {
+			return err
+		}
+		if !r.queueReplies(p, replies) {
+			return errors.New("certificate reply backlog full")
+		}
+		for _, w := range changed {
+			r.broadcastExcept(w, p.id)
+		}
+		return nil
 	}
+	r.mu.Lock()
+	if r.pendingFresh[origin] == nonce {
+		r.fresh[origin] = true
+		delete(r.pendingFresh, origin)
+	}
+	r.mu.Unlock()
+	delete(r.requests, nonce)
 	return nil
 }
 func (r *Runtime) pumpTransfers() {

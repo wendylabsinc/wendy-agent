@@ -13,6 +13,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
@@ -78,9 +79,9 @@ type originInventory struct {
 	Receipts  []freshReceipt `json:"receipts"`
 }
 type signedInventory struct {
-	Body      json.RawMessage `json:"body"`
-	Signature []byte          `json:"signature"`
-	Bundle    [][]byte        `json:"bundle"`
+	Body      json.RawMessage             `json:"body"`
+	Signature []byte                      `json:"signature"`
+	Chain     *localmesh.CertificateChain `json:"chain"`
 }
 
 func inventorySignInput(key crypto.PublicKey, body []byte) ([]byte, crypto.SignerOpts) {
@@ -128,7 +129,11 @@ func (c *Catalog) signInventory(q FreshRequest, now time.Time) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := json.Marshal(signedInventory{raw, sig, c.creds.Certificate.Certificate})
+	description := localmesh.DescribeCertificates(c.principal, c.creds.Certificate.Certificate)
+	if description == nil {
+		return nil, errors.New("invalid origin inventory certificate chain")
+	}
+	data, err := json.Marshal(signedInventory{Body: raw, Signature: sig, Chain: description.Chain})
 	if len(data) > maxFreshBytes {
 		return nil, errors.New("origin inventory exceeds bound")
 	}
@@ -143,13 +148,13 @@ func (c *Catalog) acceptInventory(data []byte, q FreshRequest, now time.Time) er
 	if err := json.Unmarshal(data, &signed); err != nil {
 		return err
 	}
-	if len(signed.Signature) == 0 || len(signed.Signature) > 2048 || len(signed.Bundle) == 0 || len(signed.Bundle) > 16 {
+	if len(signed.Signature) == 0 || len(signed.Signature) > 2048 || signed.Chain == nil {
 		return errors.New("invalid inventory envelope")
 	}
 	if err := json.Unmarshal(signed.Body, &body); err != nil {
 		return err
 	}
-	if body.Mesh != c.mesh || body.Origin != q.Origin || body.Requester != c.principal || body.Requester != q.Requester || body.Nonce != q.Nonce || len(body.Receipts) > c.limit {
+	if body.Mesh != c.mesh || body.Origin != q.Origin || body.Requester != c.principal || body.Requester != q.Requester || body.Nonce != q.Nonce || len(body.Receipts) > c.limit || signed.Chain.Principal != body.Origin {
 		return errors.New("inventory binding mismatch")
 	}
 	origin, err := meshid.DeviceFromPrincipal(body.Origin)
@@ -160,18 +165,21 @@ func (c *Catalog) acceptInventory(data []byte, q FreshRequest, now time.Time) er
 	if !expires.After(now) || issued.After(now.Add(5*time.Second)) || !expires.After(issued) || expires.Sub(issued) > freshLifetime {
 		return ErrExpired
 	}
-	principal, err := c.cache.Put(signed.Bundle, now)
+	principal, err := c.cache.ResolveCertificateChain(*signed.Chain, now)
 	if err != nil {
+		if errors.Is(err, localmesh.ErrCertificateNeeded) {
+			return ErrIdentityNeeded
+		}
 		return err
 	}
 	if principal != body.Origin {
 		return errors.New("inventory signer mismatch")
 	}
-	_, identity, ok := c.cache.Get(principal, now)
+	chain, identity, ok := c.cache.Get(principal, now)
 	if !ok || expires.After(identity.NotAfter) {
 		return errors.New("inventory outlives identity")
 	}
-	leaf, err := x509.ParseCertificate(signed.Bundle[0])
+	leaf, err := x509.ParseCertificate(chain[0])
 	if err != nil {
 		return err
 	}

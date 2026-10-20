@@ -33,11 +33,11 @@ type nodePeer struct {
 	link       nodeLink
 	tun        *os.File
 	control    chan ControlMessage
+	catalog    chan ControlMessage
+	done       chan struct{}
 	sync       *Synchronizer
 	replies    []ControlMessage
 	replyBytes int
-	catalog    chan ControlMessage
-	done       chan struct{}
 }
 
 type nodeLink interface {
@@ -130,7 +130,7 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{controlHub: NewControlHub(), Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
+	n := &Node{controlHub: NewControlHub(cache.Certificates()), Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
 		advertisement: Manifest{Version: 1, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort},
 		diagnostics:   carrierDiagnostics{enabled: os.Getenv("WENDY_NET_CARRIER_DIAGNOSTICS") == "1"}}
 	ok := false

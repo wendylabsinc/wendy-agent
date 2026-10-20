@@ -27,6 +27,8 @@ type catalogPeer struct {
 	started      time.Time
 	out          chan []byte
 	queued       atomic.Int64
+	replies      [][]byte
+	replyBytes   int
 	cancel       context.CancelFunc
 }
 
@@ -66,23 +68,30 @@ func (r *Runtime) syncPeers(ctx context.Context) {
 	for id, p := range r.peers {
 		if !live[id] {
 			p.cancel()
+			p.syncer.Close()
 			delete(r.peers, id)
 		}
 	}
 }
 func (r *Runtime) queue(p *catalogPeer, messages ...inventoryMessage) bool {
-	if len(p.out)+len(messages) > cap(p.out) {
-		return false
-	}
 	frames := make([][]byte, 0, len(messages))
-	bytes := 0
 	for _, m := range messages {
 		b, err := inventoryWire(m)
 		if err != nil {
 			return false
 		}
 		frames = append(frames, b)
-		bytes += len(b)
+	}
+	return r.queueFrames(p, frames)
+}
+
+func (r *Runtime) queueFrames(p *catalogPeer, frames [][]byte) bool {
+	if len(p.out)+len(frames) > cap(p.out) {
+		return false
+	}
+	bytes := 0
+	for _, frame := range frames {
+		bytes += len(frame)
 	}
 	if p.queued.Load()+int64(bytes) > maxInventoryQueueBytes {
 		return false
@@ -91,6 +100,34 @@ func (r *Runtime) queue(p *catalogPeer, messages ...inventoryMessage) bool {
 	for _, b := range frames {
 		p.out <- b
 	}
+	return true
+}
+
+// Replies get a bounded backlog separate from the bulk inventory writer.
+// Normal backpressure must not discard a requested certificate chunk or close
+// the shared routing connection. Sustained protocol overload remains bounded.
+func (r *Runtime) queueReplies(p *catalogPeer, messages []Message) bool {
+	if len(messages) == 0 {
+		return true
+	}
+	frames := make([][]byte, 0, len(messages))
+	bytes := 0
+	for _, m := range messages {
+		frame, err := inventoryWire(inventoryMessage{Message: m})
+		if err != nil {
+			return false
+		}
+		frames = append(frames, frame)
+		bytes += len(frame)
+	}
+	if len(p.replies) == 0 && r.queueFrames(p, frames) {
+		return true
+	}
+	if len(p.replies)+len(frames) > maxInventoryQueueFrames || p.replyBytes+bytes > maxInventoryQueueBytes {
+		return false
+	}
+	p.replies = append(p.replies, frames...)
+	p.replyBytes += bytes
 	return true
 }
 func (r *Runtime) queueMessages(p *catalogPeer, messages []Message) bool {
@@ -127,6 +164,14 @@ func (r *Runtime) sendRecord(p *catalogPeer, w SignedRecord) bool {
 	return false
 }
 func (r *Runtime) pump(p *catalogPeer) {
+	for len(p.replies) > 0 {
+		if !r.queueFrames(p, p.replies[:1]) {
+			return
+		}
+		p.replyBytes -= len(p.replies[0])
+		p.replies[0] = nil
+		p.replies = p.replies[1:]
+	}
 	for len(p.initial) > 0 {
 		if !r.queue(p, p.initial[0]) {
 			return
