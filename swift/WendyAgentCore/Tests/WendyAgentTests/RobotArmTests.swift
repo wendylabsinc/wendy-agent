@@ -143,6 +143,18 @@ struct RobotArmTests {
         #expect(try String(contentsOf: path, encoding: .utf8) == "broken")
     }
 
+    @Test("Fields written by a newer Agent do not make saved bindings unreadable")
+    func unknownFields() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("bindings.json")
+        let saved = #"[{"id":"x","model":"so101","configured":true,"name":"F","newer":1}]"#
+        try Data(saved.utf8).write(to: path)
+        let service = RobotArmService(path: path, discover: { [] })
+        #expect(try await service.devices().first?.name == "F")
+    }
+
     @Test("RPC handlers keep discovery and saved bindings on the target Agent")
     func rpcHandlers() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -3,6 +3,7 @@ package robotarm
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -72,5 +73,56 @@ func TestStoreWriteFailureAndConcurrentUpdates(t *testing.T) {
 	records, err := s.List()
 	if err != nil || len(records) != 4 {
 		t.Fatalf("concurrent update lost: %v %v", records, err)
+	}
+}
+
+// The file holds proto JSON with proto field names, so records written before
+// the store used protojson still load, and a newer Agent's fields don't make an
+// older one treat the file as corrupt.
+func TestStoreFileFormatAndUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bindings.json")
+	earlier := `[
+  {
+    "id": "usb:1a86:55d3:s:41:1",
+    "name": "Follower",
+    "model": "so101",
+    "configured": true,
+    "identity_kind": "usb_serial",
+    "usb_interface": "1",
+    "vendor_id": "1a86",
+    "serial_number": "A",
+    "added_by_a_newer_agent": {"x": 1}
+  }
+]`
+	if err := os.WriteFile(path, []byte(earlier), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(path)
+	records, err := s.List()
+	if err != nil || len(records) != 1 || records[0].Name != "Follower" || records[0].IdentityKind != "usb_serial" || records[0].SerialNumber != "A" {
+		t.Fatalf("earlier record: %v %v", records, err)
+	}
+	if err = s.Put(&pb.RobotArm{Id: "usb:b", Model: "so101", Configured: true, UsbLocation: "1-2", DevicePath: "/dev/ttyACM0"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"identity_kind": "usb_serial"`, `"usb_location": "1-2"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("want %s in:\n%s", want, data)
+		}
+	}
+	if strings.Contains(string(data), "device_path") || strings.Contains(string(data), "added_by_a_newer_agent") {
+		t.Fatalf("persisted live or unknown fields:\n%s", data)
+	}
+	for _, bad := range []string{`[null]`, `null`, `[{"id": 7}]`} {
+		if err := os.WriteFile(path, []byte(bad), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.List(); err == nil {
+			t.Fatalf("invalid store %s accepted", bad)
+		}
 	}
 }

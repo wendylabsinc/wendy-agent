@@ -9,15 +9,20 @@ import (
 	"sync"
 
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
 // Store follows the Agent's JSON state convention, with atomic writes and no
 // optimistic in-memory mutation on failed persistence. Corrupt state fails closed.
+// Each record is proto JSON with proto field names; fields from a newer Agent
+// are dropped so that a rolled-back Agent can still read the file.
 type Store struct {
 	path string
 	mu   sync.Mutex
 }
+
+var errInvalidStore = errors.New("invalid robot arm binding store")
 
 func NewStore(path string) *Store { return &Store{path: path} }
 func (s *Store) load() ([]*pb.RobotArm, error) {
@@ -28,19 +33,25 @@ func (s *Store) load() ([]*pb.RobotArm, error) {
 	if err != nil {
 		return nil, err
 	}
-	var records []*pb.RobotArm
-	if err = json.Unmarshal(data, &records); err != nil {
+	var raw []json.RawMessage
+	if err = json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	if records == nil {
-		return nil, errors.New("invalid robot arm binding store")
+	if raw == nil {
+		return nil, errInvalidStore
 	}
+	records := make([]*pb.RobotArm, 0, len(raw))
 	seen := map[string]bool{}
-	for _, r := range records {
-		if r == nil || r.Id == "" || r.Model != "so101" || !r.Configured || seen[r.Id] {
-			return nil, errors.New("invalid robot arm binding store")
+	for _, item := range raw {
+		r := &pb.RobotArm{}
+		if err = (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(item, r); err != nil {
+			return nil, errInvalidStore
+		}
+		if r.Id == "" || r.Model != "so101" || !r.Configured || seen[r.Id] {
+			return nil, errInvalidStore
 		}
 		seen[r.Id] = true
+		records = append(records, r)
 	}
 	return records, nil
 }
@@ -70,7 +81,17 @@ func (s *Store) update(id string, d *pb.RobotArm) error {
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Id < out[j].Id })
-	data, err := json.MarshalIndent(out, "", "  ")
+	raw := make([]json.RawMessage, 0, len(out))
+	for _, r := range out {
+		item, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(r)
+		if err != nil {
+			return err
+		}
+		raw = append(raw, item)
+	}
+	// Marshal compacts each record, so protojson's build-dependent spacing
+	// doesn't reach the file.
+	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}

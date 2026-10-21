@@ -26,8 +26,12 @@ actor RobotArmService: Wendy_Agent_Services_V2_WendyRobotArmService.ServiceProto
         guard let objects = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw RPCError(code: .internalError, message: "Invalid robot arm binding store")
         }
+        // Fields from a newer Agent are dropped so that a rolled-back Agent can
+        // still read the file.
+        var options = JSONDecodingOptions()
+        options.ignoreUnknownFields = true
         let devices = try objects.map {
-            try Device(jsonUTF8Data: JSONSerialization.data(withJSONObject: $0))
+            try Device(jsonUTF8Data: JSONSerialization.data(withJSONObject: $0), options: options)
         }
         guard devices.allSatisfy({ !$0.id.isEmpty && $0.model == "so101" && $0.configured }),
             Set(devices.map(\.id)).count == devices.count
