@@ -265,7 +265,31 @@ jobs:
         if: env.SLACK_READY != 'true'
         run: echo "::warning::CI_SLACK_BOT_TOKEN or CI_SLACK_CHANNEL is not configured; skipping the Slack alarm."
 
-      - name: Post to #ci
+      - name: Write alarm
+        id: alarm
+        if: env.SLACK_READY == 'true'
+        env:
+          CHANNEL: ${{ vars.CI_SLACK_CHANNEL }}
+          RESULT: ${{ needs.mac.result }}
+          RUNNER: ${{ needs.mac.outputs.runner }}
+          FREE: ${{ needs.mac.outputs.free-after || needs.mac.outputs.free-before }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RUNNER" ]]; then
+            status="did not run"
+          elif [[ "$RESULT" == failure ]]; then
+            status=failed
+          else
+            status="did not finish ($RESULT)"
+          fi
+          text=":rotating_light: *Runner janitor $status* on \`${RUNNER:-wendy-macos-26}\`. Free disk: ${FREE:-unknown} GiB. <$RUN_URL|View run>"
+          jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}' \
+            > "$RUNNER_TEMP/alarm-payload.json"
+          echo "payload=$RUNNER_TEMP/alarm-payload.json" >> "$GITHUB_OUTPUT"
+
+      # Quoted: an unquoted " #" starts a YAML comment and cuts the name short.
+      - name: 'Post to #ci'
         if: env.SLACK_READY == 'true'
         # SECURITY: the tag v4.0.0 resolves to exactly this commit (verified with the GitHub API on 2026-10-19).
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
@@ -274,12 +298,10 @@ jobs:
           # SECURITY: deliberate - one Wendy CI token (chat:write, chat:write.public; it cannot read channels) serves all CI alarms; this job only runs on scheduled runs of main.
           token: ${{ secrets.CI_SLACK_BOT_TOKEN }}
           errors: true
-          payload: |
-            channel: ${{ vars.CI_SLACK_CHANNEL }}
-            text: ":rotating_light: *Runner janitor ${{ !needs.mac.outputs.runner && 'did not run' || needs.mac.result == 'failure' && 'failed' || format('did not finish ({0})', needs.mac.result) }}* on `${{ needs.mac.outputs.runner || 'wendy-macos-26' }}`. Free disk: ${{ needs.mac.outputs.free-after || needs.mac.outputs.free-before || 'unknown' }} GiB. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+          payload-file-path: ${{ steps.alarm.outputs.payload }}
 
   feed:
-    name: Post report to #feed-janitor
+    name: 'Post report to #feed-janitor'
     needs: mac
     # Every scheduled or manual run, green or red, for the record.
     if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
@@ -333,7 +355,7 @@ jobs:
             > "$RUNNER_TEMP/feed-payload.json"
           echo "payload=$RUNNER_TEMP/feed-payload.json" >> "$GITHUB_OUTPUT"
 
-      - name: Post to #feed-janitor
+      - name: 'Post to #feed-janitor'
         if: env.SLACK_READY == 'true'
         # SECURITY: the tag v4.0.0 resolves to exactly this commit (verified with the GitHub API on 2026-10-19).
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
