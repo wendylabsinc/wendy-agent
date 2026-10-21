@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/spf13/pflag"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -71,7 +73,7 @@ func TestExplainKnownFailures(t *testing.T) {
 
 func TestExplainUnknownTransportAndWrappedChains(t *testing.T) {
 	for _, raw := range []string{"asset not found", "device is offline", "rpc error: code = Unavailable desc = device is offline", "rpc error: code = Unknown desc = secret server detail", "http 500: secret body", "lowercase library text", "\x1b[31mforged terminal text\x1b[0m"} {
-		for _, err := range []error{errors.New(raw), fmt.Errorf("raw context: %w", errors.New(raw)), errors.Join(errors.New(raw), errors.New("raw sibling"))} {
+		for _, err := range []error{Foreign(errors.New(raw)), fmt.Errorf("raw context: %w", Foreign(errors.New(raw))), errors.Join(Foreign(errors.New(raw)), errors.New("raw sibling"))} {
 			got := Explain(err, "").Text()
 			assertSentences(t, got)
 			for _, secret := range []string{raw, "raw context", "raw sibling"} {
@@ -86,7 +88,6 @@ func TestExplainUnknownTransportAndWrappedChains(t *testing.T) {
 		&net.DNSError{Err: "raw lookup detail", Name: "private host"},
 		&tls.CertificateVerificationError{Err: errors.New("raw certificate detail")},
 		&url.Error{Op: http.MethodGet, URL: "https://private.host/token", Err: errors.New("raw body")},
-		&os.PathError{Op: "open", Path: "private file", Err: os.ErrPermission},
 		context.DeadlineExceeded,
 	} {
 		got := Explain(fmt.Errorf("raw wrapper: %w", err), "").Text()
@@ -97,9 +98,9 @@ func TestExplainUnknownTransportAndWrappedChains(t *testing.T) {
 	}
 }
 
-func TestExplainAllCommandCategories(t *testing.T) {
-	for _, category := range []string{"memory_ambiguous", "device_identity_mismatch", "auth_required", "device_auth_required", "auth_session_ambiguous", "cli_usage", "config_invalid", "no_device", "device_ambiguous", "device_org_mismatch", "project_target_mismatch", "build_failed", "builder_unavailable", "transfer_failed", "container_start_failed", "readiness_timeout", "app_crashed", "registry_auth", "registry_unavailable", "tool_not_found", "disk_full", "device_offline"} {
-		got := Explain(errors.New("private cause"), category).Text()
+func TestExplainForeignCommandCategories(t *testing.T) {
+	for _, category := range []string{"device_identity_mismatch", "auth_required", "device_auth_required", "auth_session_ambiguous", "cli_usage", "config_invalid", "no_device", "device_ambiguous", "device_org_mismatch", "project_target_mismatch", "build_failed", "builder_unavailable", "transfer_failed", "container_start_failed", "readiness_timeout", "app_crashed", "registry_auth", "registry_unavailable", "tool_not_found", "disk_full", "device_offline"} {
+		got := Explain(Foreign(errors.New("private cause")), category).Text()
 		assertSentences(t, got)
 		if got == Generic || strings.Contains(got, "private cause") {
 			t.Errorf("unmapped category %s: %q", category, got)
@@ -132,7 +133,7 @@ func TestInlineMessagesMapErrorArguments(t *testing.T) {
 	}
 }
 
-func TestKnownLocalRefusals(t *testing.T) {
+func TestKnownForeignReasons(t *testing.T) {
 	for _, tc := range []struct{ raw, want string }{
 		{"enter a unicast IPv4 address for the robot", "Enter a unicast IPv4 address for the robot."},
 		{"create the simulator before setting it as default", "Create the simulator before setting it as default."},
@@ -143,7 +144,7 @@ func TestKnownLocalRefusals(t *testing.T) {
 		{"the device did not answer in time", "The device did not answer in time. Check its connection and try again."},
 		{"the device did not finish scanning its network in time", "The device did not finish scanning its network in time. Try again."},
 	} {
-		got := Explain(fmt.Errorf("raw wrapper: %w", errors.New(tc.raw)), "").Text()
+		got := Explain(fmt.Errorf("raw wrapper: %w", Foreign(errors.New(tc.raw))), "").Text()
 		if got != tc.want {
 			t.Errorf("message = %q, want %q", got, tc.want)
 		}
@@ -161,7 +162,7 @@ func (e advisedError) Unwrap() error       { return e.cause }
 func (e advisedError) NextSteps() []string { return e.steps }
 
 func TestAttachedAdviceIsAllowlisted(t *testing.T) {
-	err := errors.Join(advisedError{errors.New("raw cause"), []string{"raw server advice", "Confirm it with 'wendy device get-default'."}}, advisedError{errors.New("raw sibling"), []string{"Check its network connection and retry."}})
+	err := errors.Join(advisedError{Foreign(errors.New("raw cause")), []string{"raw server advice", "Confirm it with 'wendy device get-default'."}}, advisedError{Foreign(errors.New("raw sibling")), []string{"Check its network connection and retry."}})
 	got := Explain(err, "")
 	if len(got.Steps) != 2 {
 		t.Errorf("approved steps = %q", got.Steps)
@@ -181,5 +182,82 @@ func TestTypedRefusalCannotBeOverriddenByDescription(t *testing.T) {
 	}
 	if got := Explain(status.Error(codes.Unavailable, "device is offline"), "device_identity_mismatch").Message; got != "Connection blocked because the device's identity has changed." {
 		t.Errorf("identity refusal became %q", got)
+	}
+}
+
+func TestLocalMessagesRetainSpecifics(t *testing.T) {
+	for _, tc := range []struct{ category, raw, want string }{
+		{"", "no wendy.json found in /my/project", "No wendy.json found in /my/project."},
+		{"config_invalid", "project config: service web: port must be between 1 and 65535", "Project config: service web: port must be between 1 and 65535."},
+		{"cli_usage", "flag needs an argument: --device", "Flag needs an argument: --device."},
+		{"tool_not_found", "install docker before building this app", "Install docker before building this app."},
+		{"", "use a different device?", "Use a different device?"},
+	} {
+		got := Explain(errors.New(tc.raw), tc.category).Text()
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.category, got, tc.want)
+		}
+		assertSentences(t, got)
+	}
+	wrapped := fmt.Errorf("validating project: %w", errors.New("service web has no image"))
+	if got := Explain(wrapped, "config_invalid").Message; got != "Validating project: service web has no image." {
+		t.Errorf("lost local chain: %q", got)
+	}
+}
+
+func TestPathErrorsNameTheirSubject(t *testing.T) {
+	for _, tc := range []struct {
+		cause error
+		want  string
+	}{
+		{os.ErrNotExist, "Couldn't find /project/wendy.json. Check the path and try again."},
+		{os.ErrPermission, "Access to /project/wendy.json was denied. Check its permissions and try again."},
+		{errors.New("private filesystem detail"), "Couldn't access /project/wendy.json. Check the path and its permissions, then try again."},
+	} {
+		err := fmt.Errorf("loading project: %w", &os.PathError{Op: "open", Path: "/project/wendy.json", Err: tc.cause})
+		got := Explain(err, "config_invalid").Message
+		if got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
+		assertSentences(t, got)
+	}
+}
+
+func TestForeignPreservesErrorContracts(t *testing.T) {
+	cause := status.Error(codes.PermissionDenied, "private detail")
+	err := Foreign(cause)
+	if !errors.Is(err, cause) || err.Error() != cause.Error() || status.Code(err) != codes.PermissionDenied {
+		t.Fatal("provenance marker changed error contract")
+	}
+	if Foreign(nil) != nil {
+		t.Fatal("nil became an error")
+	}
+	if got := Server("unknown agent detail"); got != Generic {
+		t.Errorf("unknown foreign message: %q", got)
+	}
+}
+
+func TestCLIFlagErrorsRetainTheirSubject(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--device"}, "Parsing arguments: flag needs an argument: --device."},
+		{[]string{"--no-such-flag"}, "Parsing arguments: unknown flag: --no-such-flag."},
+		{[]string{"--count", "wrong"}, "The value for --count is not valid. Check the value and try again."},
+	} {
+		flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		flags.String("device", "", "")
+		flags.Int("count", 0, "")
+		err := flags.Parse(tc.args)
+		if err == nil {
+			t.Fatal("invalid invocation succeeded")
+		}
+		got := Explain(fmt.Errorf("parsing arguments: %w", err), "cli_usage").Message
+		if got != tc.want {
+			t.Errorf("%q: got %q, want %q", tc.args, got, tc.want)
+		}
+		assertSentences(t, got)
 	}
 }

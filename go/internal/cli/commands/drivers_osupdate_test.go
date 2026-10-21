@@ -163,7 +163,7 @@ func TestWarnDriverAddons_ManifestFailureBlocks(t *testing.T) {
 	if !pf.blocking() {
 		t.Fatal("a manifest failure did not block the update")
 	}
-	if len(pf.unstaged) != 1 || !strings.Contains(pf.unstaged[0].reason, "Something went wrong. Try again.") || strings.Contains(pf.unstaged[0].reason, "503") {
+	if len(pf.unstaged) != 1 || !strings.Contains(pf.unstaged[0].reason, "Fetching manifest: 503 Service Unavailable.") {
 		t.Errorf("unstaged = %+v, want the add-on named with the underlying cause", pf.unstaged)
 	}
 	// --no-drivers stays the explicit opt-out.

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 type httpProvider struct {
@@ -75,7 +77,7 @@ func (p *httpProvider) post(ctx context.Context, suffix string, payload any) (*h
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create chat request: %s", p.safeError(err.Error()))
+		return nil, usermessage.Foreign(fmt.Errorf("create chat request: %s", p.safeError(err.Error())))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
@@ -92,7 +94,7 @@ func (p *httpProvider) post(ctx context.Context, suffix string, payload any) (*h
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("chat request failed: %s", p.safeError(err.Error()))
+		return nil, usermessage.Foreign(fmt.Errorf("chat request failed: %s", p.safeError(err.Error())))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
@@ -101,12 +103,12 @@ func (p *httpProvider) post(ctx context.Context, suffix string, payload any) (*h
 		if detail == "" {
 			detail = http.StatusText(resp.StatusCode)
 		}
-		return nil, fmt.Errorf("%s API returned HTTP %d: %s", p.config.Provider, resp.StatusCode, detail)
+		return nil, usermessage.Foreign(fmt.Errorf("%s API returned HTTP %d: %s", p.config.Provider, resp.StatusCode, detail))
 	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return nil, fmt.Errorf("chat endpoint returned JSON instead of an event stream; check --base-url and model streaming support: %s", p.errorDetail(data))
+		return nil, usermessage.Foreign(fmt.Errorf("chat endpoint returned JSON instead of an event stream; check --base-url and model streaming support: %s", p.errorDetail(data)))
 	}
 	return resp, nil
 }

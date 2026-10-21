@@ -1656,7 +1656,7 @@ func TestLockFallbackWarningNamesWhatWasNotRecorded(t *testing.T) {
 					t.Errorf("warning names %q = %v, want %v:\n%s", key, named, !named, msg)
 				}
 			}
-			if !strings.Contains(msg, "was not recorded") || !strings.Contains(msg, "Something went wrong. Try again.") || strings.Contains(msg, lockErr.Error()) {
+			if !strings.Contains(msg, "was not recorded") || !strings.Contains(msg, "Another wendy process has held config.lock.") {
 				t.Errorf("warning = %q", msg)
 			}
 		})

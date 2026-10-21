@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -247,11 +247,11 @@ func reportControlResults(out io.Writer, id uint32, results []*agentpb.CameraCon
 			fmt.Fprintf(out, "camera %d: %s applied\n", id, r.GetName())
 			continue
 		}
-		detail := r.GetDetail()
-		if detail == "" {
-			detail = "not applied"
+		detail := usermessage.Server(r.GetDetail())
+		if r.GetDetail() == "" {
+			detail = "Check the requested control and try again."
 		}
-		fmt.Fprintf(out, "camera %d: %s NOT applied (%s)\n", id, r.GetName(), detail)
+		fmt.Fprintln(out, usermessage.Sprintf("Camera %d: %s was not applied. %s", id, r.GetName(), detail))
 		failed = append(failed, r.GetName())
 	}
 	if len(failed) > 0 {

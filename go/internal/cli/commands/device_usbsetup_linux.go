@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
 )
@@ -79,10 +80,10 @@ func runUSBSetup(ctx context.Context, iface string, w io.Writer) error {
 	_ = nmcli.Command(ctx, nmcliPath, "connection", "delete", usbSetupNMConnPrefix).Run()
 
 	if b, err := nmcli.Command(ctx, nmcliPath, addArgs...).CombinedOutput(); err != nil {
-		return fmt.Errorf("nmcli connection add failed: %v: %s", err, strings.TrimSpace(string(b)))
+		return usermessage.Foreign(fmt.Errorf("nmcli connection add failed: %v: %s", err, strings.TrimSpace(string(b))))
 	}
 	if b, err := nmcli.Command(ctx, nmcliPath, "connection", "up", conn).CombinedOutput(); err != nil {
-		return fmt.Errorf("nmcli connection up failed: %v: %s", err, strings.TrimSpace(string(b)))
+		return usermessage.Foreign(fmt.Errorf("nmcli connection up failed: %v: %s", err, strings.TrimSpace(string(b))))
 	}
 	fmt.Fprintf(w, "✓ configured %s (link-local, profile %s)\n", iface, conn)
 
@@ -152,10 +153,10 @@ func reloadUdev(ctx context.Context) error {
 		return fmt.Errorf("udevadm not found: %w", err)
 	}
 	if b, err := exec.CommandContext(ctx, udevadm, "control", "--reload-rules").CombinedOutput(); err != nil {
-		return fmt.Errorf("udevadm control: %v: %s", err, strings.TrimSpace(string(b)))
+		return usermessage.Foreign(fmt.Errorf("udevadm control: %v: %s", err, strings.TrimSpace(string(b))))
 	}
 	if b, err := exec.CommandContext(ctx, udevadm, "trigger").CombinedOutput(); err != nil {
-		return fmt.Errorf("udevadm trigger: %v: %s", err, strings.TrimSpace(string(b)))
+		return usermessage.Foreign(fmt.Errorf("udevadm trigger: %v: %s", err, strings.TrimSpace(string(b))))
 	}
 	return nil
 }

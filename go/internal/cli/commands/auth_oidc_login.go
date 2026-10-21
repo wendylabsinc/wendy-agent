@@ -22,6 +22,7 @@ import (
 
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
@@ -353,7 +354,7 @@ func requestPKIIdentityCertificate(
 		if resp.StatusCode == http.StatusUnauthorized {
 			detail = "unauthorized (verify the realm-to-tenant mapping and PKI audience)"
 		}
-		return config.CertificateInfo{}, fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail)
+		return config.CertificateInfo{}, usermessage.Foreign(fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail))
 	}
 	if len(body) > 1<<20 {
 		return config.CertificateInfo{}, fmt.Errorf("pki-core identity response exceeds 1 MiB")

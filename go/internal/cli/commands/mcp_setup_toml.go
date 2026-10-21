@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	toml "github.com/BurntSushi/toml"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // The Codex config (~/.codex/config.toml) is hand-edited: it carries comments,
@@ -469,7 +470,7 @@ func upsertCodexMCPServer(src []byte, topKey, name, command string, args []strin
 
 	var after map[string]any
 	if _, err := toml.Decode(string(out), &after); err != nil {
-		return nil, fmt.Errorf("updating [%s.%s] would produce invalid TOML (%v); edit the file by hand", topKey, name, err)
+		return nil, usermessage.Foreign(fmt.Errorf("updating [%s.%s] would produce invalid TOML (%v); edit the file by hand", topKey, name, err))
 	}
 	ownedKeys := make([]string, len(owned))
 	for i, kv := range owned {

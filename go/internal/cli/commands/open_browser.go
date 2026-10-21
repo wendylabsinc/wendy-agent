@@ -30,7 +30,7 @@ func newOpenBrowserCmd() *cobra.Command {
 			}
 
 			if err := openBrowser(rawURL); err != nil {
-				usermessage.Fprintf(cmd.ErrOrStderr(), "Could not open browser: %v\n", err)
+				usermessage.Fprintf(cmd.ErrOrStderr(), "Could not open browser: %v\n", usermessage.Foreign(err))
 				fmt.Fprintln(cmd.OutOrStdout(), rawURL)
 				return nil
 			}

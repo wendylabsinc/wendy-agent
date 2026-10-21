@@ -15,6 +15,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
@@ -116,7 +117,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		return nil, fmt.Errorf("issuing certificate: %w", err)
 	}
 	if issueResp.GetError() != nil {
-		return nil, fmt.Errorf("certificate issuance failed: %s", issueResp.GetError().GetMessage())
+		return nil, usermessage.Foreign(fmt.Errorf("certificate issuance failed: %s", issueResp.GetError().GetMessage()))
 	}
 	certObj := issueResp.GetCertificate()
 	if certObj == nil {

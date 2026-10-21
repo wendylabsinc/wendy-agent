@@ -322,7 +322,7 @@ func terminationSummary(reason string, exitCode int32) string {
 	case "exited":
 		return "exited"
 	default:
-		return reason
+		return fmt.Sprintf("stopped (exit %d)", exitCode)
 	}
 }
 

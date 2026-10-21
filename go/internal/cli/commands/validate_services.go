@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // validateServicesBeforeReplace asks the agent to check every service's create
@@ -29,7 +29,7 @@ func validateServicesBeforeReplace(ctx context.Context, svc agentpb.WendyContain
 			if status.Code(err) == codes.Unimplemented {
 				return nil
 			}
-			refusals = append(refusals, fmt.Errorf("service %s: %s", name, status.Convert(err).Message()))
+			refusals = append(refusals, usermessage.Foreign(fmt.Errorf("service %s: %s", name, status.Convert(err).Message())))
 		}
 	}
 	if len(refusals) > 0 {

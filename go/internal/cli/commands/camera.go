@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"golang.org/x/term"
 	"google.golang.org/grpc"
 )
 
@@ -357,10 +357,10 @@ func runCameraTest(ctx context.Context, client cameraTester, id uint32, out io.W
 		}
 		return nil
 	case agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED:
-		return fmt.Errorf("camera %d rejected the stored credentials; run `wendy device camera login %d`: %s",
-			id, id, resp.GetDetail())
+		return usermessage.Foreign(fmt.Errorf("camera %d rejected the stored credentials; run `wendy device camera login %d`: %s",
+			id, id, resp.GetDetail()))
 	case agentpb.TestCameraCredentialsResponse_RESULT_UNREACHABLE:
-		return fmt.Errorf("camera %d: %s", id, resp.GetDetail())
+		return usermessage.Foreign(fmt.Errorf("camera %d: %s", id, resp.GetDetail()))
 	default:
 		return fmt.Errorf("camera %d: unexpected test result %v", id, resp.GetResult())
 	}

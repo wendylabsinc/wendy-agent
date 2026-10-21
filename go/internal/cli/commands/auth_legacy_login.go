@@ -17,6 +17,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -285,7 +286,7 @@ func completeLegacyLogin(ctx context.Context, cloudDashboard, cloudGRPC string, 
 		return nil, "", err
 	}
 	if issueResp.GetError() != nil {
-		return nil, "", fmt.Errorf("certificate issuance error: %s", issueResp.GetError().GetMessage())
+		return nil, "", usermessage.Foreign(fmt.Errorf("certificate issuance error: %s", issueResp.GetError().GetMessage()))
 	}
 	cert := issueResp.GetCertificate()
 	if cert == nil {

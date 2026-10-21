@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"io"
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 const maxBuildFailureCauseLen = 220
@@ -224,7 +225,7 @@ func buildFailureError(summary buildFailureSummary, buildErr error) error {
 	if summary.stage != "" {
 		message = fmt.Sprintf("build failed at [%s] %s: %s", summary.stage, summary.command, cause)
 	}
-	return &buildFailureCauseError{message: message, err: buildErr}
+	return usermessage.Foreign(&buildFailureCauseError{message: message, err: buildErr})
 }
 
 // buildOutputCause is the one-line cause in a failing step's output: its last

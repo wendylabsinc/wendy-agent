@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"golang.org/x/sys/windows"
 )
 
@@ -329,7 +330,7 @@ func signCatalog(catPath string, cert *signingCert) error {
 	)
 	// SignerSignEx returns an HRESULT; S_OK == 0.
 	if int32(r) != 0 {
-		return fmt.Errorf("SignerSignEx: HRESULT 0x%08x (%v)", uint32(r), e)
+		return usermessage.Foreign(fmt.Errorf("SignerSignEx: HRESULT 0x%08x (%v)", uint32(r), e))
 	}
 	if ctx != 0 {
 		procSignerFreeSignerContext.Call(ctx)

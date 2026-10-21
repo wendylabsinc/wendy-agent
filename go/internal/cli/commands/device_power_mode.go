@@ -8,11 +8,11 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func newDevicePowerModeCmd() *cobra.Command {
@@ -111,7 +111,7 @@ func powerModeRPCError(action string, err error) error {
 	case codes.Unimplemented:
 		return fmt.Errorf("%s: this device's agent does not support power modes; update the agent first", action)
 	case codes.Unavailable, codes.InvalidArgument:
-		return fmt.Errorf("%s: %s", action, status.Convert(err).Message())
+		return usermessage.Foreign(fmt.Errorf("%s: %s", action, status.Convert(err).Message()))
 	}
 	return fmt.Errorf("%s: %w", action, err)
 }

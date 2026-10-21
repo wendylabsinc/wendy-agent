@@ -293,7 +293,7 @@ func waitForRobot(ctx context.Context, name string, port int, profile vm.RobotPr
 				return nil
 			}
 			if state.Error != "" {
-				return fmt.Errorf("robot runtime failed: %s", state.Error)
+				return usermessage.Foreign(fmt.Errorf("robot runtime failed: %s", state.Error))
 			}
 			last = fmt.Errorf("robot is %s (ready=%t)", state.Mode, state.Ready)
 		} else {
@@ -539,7 +539,7 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 			// reset the world when a second CLI command connects.
 			return nil
 		}
-		return fmt.Errorf("robot runtime is unhealthy: %s; inspect 'wendy vm robot status %s' or recover with 'wendy vm robot restart %s'", current.Error, name, name)
+		return usermessage.Foreign(fmt.Errorf("robot runtime is unhealthy: %s; inspect 'wendy vm robot status %s' or recover with 'wendy vm robot restart %s'", current.Error, name, name))
 	}
 	app, err := findRobotContainer(ctx, conn, runtime.appID)
 	if err != nil {

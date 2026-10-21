@@ -18,16 +18,15 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/linklocal"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func newOSCmd() *cobra.Command {
@@ -510,7 +509,7 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 				return
 			}
 			if failed := resp.GetFailed(); failed != nil {
-				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
+				p.Send(tui.SpinnerDoneMsg{Err: usermessage.Foreign(fmt.Errorf("update failed: %s", failed.GetErrorMessage()))})
 				return
 			}
 		}
@@ -1313,7 +1312,7 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 			return nil
 		}
 		if failed := resp.GetFailed(); failed != nil {
-			return fmt.Errorf("update failed: %s", failed.GetErrorMessage())
+			return usermessage.Foreign(fmt.Errorf("update failed: %s", failed.GetErrorMessage()))
 		}
 	}
 }

@@ -75,18 +75,7 @@ func (s *MemoryStore) Lookup(ctx context.Context, ref string) (MemoryEntry, erro
 		for i, entry := range matches {
 			choices[i] = entry.ID + "  " + chatSingleLine(entry.Title)
 		}
-		return MemoryEntry{}, &ambiguousMemoryIDError{ref: ref, matches: matches, detail: strings.Join(choices, "\n")}
+		return MemoryEntry{}, fmt.Errorf("memory ID %q is ambiguous. Use a full ID:\n%s", ref, strings.Join(choices, "\n"))
 	}
 	return matches[0], nil
-}
-
-// The terminal can show candidate records without displaying an error string.
-type ambiguousMemoryIDError struct {
-	ref     string
-	matches []MemoryEntry
-	detail  string
-}
-
-func (e *ambiguousMemoryIDError) Error() string {
-	return fmt.Sprintf("memory ID %q is ambiguous. Use a full ID:\n%s", e.ref, e.detail)
 }

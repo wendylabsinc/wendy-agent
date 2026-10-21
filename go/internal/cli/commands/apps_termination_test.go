@@ -15,7 +15,7 @@ func TestTerminationSummary(t *testing.T) {
 		{"start failed", "start_failed", -1, "start failed"},
 		{"entitlement", "entitlement_denied", -1, "entitlement denied"},
 		{"clean exit", "exited", 0, "exited"},
-		{"unknown reason passes through", "weird_future_reason", 0, "weird_future_reason"},
+		{"unknown reason uses own prose", "weird_future_reason", 0, "stopped (exit 0)"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

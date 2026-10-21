@@ -54,7 +54,7 @@ func TestReportControlResults_PartialFailureIsAnError(t *testing.T) {
 	if !strings.Contains(err.Error(), "exposure_time_absolute") {
 		t.Fatalf("error should name the failed control: %v", err)
 	}
-	if !strings.Contains(buf.String(), "NOT applied (invalid argument)") {
+	if !strings.Contains(buf.String(), "Camera 2: exposure_time_absolute was not applied. Something went wrong. Try again.") || strings.Contains(buf.String(), "invalid argument") {
 		t.Fatalf("output missing failure detail: %q", buf.String())
 	}
 }

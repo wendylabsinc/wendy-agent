@@ -114,7 +114,7 @@ func TestDiscoverOnceScan_ReportsRuntimesThatDidNotAnswer(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	warnSkippedRuntimes(&buf, skipped)
-	if got, want := buf.String(), "Warning: Something went wrong. Try again. It is not listed.\n"; got != want {
+	if got, want := buf.String(), "Warning: Docker did not answer within 3s. It is not listed.\n"; got != want {
 		t.Fatalf("warnings = %q, want %q", got, want)
 	}
 }

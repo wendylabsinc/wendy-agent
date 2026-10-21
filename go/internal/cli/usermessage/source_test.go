@@ -99,7 +99,7 @@ func displayViolations(path, src string) []token.Position {
 			case *ast.CallExpr:
 				if s, ok := x.Fun.(*ast.SelectorExpr); ok {
 					if id, ok := s.X.(*ast.Ident); ok && id.Name == "usermessage" {
-						return false
+						return s.Sel.Name == "Foreign" && typedErrors
 					}
 					if s.Sel.Name == "Text" {
 						if call, ok := s.X.(*ast.CallExpr); ok {
@@ -180,7 +180,11 @@ func displayViolations(path, src string) []token.Position {
 			}
 			sink := pkg == "fmt" && (strings.HasPrefix(name, "Print") || strings.HasPrefix(name, "Fprint") || name == "Sprintf" || name == "Sprint" || name == "Sprintln") || name == "cliNotice" || name == "cliLogln" || name == "cliSuccess" || name == "Render" || name == "WriteString" || name == "WarningMessage" || name == "ErrorMessage" || name == "Note" || name == "appendEntry"
 			mapper := pkg == "usermessage" && (name == "Sprintf" || name == "Printf" || name == "Fprintf")
-			if !sink && !mapper {
+			constructor := pkg == "fmt" && name == "Errorf" || pkg == "errors" && name == "New"
+			if pkg == "usermessage" && name == "Foreign" {
+				return false
+			}
+			if !sink && !mapper && !constructor {
 				return true
 			}
 			// Protocol and application log streams are intentionally transparent. Each
@@ -192,7 +196,7 @@ func displayViolations(path, src string) []token.Position {
 				}
 			}
 			for _, arg := range c.Args {
-				if raw(arg, !mapper) {
+				if raw(arg, !mapper && !constructor) {
 					out = append(out, fs.Position(c.Pos()))
 					break
 				}
@@ -208,6 +212,9 @@ func TestDisplaySourceCheckCatchesBypasses(t *testing.T) {
 		`var failure error; fmt.Printf("%v",failure)`,
 		`fmt.Println(fmt.Errorf("private detail"))`,
 		`fmt.Println(errors.New("private detail"))`,
+		`fmt.Println(usermessage.Foreign(err))`,
+		`return fmt.Errorf("agent rejected: %s", response.GetErrorMessage())`,
+		`message := response.GetMessage(); return errors.New(message)`,
 		`fmt.Println(fmt.Sprint(err))`,
 		`fmt.Println(diagnostic.CLIMessage())`,
 		`view.message = failure.Error()`,
@@ -228,6 +235,7 @@ func TestDisplaySourceCheckCatchesBypasses(t *testing.T) {
 		`fmt.Println(usermessage.Text(err))`,
 		`usermessage.Printf("Could not connect: %v\n", err)`,
 		`return fmt.Errorf("connecting: %w", err)`,
+		`return usermessage.Foreign(fmt.Errorf("agent rejected: %s", response.GetErrorMessage()))`,
 		`if status.Convert(err).Message() == "known reason" { return err }`,
 	} {
 		if got := displayViolations("good.go", "package p; func f(){"+body+"}"); len(got) > 0 {

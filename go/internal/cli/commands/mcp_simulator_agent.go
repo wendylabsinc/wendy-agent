@@ -11,6 +11,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -113,7 +114,7 @@ func updateMCPSimulatorAgent(ctx context.Context, name string) (*wendymcp.Simula
 		// The shared CLI verifier suggests an untargeted device update. Keep
 		// recovery scoped to this simulator, even when a physical default exists.
 		detail := strings.ReplaceAll(err.Error(), "re-run 'wendy device update'", "refresh this simulator's status and retry Finish setup")
-		return nil, fmt.Errorf("verifying agent for vm:%s: %s", name, detail)
+		return nil, usermessage.Foreign(fmt.Errorf("verifying agent for vm:%s: %s", name, detail))
 	}
 	if err := requireRobotAgentCapability(ctx, next, profile.Kind); err != nil {
 		return nil, fmt.Errorf("official agent %s was installed, but robot support is not available: %w", verified.Version, err)

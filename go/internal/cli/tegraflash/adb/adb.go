@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/google/gousb"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/adbproto"
 	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
@@ -139,7 +138,7 @@ func openOnce(wantPath string, strict bool) (*Device, error) {
 		if errors.Is(err, gousb.ErrorAccess) {
 			return nil, fmt.Errorf("%w: %v (install a udev rule covering USB vendor 0955, or run with sudo)", ErrUSBAccess, err)
 		}
-		return nil, fmt.Errorf("no USB device with an ADB interface (ff/42/01) found: %v", err)
+		return nil, usermessage.Foreign(fmt.Errorf("no USB device with an ADB interface (ff/42/01) found: %v", err))
 	}
 
 	// Pick which device to drive. WENDY_ADB_PATH pins a physical USB location (bus +

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -75,7 +76,7 @@ func appCrashedError(appID string, c *agentpb.AppContainer) error {
 	if reason := c.GetTerminationReason(); reason != "" {
 		detail = fmt.Sprintf("exit code %d, termination reason %q", c.GetExitCode(), reason)
 	}
-	return commandErrorf(errAppCrashed, "app %s %s (%s); see its logs with `wendy device logs --app %s`", appID, what, detail, appID)
+	return usermessage.Foreign(commandErrorf(errAppCrashed, "app %s %s (%s); see its logs with `wendy device logs --app %s`", appID, what, detail, appID))
 }
 
 // appBaseline is what a run knows about the app instance it watches, so it

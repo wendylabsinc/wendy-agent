@@ -201,7 +201,7 @@ func TestAudioTUIListenFailureReturnsToPicker(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	updated, _ = updated.(audioTUIModel).Update(audioListenResultMsg{err: errors.New("microphone unavailable")})
 	model = updated.(audioTUIModel)
-	if model.listening != nil || model.busy || !model.isError || !strings.Contains(model.View(), "Something went wrong. Try again.") {
+	if model.listening != nil || model.busy || !model.isError || !strings.Contains(model.View(), "Microphone unavailable.") {
 		t.Fatal("playback failure should return to the picker with an error")
 	}
 	if handler.listenContext.Err() != context.Canceled {

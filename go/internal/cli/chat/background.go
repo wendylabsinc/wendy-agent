@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 const (
@@ -139,7 +141,7 @@ func (p *backgroundProcesses) start(ctx context.Context, kind string, target bac
 	}
 	info := p.snapshot(job, true)
 	if info.State == "failed" {
-		return info, fmt.Errorf("%s exited during startup: %s", kind, info.Error)
+		return info, usermessage.Foreign(fmt.Errorf("%s exited during startup: %s", kind, info.Error))
 	}
 	return info, nil
 }

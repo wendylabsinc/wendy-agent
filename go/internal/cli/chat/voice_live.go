@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // VoiceEvent carries display transcripts and complete, reconciled delegations.
@@ -141,7 +142,7 @@ func liveUpgradeError(key string, response *http.Response) error {
 			hint = "The WebSocket upgrade was rejected; check the server response and network/proxy settings."
 		}
 	}
-	return fmt.Errorf("GPT-Live HTTP %d (%s): %s. %s", response.StatusCode, http.StatusText(response.StatusCode), detail, hint)
+	return usermessage.Foreign(fmt.Errorf("GPT-Live HTTP %d (%s): %s. %s", response.StatusCode, http.StatusText(response.StatusCode), detail, hint))
 }
 
 func (w *liveSocket) Send(ctx context.Context, value any) error {
@@ -324,7 +325,7 @@ func liveError(key, action string, err error) error {
 		return err
 	}
 	provider := httpProvider{config: Config{APIKey: key}}
-	return fmt.Errorf("%s: %s", action, provider.safeError(err.Error()))
+	return usermessage.Foreign(fmt.Errorf("%s: %s", action, provider.safeError(err.Error())))
 }
 
 func (s *liveSession) Events() <-chan VoiceEvent { return s.events }

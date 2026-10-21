@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // responsesInput replays native items in their original order, including opaque
@@ -166,15 +168,15 @@ func (p *httpProvider) streamResponses(ctx context.Context, messages []Message, 
 		recordUsage(ctx, chunk.Response.Usage, false)
 		switch chunk.Type {
 		case "error":
-			return fmt.Errorf("OpenAI Responses stream error: %s", p.safeError(firstValue(chunk.Message, p.errorDetail(data))))
+			return usermessage.Foreign(fmt.Errorf("OpenAI Responses stream error: %s", p.safeError(firstValue(chunk.Message, p.errorDetail(data)))))
 		case "response.failed":
 			failure, _ := json.Marshal(map[string]any{"error": chunk.Response.Error})
-			return fmt.Errorf("OpenAI response failed: %s", p.errorDetail(failure))
+			return usermessage.Foreign(fmt.Errorf("OpenAI response failed: %s", p.errorDetail(failure)))
 		case "response.incomplete":
 			if chunk.Response.IncompleteDetails.Reason == "max_output_tokens" {
 				return fmt.Errorf("model reached its output token limit; increase --max-tokens and retry (no tool calls were executed)")
 			}
-			return fmt.Errorf("OpenAI response was incomplete: %s; no tool calls were executed", p.safeError(chunk.Response.IncompleteDetails.Reason))
+			return usermessage.Foreign(fmt.Errorf("OpenAI response was incomplete: %s; no tool calls were executed", p.safeError(chunk.Response.IncompleteDetails.Reason)))
 		case "response.output_text.delta", "response.refusal.delta":
 			streamed.WriteString(chunk.Delta)
 			if chunk.Delta != "" {

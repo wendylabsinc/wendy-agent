@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -68,7 +68,7 @@ func resolveAppImage(ctx context.Context, base, appID string) (appImageResolutio
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return appImageResolution{}, fmt.Errorf("AppStore returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return appImageResolution{}, usermessage.Foreign(fmt.Errorf("AppStore returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
 	}
 
 	var out appImageResolution

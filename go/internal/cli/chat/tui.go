@@ -515,13 +515,7 @@ func (m *chatModel) submit(prompt string) tea.Cmd {
 		if id == "" {
 			m.appendEntry("notice", "Choose a note", "Use /memory to find its short ID, then /forget <id> to delete it.")
 		} else if err := m.opts.Engine.ForgetMemory(m.ctx, id); err != nil {
-			var ambiguous *ambiguousMemoryIDError
-			if errors.As(err, &ambiguous) {
-				m.appendEntry("error", "Could not forget note", usermessage.Explain(err, "memory_ambiguous").Text())
-				m.appendMemoryEntry(chatEntry{kind: "memory", title: "Matching notes", memory: &memoryDisplay{entries: ambiguous.matches, fullIDs: true}})
-			} else {
-				m.appendEntry("error", "Could not forget note", usermessage.Text(err))
-			}
+			m.appendEntry("error", "Could not forget note", usermessage.Text(err))
 		} else {
 			m.appendEntry("notice", "Note forgotten", "Removed the selected note from memory.")
 		}

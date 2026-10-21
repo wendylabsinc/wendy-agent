@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -343,7 +344,11 @@ func writeDataSources(out io.Writer, sources []*agentpbv2.DataSource, wanted []s
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s", s.GetId(), s.GetKind(), s.GetClockDomain(), health)
 		if detailColumn {
-			fmt.Fprintf(w, "\t%s", truncateSourceDetail(s.GetDetail()))
+			detail := s.GetDetail()
+			if !s.GetHealthy() && detail != "" {
+				detail = usermessage.Server(detail)
+			}
+			fmt.Fprintf(w, "\t%s", truncateSourceDetail(detail))
 		}
 		fmt.Fprintln(w)
 	}
@@ -474,7 +479,7 @@ func newDataInspectCmd() *cobra.Command {
 				}
 			}
 			if len(r.GetVerificationErrors()) > 0 {
-				return fmt.Errorf("episode verification failed: %s", strings.Join(r.GetVerificationErrors(), "; "))
+				return usermessage.Foreign(fmt.Errorf("episode verification failed: %s", strings.Join(r.GetVerificationErrors(), "; ")))
 			}
 			return nil
 		})

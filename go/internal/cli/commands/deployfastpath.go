@@ -730,6 +730,9 @@ func containerExitDetail(ctx context.Context, conn *grpcclient.AgentConnection, 
 // the user sees when a startup crash is the real cause (WDY-1819).
 func warnReadiness(ctx context.Context, conn *grpcclient.AgentConnection, appID string, err error) {
 	msg := usermessage.Text(err)
+	if detail := containerExitDetail(ctx, conn, appID); detail != "" {
+		msg += " " + usermessage.Sprintf("%s", detail)
+	}
 	cliLogln("Warning: %s", msg)
 }
 

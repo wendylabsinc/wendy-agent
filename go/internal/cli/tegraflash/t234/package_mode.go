@@ -11,6 +11,7 @@ import (
 
 	backendfile "github.com/diskfs/go-diskfs/backend/file"
 	"github.com/diskfs/go-diskfs/filesystem/ext4"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 type USBMode string
@@ -130,7 +131,7 @@ func prepareUSBMode(sourcePath, tempDir string, supportsSingle bool) (string, US
 	}
 	got, err := readPackageUSBMode(copy)
 	if err != nil || got != USBModeSingle {
-		return "", "", fmt.Errorf("verifying prepared USB mode: got %q, error %v", got, err)
+		return "", "", usermessage.Foreign(fmt.Errorf("verifying prepared USB mode: got %q, error %v", got, err))
 	}
 	if err := copy.Close(); err != nil {
 		return "", "", err

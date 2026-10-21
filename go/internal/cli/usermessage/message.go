@@ -1,5 +1,5 @@
 // Package usermessage is the boundary between failures and CLI display text.
-// Error strings may select a known reason, but are never returned to a person.
+// CLI-authored messages are sentences; foreign failures select approved prose.
 package usermessage
 
 import (
@@ -9,9 +9,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"reflect"
 	"strings"
 	"unicode"
 
+	"github.com/spf13/pflag"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -37,8 +40,8 @@ func (r Report) Text() string {
 
 func report(message string, steps ...string) Report { return Report{message, steps} }
 
-// Explain maps transport status and the CLI's bounded failure category to our
-// sentences. Neither wrapped context nor server descriptions are display text.
+// Explain preserves CLI-authored detail and maps foreign failures to our
+// sentences. A chain containing foreign text never displays its wrapped context.
 // Category comes from ExecutionErrorClass; it does not affect exit/retry logic.
 func Explain(err error, category string) (result Report) {
 	defer func() { result.Steps = approvedSteps(err, result.Steps) }()
@@ -55,6 +58,9 @@ func Explain(err error, category string) (result Report) {
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
+	if !isForeign(err) {
+		return report(sentence(msg))
+	}
 	code := status.Code(err)
 	// Broker verdicts live inside a connection failure. Other typed statuses
 	// keep their code even if a description happens to contain another status.
@@ -83,7 +89,22 @@ func Explain(err error, category string) (result Report) {
 	case codes.NotFound:
 		return report(NotFound)
 	}
-	// Known local refusals select fixed client-authored guidance too. They are
+	var path *os.PathError
+	if errors.As(err, &path) {
+		switch {
+		case errors.Is(path, os.ErrNotExist):
+			return report("Couldn't find " + path.Path + ". Check the path and try again.")
+		case errors.Is(path, os.ErrPermission):
+			return report("Access to " + path.Path + " was denied. Check its permissions and try again.")
+		default:
+			return report("Couldn't access " + path.Path + ". Check the path and its permissions, then try again.")
+		}
+	}
+	var invalidFlag *pflag.InvalidValueError
+	if errors.As(err, &invalidFlag) {
+		return report("The value for --" + invalidFlag.GetFlag().Name + " is not valid. Check the value and try again.")
+	}
+	// Known refusal reasons select fixed client-authored guidance too. They are
 	// never copied from the input, and cannot carry additional server details.
 	for _, known := range []struct{ reason, message string }{
 		{"enter a unicast ipv4 address for the robot", "Enter a unicast IPv4 address for the robot."},
@@ -106,9 +127,6 @@ func Explain(err error, category string) (result Report) {
 		return report(NotFound)
 	}
 	switch category {
-	case "memory_ambiguous":
-		return report("More than one saved note matches. Use a full note ID and try again.")
-
 	case "auth_required", "device_auth_required":
 		return report("Sign in again to continue.", "Run 'wendy auth login', then try again.")
 	case "auth_session_ambiguous":
@@ -234,7 +252,8 @@ func Explain(err error, category string) (result Report) {
 	return report(Generic)
 }
 
-// Text is used for inline messages, including failures received as strings.
+// Text is used for inline errors. Mark untyped foreign errors with Foreign at
+// their source; use Server for a response received as a string.
 func Text(err error) string {
 	Debug(err)
 	return Explain(err, "").Text()
@@ -242,7 +261,70 @@ func Text(err error) string {
 
 // Server converts an untyped server failure into approved text. Prefer keeping
 // typed errors intact until Explain so status codes remain available.
-func Server(raw string) string { return Text(errors.New(raw)) }
+func Server(raw string) string { return Text(Foreign(errors.New(raw))) }
+
+type foreignError struct{ error }
+
+func (e *foreignError) Unwrap() error { return e.error }
+
+// Foreign retains provenance when an agent, HTTP body or library supplies an
+// untyped error. It preserves Error, Is, As and status information for callers.
+func Foreign(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &foreignError{err}
+}
+
+func isForeign(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{"rpc error: code =", "cloud tunnel closed by broker:", "tls:", "x509:", "authentication handshake failed"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	if _, ok := status.FromError(err); ok {
+		return true
+	}
+	if _, ok := err.(*foreignError); ok {
+		return true
+	}
+	if _, ok := err.(net.Error); ok {
+		return true
+	}
+	// Standard sentinels use errors.errorString, just like local errors.New.
+	for _, sentinel := range []error{io.EOF, io.ErrUnexpectedEOF, io.ErrClosedPipe, io.ErrNoProgress, io.ErrShortBuffer, io.ErrShortWrite, exec.ErrNotFound, os.ErrPermission, os.ErrNotExist, os.ErrExist, os.ErrInvalid, os.ErrClosed, context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	typ := reflect.TypeOf(err)
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	pkg := typ.PkgPath()
+	// fmt/errors implement local wrapping and construction too. All other
+	// library-defined error types are foreign, including net/url/TLS/JSON/exec.
+	// pflag's syntax errors describe this CLI's invocation. Its wrapped causes
+	// still pass through the foreign check (for example strconv parse errors).
+	if pkg != "fmt" && pkg != "errors" && pkg != "github.com/spf13/pflag" && !strings.HasPrefix(pkg, "github.com/wendylabsinc/wendy/go/internal/cli/") && !strings.HasPrefix(pkg, "github.com/wendylabsinc/wendy/go/internal/shared/") && pkg != "github.com/wendylabsinc/wendy/go/cmd/wendy" {
+		return true
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, cause := range e.Unwrap() {
+			if isForeign(cause) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return isForeign(e.Unwrap())
+	}
+	return false
+}
 
 // Debug keeps raw diagnostics behind the existing explicit debug switch.
 func Debug(err error) {

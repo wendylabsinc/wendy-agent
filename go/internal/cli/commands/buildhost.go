@@ -12,15 +12,15 @@ import (
 	"strconv"
 	"strings"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // errBuilderWithBuildHost is returned when --builder and --build-host are both
@@ -549,7 +549,7 @@ func reportedDeliveryError(result *agentpbv2.BuildImageResult, assetID int32) er
 		if reason == "" {
 			reason = "delivery failed (no reason reported)"
 		}
-		return errors.New(reason)
+		return usermessage.Foreign(errors.New(reason))
 	}
 	return fmt.Errorf("build host returned no delivery result for asset %d", assetID)
 }

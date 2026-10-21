@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 type openAIFunction struct {
@@ -225,7 +227,7 @@ func (p *httpProvider) streamOpenAI(ctx context.Context, messages []Message, too
 			return fmt.Errorf("invalid JSON in chat event stream")
 		}
 		if event == "error" || (len(chunk.Error) > 0 && string(chunk.Error) != "null") {
-			return fmt.Errorf("%s stream error: %s", p.config.Provider, p.errorDetail(data))
+			return usermessage.Foreign(fmt.Errorf("%s stream error: %s", p.config.Provider, p.errorDetail(data)))
 		}
 		recordUsage(ctx, chunk.Usage, false)
 		for _, choice := range chunk.Choices {
@@ -259,7 +261,7 @@ func (p *httpProvider) streamOpenAI(ctx context.Context, messages []Message, too
 			case "content_filter":
 				return fmt.Errorf("model response was stopped by the provider's content filter")
 			default:
-				return fmt.Errorf("model stopped with unsupported finish reason %q", p.safeError(choice.FinishReason))
+				return usermessage.Foreign(fmt.Errorf("model stopped with unsupported finish reason %q", p.safeError(choice.FinishReason)))
 			}
 		}
 		return nil

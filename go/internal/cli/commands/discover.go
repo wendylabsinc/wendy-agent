@@ -1838,7 +1838,7 @@ func copyToClipboard(text string) error {
 	default:
 		return fmt.Errorf("clipboard not supported on %s; copy the output manually", runtime.GOOS)
 	}
-	var errs []string
+	var errs []error
 	for _, c := range candidates {
 		if _, err := execLookPath(c.name); err != nil {
 			continue
@@ -1854,13 +1854,13 @@ func copyToClipboard(text string) error {
 			if detail == "" {
 				detail = err.Error()
 			}
-			errs = append(errs, fmt.Errorf("%s: %s", c.name, strings.TrimSpace(detail)).Error())
+			errs = append(errs, usermessage.Foreign(fmt.Errorf("%s: %s", c.name, strings.TrimSpace(detail))))
 			continue
 		}
 		return nil
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("all clipboard tools failed: %s", strings.Join(errs, "; "))
+		return fmt.Errorf("all clipboard tools failed: %w", errors.Join(errs...))
 	}
 	names := make([]string, len(candidates))
 	for i, c := range candidates {

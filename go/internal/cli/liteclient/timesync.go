@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/roughtime"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
@@ -56,7 +57,7 @@ func relayRoughtime(ctx context.Context, nonceHex string,
 	for range roughtime.Servers {
 		select {
 		case <-ctx.Done():
-			return time.Time{}, fmt.Errorf("Roughtime sync: %w (%s)", ctx.Err(), strings.Join(failures, "; "))
+			return time.Time{}, usermessage.Foreign(fmt.Errorf("Roughtime sync: %w (%s)", ctx.Err(), strings.Join(failures, "; ")))
 		case a := <-replies:
 			if a.err != nil {
 				failures = append(failures, a.err.Error())
@@ -79,5 +80,5 @@ func relayRoughtime(ctx context.Context, nonceHex string,
 			}
 		}
 	}
-	return time.Time{}, fmt.Errorf("device could not establish two-server Roughtime consensus (%s)", strings.Join(failures, "; "))
+	return time.Time{}, usermessage.Foreign(fmt.Errorf("device could not establish two-server Roughtime consensus (%s)", strings.Join(failures, "; ")))
 }

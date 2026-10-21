@@ -460,7 +460,7 @@ func TestReportWaitReadyOutcomeCleanExitCarriesExitCodeZero(t *testing.T) {
 		t.Fatalf("stdout %q does not carry \"exit_code\":0", stdout)
 	}
 	got := decodeOneJSONObject(t, stdout)
-	if got["status"] != "crashed" || got["termination_reason"] != "exited" || !strings.Contains(fmt.Sprint(got["message"]), "The app stopped unexpectedly.") {
+	if got["status"] != "crashed" || got["termination_reason"] != "exited" || !strings.Contains(fmt.Sprint(got["message"]), "App app exited before becoming ready (exit code 0);") {
 		t.Fatalf("object = %v, want a crashed clean exit", got)
 	}
 }

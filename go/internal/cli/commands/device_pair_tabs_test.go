@@ -549,7 +549,7 @@ func TestSensorPairFallsBackToLocalScanOnlyForOldAgents(t *testing.T) {
 	h.client, h.discoverLocal = old, nil
 	updated, _ = m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if !strings.Contains(m.message, "Update its agent") || len(m.rows) != 1 {
+	if !strings.Contains(m.message, "update it") || len(m.rows) != 1 {
 		t.Fatalf("missing update hint or lost known sources: %q", m.message)
 	}
 }
@@ -560,7 +560,7 @@ func TestSensorPairDeviceDiscoveryErrorsAreNotReplacedByLocalScan(t *testing.T) 
 		want string
 	}{
 		{status.Error(codes.Unavailable, "tunnel closed"), "Device is not reachable"},
-		{status.Error(codes.PermissionDenied, "org mismatch"), "You don't have permission"},
+		{status.Error(codes.PermissionDenied, "org mismatch"), "Not authorized"},
 		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"), "The device did not finish scanning its network in time"},
 		{status.Error(codes.Internal, "sensor source discovery failed on this device"), "Something went wrong. Try again."},
 	} {

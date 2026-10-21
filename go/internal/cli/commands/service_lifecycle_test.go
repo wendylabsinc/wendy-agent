@@ -541,7 +541,7 @@ func TestServiceHookRunner_ReadinessWarningIncludesGroupExitDetail(t *testing.T)
 	if !strings.Contains(out, "Warning:") {
 		t.Fatalf("readiness warning never printed; output:\n%s", out)
 	}
-	if !strings.Contains(out, "Something went wrong. Try again.") || strings.Contains(out, "container crashed (exit 1)") {
+	if !strings.Contains(out, "Container crashed (exit 1).") {
 		t.Errorf("readiness warning lacks the container-exit-detail suffix (group-appID lookup failed); output:\n%s", out)
 	}
 }

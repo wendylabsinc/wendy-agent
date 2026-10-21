@@ -33,11 +33,18 @@ func (diagnosticTestError) CLIMessage() string {
 	return "✗ Connection blocked\n\n  wendy device unpin device.local"
 }
 
-func TestRenderErrorNeverUsesArbitraryDiagnosticText(t *testing.T) {
-	for _, err := range []error{diagnosticTestError{}, fmt.Errorf("connecting: %w", diagnosticTestError{}), errors.Join(diagnosticTestError{}, errors.New("raw sibling detail"))} {
-		got := renderError(err)
-		if !strings.Contains(got, "Something went wrong. Try again.") || strings.Contains(got, "programmatic") || strings.Contains(got, "sibling") {
-			t.Errorf("unsafe diagnostic: %q", got)
+func TestRenderErrorUsesLocalErrorInsteadOfDiagnosticPresentation(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{diagnosticTestError{}, "Plain programmatic error."},
+		{fmt.Errorf("connecting: %w", diagnosticTestError{}), "Connecting: plain programmatic error."},
+		{errors.Join(diagnosticTestError{}, errors.New("local sibling detail")), "Plain programmatic error\nlocal sibling detail."},
+	} {
+		got := renderError(tc.err)
+		if !strings.Contains(got, tc.want) || strings.Contains(got, "Connection blocked") {
+			t.Errorf("unexpected diagnostic: %q", got)
 		}
 	}
 }

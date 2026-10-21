@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 type anthropicBlock struct {
@@ -137,7 +139,7 @@ func (p *httpProvider) streamAnthropic(ctx context.Context, messages []Message, 
 			}
 			recordUsage(ctx, &usage, true)
 		case "error":
-			return fmt.Errorf("anthropic stream error: %s", p.errorDetail(data))
+			return usermessage.Foreign(fmt.Errorf("anthropic stream error: %s", p.errorDetail(data)))
 		case "content_block_start":
 			if chunk.Index < 0 || chunk.Index >= 1024 || openBlocks[chunk.Index] {
 				return fmt.Errorf("Anthropic returned an invalid content block index")
@@ -206,7 +208,7 @@ func (p *httpProvider) streamAnthropic(ctx context.Context, messages []Message, 
 			case "max_tokens":
 				return fmt.Errorf("model reached its output token limit; increase --max-tokens and retry (no tool calls were executed)")
 			default:
-				return fmt.Errorf("Anthropic stopped with unsupported reason %q", p.safeError(stopReason))
+				return usermessage.Foreign(fmt.Errorf("Anthropic stopped with unsupported reason %q", p.safeError(stopReason)))
 			}
 			finished = true
 			return errStreamComplete

@@ -10,11 +10,11 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
-	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // newDriversCmd is the "drivers" command group under `wendy device`, mirroring
@@ -403,7 +403,7 @@ func consumeDriverApply(stream driverApplyRecvStream, name, verb string) error {
 			}
 			return nil
 		case resp.GetFailed() != nil:
-			return fmt.Errorf("driver %s: %s", name, resp.GetFailed().GetErrorMessage())
+			return usermessage.Foreign(fmt.Errorf("driver %s: %s", name, resp.GetFailed().GetErrorMessage()))
 		}
 	}
 }

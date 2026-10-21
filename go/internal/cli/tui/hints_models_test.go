@@ -154,7 +154,7 @@ func TestSuppressedHintsKeepErrors(t *testing.T) {
 		{NewProgress("Downloading image"), ProgressDoneMsg{Err: want}},
 	} {
 		model, _ := tc.model.Update(tc.done)
-		if view := model.View(); !strings.Contains(view, "Something went wrong. Try again.") || strings.Contains(view, want.Error()) {
+		if view := model.View(); !strings.Contains(view, "Download failed.") {
 			t.Fatalf("suppressed hints hid error: %q", view)
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"golang.org/x/sys/unix"
 )
 
@@ -159,7 +160,7 @@ func unmountUMSDisk(d UMSDisk) error {
 		}
 		out, err := exec.Command("umount", "--", target).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			return usermessage.Foreign(fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out))))
 		}
 		return nil
 	})
@@ -170,7 +171,7 @@ func unmountUMSDisk(d UMSDisk) error {
 // udisksctl power-off would disconnect it.
 func ejectUMSDisk(d UMSDisk) error {
 	if out, err := exec.Command("eject", "--scsi", d.DevPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
+		return usermessage.Foreign(fmt.Errorf("eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out))))
 	}
 	return nil
 }
@@ -180,7 +181,7 @@ func ejectUMSDisk(d UMSDisk) error {
 // sysfs loses its old node, leaving the host's SCSI INQUIRY cache stale.
 func ejectLegacyUMSDisk(d UMSDisk) error {
 	if out, err := exec.Command("udisksctl", "power-off", "-b", d.DevPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("powering off %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
+		return usermessage.Foreign(fmt.Errorf("powering off %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out))))
 	}
 	return nil
 }

@@ -56,7 +56,7 @@ func TestFormatRegistryFallbackNotice(t *testing.T) {
 	t.Run("large image includes size and FULL registry push wording", func(t *testing.T) {
 		// ~1.9GB decimal.
 		got := formatRegistryFallbackNotice(chunkErr, 1_900_000_000)
-		if strings.Contains(got, chunkErr.Error()) || !strings.Contains(got, "Something went wrong. Try again.") {
+		if !strings.Contains(got, chunkErr.Error()+".") {
 			t.Fatalf("notice %q does not contain the chunk-diff error %q", got, chunkErr.Error())
 		}
 		if !strings.Contains(got, "1.9GB") {
@@ -69,7 +69,7 @@ func TestFormatRegistryFallbackNotice(t *testing.T) {
 
 	t.Run("zero bytes omits the size clause", func(t *testing.T) {
 		got := formatRegistryFallbackNotice(chunkErr, 0)
-		if strings.Contains(got, chunkErr.Error()) || !strings.Contains(got, "Something went wrong. Try again.") {
+		if !strings.Contains(got, chunkErr.Error()+".") {
 			t.Fatalf("notice %q does not contain the chunk-diff error %q", got, chunkErr.Error())
 		}
 		if strings.Contains(got, "GB") || strings.Contains(got, "MB") || strings.Contains(got, "will be re-uploaded") {

@@ -8,7 +8,6 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -353,7 +352,7 @@ func (h *audioRPCHandler) SetDefault(device *agentpbv2.AudioDevice) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := h.client.SetDefaultAudioDevice(h.ctx, &agentpbv2.SetDefaultAudioDeviceRequest{DeviceId: device.GetDeviceId()})
 		if err == nil && !resp.GetSuccess() {
-			err = fmt.Errorf("setting default audio device: %s", resp.GetErrorMessage())
+			err = usermessage.Foreign(fmt.Errorf("setting default audio device: %s", resp.GetErrorMessage()))
 		}
 		return audioOpResultMsg{
 			action: audioActionSetDefault, deviceID: device.GetDeviceId(), deviceType: device.GetType(), err: err,
@@ -367,7 +366,7 @@ func (h *audioRPCHandler) SetVolume(device *agentpbv2.AudioDevice, volume uint32
 			DeviceId: device.GetDeviceId(), VolumePercent: volume,
 		})
 		if err == nil && !resp.GetSuccess() {
-			err = fmt.Errorf("setting audio volume: %s", resp.GetErrorMessage())
+			err = usermessage.Foreign(fmt.Errorf("setting audio volume: %s", resp.GetErrorMessage()))
 		}
 		actual := volume
 		if err == nil && resp.VolumePercent != nil {

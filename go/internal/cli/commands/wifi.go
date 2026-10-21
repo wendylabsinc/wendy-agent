@@ -16,6 +16,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui/wifitable"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
@@ -215,7 +216,7 @@ func (c *wifiClient) Connect(ctx context.Context, req *agentpb.ConnectToWiFiRequ
 			return fmt.Errorf("connecting to WiFi: %w", err)
 		}
 		if !resp.GetSuccess() {
-			return fmt.Errorf("failed to connect: %s", resp.GetErrorMessage())
+			return usermessage.Foreign(fmt.Errorf("failed to connect: %s", resp.GetErrorMessage()))
 		}
 		return nil
 	}
@@ -237,7 +238,7 @@ func (c *wifiClient) Reorder(ctx context.Context, order []string) error {
 			return fmt.Errorf("reordering WiFi networks: %w", err)
 		}
 		if !resp.GetSuccess() {
-			return fmt.Errorf("reorder failed: %s", resp.GetErrorMessage())
+			return usermessage.Foreign(fmt.Errorf("reorder failed: %s", resp.GetErrorMessage()))
 		}
 		return nil
 	}
@@ -251,7 +252,7 @@ func (c *wifiClient) SetPriority(ctx context.Context, ssid string, priority int3
 			return fmt.Errorf("setting priority: %w", err)
 		}
 		if !resp.GetSuccess() {
-			return fmt.Errorf("set priority failed: %s", resp.GetErrorMessage())
+			return usermessage.Foreign(fmt.Errorf("set priority failed: %s", resp.GetErrorMessage()))
 		}
 		return nil
 	}
@@ -265,7 +266,7 @@ func (c *wifiClient) Forget(ctx context.Context, ssid string) error {
 			return fmt.Errorf("forgetting network: %w", err)
 		}
 		if !resp.GetSuccess() {
-			return fmt.Errorf("forget failed: %s", resp.GetErrorMessage())
+			return usermessage.Foreign(fmt.Errorf("forget failed: %s", resp.GetErrorMessage()))
 		}
 		return nil
 	}
@@ -540,7 +541,7 @@ func newWifiDisconnectCmd() *cobra.Command {
 				return fmt.Errorf("disconnecting WiFi: %w", err)
 			}
 			if !resp.GetSuccess() {
-				return fmt.Errorf("failed to disconnect: %s", resp.GetErrorMessage())
+				return usermessage.Foreign(fmt.Errorf("failed to disconnect: %s", resp.GetErrorMessage()))
 			}
 			cliSuccess("Disconnected from WiFi.")
 			return nil

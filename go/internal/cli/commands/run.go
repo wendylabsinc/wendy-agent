@@ -25,12 +25,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-	"gopkg.in/yaml.v3"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -48,6 +42,11 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"gopkg.in/yaml.v3"
 )
 
 var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
@@ -2900,7 +2899,7 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 			// the normal cleanup, then return it so `wendy run` exits non-zero
 			// instead of reporting a false success. Use the status message so the
 			// output reads as a container failure, not a CLI crash.
-			runErr = fmt.Errorf("container run failed: %s", status.Convert(recvErr).Message())
+			runErr = usermessage.Foreign(fmt.Errorf("container run failed: %s", status.Convert(recvErr).Message()))
 			break
 		}
 		gotFirstResponse = true

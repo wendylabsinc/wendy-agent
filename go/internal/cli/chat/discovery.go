@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // ModelOption is a model advertised by the selected server, ready for a picker.
@@ -394,7 +396,7 @@ func discoveryRequest(ctx context.Context, p *httpProvider, method, endpoint str
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return nil, fmt.Errorf("could not prepare the model request: %s", p.safeError(err.Error()))
+		return nil, usermessage.Foreign(fmt.Errorf("could not prepare the model request: %s", p.safeError(err.Error())))
 	}
 	req.Header.Set("Accept", "application/json")
 	if payload != nil {
@@ -433,7 +435,7 @@ func discoveryRequest(ctx context.Context, p *httpProvider, method, endpoint str
 	if detail != "" {
 		message += ": " + detail
 	}
-	return nil, &discoveryHTTPError{code: resp.StatusCode, message: message}
+	return nil, usermessage.Foreign(&discoveryHTTPError{code: resp.StatusCode, message: message})
 }
 
 func discoveryJSON(ctx context.Context, p *httpProvider, method, endpoint string, payload, output any) error {
@@ -501,7 +503,7 @@ func PullOllamaModel(ctx context.Context, config Config, model string, progress 
 			return fmt.Errorf("Ollama returned an unexpected download update; please retry")
 		}
 		if update.Error != "" {
-			return fmt.Errorf("Ollama could not download the model: %s", p.safeError(update.Error))
+			return usermessage.Foreign(fmt.Errorf("Ollama could not download the model: %s", p.safeError(update.Error)))
 		}
 		status := p.safeError(update.Status)
 		if update.Total > 0 {

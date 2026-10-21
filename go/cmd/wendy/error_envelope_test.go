@@ -111,14 +111,15 @@ func TestReportFailure_TextModeUsesApprovedSentences(t *testing.T) {
 		message string
 	}{
 		{fmt.Errorf("listing cloud devices: %w", config.ErrNotLoggedIn), 3, "Sign in again to continue."},
-		{errors.Join(errors.New("api: build failed\nstep 3/7 exited 1"), errors.New("worker: build failed")), 1, "Something went wrong. Try again."},
-		{fmt.Errorf("connecting: %w", diagnosticTestError{}), 1, "Something went wrong. Try again."},
+		{errors.Join(errors.New("local: build failed\nstep 3/7 exited 1"), errors.New("worker: build failed")), 1, "Local: build failed\nstep 3/7 exited 1\nworker: build failed."},
+		{fmt.Errorf("connecting: %w", diagnosticTestError{}), 1, "Connecting: plain programmatic error."},
 	} {
 		var out strings.Builder
 		if got := reportFailure(&out, tc.err, nil, []string{"--json=false"}); got != tc.exit {
 			t.Errorf("exit = %d", got)
 		}
-		if !strings.HasPrefix(out.String(), "✗ "+tc.message) || strings.Contains(out.String(), tc.err.Error()) {
+		normalized := strings.Join(strings.Fields(out.String()), " ")
+		if !strings.HasPrefix(normalized, "✗ "+strings.Join(strings.Fields(tc.message), " ")) {
 			t.Errorf("unsafe text = %q", out.String())
 		}
 	}
@@ -178,7 +179,7 @@ func TestReportFailure_EnvelopeTextIsPlain(t *testing.T) {
 	out.Reset()
 	reportFailure(&out, fmt.Errorf("connecting: %w", diagnosticTestError{}), nil, []string{"--json"})
 	got = decodeEnvelope(t, out.String())
-	if got.Message != "Something went wrong. Try again." || strings.ContainsAny(got.Message, "✗\x1b") {
+	if got.Message != "Connecting: plain programmatic error." || strings.ContainsAny(got.Message, "✗\x1b") {
 		t.Errorf("diagnostic message = %q, want the plain Error() text", got.Message)
 	}
 }
@@ -189,7 +190,7 @@ func TestReportFailure_MultiLineErrorsStayOneLine(t *testing.T) {
 	err := errors.Join(errors.New("api: build failed\nstep 3/7 exited 1"), errors.New("worker: build failed"))
 	reportFailure(&out, err, nil, []string{"--json"})
 	got := decodeEnvelope(t, out.String())
-	if got.Message != "Something went wrong. Try again." || got.Code != "error" || got.Exit != 1 {
+	if got.Message != "Api: build failed\nstep 3/7 exited 1\nworker: build failed." || got.Code != "error" || got.Exit != 1 {
 		t.Errorf("envelope = %+v", got)
 	}
 }
@@ -210,7 +211,7 @@ func TestReportFailure_UnapprovedAdviceNeverReachesTheEnvelope(t *testing.T) {
 	var out strings.Builder
 	reportFailure(&out, commands.UnknownSubcommandError([]string{"device", "inf"}), nil, []string{"--json", "device", "inf"})
 	got := decodeEnvelope(t, out.String())
-	if got.Message != "The command or its arguments are not valid. Check the command and try again." ||
+	if !strings.Contains(got.Message, "Unknown command") ||
 		!reflect.DeepEqual(got.NextSteps, []string{}) {
 		t.Errorf("unknown subcommand envelope = %+v", got)
 	}

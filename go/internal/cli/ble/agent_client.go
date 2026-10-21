@@ -16,6 +16,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/central"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -118,7 +119,7 @@ func (c *AgentClient) sendCommand(cmd *agentpb.BluetoothCommand) (*agentpb.Bluet
 	}
 
 	if errResp := resp.GetError(); errResp != nil {
-		return nil, fmt.Errorf("agent error: %s", errResp.GetMessage())
+		return nil, usermessage.Foreign(fmt.Errorf("agent error: %s", errResp.GetMessage()))
 	}
 
 	return resp, nil
@@ -164,7 +165,7 @@ func (c *AgentClient) WifiConnectWith(ssid, password string, security agentpb.Wi
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("WiFi connect failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("WiFi connect failed: %s", msg))
 	}
 
 	return nil
@@ -231,7 +232,7 @@ func (c *AgentClient) WifiDisconnect() error {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("WiFi disconnect failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("WiFi disconnect failed: %s", msg))
 	}
 	return nil
 }
@@ -277,7 +278,7 @@ func (c *AgentClient) WifiSetPriority(ssid string, priority int32) error {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("WiFi set priority failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("WiFi set priority failed: %s", msg))
 	}
 	return nil
 }
@@ -302,7 +303,7 @@ func (c *AgentClient) WifiReorder(order []string) error {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("WiFi reorder failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("WiFi reorder failed: %s", msg))
 	}
 	return nil
 }
@@ -361,7 +362,7 @@ func (c *AgentClient) AppsStop(appName string) error {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("apps stop failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("apps stop failed: %s", msg))
 	}
 	return nil
 }
@@ -389,7 +390,7 @@ func (c *AgentClient) AppsRemove(appName string, purgeImage bool) error {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("apps remove failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("apps remove failed: %s", msg))
 	}
 	return nil
 }
@@ -432,7 +433,7 @@ func (c *AgentClient) WifiForget(ssid string) error {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		return fmt.Errorf("WiFi forget failed: %s", msg)
+		return usermessage.Foreign(fmt.Errorf("WiFi forget failed: %s", msg))
 	}
 	return nil
 }

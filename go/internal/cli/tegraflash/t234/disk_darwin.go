@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // listUSBDevices lists USB devices from ioreg: unlike a gousb descriptor walk,
@@ -252,7 +254,7 @@ func unmountUMSDisk(d UMSDisk) error {
 // flashing initrd waits for. diskutil eject never disconnects the USB device.
 func ejectUMSDisk(d UMSDisk) error {
 	if out, err := exec.Command("diskutil", "eject", d.DevPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("diskutil eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out)))
+		return usermessage.Foreign(fmt.Errorf("diskutil eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out))))
 	}
 	return nil
 }

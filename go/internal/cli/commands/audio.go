@@ -11,11 +11,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"golang.org/x/term"
 )
 
 func newAudioCmd() *cobra.Command {
@@ -171,7 +171,7 @@ func newAudioSetDefaultCmd() *cobra.Command {
 			}
 
 			if !resp.GetSuccess() {
-				return fmt.Errorf("failed: %s", resp.GetErrorMessage())
+				return usermessage.Foreign(fmt.Errorf("failed: %s", resp.GetErrorMessage()))
 			}
 
 			fmt.Printf("Default audio device set to ID %d.\n", deviceID)

@@ -29,6 +29,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -238,7 +239,7 @@ func (s *Session) exchange(ctx context.Context, form url.Values) (token, error) 
 				nonce = r.Header.Get("DPoP-Nonce")
 				continue
 			}
-			return token{}, fmt.Errorf("Token exchange failed (%d): %s", r.StatusCode, problem.Error)
+			return token{}, usermessage.Foreign(fmt.Errorf("Token exchange failed (%d): %s", r.StatusCode, problem.Error))
 		}
 		var t token
 		if e = json.Unmarshal(b, &t); e != nil {
@@ -513,7 +514,7 @@ func requestPKIIdentityCertificate(
 		if resp.StatusCode == http.StatusUnauthorized {
 			detail = "unauthorized (verify the realm-to-tenant mapping and PKI audience)"
 		}
-		return config.CertificateInfo{}, fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail)
+		return config.CertificateInfo{}, usermessage.Foreign(fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail))
 	}
 	if len(body) > 1<<20 {
 		return config.CertificateInfo{}, fmt.Errorf("pki-core identity response exceeds 1 MiB")

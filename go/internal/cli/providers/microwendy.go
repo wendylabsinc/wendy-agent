@@ -1218,7 +1218,7 @@ func connectWithScopedCLIIdentities(ctx context.Context, advertisedTenant string
 			fmt.Fprintf(&b, "; %v", e)
 		}
 	}
-	return errors.New(b.String())
+	return usermessage.Foreign(errors.New(b.String()))
 }
 
 // serialConnectMaxAttempts bounds how many times connectSerialWithRetry

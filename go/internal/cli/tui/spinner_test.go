@@ -66,7 +66,7 @@ func TestSpinnerModel_ErrorDoneMsg(t *testing.T) {
 	}
 
 	view := updated.View()
-	if !strings.Contains(view, "Something went wrong. Try again.") || strings.Contains(view, testErr.Error()) {
+	if !strings.Contains(view, "Something failed.") || strings.Contains(view, testErr.Error()) {
 		t.Errorf("failure view should contain approved prose, got: %q", view)
 	}
 }
@@ -207,7 +207,7 @@ func TestProgressModel_ErrorDoneMsg(t *testing.T) {
 	}
 
 	view := updated.View()
-	if !strings.Contains(view, "Something went wrong. Try again.") || strings.Contains(view, testErr.Error()) {
+	if !strings.Contains(view, "Upload failed.") || strings.Contains(view, testErr.Error()) {
 		t.Errorf("failure view should contain approved prose, got: %q", view)
 	}
 }

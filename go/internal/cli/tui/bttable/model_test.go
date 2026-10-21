@@ -517,7 +517,7 @@ func TestUserFacingErrorStripsGRPCFraming(t *testing.T) {
 	if strings.Contains(got, "rpc error") {
 		t.Errorf("grpc framing leaked into UI string: %q", got)
 	}
-	if userFacingError(errors.New("plain")) != "Something went wrong. Try again." {
+	if userFacingError(errors.New("plain")) != "Plain." {
 		t.Errorf("non-grpc error should fall back to Error()")
 	}
 }

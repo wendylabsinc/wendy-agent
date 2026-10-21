@@ -93,7 +93,7 @@ func newErrorEnvelope(err error, class string, outcome errorOutcome, executed *c
 
 // plainErrorReport returns err as the unstyled text renderError would show,
 // minus the approved recovery steps, which it returns separately.
-// Arbitrary diagnostic strings and attached steps are never display text.
+// Foreign descriptions are mapped; local messages retain their specific detail.
 func plainErrorReport(err error) (string, []string) {
 	r := usermessage.Explain(err, commands.ExecutionErrorClass(err))
 	return r.Message, cleanSteps(r.Steps)
