@@ -983,6 +983,10 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
+	base, err := pythonDockerBase(dir)
+	if err != nil {
+		return "", err
+	}
 
 	// Determine if requirements.txt exists.
 	hasRequirements := false
@@ -1000,7 +1004,7 @@ func generatePythonDockerfile(dir string, debug bool) (string, error) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("FROM python:3.11-slim\n")
+	fmt.Fprintf(&sb, "FROM python:%s-slim\n", base)
 	sb.WriteString("WORKDIR /app\n")
 	if hasRequirements {
 		sb.WriteString("COPY requirements.txt .\n")
