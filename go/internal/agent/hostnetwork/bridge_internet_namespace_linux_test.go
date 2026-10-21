@@ -46,6 +46,28 @@ func TestBridgeInternetNativeAndBorrowedPolicy(t *testing.T) {
 	if os.Getenv("WENDY_BRIDGE_INTERNET_NAMESPACE_TEST") != "1" {
 		t.Skip("disposable privileged network-none container only")
 	}
+	if order := os.Getenv("WENDY_BRIDGE_INTERNET_ORDER_CHILD"); order != "" {
+		if order != "lan-first" && order != "internet-first" {
+			t.Fatalf("invalid fixture order %q", order)
+		}
+		runBridgeInternetNativeAndBorrowedPolicy(t, order == "internet-first")
+		return
+	}
+	for _, order := range []string{"lan-first", "internet-first"} {
+		t.Run(order, func(t *testing.T) {
+			// Keep rules, conntrack and sysctls independent between both
+			// initialization orders in the disposable test container.
+			cmd := exec.Command("unshare", "--net", os.Args[0], "-test.run=^TestBridgeInternetNativeAndBorrowedPolicy$", "-test.v")
+			cmd.Env = append(os.Environ(), "WENDY_BRIDGE_INTERNET_ORDER_CHILD="+order)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s: %v\n%s", order, err, out)
+			}
+		})
+	}
+}
+
+func runBridgeInternetNativeAndBorrowedPolicy(t *testing.T, internetFirst bool) {
+	t.Helper()
 	run := func(name string, args ...string) string {
 		t.Helper()
 		out, err := exec.Command(name, args...).CombinedOutput()
@@ -93,6 +115,12 @@ func TestBridgeInternetNativeAndBorrowedPolicy(t *testing.T) {
 	run("iptables", "-P", "FORWARD", "ACCEPT")
 	foreign := []string{"-s", "198.18.0.1/32", "-m", "comment", "--comment", "foreign-test-rule", "-j", "DROP"}
 	run("iptables", append([]string{"-A", "FORWARD"}, foreign...)...)
+	const owner = "bridge-internet-test/app/eth0"
+	if internetFirst {
+		if err := EnsureBridgeInternetAccess(owner, "biapph", []net.IP{net.ParseIP("10.42.3.2")}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Upgrade the exact two-rule b810 guard in place. CNI can already have
 	// enabled forwarding while the persisted owner still records baseline 0.
 	if err := InitLANServiceChain(); err != nil {
@@ -123,7 +151,6 @@ func TestBridgeInternetNativeAndBorrowedPolicy(t *testing.T) {
 	if strings.Join(owned, ",") != BridgeInternetChain+","+LANChainName+",DROP" {
 		t.Fatalf("upgrade changed Internet/LAN/fallback precedence: %v", owned)
 	}
-	const owner = "bridge-internet-test/app/eth0"
 	if err := EnsureBridgeInternetAccess(owner, "biapph", []net.IP{net.ParseIP("10.42.3.2")}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +281,12 @@ func TestBridgeInternetNativeAndBorrowedPolicy(t *testing.T) {
 	if err := ReleaseForwarding("bridge-internet-test"); err != nil {
 		t.Fatal(err)
 	}
-	if text := run("iptables", "-S", "FORWARD"); strings.Contains(text, forwardingComment) || !strings.Contains(text, "foreign-test-rule") || !strings.Contains(text, lanRuleMarker) {
-		t.Fatalf("release failed to remove only its three owned jumps: %s", text)
+	dispatch := run("iptables", "-S", lanForwardChain)
+	internetAt, lanAt := strings.Index(dispatch, "-j "+BridgeInternetChain), strings.Index(dispatch, "-j "+LANChainName)
+	if internetAt < 0 || lanAt <= internetAt {
+		t.Fatalf("dispatcher shadows explicit Internet grants: %s", dispatch)
+	}
+	if text := run("iptables", "-S", "FORWARD"); strings.Contains(text, forwardingComment) || !strings.Contains(text, "foreign-test-rule") || !strings.Contains(text, lanForwardMarker) {
+		t.Fatalf("release failed to remove its fallback while preserving the LAN dispatcher and foreign rule: %s", text)
 	}
 }
