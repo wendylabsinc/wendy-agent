@@ -82,7 +82,7 @@ func TestCarrierStartupFailureWithoutEnabledCarrierNames(t *testing.T) {
 				t.Fatal("invalid startup accepted")
 			}
 			state := sharing.Status()
-			if !state.Available || state.State != "failed" || !strings.Contains(state.Detail, "Mesh: failed") {
+			if !state.Available || state.State != "failed" || !strings.Contains(state.Detail, "Local net: failed") {
 				t.Fatalf("startup failure hidden without named carriers: %+v", state)
 			}
 		})

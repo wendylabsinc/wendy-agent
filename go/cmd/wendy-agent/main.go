@@ -956,7 +956,6 @@ func main() {
 	var localMeshStart sync.Once
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
-	var localMeshCredentials *localmesh.Credentials
 	var localMeshAppClient *meshsession.Client
 	// Persistent VIP table shared by DNS answers, the proxy's reverse
 	// lookup, and every allocation: (tenant UUID, device UUID) ↔ VIP. A

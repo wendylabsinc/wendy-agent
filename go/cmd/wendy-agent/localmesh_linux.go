@@ -55,7 +55,7 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 		return nil
 	}
 	if err != nil {
-		epoch := sharing.carriers.begin("unreadable configuration", []string{"Mesh"})
+		epoch := sharing.carriers.begin("unreadable configuration", []string{"Local net"})
 		sharing.carriers.fail(epoch, err)
 		return err
 	}
@@ -79,7 +79,7 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 	if len(names) == 0 {
 		// A present document without enabled carriers still needs a status
 		// slot: identity or strict config validation can fail below.
-		names = []string{"Mesh"}
+		names = []string{"Local net"}
 	}
 	epoch := sharing.carriers.begin(string(initial), names)
 	if err != nil {
