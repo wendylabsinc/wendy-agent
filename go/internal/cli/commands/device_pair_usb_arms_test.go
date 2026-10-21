@@ -77,11 +77,26 @@ func TestUSBArmJSONListBindForgetAndOldAgent(t *testing.T) {
 	if err := runArmPair(context.Background(), client, "", "target-only", "", false, true, &out); err != nil || client.forgotten != "target-only" || !strings.Contains(out.String(), "forgotten") {
 		t.Fatalf("forget: %s %v", out.String(), err)
 	}
-	client.err = status.Error(codes.Unimplemented, "unknown service")
-	out.Reset()
-	err := runArmPair(context.Background(), client, "", "", "", false, true, &out)
-	if err == nil || !strings.Contains(err.Error(), "target Agent does not support") || out.Len() != 0 {
-		t.Fatalf("old agent fallback: %s %v", out.String(), err)
+	// An old Agent lacks the service; a Go Agent off Linux reports ErrUnsupported.
+	for _, unimplemented := range []string{"unknown service", "USB arm inventory requires a Linux Agent or the native Mac Agent"} {
+		client.err = status.Error(codes.Unimplemented, unimplemented)
+		out.Reset()
+		err := runArmPair(context.Background(), client, "", "", "", false, true, &out)
+		if err == nil || !strings.Contains(err.Error(), "target Agent does not support") || !strings.Contains(err.Error(), "Linux Agent or the native Mac Agent") || strings.Contains(err.Error(), "update the target") || out.Len() != 0 {
+			t.Fatalf("unsupported Agent (%s): %s %v", unimplemented, out.String(), err)
+		}
+	}
+}
+
+func TestUSBArmJSONHasAFixedLayout(t *testing.T) {
+	client := &armTestClient{devices: []*pb.RobotArm{{Id: "usb-1", Connected: true}}}
+	var out bytes.Buffer
+	if err := runArmPair(context.Background(), client, "", "", "", false, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	// protojson's whitespace differs between builds; the output is re-indented.
+	if !strings.HasPrefix(out.String(), "{\n  \"devices\": [\n    {\n      \"id\": \"usb-1\",\n      \"name\": \"\",") {
+		t.Fatalf("JSON layout: %q", out.String())
 	}
 }
 func TestUSBArmTabConfirmationRoutingAndOfflineForget(t *testing.T) {
@@ -162,15 +177,28 @@ func TestUSBArmScanFailureBlocksStaleBindingAndSanitizes(t *testing.T) {
 	}
 }
 func TestUSBArmFlagsLeaveLegacyPairingUntouched(t *testing.T) {
-	if err := validateArmPairFlags(false, true, "", "", "", false, true); err != nil {
+	if err := validateArmPairFlags(false, true, "", "", "", false, true, false); err != nil {
 		t.Fatalf("legacy --list --name rejected: %v", err)
 	}
+	// --arm-name names a --bind, or the binds made in the interactive tab.
 	for _, err := range []error{
-		validateArmPairFlags(false, false, "id", "", "", false, false),
-		validateArmPairFlags(true, false, "id", "id", "", false, false),
-		validateArmPairFlags(true, true, "id", "", "", false, false),
-		validateArmPairFlags(true, false, "", "", "", true, false),
-		validateArmPairFlags(true, false, "", "", "", false, true),
+		validateArmPairFlags(true, false, "id", "", "Follower", false, false, true),
+		validateArmPairFlags(true, false, "", "", "Follower", false, false, false),
+	} {
+		if err != nil {
+			t.Fatalf("--arm-name rejected where it applies: %v", err)
+		}
+	}
+	for _, err := range []error{
+		validateArmPairFlags(false, false, "id", "", "", false, false, false),
+		validateArmPairFlags(true, false, "id", "id", "", false, false, false),
+		validateArmPairFlags(true, true, "id", "", "", false, false, false),
+		validateArmPairFlags(true, false, "", "", "", true, false, false),
+		validateArmPairFlags(true, false, "", "", "", false, true, false),
+		validateArmPairFlags(true, true, "", "", "Follower", false, false, false),
+		validateArmPairFlags(true, false, "", "id", "Follower", false, false, false),
+		// --json without --bind lists, which would drop the name.
+		validateArmPairFlags(true, false, "", "", "Follower", false, false, true),
 	} {
 		if err == nil {
 			t.Fatal("incompatible flags accepted")

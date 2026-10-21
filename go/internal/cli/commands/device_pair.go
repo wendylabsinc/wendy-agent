@@ -210,7 +210,7 @@ func newDevicePairCmd() *cobra.Command {
 		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, IP Cameras, USB Arms, and Unitree tabs. Bluetooth, SensorLink sources, IP cameras, and Unitree Go2 robots are discovered on the selected WendyOS device's network, so you can pair from anywhere; if the device's agent is too old to scan for SensorLink sources, that tab scans your local network instead and says so. Unitree login retrieves your robot's key, which the selected WendyOS device stores and uses to connect. Use --ip to enter a robot's IPv4 address. USB arm pairing saves an unverified host-local binding on the target Agent; it does not bond Bluetooth or start telemetry/control. SensorLink devices must be in an organization you belong to.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateArmPairFlags(usbArms, listOnly, bindArm, forgetArm, armName, allowLocation, cmd.Flags().Changed("name") || cmd.Flags().Changed("sensors")); err != nil {
+			if err := validateArmPairFlags(usbArms, listOnly, bindArm, forgetArm, armName, allowLocation, cmd.Flags().Changed("name") || cmd.Flags().Changed("sensors"), jsonOutput); err != nil {
 				return err
 			}
 			if usbArms && (unitreeTab || cmd.Flags().Changed("ip") || cmd.Flags().Changed("unitree-region")) {
@@ -298,7 +298,7 @@ func newDevicePairCmd() *cobra.Command {
 	return cmd
 }
 
-func validateArmPairFlags(usb, list bool, bind, forget, name string, allowLocation, sensorFlags bool) error {
+func validateArmPairFlags(usb, list bool, bind, forget, name string, allowLocation, sensorFlags, jsonOut bool) error {
 	if !usb && (bind != "" || forget != "" || name != "" || allowLocation) {
 		return fmt.Errorf("USB arm options require --usb-arms")
 	}
@@ -314,7 +314,8 @@ func validateArmPairFlags(usb, list bool, bind, forget, name string, allowLocati
 	if allowLocation && bind == "" {
 		return fmt.Errorf("--allow-location-binding requires --bind")
 	}
-	if name != "" && (list || forget != "") {
+	// --json without --bind lists, which has nothing to name.
+	if name != "" && bind == "" && (list || forget != "" || jsonOut) {
 		return fmt.Errorf("--arm-name applies to binding only")
 	}
 	return nil

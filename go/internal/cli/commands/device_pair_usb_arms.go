@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,8 @@ func armRPCError(err error) error {
 		return nil
 	}
 	if status.Code(err) == codes.Unimplemented {
-		return fmt.Errorf("target Agent does not support USB arm bindings; update the target Agent (native Mac or Linux)")
+		// An older Agent lacks the service; a Go Agent off Linux has no inventory.
+		return fmt.Errorf("target Agent does not support USB arm bindings; they need an up-to-date Linux Agent or the native Mac Agent")
 	}
 	return fmt.Errorf("USB arm request failed: %s", userFacingGRPCError(err))
 }
@@ -59,11 +61,6 @@ func runArmPair(ctx context.Context, client pb.WendyRobotArmServiceClient, bind,
 		if err != nil {
 			return armRPCError(err)
 		}
-		// Always an array, including empty inventory. encoding/json matches existing
-		// Go CLI output's snake_case proto fields without changing other categories.
-		if resp.Devices == nil {
-			resp.Devices = []*pb.RobotArm{}
-		}
 		result = resp
 		if !jsonOut {
 			if len(resp.Devices) == 0 {
@@ -77,16 +74,21 @@ func runArmPair(ctx context.Context, client pb.WendyRobotArmServiceClient, bind,
 		}
 	}
 	if message, ok := result.(proto.Message); ok {
-		data, err := (protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true, Indent: "  "}).Marshal(message)
+		// snake_case fields with explicit defaults; devices is [] when empty.
+		// protojson's whitespace differs between builds, so re-indent it.
+		raw, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(message)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(out, string(data))
+		var indented bytes.Buffer
+		if err = json.Indent(&indented, raw, "", "  "); err != nil {
+			return err
+		}
+		indented.WriteByte('\n')
+		_, err = out.Write(indented.Bytes())
 		return err
 	}
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(result)
+	return writeJSON(out, result)
 }
 
 func armBindingState(d *pb.RobotArm) string {
