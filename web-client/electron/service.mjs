@@ -314,18 +314,18 @@ export class DesktopService {
     const pending = this.meshSnapshots.get(target);
     if (pending) return pending;
     if (this.meshSnapshots.size >= 4)
-      throw new Error("Four mesh observations are already in progress. Try again shortly.");
+      throw new Error("Four local observations are already in progress. Try again shortly.");
     const generation = this.monitorGeneration;
     const request = this.monitorTarget(target).then((address) => this.run(
       this.cli,
       ["device", "wendy-net", "topology", "--device", address, "--json", "--observation"],
       { timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
     )).then((output) => {
-      if (generation !== this.monitorGeneration) throw new Error("This mesh view is no longer open.");
+      if (generation !== this.monitorGeneration) throw new Error("This local network view is no longer open.");
       const observation = JSON.parse(output);
       if (!observation || !["ok", "unsupported", "unavailable", "unauthorized", "error"].includes(observation.status) ||
           (observation.status === "ok" && (!observation.topology || typeof observation.topology.selfPrincipal !== "string")))
-        throw new Error("The CLI returned an invalid mesh observation.");
+        throw new Error("The CLI returned an invalid local observation.");
       return observation;
     }).finally(() => this.meshSnapshots.delete(target));
     this.meshSnapshots.set(target, request);

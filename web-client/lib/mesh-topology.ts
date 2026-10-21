@@ -202,7 +202,7 @@ export function nodeState(
   }
   const status = observation.topology?.status;
   if (status?.state === "mesh-active" && observation.topology?.runtimeAvailable)
-    return { label: "Mesh active", tone: "good" };
+    return { label: "Local peers active", tone: "good" };
   if (status?.state?.includes("fail"))
     return { label: "Setup failed", tone: "bad" };
   if (

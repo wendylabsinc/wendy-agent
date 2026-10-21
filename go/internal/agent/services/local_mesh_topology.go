@@ -38,7 +38,7 @@ func (s *LocalMeshAdminService) GetLocalMeshTopology(ctx context.Context, _ *pb.
 	}
 	s.mu.Unlock()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "reading local mesh configuration: %v", err)
+		return nil, status.Errorf(codes.Internal, "reading local net configuration: %v", err)
 	}
 	var snapshot localmesh.NodeSnapshot
 	if source != nil {

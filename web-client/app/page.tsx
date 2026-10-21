@@ -131,7 +131,7 @@ const nav = [
 const descriptions: Record<View, string> = {
   Overview: "Your devices, applications, and what needs your attention.",
   Devices: "A home for every device on your edge.",
-  Networks: "Inspect authenticated mesh peers and learned routes.",
+  Networks: "Inspect authenticated local net peers and learned routes.",
   Applications: "Start, stop, and inspect what runs on your devices.",
   Logs: "Follow what is happening, one line at a time.",
   Metrics: "Select a cloud device to inspect its OpenTelemetry metrics.",

@@ -46,7 +46,7 @@ export default function WendyLogin({
   const client = useRef<WendyClient | null>(null);
   const meshSource = useMemo<MeshDataSource>(() => ({
     discover: async () => {
-      if (!client.current) throw new Error("Sign in to read your mesh networks.");
+      if (!client.current) throw new Error("Sign in to read your local networks.");
       return { devices: await client.current.call<MeshDevice[]>("mesh-discover"), warnings: [] };
     },
     read: async (id) => {

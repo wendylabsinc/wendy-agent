@@ -78,7 +78,7 @@ func newDeviceLocalMeshTopologyCmd() *cobra.Command {
 	var observation bool
 	cmd := &cobra.Command{
 		Use:   "topology",
-		Short: "Show the selected device's observed mesh peers, routes and route proofs",
+		Short: "Show the selected device's observed local net peers, routes and route proofs",
 		Long:  "Reads one live topology snapshot from the selected agent. Observations are local to that device; they do not prove fleet-wide reachability. Use --json for the complete snapshot.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -107,16 +107,16 @@ func readLocalMeshTopology(parent context.Context) (*pb.LocalMeshTopology, error
 		return nil, err
 	}
 	if conn == nil {
-		return nil, fmt.Errorf("local mesh topology requires a WendyOS agent")
+		return nil, fmt.Errorf("local topology requires a WendyOS agent")
 	}
 	defer conn.Close()
 	if conn.Conn == nil {
-		return nil, fmt.Errorf("local mesh topology requires a WendyOS agent")
+		return nil, fmt.Errorf("local topology requires a WendyOS agent")
 	}
 	client := pb.NewWendyLocalMeshAdminServiceClient(conn.Conn)
 	topology, err := client.GetLocalMeshTopology(ctx, &pb.GetLocalMeshTopologyRequest{})
 	if err != nil {
-		return nil, fmt.Errorf("reading local mesh topology: %w", err)
+		return nil, fmt.Errorf("reading local topology: %w", err)
 	}
 	peer, verified := observedLocalMeshTopologyIdentity(conn)
 	if !verified {
@@ -147,7 +147,7 @@ func printLocalMeshObservation(cmd *cobra.Command, topology *pb.LocalMeshTopolog
 
 func printLocalMeshTopology(cmd *cobra.Command, topology *pb.LocalMeshTopology) error {
 	if topology == nil {
-		return fmt.Errorf("agent returned no local mesh topology snapshot")
+		return fmt.Errorf("agent returned no local topology snapshot")
 	}
 	if jsonOutput {
 		data, err := (protojson.MarshalOptions{Indent: "  ", EmitUnpopulated: true}).Marshal(topology)
@@ -161,9 +161,9 @@ func printLocalMeshTopology(cmd *cobra.Command, topology *pb.LocalMeshTopology) 
 	if topology.GetCapturedAtUnixMs() > 0 {
 		captured = time.UnixMilli(topology.GetCapturedAtUnixMs()).UTC().Format(time.RFC3339Nano)
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "Device: %s\nMesh address: %s\nCaptured: %s\nRuntime available: %t\nState: %s\n%s\nObserved peers: %d\nRoutes: %d\nRoute announcements: %d\nSnapshot truncated: %t\nUse --json for peer, route and proof details.\n",
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "Device: %s\nNet address: %s\nCaptured: %s\nRuntime available: %t\nState: %s\n%s\nObserved peers: %d\nRoutes: %d\nRoute announcements: %d\nSnapshot truncated: %t\nUse --json for peer, route and proof details.\n",
 		topology.GetSelfPrincipal(), topology.GetSelfMeshAddress(), captured, topology.GetRuntimeAvailable(),
-		topology.GetStatus().GetState(), topology.GetStatus().GetDetail(), len(topology.GetPeers()),
+		localNetStateLabel(topology.GetStatus().GetState()), topology.GetStatus().GetDetail(), len(topology.GetPeers()),
 		len(topology.GetRoutes()), len(topology.GetAnnouncements()), topology.GetTruncated())
 	return err
 }

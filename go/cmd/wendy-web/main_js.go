@@ -164,7 +164,7 @@ func (b *bridge) handle(r request) (any, error) {
 	}
 	if r.Method == "mesh-topology" {
 		if js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
-			return nil, errors.New("Mesh observations require the local browser relay")
+			return nil, errors.New("Local observations require the local browser relay")
 		}
 		var p struct {
 			ID string `json:"id"`

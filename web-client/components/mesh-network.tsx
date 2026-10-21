@@ -142,7 +142,7 @@ export default function MeshNetwork({
   );
   const waiting = devices.filter((device) => !observations[device.id]).length;
   return (
-    <section className={styles.network} aria-label="Mesh networks">
+    <section className={styles.network} aria-label="Local networks">
       <div className={styles.heading}>
         <div>
           <span className={styles.eyebrow}>Connectivity</span>
@@ -215,7 +215,7 @@ export default function MeshNetwork({
           <h2>
             {!loaded && busy
               ? "Reading your networks"
-              : "No mesh identities observed"}
+              : "No local net identities observed"}
           </h2>
           <p>
             {!loaded && busy
@@ -295,7 +295,7 @@ export default function MeshNetwork({
             <div className={styles.graphPanel}>
               <div className={styles.panelHeader}>
                 <div>
-                  <h2>Mesh topology</h2>
+                  <h2>Local topology</h2>
                   <p>
                     Tenant <code>{group.tenant}</code>
                   </p>
@@ -359,7 +359,7 @@ export default function MeshNetwork({
                     <ShieldCheck size={16} />
                     <p>
                       Each graph contains one tenant. Shared WiFi or Ethernet
-                      does not imply a mesh connection.
+                      does not imply a local net connection.
                     </p>
                   </div>
                 </div>
@@ -381,7 +381,7 @@ export default function MeshNetwork({
                 <thead>
                   <tr>
                     <th>Device</th>
-                    <th>Mesh state</th>
+                    <th>Local peer state</th>
                     <th>Direct peers</th>
                     <th>Last read</th>
                     <th>Details</th>
@@ -463,7 +463,7 @@ export default function MeshNetwork({
                       (observations[device.id]?.result.status === "unsupported"
                         ? "This agent does not support topology snapshots."
                         : observations[device.id]
-                          ? "No matching canonical mesh identity returned."
+                          ? "No matching canonical local net identity returned."
                           : "Waiting for a topology snapshot.")}
                   </small>
                 </span>
@@ -534,7 +534,7 @@ function Topology({
       )}
       <svg
         viewBox={`0 0 920 ${height}`}
-        aria-label={`Mesh topology for tenant ${group.tenant}`}
+        aria-label={`Local topology for tenant ${group.tenant}`}
       >
         <defs>
           <pattern
@@ -666,6 +666,7 @@ function DeviceDetails({
 }) {
   const state = nodeState(node, now),
     topology = node.observation?.topology;
+  const captured = new Date(Number(topology?.capturedAtUnixMs));
   const routes = (topology?.routes || []).filter((route) => !route.local);
   const announcements = (topology?.announcements || []).filter(
     (item) => item.principal === node.id,
@@ -698,14 +699,14 @@ function DeviceDetails({
         <dl>
           <dt>Device identity</dt>
           <dd>{node.deviceId}</dd>
-          <dt>Mesh address</dt>
+          <dt>Net address</dt>
           <dd>{node.address || "Not reported"}</dd>
           <dt>Snapshot received</dt>
           <dd>{elapsed(node.observation?.receivedAt, now)}</dd>
           <dt>Captured on device</dt>
           <dd>
-            {topology?.capturedAtUnixMs
-              ? new Date(Number(topology.capturedAtUnixMs)).toLocaleTimeString()
+            {captured.getTime() > 0
+              ? captured.toLocaleTimeString()
               : "Not reported"}
           </dd>
         </dl>

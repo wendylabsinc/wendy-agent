@@ -197,7 +197,7 @@ Sign-out is local; it does not log you out of other Wendy applications.
 
 ## Cloud workspace
 
-Choose **Networks** to inspect mesh membership, direct peer links, and selected
+Choose **Networks** to inspect local net membership, direct peer links, and selected
 routes. The browser reads snapshots from the signed-in Cloud inventory. The
 desktop combines LAN discovery with the current CLI Cloud inventory. Each
 snapshot uses an independent authenticated connection, so viewing networks does
@@ -211,17 +211,17 @@ origin and prefix; it does not prove that an intermediary forwards traffic.
 
 The view polls at most four devices concurrently, then waits ten seconds before
 the next batch. **Pause** stops new reads. Snapshots older than thirty seconds
-are marked stale. A running mesh also needs a valid, recent device capture time.
+are marked stale. An active local network also needs a valid, recent device capture time.
 Failed reads retain the last snapshot visibly as stale. Older agents
 appear as unsupported until updated. Offline, denied, and unverified devices
 remain explicit rather than becoming empty healthy networks.
 
 The underlying read-only API is
 `WendyLocalMeshAdminService.GetLocalMeshTopology`, with the same tenant-scoped
-operator authorization as the existing mesh administration API. The CLI exposes
+operator authorization as the existing net administration API. The CLI exposes
 it as `wendy --device HOST:PORT --json device wendy-net topology`.
 `--observation` adds a typed result envelope for clients handling partial
-failures. Neither the API nor this view enables the mesh or changes its policy.
+failures. Neither the API nor this view enables the net or changes its policy.
 
 The sidebar shows the signed-in email from OIDC UserInfo and the organization
 name from Cloud's v2 OrganizationService. UserInfo must match the authenticated
