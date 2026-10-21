@@ -95,6 +95,20 @@ borrowing, set `--roam=false` on the travelling device. Changes are saved across
 agent restarts. Existing Internet sessions may be interrupted when a gateway or
 uplink changes.
 
+### Give an app outbound Internet access
+
+Use this entitlement in the app's `wendy.json`, then redeploy with `wendy run`:
+
+```json
+{ "type": "network", "mode": "bridge" }
+```
+
+This gives the app outbound connections and DNS through the device's available
+Internet path, including a borrowed gateway. It does not publish the app's ports.
+Wendy Net service mode is separate and does not grant an Internet default route.
+Host-networked apps share the host's network access and expose ports they bind;
+use host mode only when the app needs that access.
+
 ## 5. Connect your applications
 
 Applications opt into Wendy Net in `wendy.json` and explicitly publish the ports

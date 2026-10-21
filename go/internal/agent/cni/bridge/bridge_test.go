@@ -21,8 +21,12 @@ import (
 )
 
 func TestDeleteQuarantinesLeaseUntilInternetGrantRevoked(t *testing.T) {
+	if os.Getenv("WENDY_MESH_NAMESPACE_TEST") != "1" {
+		t.Skip("disposable privileged container only")
+	}
 	// Use a real host-local store and fail firewall inspection at the command
-	// boundary. No host networking or privilege is needed for this regression.
+	// boundary. Cleanup also holds the host's cross-process forwarding lock;
+	// keep this integration test in the same isolated environment as CNI ADD.
 	bin := t.TempDir()
 	firewall := filepath.Join(bin, "iptables")
 	if err := os.WriteFile(firewall, []byte("#!/bin/sh\nexit 4\n"), 0700); err != nil {
