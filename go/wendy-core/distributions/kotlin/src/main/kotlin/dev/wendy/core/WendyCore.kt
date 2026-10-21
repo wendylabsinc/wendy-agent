@@ -49,8 +49,13 @@ private object NativeBridge {
 
     private external fun open(path: ByteArray): Long
     private external fun hello(handle: Long): Int
+    private external fun version(handle: Long): String
+    fun coreVersion(): String = version(handle)
     fun call(): Int = hello(handle)
 }
 
 /** Returns 42 from the shared Go engine. */
 fun WendyHelloWorld(): Int = NativeBridge.call()
+
+/** Returns the effective version of the loaded Wendy Core engine. */
+fun WendyCoreVersion(): String = NativeBridge.coreVersion()

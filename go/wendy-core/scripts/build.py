@@ -49,6 +49,10 @@ def version():
     return identity()["version"]
 
 
+def go_ldflags(extra=""):
+    return f"-X github.com/wendylabsinc/wendy-core/core.buildVersion={version()} {extra}".strip()
+
+
 def check_version(tag=None):
     # Checked-in metadata names the next stable release. Package staging applies
     # the effective version without leaving generated edits in the source tree.
@@ -132,7 +136,7 @@ def native():
         env["MACOSX_DEPLOYMENT_TARGET"] = "15.0"
         env["CGO_CFLAGS"] = env.get("CGO_CFLAGS", "-O2 -g") + " -mmacosx-version-min=15.0"
         env["CGO_LDFLAGS"] = env.get("CGO_LDFLAGS", "") + " -mmacosx-version-min=15.0"
-    linker = ["-ldflags=-extldflags=-Wl,-install_name,@rpath/libWendyCore.dylib"] if system == "darwin" else []
+    linker = ["-ldflags=" + go_ldflags("-extldflags=-Wl,-install_name,@rpath/libWendyCore.dylib" if system == "darwin" else "")]
     run("go", "build", "-trimpath", "-buildmode=c-shared", *linker, "-o", library, "./cmd/wendy-core-native", env=env)
     # Test an independently compiled C consumer of the public header and symbol.
     compiler = os.environ.get("CC", "cc" if system != "win32" else "gcc")
@@ -159,7 +163,7 @@ def swift_notices(directory, go_license_file):
 
 def go_archive(output, env):
     output.parent.mkdir(parents=True, exist_ok=True)
-    run("go", "build", "-trimpath", "-buildmode=c-archive", "-o", output, "./cmd/wendy-core-native", env=env)
+    run("go", "build", "-trimpath", "-buildmode=c-archive", "-ldflags=" + go_ldflags(), "-o", output, "./cmd/wendy-core-native", env=env)
     output.with_suffix(".h").unlink()  # cgo's generated header; WendyCore.h is canonical
 
 
@@ -266,7 +270,7 @@ def wasm():
     output = JS / "assets/wasm"
     output.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "GOOS": "js", "GOARCH": "wasm", "CGO_ENABLED": "0"}
-    run("go", "build", "-trimpath", "-o", output / "wendy_core.wasm", "./cmd/wendy-core-wasm", env=env)
+    run("go", "build", "-trimpath", "-ldflags=" + go_ldflags(), "-o", output / "wendy_core.wasm", "./cmd/wendy-core-wasm", env=env)
     goroot = Path(subprocess.check_output(["go", "env", "GOROOT"], text=True).strip())
     copy(goroot / "lib/wasm/wasm_exec.js", output / "wasm_exec.mjs")
     copy(go_license(goroot), output / "LICENSE-Go.txt")

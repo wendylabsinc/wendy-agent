@@ -14,6 +14,7 @@
 
 typedef struct WendyCoreLibrary {
     int32_t (WENDY_CORE_CALL *hello)(void);
+    char *(WENDY_CORE_CALL *version)(void);
 } WendyCoreLibrary;
 
 static WendyCoreLibrary *WendyCoreLibraryOpen(char const *path) {
@@ -33,6 +34,13 @@ static WendyCoreLibrary *WendyCoreLibraryOpen(char const *path) {
 #endif
     if (symbol == NULL) { free(library); return NULL; }
     memcpy(&library->hello, &symbol, sizeof(library->hello));
+    #if defined(_WIN32)
+    FARPROC const version = GetProcAddress(handle, "WendyCoreVersion");
+#else
+    void *version = dlsym(handle, "WendyCoreVersion");
+#endif
+    if (version == NULL) { free(library); return NULL; }
+    memcpy(&library->version, &version, sizeof(library->version));
     /* Go shared libraries cannot safely be unloaded. Keep the OS library
        reference for the process lifetime, independently of wrapper lifetimes. */
     return library;

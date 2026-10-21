@@ -13,4 +13,12 @@ func WendyHelloWorld() C.int32_t {
 	return C.int32_t(core.WendyHelloWorld())
 }
 
+// Keep one C allocation for the process lifetime. No Go pointer crosses the ABI.
+var version = C.CString(core.Version())
+
+//export WendyCoreVersion
+func WendyCoreVersion() *C.char {
+	return version
+}
+
 func main() {}

@@ -29,3 +29,9 @@ JNIEXPORT jint JNICALL Java_dev_wendy_core_NativeBridge_hello(JNIEnv *env, jobje
     WendyCoreLibrary const *library = (WendyCoreLibrary const *)(intptr_t)handle;
     return library->hello();
 }
+
+JNIEXPORT jstring JNICALL Java_dev_wendy_core_NativeBridge_version(JNIEnv *env, jobject self, jlong handle) {
+    (void)self;
+    WendyCoreLibrary const *library = (WendyCoreLibrary const *)(intptr_t)handle;
+    return (*env)->NewStringUTF(env, library->version());
+}

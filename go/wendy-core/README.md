@@ -2,7 +2,7 @@
 
 `wendy-core` is the standalone, strict-SemVer release unit for the portable engine, selected modules, public contracts and included platform/subsystem implementations. Go is the chosen engine implementation. Core ships in language-consumable distributions. The ergonomic language SDKs build on them in their own repositories: [Wendy Swift](https://github.com/wendylabsinc/wendy-swift) and [Wendy Go](https://github.com/wendylabsinc/wendy-go); others are not started.
 
-The runnable contract currently exports **one operation**, `WendyHelloWorld()`, returning the integer **42**. Every incarnation reaches the same implementation in `core/core.go`. No device, Cloud, authentication, or platform-capability behavior is implemented.
+The runnable contract currently exports `WendyHelloWorld()`, returning the integer **42**, and `WendyCoreVersion()`, returning the effective engine version. Go callers use `core.WendyHelloWorld()` and `core.Version()` directly. Every incarnation reaches the same Go engine. No device, Cloud, authentication, or platform-capability behavior is implemented.
 
 ## Shape
 

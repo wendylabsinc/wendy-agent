@@ -17,7 +17,10 @@ func main() {
 	hello := js.FuncOf(func(this js.Value, arguments []js.Value) any {
 		return core.WendyHelloWorld()
 	})
-	ready.Invoke(map[string]any{"WendyHelloWorld": hello})
+	version := js.FuncOf(func(this js.Value, arguments []js.Value) any {
+		return core.Version()
+	})
+	ready.Invoke(map[string]any{"WendyHelloWorld": hello, "WendyCoreVersion": version})
 	// Keep the Go runtime and callback alive for this module's lifetime.
 	select {}
 }

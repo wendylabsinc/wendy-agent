@@ -1,6 +1,6 @@
 # Architecture and names
 
-This page preserves the agreed direction. It is not a claim that the modules, runtime objects or provider interfaces below are implemented. The current bootstrap exports only `WendyHelloWorld()`, implemented in Go, and provides local examples in all six initial languages.
+This page preserves the agreed direction. It is not a claim that the modules, runtime objects or provider interfaces below are implemented. The current bootstrap exports `WendyHelloWorld()` and `WendyCoreVersion()`, implemented in Go, and provides local examples in all six initial languages.
 
 ## Names and release boundaries
 

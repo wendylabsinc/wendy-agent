@@ -21,3 +21,4 @@ try {
 }
 const core = createCore(backend);
 export const WendyHelloWorld = core.WendyHelloWorld;
+export const WendyCoreVersion = core.WendyCoreVersion;

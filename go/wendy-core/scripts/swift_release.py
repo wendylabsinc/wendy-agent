@@ -79,8 +79,9 @@ let package = Package(
 import WendyCore
 @Test func consumesCoreThroughAnOrdinaryDependency() {
     #expect(WendyHelloWorld() == 42)
+    #expect(WendyCoreVersion() == "%s")
 }
-''')
+''' % value)
         if xcode_mcp:
             run("xcodebuildmcp", "swift-package", "test", "--package-path", consumer)
         else:

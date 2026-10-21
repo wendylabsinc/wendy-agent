@@ -16,7 +16,7 @@ extern "C" {
 /**
  * Returns 42 from the shared Go engine.
  *
- * This is the only operation in the initial runnable Core contract. It is
+ * This operation is
  * synchronous, thread-safe, and requires no platform capability. It returns a
  * scalar without transferring resources; runtime initialization is separate.
  * There are no input pointers, owned objects, callbacks, or error conditions.
@@ -27,6 +27,21 @@ extern "C" {
  * Availability: 0.0.1.
  */
 int32_t WENDY_CORE_CALL WendyHelloWorld(void);
+
+/**
+ * Returns the effective Wendy Core version without a leading v.
+ *
+ * Packaged engines report their build identity, including preview/development
+ * suffixes. The NUL-terminated UTF-8 string is borrowed and valid for the life
+ * of the process. Callers must not modify or free it. No Go pointer crosses
+ * the ABI, and there are no error conditions.
+ *
+ * Binding pattern: borrowed-string-unary.
+ * Ownership: returns a borrowed, read-only string; no resources are transferred.
+ * Threading: safe for concurrent calls.
+ * Availability: 0.1.0.
+ */
+char *WENDY_CORE_CALL WendyCoreVersion(void);
 
 #ifdef __cplusplus
 }
