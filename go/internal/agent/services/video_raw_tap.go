@@ -93,12 +93,14 @@ const (
 // rawSink is what a producer needs from its hub to hand out raw frames: whether
 // anyone is listening (to skip the copy when not), a way to publish, and a way
 // to record the decision either way. deviceHub implements it; producers that
-// can never offer raw get noRawSink.
+// can never offer raw get noRawSink. publishThermal takes the hot/cold reading
+// of a radiometric frame (thermal_stats.go), or nil to withdraw the last one.
 type rawSink interface {
 	wantRaw() bool
 	publishRaw(data []byte, tsNs uint64, format *agentpb.RawFormat) bool
 	rawOffered(format *agentpb.RawFormat)
 	rawNotOffered(reason string)
+	publishThermal(snap *thermalSnapshot)
 }
 
 // noRawSink is the sink for producers whose raw decision was made by the caller.
@@ -108,6 +110,7 @@ func (noRawSink) wantRaw() bool                                      { return fa
 func (noRawSink) publishRaw([]byte, uint64, *agentpb.RawFormat) bool { return true }
 func (noRawSink) rawOffered(*agentpb.RawFormat)                      {}
 func (noRawSink) rawNotOffered(string)                               {}
+func (noRawSink) publishThermal(*thermalSnapshot)                    {}
 
 // errRawUnavailable is the answer a raw subscriber gets from a camera that has
 // no raw frames to give. Machine-readable reason so the CLI can name the fix.
@@ -332,7 +335,13 @@ func stackedModeAbove(devicePath string, w, h uint32) (uint32, uint32) {
 // protocol; a short read means the pipeline ended. Timestamps are taken here
 // rather than from GStreamer: the raw branch carries no metadata, and wall-clock
 // at arrival is what the encoded path reports too.
-func (s *VideoService) pumpRawTap(ctx context.Context, r *os.File, format *agentpb.RawFormat, sink rawSink, device string) {
+//
+// When radiometricRows is set, the frame's top rows carry a thermal camera's
+// per-pixel temperatures, and every frame -- watched raw or not -- is scanned for
+// its hottest and coldest pixel for viewers of the encoded stream
+// (thermal_stats.go). The reading carries the same timestamp a raw subscriber
+// gets for that frame.
+func (s *VideoService) pumpRawTap(ctx context.Context, r *os.File, format *agentpb.RawFormat, radiometricRows uint32, sink rawSink, device string) {
 	defer r.Close() //nolint:errcheck
 	frameBytes := int(format.GetBytesPerLine()) * int(format.GetHeight())
 	if frameBytes <= 0 || frameBytes > maxRawFrameBytes {
@@ -340,8 +349,23 @@ func (s *VideoService) pumpRawTap(ctx context.Context, r *os.File, format *agent
 			zap.String("device", device), zap.Int("frame_bytes", frameBytes))
 		return
 	}
+	if radiometricRows > 0 {
+		if _, ok := thermalLayoutFor(format, radiometricRows); ok {
+			s.logger.Info("raw frame tap carries a radiometric block; sending hot/cold stats to viewers",
+				zap.String("device", device), zap.Uint32("metadata_rows", radiometricRows))
+			// A closed tap measures nothing: withdraw its last reading rather
+			// than leave it to age out.
+			defer sink.publishThermal(nil)
+		} else {
+			s.logger.Info("stacked frame does not match the measured radiometric layout; no hot/cold stats",
+				zap.String("device", device), zap.String("format", describeRawFormat(format)),
+				zap.Uint32("metadata_rows", radiometricRows))
+			radiometricRows = 0
+		}
+	}
 	buf := make([]byte, frameBytes)
 	var frames, delivered uint64
+	thermalOK := true // log only transitions of the plausibility guard, not every frame
 	for {
 		if _, err := io.ReadFull(r, buf); err != nil {
 			if ctx.Err() == nil && err != io.EOF {
@@ -352,12 +376,28 @@ func (s *VideoService) pumpRawTap(ctx context.Context, r *os.File, format *agent
 			return
 		}
 		frames++
+		arrived := time.Now()
+		tsNs := uint64(arrived.UnixNano())
+		if radiometricRows > 0 {
+			st, ok := computeThermalStats(buf, format, radiometricRows)
+			if ok {
+				sink.publishThermal(newThermalSnapshot(st, tsNs, arrived))
+			} else {
+				sink.publishThermal(nil)
+			}
+			if ok != thermalOK {
+				thermalOK = ok
+				s.logger.Info("radiometric plausibility guard changed state",
+					zap.String("device", device), zap.Bool("sending_stats", ok),
+					zap.Float32("mean_celsius", st.meanCelsius))
+			}
+		}
 		if !sink.wantRaw() {
 			continue // nobody listening: keep the tee flowing, spend nothing on a copy
 		}
 		data := make([]byte, frameBytes)
 		copy(data, buf)
-		if !sink.publishRaw(data, uint64(time.Now().UnixNano()), format) {
+		if !sink.publishRaw(data, tsNs, format) {
 			return // hub has no subscribers of any kind; the producer is stopping
 		}
 		delivered++

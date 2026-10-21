@@ -174,11 +174,28 @@ message RawFormat {
     uint32 bytes_per_line = 4; // stride; data is exactly bytes_per_line * height bytes
 }
 
+// ThermalStats locates the hottest and coldest pixels of one radiometric
+// thermal frame. Set only for a camera whose capture carries a per-pixel
+// temperature block (a TOPDON TC001 in its stacked 512x484 mode); absent for
+// every other camera and for older agents. Positions are normalized [0,1]
+// against the picture viewers are sent (the cropped picture), measured at
+// pixel centres, x left-to-right and y top-to-bottom.
+message ThermalStats {
+    float  max_x        = 1;
+    float  max_y        = 2;
+    float  max_celsius  = 3;
+    float  min_x        = 4;
+    float  min_y        = 5;
+    float  min_celsius  = 6;
+    uint64 timestamp_ns = 7; // capture time of the raw frame these stats were computed from
+}
+
 message VideoFrame {
-    bytes      data         = 1; // chunk of encoded video; concatenate chunks in order; format described by codec. For VIDEO_CODEC_RAW, one whole frame.
-    uint64     timestamp_ns = 2; // wall-clock timestamp in nanoseconds
-    VideoCodec codec        = 3; // codec used; default 0 = H264
-    RawFormat  raw_format   = 4; // set on VIDEO_CODEC_RAW frames only
+    bytes        data         = 1; // chunk of encoded video; concatenate chunks in order; format described by codec. For VIDEO_CODEC_RAW, one whole frame.
+    uint64       timestamp_ns = 2; // wall-clock timestamp in nanoseconds
+    VideoCodec   codec        = 3; // codec used; default 0 = H264
+    RawFormat    raw_format   = 4; // set on VIDEO_CODEC_RAW frames only
+    ThermalStats thermal      = 5; // latest stats for this camera, if it is radiometric; may repeat across consecutive frames
 }
 
 // A tunable V4L2 control on a local camera -- exposure, gain, white balance and
