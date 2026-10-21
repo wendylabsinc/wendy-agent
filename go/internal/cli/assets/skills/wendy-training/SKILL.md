@@ -11,7 +11,9 @@ establish training success or physical robot behavior.
 
 For a focused agent catalog, configure `wendy mcp serve --device <selector>
 --tool-profile training`. This changes discovery only; each tool retains its
-permissions. The default catalog remains available for general device work.
+permissions. For an existing saved workflow, `--tool-profile workflow` advertises
+only the workflow-file input for submission. It retains the same authorization.
+The default catalog remains available for general device work.
 
 1. Call `wendy_status`; connect to the selected target if needed.
 2. Use `compute_status` (`wendy device compute-status`) for GPU identity,
@@ -29,22 +31,54 @@ permissions. The default catalog remains available for general device work.
    files whose hashes match. Bytes stay out of agent context. Maximum 64 files,
    16 MiB transferred; request fewer files when needed. Destination is absolute.
 
-For a new job explicitly requested by the user, call
-`job_submit(spec_path="/absolute/local/spec.json", wait_seconds=30)`.
-The file is local to the MCP server; its working directory and argv refer to
-the connected remote host. Prefer this reference over reading and copying the
-JSON through model context. Inline `spec=...` is also supported; supply exactly
-one. The optional wait returns terminal evidence or a current snapshot after
-at most 30 seconds. Expiry never cancels the job. Inspect ongoing jobs afterward;
-an observation error preserves the confirmed receipt and leaves completion unknown.
-For short jobs, pass `artifact_files=["status.json", "evaluate/result.json"]`
-and an absolute local `artifact_destination` in that same call. Reports are
-collected only after a terminal observation, with the same limits and digest
-checks as `job_artifacts_pull`. A still-running job returns `artifacts_pending`;
-an `artifact_error` preserves job identity and does not imply training failed.
-An identical retry reuses the job and skips unchanged reports. This avoids
-separate model turns for submission, polling and collection. Use explicit
-artifact retrieval for ongoing jobs and larger selected report sets.
+For a new job explicitly requested by the user, prefer a saved local workflow:
+`job_submit(workflow_path="/absolute/local/workflow.json")`. Supply it alone.
+The versioned file combines the job and its evidence contract:
+
+```json
+{
+  "schema": "wendy.workflow.v1",
+  "job": {
+    "name": "evaluate-001",
+    "working_directory": "/remote/project",
+    "steps": [{"name": "evaluate", "argv": [".venv/bin/python", "evaluate.py", "--output", "{step_dir}/result.json"], "timeout_seconds": 600}]
+  },
+  "wait_seconds": 660,
+  "artifact_files": ["status.json", "evaluate/result.json"],
+  "artifact_destination": "/local/reports/evaluate-001",
+  "report_fields": {"evaluate/result.json": ["/successes", "/episodes"]}
+}
+```
+
+The workflow/spec file is local to the MCP server; its working directory and
+argv refer to the connected remote host. The file cannot override the target.
+Use unique output directories for separate workflows. For ad hoc submission,
+`spec_path="/absolute/local/spec.json"` or inline `spec=...` remains available,
+with optional wait/artifact/report arguments. Prefer references over copying
+JSON through model context.
+
+Waiting is bounded to 3600 seconds through host RPCs of at most 30 seconds.
+Set the client's tool timeout above the wait plus submission/collection time
+(for example, wait + 300 seconds). Expiry never cancels the job; inspect it or
+retry the identical workflow to collect later. Observation errors preserve the
+confirmed receipt and leave completion unknown.
+
+After terminal observation the response includes every declared step's exit
+and timeout outcome, plus `step_check`. A passed step check verifies process
+exits, not scientific success. Selected reports are retrieved with digest
+verification; their bytes stay outside context. `report_fields` returns at most
+32 scalar JSON-pointer selections across eight files, with report hashes.
+Missing, compound, oversized or changed fields are explicitly unavailable;
+never infer zero or success from them. Full reports remain on disk for audit.
+
+A compact receipt is saved as `.wendy-artifacts-workflow-receipt.json` in the
+artifact directory. The response links its path and SHA-256, the manifest and
+workflow hashes. A receipt proves provenance, not independent outcome grading.
+A running job returns `artifacts_pending`; an `artifact_error`, `report_error`
+or `receipt_error` preserves the job identity. An identical retry reuses that
+job and skips unchanged reports. Use `job_artifacts_pull` for larger selections
+or ongoing jobs, subject to the same 64-file/16-MiB transfer limits.
+
 The spec has `name`, absolute `working_directory`, and 1–32 `steps`. Each step
 has a unique `name`, `argv` and `timeout_seconds` (1–86400). Optional
 `source_hashes` verify relative source/checkpoint files before launch. Use the
@@ -60,6 +94,8 @@ Never submit physical robot actions without specific user authorization.
 
 CLI equivalents: `wendy job inspect <path> --since <cursor> --wait 30`,
 `wendy job artifacts pull <path> --file status.json --output <local-dir>`,
-and `wendy job submit spec.json --wait 30`. Use the global `--device` selector.
+and `wendy job submit workflow.json --workflow`. Use the global `--device` selector.
 Add `--artifact status.json --artifact evaluate/result.json --output /local/reports`
-to collect selected reports in the submission command after terminal evidence.
+to a plain spec submission with `--wait 660` to collect reports after terminal
+evidence. Add `--report-field evaluate/result.json#/successes` for a scalar
+projection. A saved workflow owns these options; do not also pass overrides.

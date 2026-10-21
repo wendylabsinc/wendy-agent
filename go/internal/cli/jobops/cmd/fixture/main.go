@@ -98,8 +98,8 @@ func main() {
 	if err = srv.SetToolGroups([]string{"observability"}); err != nil {
 		panic(err)
 	}
-	if os.Getenv("WENDY_EVAL_PROFILE") == "training" {
-		if err = srv.SetToolProfile("training"); err != nil {
+	if profile := os.Getenv("WENDY_EVAL_PROFILE"); profile != "" {
+		if err = srv.SetToolProfile(profile); err != nil {
 			panic(err)
 		}
 	}

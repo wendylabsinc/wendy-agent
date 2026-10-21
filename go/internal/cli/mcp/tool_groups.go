@@ -30,8 +30,8 @@ var toolGroupNames = []string{"core", "setup", "simulator", "hardware", "robotic
 // SetToolProfile selects an explicit task catalog without changing authorization.
 // The default keeps the existing core/group discovery contract unchanged.
 func (s *mcpServer) SetToolProfile(profile string) error {
-	if profile != "" && profile != "training" {
-		return fmt.Errorf("unknown tool profile %q; choose training or omit", profile)
+	if profile != "" && profile != "training" && profile != "workflow" {
+		return fmt.Errorf("unknown tool profile %q; choose training, workflow or omit", profile)
 	}
 	s.mu.Lock()
 	s.toolProfile = profile
@@ -90,8 +90,12 @@ func (s *mcpServer) filterTools(_ context.Context, tools []mcpgo.Tool) []mcpgo.T
 			}
 			continue
 		}
-		if profile == "training" {
+		if profile == "training" || profile == "workflow" {
 			if slices.Contains(trainingTools, tool.Name) {
+				if profile == "workflow" && tool.Name == "job_submit" {
+					tool.Description = "Run a saved wendy.workflow.v1 file on the connected target: bounded steps, terminal evidence, verified selected reports and a saved receipt. Identical retries reuse the job. Missing evidence stays unknown. Executes the declared argv with host-agent permissions."
+					tool.InputSchema = mcpgo.ToolInputSchema{Type: "object", Properties: map[string]any{"workflow_path": map[string]any{"type": "string", "description": "Absolute local workflow JSON path; contains job, wait_seconds, artifact selection/destination and scalar report fields"}}, Required: []string{"workflow_path"}}
+				}
 				visible = append(visible, tool)
 			}
 			continue

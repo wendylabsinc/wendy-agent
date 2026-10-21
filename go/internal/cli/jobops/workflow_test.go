@@ -38,7 +38,7 @@ func TestSubmitWorkflowRefusesBadCollectionBeforeLaunching(t *testing.T) {
 	h := &host{}
 	c := connection(t, h)
 	for _, opts := range []jobops.SubmitOptions{
-		{WaitSeconds: 31}, {WaitSeconds: 1, ArtifactDestination: t.TempDir()},
+		{WaitSeconds: 3601}, {WaitSeconds: 1, ArtifactDestination: t.TempDir()},
 		{WaitSeconds: 1, ArtifactDestination: "relative", ArtifactFiles: []string{"status.json"}},
 		{ArtifactDestination: t.TempDir(), ArtifactFiles: []string{"status.json"}},
 		{WaitSeconds: 1, ArtifactDestination: t.TempDir(), ArtifactFiles: []string{"../escape"}},

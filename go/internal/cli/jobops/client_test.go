@@ -25,6 +25,7 @@ type host struct {
 	noExit      bool
 	corrupt     bool
 	failInspect bool
+	lastWait    atomic.Int32
 	env         []string
 }
 
@@ -37,6 +38,12 @@ func (h *host) HostShell(stream grpc.BidiStreamingServer[agentpb.HostShellReques
 	args := r.GetStart().GetCommand()
 	if len(args) != 4 || args[0] != "python3" || args[1] != "-c" {
 		return stream.Send(&agentpb.HostShellResponse{ResponseType: &agentpb.HostShellResponse_ExitCode{ExitCode: 99}})
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(args[3]), &payload) == nil {
+		if wait, ok := payload["wait_seconds"].(float64); ok {
+			h.lastWait.Store(int32(wait))
+		}
 	}
 	if h.failInspect && strings.Contains(args[3], `"until_terminal"`) {
 		return stream.Send(&agentpb.HostShellResponse{ResponseType: &agentpb.HostShellResponse_ExitCode{ExitCode: 3}})

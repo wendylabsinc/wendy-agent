@@ -43,7 +43,7 @@ func TestJobCommandsDocumentAgentFacingFlags(t *testing.T) {
 	if err := c.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--wait", "--artifact", "--output"} {
+	for _, flag := range []string{"--wait", "--artifact", "--output", "--report-field", "--workflow"} {
 		if !strings.Contains(out.String(), flag) {
 			t.Fatal(out.String())
 		}

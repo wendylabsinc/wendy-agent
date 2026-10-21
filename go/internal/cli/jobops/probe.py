@@ -100,7 +100,7 @@ def process(root, pid, started):
         }
 
 
-def snapshot(root, target):
+def snapshot(root, target, include_steps=False):
     raw, mtime = read_regular(root / "status.json", MAX_STATUS)
     data = json.loads(raw)
     if not isinstance(data, dict):
@@ -178,6 +178,20 @@ def snapshot(root, target):
         if isinstance(data.get(key), int):
             out[key] = data[key]
     stages = data.get("stages")
+    if include_steps:
+        outcomes = []
+        if isinstance(stages, list):
+            for step in stages[-32:]:
+                if not isinstance(step, dict):
+                    continue
+                code = step.get("returncode")
+                outcomes.append({
+                    "label": str(step.get("label", "unknown"))[:80],
+                    "returncode": code if isinstance(code, int) and not isinstance(code, bool) else None,
+                    "timed_out": step.get("timed_out") if isinstance(step.get("timed_out"), bool) else None,
+                })
+        out["step_outcomes"] = outcomes
+        out["step_outcomes_omitted"] = max(0, len(stages) - len(outcomes)) if isinstance(stages, list) else 0
     if isinstance(stages, list) and stages and isinstance(stages[-1], dict):
         out["last_stage"] = {
             k: (v[:160] if isinstance(v, str) else v)
@@ -192,7 +206,7 @@ def snapshot(root, target):
     # Cursor deliberately excludes wall-clock age. A poll sees changed process,
     # metrics, state, error or report content even when the stage is unchanged.
     cursor = hashlib.sha256(
-        json.dumps(out, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps({key: value for key, value in out.items() if key not in ["step_outcomes", "step_outcomes_omitted"]}, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:24]
     out.update(
         cursor=cursor,
@@ -228,7 +242,7 @@ def main():
         raise ValueError("wait_seconds requires since")
     deadline = time.monotonic() + wait
     while True:
-        out = snapshot(root, str(request.get("target", ""))[:4096])
+        out = snapshot(root, str(request.get("target", ""))[:4096], until_terminal)
         if (
             (not until_terminal and out["cursor"] != since)
             or time.monotonic() >= deadline

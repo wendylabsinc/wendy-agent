@@ -62,7 +62,7 @@ func TestTerminalWaitIgnoresIntermediateChangesAndNeverCancelsOnExpiry(t *testin
 	if err != nil || r["reported_state"] != "running" || time.Since(start) < time.Second || string(before) != string(after) {
 		t.Fatalf("expiry changed job or claimed completion: %v %+v", err, r)
 	}
-	if _, err = jobops.SubmitObserved(context.Background(), nil, jobops.Spec{}, 31); err == nil {
+	if _, err = jobops.SubmitObserved(context.Background(), nil, jobops.Spec{}, 3601); err == nil {
 		t.Fatal("invalid wait reached submit")
 	}
 }
@@ -91,5 +91,21 @@ func TestSubmitWaitDeadlineLeavesOwnedJobRunningUntilCompletion(t *testing.T) {
 	}
 	if state := waitForJob(t, r["job_path"].(string)); state["state"] != "completed" {
 		t.Fatalf("wait expiry cancelled job: %+v", state)
+	}
+}
+
+func TestLongTerminalWaitUsesShortHostRPCAndReturnsAlreadyCompletedJobImmediately(t *testing.T) {
+	h := &host{}
+	c := connection(t, h)
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "status.json"), []byte(`{"state":"completed","stages":[]}`), 0600)
+	start := time.Now()
+	r, err := jobops.WaitTerminal(context.Background(), c, root, 120)
+	if err != nil || r["reported_state"] != "completed" || h.lastWait.Load() != 30 || time.Since(start) > 2*time.Second {
+		t.Fatalf("long unbounded RPC or delayed terminal response: %v %+v wait=%d", err, r, h.lastWait.Load())
+	}
+	query, err := jobops.Inspect(context.Background(), c, root, jobops.InspectOptions{Since: r["cursor"].(string)})
+	if err != nil || query["changed"] != false {
+		t.Fatalf("view-only metadata invalidated semantic cursor: %v %+v", err, query)
 	}
 }

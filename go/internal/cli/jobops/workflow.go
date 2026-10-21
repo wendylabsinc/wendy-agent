@@ -15,19 +15,25 @@ type SubmitOptions struct {
 	WaitSeconds         int
 	ArtifactFiles       []string
 	ArtifactDestination string
+	ReportFields        map[string][]string
+	Target              string
+	WorkflowSHA256      string
 }
 
 func ValidateSubmitOptions(opts SubmitOptions) error {
-	if opts.WaitSeconds < 0 || opts.WaitSeconds > 30 {
-		return fmt.Errorf("wait_seconds must be 0..30")
+	if opts.WaitSeconds < 0 || opts.WaitSeconds > 3600 {
+		return fmt.Errorf("wait_seconds must be 0..3600")
 	}
-	if len(opts.ArtifactFiles) == 0 && opts.ArtifactDestination == "" {
+	if len(opts.ArtifactFiles) == 0 && opts.ArtifactDestination == "" && len(opts.ReportFields) == 0 {
 		return nil
 	}
 	if opts.WaitSeconds == 0 || !filepath.IsAbs(opts.ArtifactDestination) {
 		return fmt.Errorf("artifact collection requires wait_seconds > 0 and an absolute local artifact_destination")
 	}
-	return validateArtifactFiles(opts.ArtifactFiles)
+	if err := validateArtifactFiles(opts.ArtifactFiles); err != nil {
+		return err
+	}
+	return validateReportFields(opts.ArtifactFiles, opts.ReportFields)
 }
 
 // SubmitWorkflow retains the confirmed receipt on any later observation or
@@ -37,7 +43,13 @@ func SubmitWorkflow(ctx context.Context, conn *grpcclient.AgentConnection, spec 
 		return nil, err
 	}
 	receipt, err := SubmitObserved(ctx, conn, spec, opts.WaitSeconds)
-	if err != nil || len(opts.ArtifactFiles) == 0 {
+	if err != nil {
+		return receipt, err
+	}
+	if opts.WorkflowSHA256 != "" {
+		receipt["workflow_sha256"] = opts.WorkflowSHA256
+	}
+	if len(opts.ArtifactFiles) == 0 {
 		return receipt, err
 	}
 	obs, _ := receipt["observation"].(map[string]any)
@@ -53,5 +65,21 @@ func SubmitWorkflow(ctx context.Context, conn *grpcclient.AgentConnection, spec 
 		return receipt, nil
 	}
 	receipt["artifacts"] = artifacts
+	if len(opts.ReportFields) > 0 {
+		reports, err := summarizeReports(opts.ArtifactDestination, artifacts, opts.ReportFields)
+		if err != nil {
+			receipt["report_error"] = err.Error()
+		} else {
+			receipt["reports"] = reports
+		}
+	}
+	target := opts.Target
+	if target == "" {
+		target, _ = obs["target"].(string)
+	}
+	receipt["target"] = target
+	if err := saveWorkflowReceipt(opts.ArtifactDestination, receipt); err != nil {
+		receipt["receipt_error"] = err.Error()
+	}
 	return receipt, nil
 }

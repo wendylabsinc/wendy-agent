@@ -98,7 +98,7 @@ func TestSubmitFileReferenceValidatesBeforeDeviceAccess(t *testing.T) {
 	for _, args := range []map[string]any{
 		{}, {"spec": map[string]any{}, "spec_path": "/tmp/spec.json"},
 		{"spec_path": "relative.json"}, {"spec_path": 3},
-		{"spec_path": "/tmp/spec.json", "wait_seconds": 31},
+		{"spec_path": "/tmp/spec.json", "wait_seconds": 3601},
 		{"spec": map[string]any{}, "wait_seconds": 0.5},
 		{"spec_path": "/tmp/spec.json", "artifact_files": []string{"status.json"}},
 		{"spec_path": "/tmp/spec.json", "wait_seconds": 1, "artifact_files": []string{"../escape"}, "artifact_destination": "/tmp/results"},
@@ -117,5 +117,37 @@ func TestSubmitFileReferenceValidatesBeforeDeviceAccess(t *testing.T) {
 	encoded, _ := json.Marshal(r)
 	if err != nil || !strings.Contains(string(encoded), "NOT_CONNECTED") {
 		t.Fatalf("valid file did not reach connection check: %v %s", err, encoded)
+	}
+}
+
+func TestWorkflowProfileHasSmallSchemaAndPreservesHostAuthorization(t *testing.T) {
+	s := New(&config.Config{}, nil)
+	if err := s.SetToolProfile("workflow"); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := s.newProtocolServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range protocolTools(t, srv) {
+		if tool.Name != "job_submit" {
+			continue
+		}
+		if len(tool.InputSchema.Properties) != 1 || len(tool.InputSchema.Required) != 1 || tool.InputSchema.Required[0] != "workflow_path" {
+			t.Fatalf("workflow profile exposes full low-level schema: %+v", tool.InputSchema)
+		}
+		if readOnlyTool(tool) || *tool.Annotations.ReadOnlyHint {
+			t.Fatal("profile granted execution authority")
+		}
+		encoded, _ := json.Marshal(tool)
+		if len(encoded) > 1000 {
+			t.Fatalf("workflow schema grew unexpectedly: %d bytes", len(encoded))
+		}
+	}
+	for _, args := range []map[string]any{{"workflow_path": 3}, {"workflow_path": "relative.json"}, {"workflow_path": "/tmp/workflow.json", "spec": map[string]any{}}} {
+		r, err := s.handleJobSubmit(context.Background(), callToolReq("job_submit", args))
+		if err != nil || !r.IsError {
+			t.Fatalf("accepted ambiguous workflow: %v %+v", err, r)
+		}
 	}
 }
