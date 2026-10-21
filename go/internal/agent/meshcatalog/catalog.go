@@ -276,7 +276,10 @@ func (c *Catalog) Snapshot(now time.Time) []Record {
 		if entry.record.Withdraw {
 			continue
 		}
-		if _, _, ok := c.cache.Get(entry.record.Key.Device, now); !ok {
+		// A renewed principal must not lend its trust to an artifact signed
+		// with the previous certificate, which may no longer be trusted.
+		chain, _, ok := c.cache.Get(entry.record.Key.Device, now)
+		if !ok || localmesh.Fingerprint(chain) != entry.wire.Fingerprint {
 			continue
 		}
 		r := entry.record
@@ -294,7 +297,8 @@ func (c *Catalog) Records(now time.Time) []SignedRecord {
 	c.prune(now)
 	keys := make([]Key, 0, len(c.entries))
 	for key, entry := range c.entries {
-		if _, _, ok := c.cache.Get(entry.record.Key.Device, now); ok {
+		chain, _, ok := c.cache.Get(entry.record.Key.Device, now)
+		if ok && localmesh.Fingerprint(chain) == entry.wire.Fingerprint {
 			keys = append(keys, key)
 		}
 	}

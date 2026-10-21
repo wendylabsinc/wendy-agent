@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/miekg/dns"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
@@ -97,13 +98,17 @@ func projectedHostName(r Record) string {
 }
 
 func projectedInstance(r Record) string {
-	owner, _ := meshid.DeviceFromPrincipal(r.Key.Device)
-	h := sha256.Sum256([]byte(r.Key.AppID + "\x00" + r.Key.ServiceID))
-	ownerID := owner.UUID()
-	suffix := fmt.Sprintf("-%s-%s", hex.EncodeToString(ownerID[:2]), hex.EncodeToString(h[:3]))
+	// Identically configured apps on different devices must have independent
+	// SRV/TXT RRsets even when their UUID prefixes match. Bind the display
+	// suffix to the complete stable owner key, not a truncated UUID prefix.
+	h := sha256.Sum256([]byte(r.Key.Mesh + "\x00" + r.Key.Device + "\x00" + r.Key.AppID + "\x00" + r.Key.ServiceID))
+	suffix := "-" + hex.EncodeToString(h[:16])
 	name := strings.TrimSpace(r.Instance)
 	if len(name) > 63-len(suffix) {
 		name = name[:63-len(suffix)]
+		for !utf8.ValidString(name) {
+			name = name[:len(name)-1]
+		}
 	}
 	return name + suffix
 }

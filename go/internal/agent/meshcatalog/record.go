@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -89,7 +90,7 @@ func (r Record) Validate(now time.Time) error {
 		}
 		return nil
 	}
-	if !typePattern.MatchString(r.Type) || r.HostPort == 0 || len(r.Instance) == 0 || len(r.Instance) > 63 ||
+	if !typePattern.MatchString(r.Type) || r.HostPort == 0 || len(r.Instance) == 0 || len(r.Instance) > 63 || !utf8.ValidString(r.Instance) ||
 		strings.ContainsAny(r.Instance, "\x00\r\n") {
 		return errors.New("invalid wendy net service endpoint")
 	}

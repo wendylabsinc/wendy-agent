@@ -156,8 +156,8 @@ func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
 	// transmit data. Check the stamp first; every record actually transmitted
 	// still needs a current-trust lookup below. Catalog.Records independently
 	// validates origins before reconciliation/projection.
-	_, _, ok := s.cache.Get(record.Key.Device, now)
-	if !ok {
+	chain, _, ok := s.cache.Get(record.Key.Device, now)
+	if !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
 		return nil
 	}
 	var out []Message
@@ -166,7 +166,9 @@ func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
 			s.sent = map[string]bool{}
 		}
 		s.sent[w.Fingerprint] = true
-		out = append(out, Message{Kind: "certificate", Certificate: s.certificates.Describe(record.Key.Device, now)})
+		// Use this exact verified chain. A second principal lookup could race
+		// renewal and describe a different certificate than the record names.
+		out = append(out, Message{Kind: "certificate", Certificate: localmesh.DescribeCertificates(record.Key.Device, chain)})
 	}
 	w = cloneWire(w)
 	s.sentRecords[record.Key] = sentRecordStamp{record.Generation, stamp}
