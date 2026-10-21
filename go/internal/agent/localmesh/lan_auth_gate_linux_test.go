@@ -20,8 +20,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-// The device-445 fixture has a valid tenant certificate but claims device 444
-// in the unauthenticated TCP preface. The server must never admit the link.
+// The device-445 fixture has a valid tenant certificate but claims device444
+// in its hello. The listener must derive445 from TLS and reject the mismatch.
 func TestLANAuthGatePeer(t *testing.T) {
 	path := os.Getenv("WENDY_LAN_AUTH_GATE_CONFIG")
 	if path == "" {
@@ -77,44 +77,32 @@ func TestLANAuthGatePeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tcp net.Conn
-	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); {
-		tcp, err = net.DialTimeout("tcp4", "10.201.0.2:43023", time.Second)
-		if err == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	socket, err := net.ListenPacket("udp4", "10.201.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tcp.Close()
-	if err := writeTCPPreface(tcp, lanDevice(t, 444)); err != nil {
-		t.Fatal(err)
-	}
-	pc, err := NewTCPPacketConn(tcp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := &quic.Transport{Conn: pc}
+	defer socket.Close()
+	transport := &quic.Transport{Conn: socket}
 	defer transport.Close()
+	// Give the namespace server enough time to start its real UDP listener.
+	time.Sleep(300 * time.Millisecond)
 	tlsConfig, err := creds.PeerTLS(lanDevice(t, 460))
 	if err != nil {
 		t.Fatal(err)
 	}
 	handshake, stop := context.WithTimeout(ctx, 8*time.Second)
 	defer stop()
-	conn, err := transport.Dial(handshake, pc.RemoteAddr(), tlsConfig, QUICConfig())
+	conn, err := transport.Dial(handshake, &net.UDPAddr{IP: net.IPv4(10, 201, 0, 2), Port: LANPort}, tlsConfig, QUICConfig())
 	if err == nil {
 		defer conn.CloseWithError(0, "gate done")
-		_, err = OpenControl(handshake, conn, lanDevice(t, 445), lanDevice(t, 460))
+		_, err = OpenControl(handshake, conn, lanDevice(t, 444), lanDevice(t, 460))
 	}
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("spoofed preface was not promptly rejected: %v", err)
+		t.Fatalf("spoofed hello was not promptly rejected: %v", err)
 	}
 }
 
-func TestLANRejectsSpoofedPrefaceGate(t *testing.T) {
+func TestLANRejectsSpoofedHelloGate(t *testing.T) {
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("requires disposable privileged Linux container")
 	}

@@ -504,8 +504,9 @@ func (n *Node) request(ctx context.Context, e nodeEvent) error {
 }
 
 // Attach owns the authenticated connection until return. No kernel interface is
-// created until protocol negotiation succeeds. Caller must use Credentials.PeerTLS
-// so the connection is already pinned to this peer's device principal.
+// created until protocol negotiation succeeds. Outbound callers must use Credentials.PeerTLS; unknown-peer LAN listeners must
+// derive the peer from their verified enrolled TLS chain. Admission rechecks that
+// the certificate matches this complete device principal.
 func (n *Node) Attach(ctx context.Context, peer meshid.Device, conn *quic.Conn) error {
 	return n.AttachWithCost(ctx, peer, conn, 256)
 }

@@ -203,7 +203,7 @@ wendy device wendy-net status
 
 Omitted flags preserve saved settings. Set either flag to `false` to disable that carrier. Changing these settings requires an authenticated user in the device's tenant. Check the reported runtime state after saving; saved configuration alone does not establish peer connectivity.
 
-Discovery uses IPv4 mDNS (`_wendy-mesh._tcp` on UDP 5353), followed by a TCP connection on port 43023 carrying QUIC with mutual TLS. Enabled interfaces need usable IPv4 addresses and local multicast connectivity. Virtual bridges, veth devices, access-point Wi-Fi interfaces and IPv4 link-local addresses are excluded. Every admitted peer must authenticate the exact enrolled device principal in the same tenant. An advertisement alone cannot authorize a connection.
+Discovery uses IPv4 mDNS (`_wendy-net._udp` on UDP port 5353, TXT `protocol=quic-v1`), followed by native UDP-backed QUIC on UDP port 43023 with mutual TLS. Allow both UDP ports on enabled LAN interfaces; production LAN has no TCP fallback. Explicit configured TCP links remain a separate topology simulator. Old `_wendy-mesh._tcp` discovery is incompatible. Enabled interfaces need usable IPv4 addresses and local multicast connectivity. Virtual bridges, veth devices, access-point Wi-Fi interfaces and IPv4 link-local addresses are excluded. Every admitted peer must authenticate the exact enrolled device principal in the same tenant. An advertisement alone cannot authorize a connection.
 
 Authenticated Ethernet links have lower cost than infrastructure Wi-Fi, followed by the radio carriers. Interface changes are scanned every five seconds; removing an interface closes its links and permits another enabled carrier to reconnect.
 

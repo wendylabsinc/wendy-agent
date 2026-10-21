@@ -28,10 +28,31 @@ The lower device UUID initiates the connection. The listener checks the
 configured peer list, then QUIC mutual authentication pins the complete peer
 principal. The unauthenticated TCP preface is only an ordering/admission hint.
 The framed TCP carrier exists to simulate graph topologies; its head-of-line
-blocking makes it unsuitable as the final LAN or radio carrier. Later stages
-attach automatically discovered Ethernet, infrastructure WiFi, NAN and BLE to
-the same node. Their configuration fields and transport adapters are present
-here, but this entry point runs only configured TCP links.
+blocking makes it unsuitable as the final LAN or radio carrier. Production Ethernet and infrastructure Wi-Fi discovery uses native QUIC over
+IPv4 UDP port 43023, bound to each eligible physical interface and local address.
+It never uses the simulator TCP adapter or falls back to TCP. LAN discovery
+advertises `_wendy-net._udp` with `protocol=quic-v1`, full device principal and
+mesh hash as opt-in cleartext hints; old `_wendy-mesh._tcp` advertisements are
+not compatible. Permit UDP port 43023 for neighbour QUIC and UDP port 5353 for mDNS on the
+selected LAN. IPv6 LAN discovery is not added here. Wi-Fi Aware/NAN already
+uses native UDP QUIC and is unchanged.
+
+The lower full identity initiates. Outbound mTLS pins the discovered complete
+tenant/device principal. Inbound mTLS accepts an unknown enrolled same-tenant
+device, derives its identity only from the verified certificate chain and then
+checks ordering, selection, duplicate claims and the identity-bound link hello.
+Discovery, source IP and hello do not authenticate a peer. Every handshake,
+including resumption, rechecks current trust and identity expiry. The unknown
+LAN listener has a separate bounded server ticket domain. QUIC Retry verifies
+source reachability; a 64-slot per-interface gate bounds incoming handshakes and
+live connections before TLS. Stalled handshakes retain a slot only until the
+existing QUIC handshake timeout. No 0-RTT application data is accepted.
+
+Each interface owns a single UDP socket/QUIC transport shared by all its peers.
+Disconnecting or rejecting one peer closes only that QUIC connection. Interface
+removal, cancellation or listener/mDNS failure closes the worker's endpoint,
+pending handshakes and attached links before restart. Existing link costs,
+control stream, carrier DATAGRAM framing, Babel/TUN and MTU remain unchanged.
 
 ## Identity and addressing
 

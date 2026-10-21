@@ -5,7 +5,9 @@ package localmesh
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,11 +15,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/mdns"
+	quic "github.com/quic-go/quic-go"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
@@ -268,6 +272,12 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 			run("-n", name, "link", "set", "wllan1", "up")
 		}
 	}
+	for _, name := range names {
+		out, err := exec.Command("ip", "netns", "exec", name, "iptables", "-I", "OUTPUT", "-p", "tcp", "--dport", strconv.Itoa(LANPort), "-j", "REJECT").CombinedOutput()
+		if err != nil {
+			t.Fatalf("block simulator TCP: %v %s", err, out)
+		}
+	}
 	dir := t.TempDir()
 	disableFile := filepath.Join(dir, "ethernet-disabled")
 	configs := map[meshid.Device]string{}
@@ -313,12 +323,14 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 
 func TestLANAdvertisementFilters(t *testing.T) {
 	self, peer := lanDevice(t, 445), lanDevice(t, 460)
-	base := mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 168, 2, 3), InfoFields: []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(self.Tenant())}}
+	base := mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 168, 2, 3), InfoFields: []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(self.Tenant()), "protocol=" + lanProtocol}}
 	if device, ip, ok := parseLANEntry(&base, self); !ok || device != peer || !ip.Equal(base.AddrV4) {
 		t.Fatalf("valid entry rejected: %v %v", device, ok)
 	}
 	for _, mutate := range []func(*mdns.ServiceEntry){
 		func(e *mdns.ServiceEntry) { e.Port++ },
+		func(e *mdns.ServiceEntry) { e.InfoFields[2] = "protocol=tcp" },
+		func(e *mdns.ServiceEntry) { e.InfoFields = e.InfoFields[:2] },
 		func(e *mdns.ServiceEntry) { e.AddrV4 = net.IPv4(127, 0, 0, 1) },
 		func(e *mdns.ServiceEntry) {
 			e.InfoFields[0] = "principal=" + testPrincipal(testOtherTenant, testDeviceBID)
@@ -361,27 +373,16 @@ func TestLANInterfaceKeyTracksSubnetAndName(t *testing.T) {
 	}
 }
 
-type lanObservedListener struct {
-	net.Listener
-	accepted chan struct{}
-}
-
-func (l lanObservedListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err == nil {
-		close(l.accepted)
-	}
-	return conn, err
-}
-
 func TestLANWorkerFailureClosesPendingConnections(t *testing.T) {
-	for _, failure := range []string{"responder", "listener", "cancel"} {
+	for _, failure := range []string{"responder", "socket", "cancel"} {
 		t.Run(failure, func(t *testing.T) {
-			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			a, b := testCredentials(t)
+			socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer listener.Close()
+			defer socket.Close()
+			address := socket.LocalAddr().String()
 			mdnsConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			if err != nil {
 				t.Fatal(err)
@@ -389,50 +390,118 @@ func TestLANWorkerFailureClosesPendingConnections(t *testing.T) {
 			defer mdnsConn.Close()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			accepted := make(chan struct{})
 			done := make(chan error, 1)
 			go func() {
-				// The invalid device binding makes queries fail immediately;
-				// these tests exercise listener/responder ownership directly.
-				selected := lanInterface{iface: net.Interface{Name: "no-such-lan"}, ip: net.IPv4(127, 0, 0, 1)}
-				done <- serveLANInterface(ctx, LANConfig{Credentials: &Credentials{Device: lanDevice(t, 460)}}, selected, &lanClaims{active: make(map[lanClaim]bool)}, lanObservedListener{listener, accepted}, mdnsConn, nil)
+				selected := lanInterface{iface: net.Interface{Name: "no-such-lan"}, ip: net.IPv4(127, 0, 0, 1), net: &net.IPNet{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)}, cost: EthernetLinkCost}
+				done <- serveLANInterface(ctx, LANConfig{Credentials: b}, selected, &lanClaims{active: make(map[lanClaim]bool)}, socket, mdnsConn, nil)
 			}()
-			conn, err := net.Dial("tcp4", listener.Addr().String())
+			tlsConfig, err := a.PeerTLS(b.Device)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
-			select {
-			case <-accepted:
-			case <-time.After(time.Second):
-				t.Fatal("connection not accepted")
+			pending, release := make(chan struct{}), make(chan struct{})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			tlsConfig.GetClientCertificate = func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				close(pending)
+				select {
+				case <-release:
+				case <-info.Context().Done():
+				}
+				return nil, errors.New("test leaves mTLS incomplete")
 			}
-			// Leave the unauthenticated TCP preface pending while the
-			// interface exits. It must not wait for the five-second deadline.
+			handshake, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			clientDone := make(chan error, 1)
+			go func() {
+				conn, err := quic.DialAddr(handshake, address, tlsConfig, QUICConfig())
+				if conn != nil {
+					conn.CloseWithError(0, "test done")
+				}
+				clientDone <- err
+			}()
+			select {
+			case <-pending:
+			case <-time.After(3 * time.Second):
+				t.Fatal("mTLS did not reach pending client certificate")
+			}
 			switch failure {
 			case "responder":
 				mdnsConn.Close()
-			case "listener":
-				listener.Close()
+			case "socket":
+				socket.Close()
 			case "cancel":
 				cancel()
 			}
 			select {
 			case err := <-done:
 				if failure != "cancel" && err == nil {
-					t.Fatal("worker failure was hidden")
+					t.Fatal("worker failure hidden")
 				}
 				if failure == "cancel" && err != nil {
-					t.Fatalf("cancellation returned a worker failure: %v", err)
+					t.Fatalf("cancel returned failure: %v", err)
 				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("worker did not close pending QUIC handshake")
+			}
+			// The external test client deliberately blocks its certificate callback.
+			// Release that fixture only after proving the server worker exited.
+			stop()
+			close(release)
+			select {
+			case <-clientDone:
 			case <-time.After(time.Second):
-				cancel()
-				t.Fatal("worker did not release its pending connection")
+				t.Fatal("client handshake retained after cancellation")
 			}
-			conn.SetReadDeadline(time.Now().Add(time.Second))
-			if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
-				t.Fatalf("pending connection was not closed: %v", err)
+			rebound, err := net.ListenPacket("udp4", address)
+			if err != nil {
+				t.Fatalf("worker retained UDP socket: %v", err)
 			}
+			rebound.Close()
 		})
+	}
+}
+
+func TestLANIncomingAdmissionBoundAndSubnet(t *testing.T) {
+	selected := lanInterface{net: &net.IPNet{IP: net.IPv4(192, 0, 2, 0), Mask: net.CIDRMask(24, 32)}}
+	gate := lanIncomingContext(selected)
+	info := &quic.ClientInfo{RemoteAddr: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 43023}}
+	var cancels []context.CancelFunc
+	defer func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	}()
+	for i := 0; i < maxLANIncoming; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
+		if _, err := gate(ctx, info); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := gate(context.Background(), info); err == nil {
+		t.Fatal("unbounded unauthenticated state")
+	}
+	if _, err := gate(context.Background(), &quic.ClientInfo{RemoteAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 2)}}); err == nil {
+		t.Fatal("off-subnet source admitted")
+	}
+	cancels[0]()
+	deadline := time.Now().Add(time.Second)
+	for {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := gate(ctx, info)
+		cancel()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failed handshake did not release admission slot")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

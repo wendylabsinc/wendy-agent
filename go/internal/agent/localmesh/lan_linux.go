@@ -20,6 +20,7 @@ import (
 
 	"github.com/hashicorp/mdns"
 	"github.com/miekg/dns"
+	quic "github.com/quic-go/quic-go"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 	"golang.org/x/net/ipv4"
@@ -30,13 +31,15 @@ const (
 	LANPort            = 43023
 	EthernetLinkCost   = uint16(64)
 	WiFiLinkCost       = uint16(128)
-	lanService         = "_wendy-mesh._tcp"
+	lanService         = "_wendy-net._udp"
+	lanProtocol        = "quic-v1"
+	maxLANIncoming     = 64
 	lanInterfacePeriod = 5 * time.Second
 )
 
 // LANConfig enables discovery independently for physical Ethernet and
 // infrastructure Wi-Fi. Advertisements are only hints: the QUIC TLS handshake
-// pins the expected enrolled org and asset before Node admits a link.
+// authenticates the full enrolled tenant/device principal before Node admits a link.
 type LANConfig struct {
 	Credentials        *Credentials
 	Node               *Node
@@ -258,11 +261,11 @@ func bindToInterface(name string) func(string, string, syscall.RawConn) error {
 
 func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, claims *lanClaims) error {
 	address := net.JoinHostPort(selected.ip.String(), strconv.Itoa(LANPort))
-	listener, err := (&net.ListenConfig{Control: bindToInterface(selected.iface.Name)}).Listen(ctx, "tcp4", address)
+	socket, err := listenLANQUIC(ctx, selected, address)
 	if err != nil {
 		return fmt.Errorf("LAN %s listen: %w", selected.iface.Name, err)
 	}
-	defer listener.Close()
+	defer socket.Close()
 	service, err := lanMDNSService(cfg.Credentials, selected)
 	if err != nil {
 		return err
@@ -272,137 +275,159 @@ func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, 
 		return fmt.Errorf("LAN %s mDNS: %w", selected.iface.Name, err)
 	}
 	defer mdnsConn.Close()
-	return serveLANInterface(ctx, cfg, selected, claims, listener, mdnsConn, service)
+	return serveLANInterface(ctx, cfg, selected, claims, socket, mdnsConn, service)
 }
 
-// Every exit, including a failed listener or responder, must stop attached
-// links before waiting for them so the interface scanner can restart us.
-func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterface, claims *lanClaims, listener net.Listener, mdnsConn *net.UDPConn, service *mdns.MDNSService) error {
+// listenLANQUIC binds the real UDP endpoint to both the selected address and
+// physical interface. Simulator TCP is never used by the production LAN path.
+func listenLANQUIC(ctx context.Context, selected lanInterface, address string) (net.PacketConn, error) {
+	return (&net.ListenConfig{Control: bindToInterface(selected.iface.Name)}).ListenPacket(ctx, "udp4", address)
+}
+
+// Bound unauthenticated QUIC state before TLS allocates a connection. Slots are
+// held for the connection lifetime, including stalled/failed handshakes. Source
+// subnet and QUIC Retry are admission checks, never authentication.
+func lanIncomingContext(selected lanInterface) func(context.Context, *quic.ClientInfo) (context.Context, error) {
+	slots := make(chan struct{}, maxLANIncoming)
+	return func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
+		source, ok := info.RemoteAddr.(*net.UDPAddr)
+		if !ok || selected.net == nil || !selected.net.Contains(source.IP) {
+			return nil, errors.New("LAN source outside selected interface subnet")
+		}
+		select {
+		case slots <- struct{}{}:
+			context.AfterFunc(ctx, func() { <-slots })
+			return ctx, nil
+		default:
+			return nil, errors.New("LAN incoming connection limit")
+		}
+	}
+}
+
+// One interface owns one UDP socket and QUIC transport for all peer connections.
+// A peer's end must never close that shared endpoint. Every worker exit stops
+// discovery, pending handshakes and attached links before the scanner restarts it.
+func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterface, claims *lanClaims, socket net.PacketConn, mdnsConn *net.UDPConn, service *mdns.MDNSService) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	mdnsDone := make(chan struct{})
-	var mdnsErr error
-	go func() {
-		defer close(mdnsDone)
-		mdnsErr = serveLANMDNS(ctx, selected, mdnsConn, service)
-	}()
-	defer func() {
-		cancel()
-		mdnsConn.Close()
-		<-mdnsDone
-	}()
+	defer socket.Close()
+	defer mdnsConn.Close()
+	transport := &quic.Transport{Conn: socket, ConnContext: lanIncomingContext(selected), VerifySourceAddress: func(net.Addr) bool { return true }}
+	defer transport.Close()
+	tlsConfig, err := lanServerTLS(cfg.Credentials)
+	if err != nil {
+		return err
+	}
+	listener, err := transport.Listen(tlsConfig, QUICConfig())
+	if err != nil {
+		return fmt.Errorf("LAN QUIC listen: %w", err)
+	}
+	defer listener.Close()
 	if cfg.Logger != nil {
-		cfg.Logger.Info("LAN carrier interface ready", zap.String("interface", selected.iface.Name), zap.String("address", listener.Addr().String()), zap.Uint16("cost", selected.cost))
+		cfg.Logger.Info("LAN UDP QUIC interface ready", zap.String("interface", selected.iface.Name), zap.String("address", socket.LocalAddr().String()), zap.Uint16("cost", selected.cost))
 	}
 	var wg sync.WaitGroup
-	acceptDone := make(chan struct{})
-	defer func() {
+	fatal := make(chan error, 1)
+	fail := func(err error) {
+		select {
+		case fatal <- err:
+		default:
+		}
 		cancel()
-		listener.Close()
-		<-acceptDone
-		wg.Wait()
+	}
+	mdnsDone, acceptDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(mdnsDone)
+		if err := serveLANMDNS(ctx, selected, mdnsConn, service); err != nil && ctx.Err() == nil {
+			fail(fmt.Errorf("LAN mDNS responder stopped: %w", err))
+		}
 	}()
 	go func() {
 		defer close(acceptDone)
-		sem := make(chan struct{}, 64)
 		for {
-			conn, err := listener.Accept()
+			conn, err := listener.Accept(ctx)
 			if err != nil {
+				if ctx.Err() == nil {
+					fail(fmt.Errorf("LAN QUIC listener stopped: %w", err))
+				}
 				return
 			}
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					defer func() { <-sem }()
-					defer conn.Close()
-					stop := context.AfterFunc(ctx, func() { conn.Close() })
-					defer stop()
-					id, err := readTCPPreface(conn, cfg.Credentials.Device.Tenant())
-					asset := meshid.NewDevice(cfg.Credentials.Device.Tenant(), id)
-					if err != nil || meshid.Compare(asset, cfg.Credentials.Device) >= 0 || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
-						return
-					}
-					defer claims.release(asset, selected.cost)
-					_ = attachLAN(ctx, cfg, selected, asset, conn, true)
-				}()
-			default:
-				conn.Close()
+			if conn == nil {
+				fail(errors.New("LAN QUIC listener returned no authenticated connection"))
+				return
 			}
+			asset, err := lanAuthenticatedPeer(cfg.Credentials, conn.ConnectionState().TLS)
+			// Only the lower full identity initiates. Derive it after mTLS, so
+			// crossed/duplicate attempts and forged hints cannot choose the peer.
+			if err != nil || meshid.Compare(asset, cfg.Credentials.Device) >= 0 || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
+				conn.CloseWithError(1, "LAN peer not admitted")
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer claims.release(asset, selected.cost)
+				_ = attachLAN(ctx, cfg, selected, asset, conn)
+			}()
 		}
 	}()
-	stopListener := context.AfterFunc(ctx, func() { listener.Close() })
-	defer stopListener()
+	stop := context.AfterFunc(ctx, func() { transport.Close(); socket.Close() })
+	defer func() {
+		cancel()
+		transport.Close()
+		socket.Close()
+		mdnsConn.Close()
+		stop()
+		<-acceptDone
+		<-mdnsDone
+		wg.Wait()
+	}()
 	for ctx.Err() == nil {
-		select {
-		case <-mdnsDone:
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("LAN mDNS responder stopped: %w", mdnsErr)
-		case <-acceptDone:
-			if ctx.Err() != nil {
-				return nil
-			}
-			return errors.New("LAN TCP listener stopped")
-		default:
-		}
 		entries, err := queryLAN(ctx, selected)
 		if err != nil && ctx.Err() == nil && cfg.Logger != nil {
 			cfg.Logger.Debug("LAN mDNS query failed", zap.String("interface", selected.iface.Name), zap.Error(err))
 		}
 		for _, entry := range entries {
 			asset, ip, ok := parseLANEntry(entry, cfg.Credentials.Device)
-			if !ok || selected.net == nil || !selected.net.Contains(ip) || cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
+			if !ok || ctx.Err() != nil || selected.net == nil || !selected.net.Contains(ip) || cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
 				continue
-			}
-			if cfg.Logger != nil {
-				cfg.Logger.Debug("LAN peer discovered", zap.String("device", asset.Principal()), zap.String("interface", selected.iface.Name), zap.String("address", ip.String()))
 			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				defer claims.release(asset, selected.cost)
-				dialer := &net.Dialer{
-					Timeout:   4 * time.Second,
-					LocalAddr: &net.TCPAddr{IP: selected.ip},
-					Control:   bindToInterface(selected.iface.Name),
-				}
-				conn, err := dialer.DialContext(ctx, "tcp4", net.JoinHostPort(ip.String(), strconv.Itoa(LANPort)))
+				tlsConfig, err := cfg.Credentials.PeerTLSWithTickets(asset, LinkALPN, LinkQUICSessionScope)
 				if err != nil {
-					if cfg.Logger != nil {
-						cfg.Logger.Debug("LAN peer dial failed", zap.String("device", asset.Principal()), zap.Error(err))
+					return
+				}
+				handshake, cancel := context.WithTimeout(ctx, 8*time.Second)
+				conn, err := transport.Dial(handshake, &net.UDPAddr{IP: ip, Port: LANPort}, tlsConfig, QUICConfig())
+				cancel()
+				if err != nil {
+					if ctx.Err() == nil && cfg.Logger != nil {
+						cfg.Logger.Debug("LAN UDP QUIC dial failed", zap.String("device", asset.Principal()), zap.Error(err))
 					}
 					return
 				}
-				defer conn.Close()
-				stop := context.AfterFunc(ctx, func() { conn.Close() })
-				defer stop()
-				if writeTCPPreface(conn, cfg.Credentials.Device) == nil {
-					if err := attachLAN(ctx, cfg, selected, asset, conn, false); err != nil && ctx.Err() == nil && cfg.Logger != nil {
-						cfg.Logger.Debug("LAN peer link ended", zap.String("device", asset.Principal()), zap.Error(err))
-					}
+				if err := attachLAN(ctx, cfg, selected, asset, conn); err != nil && ctx.Err() == nil && cfg.Logger != nil {
+					cfg.Logger.Debug("LAN peer link ended", zap.String("device", asset.Principal()), zap.Error(err))
 				}
 			}()
 		}
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-mdnsDone:
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("LAN mDNS responder stopped: %w", mdnsErr)
-		case <-acceptDone:
-			if ctx.Err() != nil {
-				return nil
-			}
-			return errors.New("LAN TCP listener stopped")
 		case <-time.After(3 * time.Second):
 		}
 	}
-	return nil
+	if parent.Err() != nil {
+		return nil
+	}
+	select {
+	case err := <-fatal:
+		return err
+	default:
+		return nil
+	}
 }
 
 func listenLANMDNS(ctx context.Context, selected lanInterface) (*net.UDPConn, error) {
@@ -574,27 +599,31 @@ func entriesFromLANResponse(message *dns.Msg) []*mdns.ServiceEntry {
 	return entries
 }
 
-func attachLAN(ctx context.Context, cfg LANConfig, selected lanInterface, asset meshid.Device, conn net.Conn, server bool) error {
-	stop := make(chan struct{})
-	defer close(stop)
+func attachLAN(ctx context.Context, cfg LANConfig, selected lanInterface, asset meshid.Device, conn *quic.Conn) error {
+	// Close only this peer connection; the interface retains the UDP transport.
+	defer conn.CloseWithError(0, "LAN link ended")
+	stop := context.AfterFunc(ctx, func() { conn.CloseWithError(0, "LAN interface stopped") })
+	defer stop()
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stop:
+			case <-done:
 				return
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				if cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) {
-					conn.Close()
+					conn.CloseWithError(0, "LAN peer selection changed")
 					return
 				}
 			}
 		}
 	}()
-	return attachTCPWithCost(ctx, cfg.Node, cfg.Credentials, asset, conn, server, selected.cost)
+	return cfg.Node.AttachWithCost(ctx, asset, conn, selected.cost)
 }
 
 func lanMeshHash(tenant meshid.Tenant) string {
@@ -602,9 +631,9 @@ func lanMeshHash(tenant meshid.Tenant) string {
 	return hex.EncodeToString(sum[:8])
 }
 func lanMDNSService(c *Credentials, selected lanInterface) (*mdns.MDNSService, error) {
-	instance := fmt.Sprintf("wendy-mesh-%s", c.Device.UUID())
-	host := fmt.Sprintf("wendy-mesh-%s-%d.local.", c.Device.UUID(), selected.iface.Index)
-	txt := []string{"principal=" + c.Device.Principal(), "mesh=" + lanMeshHash(c.Device.Tenant())}
+	instance := fmt.Sprintf("wendy-net-%s", c.Device.UUID())
+	host := fmt.Sprintf("wendy-net-%s-%d.local.", c.Device.UUID(), selected.iface.Index)
+	txt := []string{"protocol=" + lanProtocol, "principal=" + c.Device.Principal(), "mesh=" + lanMeshHash(c.Device.Tenant())}
 	return mdns.NewMDNSService(instance, lanService, "local.", host, LANPort, []net.IP{selected.ip}, txt)
 }
 func parseLANEntry(entry *mdns.ServiceEntry, self meshid.Device) (meshid.Device, net.IP, bool) {
@@ -624,7 +653,7 @@ func parseLANEntry(entry *mdns.ServiceEntry, self meshid.Device) (meshid.Device,
 		fields[key] = value
 	}
 	device, err := meshid.DeviceFromPrincipal(fields["principal"])
-	if err != nil || device.Tenant() != self.Tenant() || fields["mesh"] != lanMeshHash(self.Tenant()) || meshid.Compare(device, self) <= 0 {
+	if err != nil || device.Tenant() != self.Tenant() || fields["mesh"] != lanMeshHash(self.Tenant()) || fields["protocol"] != lanProtocol || meshid.Compare(device, self) <= 0 {
 		return meshid.Device{}, nil, false
 	}
 	return device, ip, true
