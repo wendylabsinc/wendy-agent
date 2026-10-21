@@ -51,6 +51,10 @@ func anchored(w timesync.TimeWindow) timesync.TimeWindow {
 }
 
 func TestCloudResetCountsSuspendSinceFreshTime(t *testing.T) {
+	boot, err := timesync.BootTime()
+	if err != nil || boot <= int64(2*time.Minute) {
+		t.Skip("requires a boot-clock anchor at least two minutes old to model suspension")
+	}
 	svc, req, ctx := cloudResetFixture(t)
 	unchanged := checkResetStateUnchanged(t, svc)
 	svc.trustedTime = func(context.Context) (timesync.TimeWindow, error) {
@@ -59,7 +63,7 @@ func TestCloudResetCountsSuspendSinceFreshTime(t *testing.T) {
 		w.Boot -= int64(2 * time.Minute) // suspend after the sample
 		return w, nil
 	}
-	_, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req)
+	_, err = NewProvisioningServiceV2(svc).Unprovision(ctx, req)
 	if !strings.Contains(status.Convert(err).Message(), "Cloud reset authorization") {
 		t.Fatalf("30-second authorization after 2m of suspend: %v", err)
 	}

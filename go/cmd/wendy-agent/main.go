@@ -340,7 +340,9 @@ func main() {
 	otelMetricReceiver := services.NewOTELMetricsReceiver(telemetryBuf)
 	otelTraceReceiver := services.NewOTELTraceReceiver(telemetryBuf)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Optional startup work can block after resource-owning workers begin.
+	// Handle termination now so those workers can drain during startup too.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Keep the chunk store bounded (WDY-3212, WDY-3217). This retires the
@@ -446,7 +448,12 @@ func main() {
 	// after the remote source they carry, instead of a generic "plughw:2,1".
 	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
 	audioSvc.SetSensorLinkPrincipalNaming(sensorStore.NameForKey)
-	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
+	// The camera hub takes SensorLink frames from this feed instead of reading
+	// them back from their v4l2loopback node, which serves one reader at a time
+	// and so would lock out any app that opens the camera directly.
+	sensorFrames := services.NewSensorFrameFeed()
+	videoSvc.SetSensorFrameFeed(sensorFrames)
+	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, sensorFrames.WrapWriters(ros2camera.NewFrameWriter), audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
 	sensorAgentScope := func() certs.Scope {
 		certPEM, _, _ := mcuIdentity()
@@ -927,6 +934,7 @@ func main() {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
 		_, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
@@ -1073,6 +1081,7 @@ func main() {
 				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
 			}
 		}()
+		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
@@ -1220,11 +1229,8 @@ func main() {
 		dataTransferWorker.Run(ctx)
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	sig := <-sigCh
-	logger.Info("Received signal, shutting down", zap.String("signal", sig.String()))
+	<-ctx.Done()
+	logger.Info("Termination requested, shutting down")
 
 	cancel()
 	_ = meshProxy.Close()

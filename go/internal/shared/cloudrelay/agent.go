@@ -435,7 +435,9 @@ func (a *Agent) runOnce(parent context.Context) error {
 					broker := lease.Broker
 					go func() {
 						defer func() { <-a.slots }()
-						if e := a.serve(ctx, broker, s.o, s.c, s.d); e != nil && ctx.Err() == nil {
+						// Sessions belong to the agent, so replacing its presence
+						// connection must not cancel their independent relay streams.
+						if e := a.serve(parent, broker, s.o, s.c, s.d); e != nil && parent.Err() == nil {
 							a.Logger.Warn("cloud relay session failed", zap.Error(e))
 						}
 					}()

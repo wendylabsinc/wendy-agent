@@ -67,6 +67,14 @@ If UUID or device-name files are not yet present, the script retries for up to
 10 seconds to handle ordering races. After updating the file it calls
 `avahi-daemon --reload` if the daemon is already running.
 
+Enrollment also updates identity before the next boot: when loading
+pre-provisioned credentials or completing live re-enrollment, the agent writes
+the certificate's device UUID to `/etc/wendyos/device-uuid` and the service's
+`id=` TXT record before restarting Avahi. A legacy asset certificate carries
+no device UUID and leaves these records unchanged. See
+[Pre-provisioning](../config-partition.md#pre-provisioning-provisioningjson)
+for hostname preservation.
+
 `wendy device rename` persists the operator-selected hostname in
 `/etc/wendy-agent/hostname` and updates the Avahi records at rename time; it
 does not overwrite the generated `/etc/wendyos/device-name`. Consequently, the
@@ -175,7 +183,7 @@ type MDNSService struct {
 
 | Key | Value | Example |
 |---|---|---|
-| `id` | Device UUID (from `/etc/wendyos/device-uuid`) | `550e8400-e29b-41d4-a716-446655440000` |
+| `id` | Device UUID (from `/etc/wendyos/device-uuid`; once enrolled, the UUID in the device certificate) | `550e8400-e29b-41d4-a716-446655440000` |
 | `name` | Slug device name (from `/etc/wendyos/device-name`) | `my-device` |
 | `displayname` | Title-cased device name | `My Device` |
 | `fqdn` | Optional reverse-DNS name derived from the hostname when present in the service template | `sh.wendy.my-device` |

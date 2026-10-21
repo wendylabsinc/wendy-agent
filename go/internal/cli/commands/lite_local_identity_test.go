@@ -77,11 +77,12 @@ func TestLocalLiteDeviceInfoUsesTenantPrimaryIdentity(t *testing.T) {
 			clientLeaf, _ := pem.Decode([]byte(presented.PemCertificate))
 			clientCA, _ := pem.Decode([]byte(presented.PemCertificateChain))
 			serverTLS.VerifyConnection = func(state tls.ConnectionState) error {
-				if len(state.PeerCertificates) != 2 || !bytes.Equal(state.PeerCertificates[0].Raw, clientLeaf.Bytes) {
-					return fmt.Errorf("LAN mTLS did not present the selected tenant operator leaf and chain")
+				// Self-signed roots stay in the verifier's trust pool, not on the wire.
+				if len(state.PeerCertificates) != 1 || !bytes.Equal(state.PeerCertificates[0].Raw, clientLeaf.Bytes) {
+					return fmt.Errorf("LAN mTLS did not present only the selected tenant operator leaf")
 				}
-				if !bytes.Equal(state.PeerCertificates[1].Raw, clientCA.Bytes) {
-					return fmt.Errorf("LAN mTLS did not preserve the selected operator chain")
+				if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) != 2 || !bytes.Equal(state.VerifiedChains[0][1].Raw, clientCA.Bytes) {
+					return fmt.Errorf("LAN mTLS did not verify the selected operator authority")
 				}
 				return nil
 			}

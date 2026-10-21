@@ -1,6 +1,6 @@
 # Enroll Wendy Lite with pki-core
 
-Build this CLI with Go 1.27 or newer, then use an OIDC operator session for the
+Build this CLI with Go 1.27.3 or newer, then use an OIDC operator session for the
 Wendy development PKI:
 
 ```sh
