@@ -26,6 +26,13 @@ func newLinuxFixture(t *testing.T) linuxFixture {
 }
 func (f linuxFixture) add(t *testing.T, node, location, serial, vid, pid string) {
 	t.Helper()
+	// CDC ACM ttys hang directly off their USB interface.
+	f.link(t, node, f.usbInterface(t, location, serial, vid, pid), "usb")
+}
+
+// usbInterface creates a USB device at location and returns its interface 1.0.
+func (f linuxFixture) usbInterface(t *testing.T, location, serial, vid, pid string) string {
+	t.Helper()
 	usb := filepath.Join(f.root, "sys/devices/usb1", location)
 	iface := filepath.Join(usb, location+":1.0")
 	if err := os.MkdirAll(iface, 0700); err != nil {
@@ -39,10 +46,22 @@ func (f linuxFixture) add(t *testing.T, node, location, serial, vid, pid string)
 	if err := os.WriteFile(filepath.Join(iface, "bInterfaceNumber"), []byte("01\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	return iface
+}
+
+// link points a tty's device at endpoint and gives endpoint a subsystem.
+func (f linuxFixture) link(t *testing.T, node, endpoint, subsystem string) {
+	t.Helper()
+	if err := os.MkdirAll(endpoint, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(f.root, "sys/bus", subsystem), filepath.Join(endpoint, "subsystem")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(f.tty, node), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(iface, filepath.Join(f.tty, node, "device")); err != nil {
+	if err := os.Symlink(endpoint, filepath.Join(f.tty, node, "device")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(f.dev, node), nil, 0000); err != nil {
@@ -99,6 +118,17 @@ func TestLinuxUSBMetadataClassificationAndRenumbering(t *testing.T) {
 	merged = Merge(f.scan(t), []*pb.RobotArm{saved})
 	if !merged[1].Connected || merged[1].UsbLocation != "1-4" || merged[1].Name != "Follower" {
 		t.Fatalf("replug failed: %v", merged)
+	}
+}
+func TestLinuxUSBSerialPortsOnlyNotOtherTTYsOnUSB(t *testing.T) {
+	f := newLinuxFixture(t)
+	// usb-serial drivers (ch341, ftdi_sio, cp210x) put a port device below the interface.
+	f.link(t, "ttyUSB0", filepath.Join(f.usbInterface(t, "1-2", "A", "1a86", "7523"), "ttyUSB0"), "usb-serial")
+	// An rfcomm tty on a USB Bluetooth controller also has a USB ancestor.
+	f.link(t, "rfcomm0", filepath.Join(f.usbInterface(t, "1-10", "", "8087", "0026"), "bluetooth/hci0/hci0:256"), "bluetooth")
+	ds := f.scan(t)
+	if len(ds) != 1 || ds[0].DevicePath != filepath.Join(f.dev, "ttyUSB0") || ds[0].UsbInterface != "1" || !ds[0].Candidate {
+		t.Fatalf("want only the usb-serial port: %v", ds)
 	}
 }
 func TestLinuxMissingSerialAndDuplicateIdentity(t *testing.T) {

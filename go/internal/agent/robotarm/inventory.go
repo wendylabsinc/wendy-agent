@@ -65,6 +65,13 @@ func DiscoverLinux(ctx context.Context, ttyRoot, devRoot string) ([]*pb.RobotArm
 		if err != nil {
 			continue
 		} // Includes unplug during enumeration.
+		// A USB serial tty's device is its CDC ACM interface ("usb") or a
+		// usb-serial port. Other ttys can still sit below a USB device, such
+		// as Bluetooth rfcomm ports on a USB controller.
+		subsystem, err := os.Readlink(filepath.Join(endpoint, "subsystem"))
+		if err != nil || filepath.Base(subsystem) != "usb" && filepath.Base(subsystem) != "usb-serial" {
+			continue
+		}
 		iface := ""
 		for dir := endpoint; dir != "/" && dir != "."; dir = filepath.Dir(dir) {
 			if value := read(dir, "bInterfaceNumber"); value != "" {
