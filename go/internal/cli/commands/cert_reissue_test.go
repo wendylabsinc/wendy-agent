@@ -314,3 +314,35 @@ func TestAutomaticCertificateReissuePersistenceFailureIsFatal(t *testing.T) {
 		t.Fatalf("calls=%d", calls)
 	}
 }
+
+func TestOIDCTokenFailureDoesNotEchoProviderSecretsOrControls(t *testing.T) {
+	for _, body := range []string{
+		"access-token-secret\n\x1b[31mforged log",
+		`{"error":"invalid_grant","error_description":"access-token-secret\n\u001b[31mforged log"}`,
+		`{"error":"access-token-secret\n\u001b[31mforged log"}`,
+	} {
+		err := oidcTokenFailure(400, []byte(body))
+		if strings.ContainsAny(err.Error(), "\r\n\x1b") || strings.Contains(err.Error(), "access-token-secret") {
+			t.Fatalf("unsafe diagnostic: %q", err.Error())
+		}
+	}
+}
+
+func TestAutomaticCertificateReissueRechecksExpiryAfterFailure(t *testing.T) {
+	resetAutomaticCertReissue(t)
+	auth := pickerAuth(7)
+	auth.OAuthIssuer = "https://auth.example"
+	until := time.Now().Add(time.Second)
+	auth.Certificates[0].PemCertificate = certPEM(t, until)
+	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{*auth}})
+	t.Setenv(renewEndpointEnv, "")
+	oldNow, oldRefresh := timeNowFn, refreshDefaultCloudCertificateFn
+	t.Cleanup(func() { timeNowFn, refreshDefaultCloudCertificateFn = oldNow, oldRefresh })
+	now := until.Add(-time.Second)
+	timeNowFn = func() time.Time { return now }
+	refused := errors.New("PKI unavailable")
+	refreshDefaultCloudCertificateFn = func(context.Context, *config.AuthConfig) error { now = until; return refused }
+	if err := prepareDefaultCloudCertificate(context.Background(), auth); !errors.Is(err, refused) {
+		t.Fatalf("certificate expired during re-issue but was retained as usable: %v", err)
+	}
+}

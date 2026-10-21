@@ -488,11 +488,20 @@ func parseTokenResponse(resp *http.Response) (*oidcTokenResponse, error) {
 // Only Auth's session refusal warrants signing in again. PKI denials,
 // discovery failures, rate limits and token configuration errors do not.
 func oidcTokenFailure(status int, body []byte) error {
-	err := fmt.Errorf("token endpoint returned %d: %s", status, strings.TrimSpace(string(body)))
 	var failure struct {
 		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(body, &failure)
+	// Provider descriptions and non-JSON bodies can contain credentials or
+	// terminal controls. Report only recognized OAuth error codes.
+	detail := ""
+	switch failure.Error {
+	case "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
+		"unsupported_grant_type", "invalid_scope", "invalid_target", "invalid_resource",
+		"access_denied", "temporarily_unavailable", "server_error", "use_dpop_nonce", "invalid_dpop_proof":
+		detail = ": " + failure.Error
+	}
+	err := fmt.Errorf("token endpoint returned %d%s", status, detail)
 	if status == http.StatusUnauthorized || status == http.StatusForbidden ||
 		(status == http.StatusBadRequest && (failure.Error == "invalid_grant" || failure.Error == "access_denied")) {
 		return oidcSignInRefusedError{err}
