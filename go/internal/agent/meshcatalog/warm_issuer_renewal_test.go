@@ -18,7 +18,7 @@ import (
 // A leaf can retain its exact DER/key while its issuing intermediate is
 // renewed with the same issuer key. Current identity lifetime includes every
 // presented issuer, so the old and new chains have different valid bounds.
-func serviceIssuerRenewalFixture(t *testing.T, renewedLifetime time.Duration) (time.Time, *localmesh.Credentials, *localmesh.Credentials) {
+func serviceIssuerRenewalFixture(t *testing.T, renewedLifetime time.Duration) (time.Time, *localmesh.Credentials, *localmesh.Credentials, localmesh.IdentityVerifier) {
 	t.Helper()
 	now := time.Now().Truncate(time.Second)
 	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -71,8 +71,14 @@ func serviceIssuerRenewalFixture(t *testing.T, renewedLifetime time.Duration) (t
 	leafPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf}))
 	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
 	var credentials []*localmesh.Credentials
-	for _, issuerPEM := range issuerPEMs {
-		c, err := localmesh.NewCredentials(leafPEM, issuerPEM+rootPEM, keyPEM)
+	for i, issuerPEM := range issuerPEMs {
+		trust := issuerPEM + rootPEM
+		if i == 0 {
+			// The own-trust-bound negative pins only the old issuer. Including
+			// the root would legitimately permit the presented renewed issuer.
+			trust = issuerPEM
+		}
+		c, err := localmesh.NewCredentials(leafPEM, trust, keyPEM)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,18 +88,32 @@ func serviceIssuerRenewalFixture(t *testing.T, renewedLifetime time.Duration) (t
 	if string(old.Certificate.Certificate[0]) != string(renewed.Certificate.Certificate[0]) || bytes.Equal(old.Certificate.Certificate[1], renewed.Certificate.Certificate[1]) {
 		t.Fatal("fixture did not keep exact leaf while changing chain")
 	}
-	oldID, err := renewed.Verify(old.Certificate.Certificate, now)
+	// An independent root-only peer must fetch each presented intermediate.
+	// Configuring the renewed same-key issuer would already provide a valid
+	// alternate path for the old leaf, defeating the warm-fetch precondition.
+	observerTemplate := *tmpl
+	observerTemplate.SerialNumber = big.NewInt(5)
+	observerDER, err := x509.CreateCertificate(rand.Reader, &observerTemplate, rootCert, &key.PublicKey, rootKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newID, err := renewed.Verify(renewed.Certificate.Certificate, now)
+	observer, err := localmesh.NewCredentials(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: observerDER})), rootPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := observer.Verify
+	oldID, err := verify(old.Certificate.Certificate, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID, err := verify(renewed.Certificate.Certificate, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !oldID.NotAfter.Equal(now.Add(30*time.Second)) || !newID.NotAfter.Equal(now.Add(renewedLifetime)) {
 		t.Fatal("fixture did not isolate effective issuer lifetime", oldID.NotAfter, newID.NotAfter)
 	}
-	return now, old, renewed
+	return now, old, renewed, verify
 }
 
 func TestWarmServiceSameLeafIssuerRenewal(t *testing.T) {
@@ -103,8 +123,7 @@ func TestWarmServiceSameLeafIssuerRenewal(t *testing.T) {
 			if mode == "still-too-short" {
 				lifetime = time.Minute
 			}
-			now, old, current := serviceIssuerRenewalFixture(t, lifetime)
-			verify := current.Verify
+			now, old, current, verify := serviceIssuerRenewalFixture(t, lifetime)
 			if mode == "own-trust-bound" {
 				verify = old.Verify
 			}
