@@ -128,6 +128,27 @@ func TestBridgeInternetNativeAndBorrowedPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { RevokeBridgeInternetAccess(owner) })
+	ips := []net.IP{net.ParseIP("10.42.3.2")}
+	if err := CheckBridgeInternetAccess(owner, "biapph", ips); err != nil {
+		t.Fatal(err)
+	}
+	// Live firewall/routing rules cannot compensate for missing or stale
+	// ownership metadata: DEL needs that record to reclaim policy routing.
+	if err := os.Remove(bridgeGrantPath(owner)); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBridgeInternetAccess(owner, "biapph", ips); err == nil {
+		t.Fatal("CHECK accepted a grant whose reply-rule ownership was lost")
+	}
+	if err := rememberBridgeGrant(owner, "biapph", []net.IP{net.ParseIP("10.42.3.3")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBridgeInternetAccess(owner, "biapph", ips); err == nil {
+		t.Fatal("CHECK accepted mismatched ownership addresses")
+	}
+	if err := rememberBridgeGrant(owner, "biapph", ips); err != nil {
+		t.Fatal(err)
+	}
 	for _, role := range []string{"app", "native", "borrowed", "peer", "sibling"} {
 		cmd := exec.Command("ip", "netns", "exec", "bi-"+role, os.Args[0], "-test.run=^TestBridgeInternetEndpoint$")
 		cmd.Env = append(os.Environ(), "WENDY_BRIDGE_ENDPOINT="+role)

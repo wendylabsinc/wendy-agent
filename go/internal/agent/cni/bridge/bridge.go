@@ -554,6 +554,7 @@ func enableIPForward(family int) error {
 
 func CmdAdd(args *skel.CmdArgs) error {
 	success := false
+	releaseIPAM := true
 
 	n, cniVersion, err := loadNetConf(args.StdinData, args.Args)
 	if err != nil {
@@ -637,7 +638,7 @@ func CmdAdd(args *skel.CmdArgs) error {
 
 		// release IP in case of failure
 		defer func() {
-			if !success {
+			if !success && releaseIPAM {
 				_ = hostlocal.CmdDel(args)
 			}
 		}()
@@ -790,18 +791,22 @@ func CmdAdd(args *skel.CmdArgs) error {
 			ips = append(ips, ipc.Address.IP)
 		}
 		owner := n.Name + "/" + args.ContainerID + "/" + args.IfName
+		defer func() {
+			if !success {
+				// Keep the lease quarantined if firewall cleanup fails. A new
+				// app must never inherit a stale grant for this bridge and IP.
+				releaseIPAM = hostnetwork.RevokeBridgeInternetAccess(owner) == nil
+			}
+		}()
 		if err := hostnetwork.EnsureBridgeInternetAccess(owner, n.BrName, ips); err != nil {
 			return err
 		}
-		defer func() {
-			if !success {
-				_ = hostnetwork.RevokeBridgeInternetAccess(owner)
-			}
-		}()
+	}
+	if err := types.PrintResult(result, cniVersion); err != nil {
+		return err
 	}
 	success = true
-
-	return types.PrintResult(result, cniVersion)
+	return nil
 }
 
 func dnsConfSet(dnsConf types.DNS) bool {
@@ -817,13 +822,14 @@ func CmdDel(args *skel.CmdArgs) (resultErr error) {
 		return err
 	}
 
-	// A grant-revocation error must not prevent veth/IPAM/NAT cleanup.
+	// Continue veth/NAT cleanup on a grant-revocation error, but retain the
+	// IPAM lease until retry succeeds so another app cannot inherit its grant.
 	grantErr := hostnetwork.RevokeBridgeInternetAccess(n.Name + "/" + args.ContainerID + "/" + args.IfName)
 	defer func() { resultErr = errors.Join(resultErr, grantErr) }()
 	isLayer3 := n.IPAM.Type != ""
 
 	ipamDel := func() error {
-		if isLayer3 {
+		if isLayer3 && grantErr == nil {
 			// In-process call (see the Allocate doc-comment in
 			// internal/agent/cni/hostlocal for why: exec'ing host-local as a
 			// second self-exec here had the same stdout-misinterpretation

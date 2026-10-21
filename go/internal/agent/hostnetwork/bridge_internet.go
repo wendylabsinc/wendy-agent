@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 )
 
@@ -157,6 +158,26 @@ func CheckBridgeInternetAccess(owner, bridge string, ips []net.IP) error {
 	rules, err := bridgeInternetRules(owner, bridge, ips)
 	if err != nil {
 		return err
+	}
+	// Rule presence alone cannot prove that DEL can revoke the grant. Recovery
+	// must retain the exact ownership record used to remove reply policy rules.
+	record, err := readBridgeGrant(owner)
+	if err != nil {
+		return err
+	}
+	if record == nil || record.Bridge != bridge {
+		return fmt.Errorf("bridge Internet ownership record missing or mismatched")
+	}
+	var expected []string
+	for _, raw := range ips {
+		if ip := raw.To4(); ip != nil {
+			expected = append(expected, ip.String())
+		}
+	}
+	slices.Sort(expected)
+	slices.Sort(record.IPs)
+	if !slices.Equal(expected, record.IPs) {
+		return fmt.Errorf("bridge Internet ownership addresses mismatched")
 	}
 	for _, rule := range rules {
 		if out, e := meshIPTables(append([]string{"-t", "filter", "-C", BridgeInternetChain}, rule...)...); e != nil {
