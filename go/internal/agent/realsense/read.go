@@ -1,6 +1,9 @@
 package realsense
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // Transport carries one HWM exchange: write a 1024-byte command frame, read
 // the 1024-byte reply frame. The linux implementation speaks
@@ -19,17 +22,54 @@ func command(t Transport, opcode, p1, p2 uint32) ([]byte, error) {
 	return parseReply(rx, opcode)
 }
 
-// defaultDepthUnitsUM is the documented D4xx default when advanced mode is
-// unavailable. It is NOT a fallback for a failed read: a device that claims
-// advanced mode and then fails to answer gets a zero scale, which callers
-// must refuse (depth in unknown units is not depth).
-const defaultDepthUnitsUM = 1000
+// defaultDepthUnitsUM is the fixed depth unit of a camera whose advanced mode
+// is off: librealsense registers RS2_OPTION_DEPTH_UNITS as a constant then,
+// 1000 µm for every D4xx except the short-range D405, whose unit is 100 µm.
+// It is NOT a fallback for a failed read: a device whose advanced-mode state
+// or units cannot be read gets a zero scale, which callers must refuse (depth
+// in unknown units is not depth).
+func defaultDepthUnitsUM(pid string) uint32 {
+	if knownModels[pid] == "D405" {
+		return 100
+	}
+	return 1000
+}
+
+// ReadDepthScale reads the one writable calibration value, metres per Z16
+// unit, in at most two exchanges: whether advanced mode is on (UAMG) and, when
+// it is, the units it set (GETADV 9). pid is the camera's USB product id,
+// which decides the fixed unit when advanced mode is off. Any failure returns
+// an error and scale 0, never a default standing in for the read.
+func ReadDepthScale(t Transport, pid string) (float64, error) {
+	am, err := command(t, opUAMG, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+	if len(am) == 0 {
+		return 0, fmt.Errorf("realsense: op 0x%02x: empty reply", opUAMG)
+	}
+	if am[0] == 0 {
+		return float64(defaultDepthUnitsUM(pid)) * 1e-6, nil
+	}
+	units, err := command(t, opGETADV, 9, 0)
+	if err != nil {
+		return 0, err
+	}
+	if len(units) < 4 {
+		return 0, fmt.Errorf("realsense: depth units reply is %d bytes, want 4", len(units))
+	}
+	um := binary.LittleEndian.Uint32(units)
+	if um == 0 {
+		return 0, fmt.Errorf("realsense: advanced mode reports a depth unit of 0 µm")
+	}
+	return float64(um) * 1e-6, nil
+}
 
 // ReadCalibration performs the full bounded calibration read: identity (GVD),
 // depth units, the coefficients table, the RGB table, and the per-resolution
 // rectified params where the firmware has them. One call makes at most six
-// exchanges; it never retries a failed one.
-func ReadCalibration(t Transport) (*Calibration, error) {
+// exchanges; it never retries a failed one. pid is as for ReadDepthScale.
+func ReadCalibration(t Transport, pid string) (*Calibration, error) {
 	cal := &Calibration{}
 
 	gvd, err := command(t, opGVD, 0, 0)
@@ -41,16 +81,10 @@ func ReadCalibration(t Transport) (*Calibration, error) {
 	}
 
 	// Depth units: writable at runtime (advanced-mode presets change them),
-	// so this value is only as fresh as this read — capture starts re-read it.
-	cal.DepthScaleM = float64(defaultDepthUnitsUM) * 1e-6
-	if am, err := command(t, opUAMG, 0, 0); err == nil && len(am) > 0 && am[0] != 0 {
-		units, err := command(t, opGETADV, 9, 0)
-		if err != nil || len(units) < 4 {
-			cal.DepthScaleM = 0 // claimed advanced mode, failed to answer: refuse, don't guess
-		} else {
-			cal.DepthScaleM = float64(uint32(units[0])|uint32(units[1])<<8|uint32(units[2])<<16|uint32(units[3])<<24) * 1e-6
-		}
-	}
+	// so this value is only as fresh as this read — capture starts re-read it
+	// with ReadDepthScale. A failed read leaves the scale 0, which disables
+	// depth by name downstream, without costing the factory tables.
+	cal.DepthScaleM, _ = ReadDepthScale(t, pid)
 
 	coef, err := command(t, opGETINTCAL, tableCoefficients, 0)
 	if err != nil {

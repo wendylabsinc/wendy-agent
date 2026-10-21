@@ -17,10 +17,13 @@ package services
 //     factory tables cached per serial, the writable depth units re-read at
 //     every capture start.
 //
-// Pairing is by agent-receipt wall clock, nearest depth frame within half the
-// depth frame interval — the same timestamp-matching policy librealsense's
-// syncer applies, since D4xx colour and depth are not genlocked. Alignment
-// runs once per published frame, here in the producer, never per subscriber.
+// Pairing is by agent-receipt wall clock, nearest depth frame within one depth
+// frame interval, since D4xx colour and depth are not genlocked. The two
+// receipt clocks are not capture clocks: colour is stamped after the
+// GStreamer pipeline and depth at DQBUF, so the window is wide enough to
+// guarantee a pair, and the pair can be up to a frame apart in capture time.
+// Alignment runs once per published frame, here in the producer, never per
+// subscriber.
 
 import (
 	"context"
@@ -31,9 +34,11 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/framesource"
 	"github.com/wendylabsinc/wendy/go/internal/agent/realsense"
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -55,12 +60,26 @@ const firstColourFrameTimeout = 15 * time.Second
 // without meaningfully aging the pair.
 const depthRingSize = 4
 
+// calibrationRetryInterval spaces repeat reads of a camera whose last read
+// failed, and of a depth scale that could not be read. Every listing and every
+// lookup describes every source, and clients poll; without it each of those
+// would repeat the HWM exchange on a control path that has to stay budgeted.
+const calibrationRetryInterval = 10 * time.Second
+
 // NewRealSenseProvider enumerates RealSense cameras from sysfs and serves
 // calibrated frames from them natively. sysfsRoot "" means the live system;
 // tests pass a fixture tree.
 func NewRealSenseProvider(logger *zap.Logger, video *VideoService, sysfsRoot string) framesource.Provider {
-	p := &realsenseProvider{logger: logger, video: video, sysfsRoot: sysfsRoot, cals: map[string]*realsense.Calibration{}}
-	return framesource.ProviderFunc(p.sources)
+	return framesource.ProviderFunc(newRealSenseProvider(logger, video, sysfsRoot).sources)
+}
+
+func newRealSenseProvider(logger *zap.Logger, video *VideoService, sysfsRoot string) *realsenseProvider {
+	return &realsenseProvider{
+		logger: logger, video: video, sysfsRoot: sysfsRoot,
+		cals:      map[string]*calibrationEntry{},
+		readCal:   hwmReadCalibration,
+		readScale: hwmReadDepthScale,
+	}
 }
 
 type realsenseProvider struct {
@@ -68,8 +87,36 @@ type realsenseProvider struct {
 	video     *VideoService
 	sysfsRoot string
 
+	// readCal and readScale are the two HWM conversations: the full calibration
+	// read and the depth-units re-read. Seams, so tests can stand in for a
+	// camera.
+	readCal   func(realsense.Camera) (*realsense.Calibration, error)
+	readScale func(realsense.Camera) (float64, error)
+
 	mu   sync.Mutex
-	cals map[string]*realsense.Calibration // factory tables, cached per serial
+	cals map[string]*calibrationEntry // per serial; entries are never removed
+}
+
+// calibrationEntry is one camera's calibration state. Its mutex is held across
+// every HWM conversation with that camera: a command's reply is read back from
+// the same extension-unit control it was written to, so two conversations
+// interleaved on one camera would each read the other's reply.
+type calibrationEntry struct {
+	mu     sync.Mutex
+	cal    *realsense.Calibration // nil until a read succeeds; replaced, never mutated
+	err    error                  // the last failed read, while cal is nil
+	readAt time.Time              // when the last read ran, full or depth units only
+}
+
+func (p *realsenseProvider) entry(serial string) *calibrationEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e := p.cals[serial]
+	if e == nil {
+		e = &calibrationEntry{}
+		p.cals[serial] = e
+	}
+	return e
 }
 
 func (p *realsenseProvider) sources(ctx context.Context) ([]framesource.Source, error) {
@@ -85,33 +132,70 @@ func (p *realsenseProvider) sources(ctx context.Context) ([]framesource.Source, 
 }
 
 // calibration reads the factory tables once per serial and caches them: they
-// are burned in at the factory, and the one runtime value (depth units) is
-// re-read fresh by every Open. The read is budgeted inside the transport —
-// callers never retry it in a loop.
+// are burned in at the factory. The depth units it carries are as of the last
+// read; Open re-reads them for every capture. A failed read is not repeated,
+// and a zero depth scale not re-read, within calibrationRetryInterval. The
+// read is budgeted inside the transport — callers never retry it in a loop.
 func (p *realsenseProvider) calibration(cam realsense.Camera) (*realsense.Calibration, error) {
-	p.mu.Lock()
-	cached := p.cals[cam.Serial]
-	p.mu.Unlock()
-	if cached != nil {
-		return cached, nil
+	e := p.entry(cam.Serial)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if time.Since(e.readAt) >= calibrationRetryInterval {
+		switch {
+		case e.cal == nil:
+			e.cal, e.err = p.readCal(cam)
+			e.readAt = time.Now()
+		case e.cal.DepthScaleM <= 0:
+			_ = p.refreshDepthScaleLocked(e, cam) // a failure leaves it at 0, which Describe reports
+		}
 	}
-	cal, err := p.readCalibration(cam)
-	if err != nil {
-		return nil, err
+	if e.cal == nil {
+		return nil, e.err
 	}
-	p.mu.Lock()
-	p.cals[cam.Serial] = cal
-	p.mu.Unlock()
-	return cal, nil
+	return e.cal, nil
 }
 
-func (p *realsenseProvider) readCalibration(cam realsense.Camera) (*realsense.Calibration, error) {
+// freshDepthScale re-reads the depth units of a camera whose factory tables
+// are cached, for a capture about to start. A failed read stores and returns
+// a zero scale beside the error: depth in unknown units is refused, never
+// carried over from an older read.
+func (p *realsenseProvider) freshDepthScale(cam realsense.Camera) (*realsense.Calibration, error) {
+	e := p.entry(cam.Serial)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cal == nil {
+		return nil, errors.New("factory calibration has not been read")
+	}
+	err := p.refreshDepthScaleLocked(e, cam)
+	return e.cal, err
+}
+
+// refreshDepthScaleLocked replaces e.cal with a copy carrying a freshly read
+// depth scale. A copy, because running streams hold the old one. e.mu is held.
+func (p *realsenseProvider) refreshDepthScaleLocked(e *calibrationEntry, cam realsense.Camera) error {
+	scale, err := p.readScale(cam)
+	cal := *e.cal
+	cal.DepthScaleM = scale
+	e.cal, e.readAt = &cal, time.Now()
+	return err
+}
+
+func hwmReadCalibration(cam realsense.Camera) (*realsense.Calibration, error) {
 	t, err := realsense.OpenTransport(cam.DepthNode)
 	if err != nil {
 		return nil, err
 	}
 	defer t.Close() //nolint:errcheck
-	return realsense.ReadCalibration(t)
+	return realsense.ReadCalibration(t, cam.PID)
+}
+
+func hwmReadDepthScale(cam realsense.Camera) (float64, error) {
+	t, err := realsense.OpenTransport(cam.DepthNode)
+	if err != nil {
+		return 0, err
+	}
+	defer t.Close() //nolint:errcheck
+	return realsense.ReadDepthScale(t, cam.PID)
 }
 
 type realsenseSource struct {
@@ -152,24 +236,37 @@ func (s *realsenseSource) Describe(ctx context.Context) (*agentpbv2.CalibratedSo
 		desc.UnavailableReason = "the camera exposes no colour function"
 		return desc, nil
 	}
-	if s.cam.Model == "" {
-		// Unknown models enumerate and refuse depth by name, so a new variant
-		// fails visibly rather than wrongly.
-		desc.UnavailableReason = fmt.Sprintf("unrecognised RealSense model %s: depth disabled", s.cam.PID)
-		desc.Provides = []agentpbv2.FrameRequirement{agentpbv2.FrameRequirement_FRAME_REQUIREMENT_MEASURED_INTRINSICS}
+	desc.Provides = []agentpbv2.FrameRequirement{agentpbv2.FrameRequirement_FRAME_REQUIREMENT_MEASURED_INTRINSICS}
+	dw, dh := depthModeFor(defaultColourWidth, defaultColourHeight)
+	if why := s.depthUnavailable(cal, dw, dh); why != "" {
+		// Depth is refused by name, so a new variant or an unreadable
+		// setting fails visibly rather than wrongly.
+		desc.UnavailableReason = why
 		desc.MaxFrameBytes = framesource.FrameBytes(defaultColourWidth*2, defaultColourHeight, 0, 0)
 		return desc, nil
 	}
-	dw, dh := depthModeFor(defaultColourWidth, defaultColourHeight)
 	desc.DepthWidth, desc.DepthHeight = defaultColourWidth, defaultColourHeight // aligned to colour
 	desc.MaxFrameBytes = framesource.FrameBytes(defaultColourWidth*2, defaultColourHeight, defaultColourWidth*2, defaultColourHeight)
-	desc.Provides = []agentpbv2.FrameRequirement{
-		agentpbv2.FrameRequirement_FRAME_REQUIREMENT_MEASURED_INTRINSICS,
-	}
-	if _, err := cal.DepthIntrinsicsFor(dw, dh); err == nil && cal.BaselineMM != 0 {
-		desc.Provides = append(desc.Provides, agentpbv2.FrameRequirement_FRAME_REQUIREMENT_ALIGNED_DEPTH)
-	}
+	desc.Provides = append(desc.Provides, agentpbv2.FrameRequirement_FRAME_REQUIREMENT_ALIGNED_DEPTH)
 	return desc, nil
+}
+
+// depthUnavailable says why a capture in depth mode dw x dh cannot carry
+// aligned depth, or "" when it can. Describe and Open both gate on it, so the
+// listing never promises depth a capture would then go without.
+func (s *realsenseSource) depthUnavailable(cal *realsense.Calibration, dw, dh uint32) string {
+	switch {
+	case s.cam.Model == "":
+		return fmt.Sprintf("unrecognised RealSense model %s: depth disabled", s.cam.PID)
+	case cal.DepthScaleM <= 0:
+		return "the camera's depth units could not be read: depth disabled"
+	case cal.BaselineMM == 0:
+		return "the factory calibration carries no stereo baseline: depth disabled"
+	}
+	if _, err := cal.DepthIntrinsicsFor(dw, dh); err != nil {
+		return fmt.Sprintf("%v: depth disabled", err)
+	}
+	return ""
 }
 
 // depthModeFor picks the camera's native depth mode for a colour aspect
@@ -186,18 +283,20 @@ func depthModeFor(colourW, colourH uint32) (uint32, uint32) {
 // and blocks until the first colour frame so the negotiated format is known
 // and open failures surface here rather than on a later Next.
 func (s *realsenseSource) Open(ctx context.Context, opts framesource.Options) (framesource.Stream, error) {
-	cal, err := s.provider.calibration(s.cam)
-	if err != nil {
+	if _, err := s.provider.calibration(s.cam); err != nil {
 		return nil, fmt.Errorf("factory calibration could not be read: %w", err)
 	}
 	// The one writable calibration value, fresh for this capture: an
-	// advanced-mode preset may have changed it since the last one.
-	fresh, err := s.provider.readCalibration(s.cam)
-	if err == nil {
-		cal = fresh
-		s.provider.mu.Lock()
-		s.provider.cals[s.cam.Serial] = fresh
-		s.provider.mu.Unlock()
+	// advanced-mode preset may have changed it since the last one. Two
+	// exchanges, not the whole read; a failure disables depth for this
+	// capture, by name, rather than reusing an older value.
+	cal, scaleErr := s.provider.freshDepthScale(s.cam)
+	if cal == nil {
+		return nil, fmt.Errorf("factory calibration could not be read: %w", scaleErr)
+	}
+	if scaleErr != nil {
+		s.provider.logger.Warn("RealSense depth units could not be read; this capture has no depth",
+			zap.String("source", s.name()), zap.Error(scaleErr))
 	}
 
 	colourW, colourH := uint32(defaultColourWidth), uint32(defaultColourHeight)
@@ -218,24 +317,24 @@ func (s *realsenseSource) Open(ctx context.Context, opts framesource.Options) (f
 
 	// Depth first: it warms up (S_FMT, buffers, STREAMON) while the colour
 	// pipeline starts, so the first colour frame usually has a partner
-	// waiting. Absence of depth support is honest, not fatal.
-	if s.cam.Model != "" && cal.DepthScaleM > 0 {
-		dw, dh := depthModeForOpts(opts)
-		if di, err := cal.DepthIntrinsicsFor(dw, dh); err == nil {
-			st.depthIntrin, st.depthEnabled = di, true
-			fps := opts.Framerate
-			if fps == 0 {
-				fps = 30
-			}
-			// One full frame interval: receipt clocks on the two paths differ
-			// by pipeline latency, and existence of a pair is what the window
-			// gates — depth arrives every interval, so this always pairs once
-			// both captures flow.
-			st.pairWindow = time.Second / time.Duration(fps)
-			st.warmupUntil = time.Now().Add(depthWarmup)
-			st.depthDone = make(chan struct{})
-			go st.runDepth(dw, dh, fps)
+	// waiting. Absence of depth support is honest, not fatal: Negotiated
+	// reports why, and a subscriber that required depth is refused with it.
+	dw, dh := depthModeForOpts(opts)
+	if st.depthOff = s.depthUnavailable(cal, dw, dh); st.depthOff == "" {
+		st.depthIntrin, _ = cal.DepthIntrinsicsFor(dw, dh)
+		st.depthEnabled = true
+		fps := opts.Framerate
+		if fps == 0 {
+			fps = 30
 		}
+		// One full frame interval: receipt clocks on the two paths differ
+		// by pipeline latency, and existence of a pair is what the window
+		// gates — depth arrives every interval, so this always pairs once
+		// both captures flow.
+		st.pairWindow = time.Second / time.Duration(fps)
+		st.warmupUntil = time.Now().Add(depthWarmup)
+		st.depthDone = make(chan struct{})
+		go st.runDepth(dw, dh, fps)
 	}
 
 	// Colour: join the shared hub as a raw subscriber — the same path a
@@ -309,6 +408,7 @@ type realsenseStream struct {
 	colourIntrin realsense.Intrinsics
 	depthIntrin  realsense.Intrinsics
 	depthEnabled bool
+	depthOff     string // why depth is not enabled, when it is not
 	pairWindow   time.Duration
 	warmupUntil  time.Time
 	depthDone    chan struct{}
@@ -339,7 +439,7 @@ func (st *realsenseStream) awaitFirstColour(ctx context.Context) (*videoFrame, e
 			return nil, fmt.Errorf("the colour pipeline produced no frame within %s", firstColourFrameTimeout)
 		case frame, ok := <-st.colour:
 			if !ok {
-				if err := st.hub.subscriberErr(st.subID); err != nil {
+				if err := st.colourEnded(); !errors.Is(err, io.EOF) {
 					return nil, err
 				}
 				return nil, errors.New("the colour capture ended before its first frame")
@@ -358,7 +458,21 @@ func (st *realsenseStream) awaitFirstColour(ctx context.Context) (*videoFrame, e
 // publishing colour-only frames to subscribers that required depth.
 func (st *realsenseStream) runDepth(dw, dh, fps uint32) {
 	defer close(st.depthDone)
+	planeBytes := int(dw) * int(dh) * 2
+	dropped := 0
 	err := st.video.captureDepthZ16(st.ctx, func(data []byte, stamp frameTimestamp) bool {
+		// A buffer the driver flagged as damaged, or one that is not exactly
+		// the Z16 plane of this mode, is a USB hiccup, not a measurement.
+		// Dropped here it costs one pairing; passed on, alignment would refuse
+		// it and end the capture for every subscriber.
+		if stamp.nativeFlags&v4l2BufFlagError != 0 || len(data) != planeBytes {
+			if dropped++; dropped == 1 {
+				st.logger.Warn("dropping damaged RealSense depth frames",
+					zap.String("source", st.source.name()), zap.Int("bytes", len(data)),
+					zap.Int("want", planeBytes), zap.Bool("driver_error", stamp.nativeFlags&v4l2BufFlagError != 0))
+			}
+			return true
+		}
 		st.mu.Lock()
 		if len(st.ring) == depthRingSize {
 			copy(st.ring, st.ring[1:])
@@ -399,29 +513,70 @@ func (st *realsenseStream) pairDepth(colourNs uint64) ([]byte, error) {
 }
 
 func (st *realsenseStream) Next(ctx context.Context) (*agentpbv2.CalibratedFrame, error) {
-	var frame *videoFrame
-	if st.pending != nil {
-		frame, st.pending = st.pending, nil
-	} else {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-st.ctx.Done():
-			return nil, context.Canceled
-		case f, ok := <-st.colour:
-			if !ok {
-				if err := st.hub.subscriberErr(st.subID); err != nil {
-					return nil, err
-				}
-				return nil, io.EOF
-			}
-			if f.rawFmt == nil {
-				return nil, fmt.Errorf("the colour hub delivered a non-raw frame to a raw subscriber")
-			}
-			frame = f
+	for {
+		frame, err := st.nextColour(ctx)
+		if err != nil {
+			return nil, err
 		}
+		var depth []byte
+		if st.depthEnabled {
+			if depth, err = st.pairDepth(frame.tsNs); err != nil {
+				return nil, err
+			}
+			if depth == nil && time.Now().Before(st.warmupUntil) {
+				continue // Startup race, not a camera fact: wait for the partner.
+			}
+		}
+		return st.assemble(frame, depth)
 	}
+}
 
+// nextColour is the next colour frame: the one Open waited for, then the
+// shared hub's.
+func (st *realsenseStream) nextColour(ctx context.Context) (*videoFrame, error) {
+	if frame := st.pending; frame != nil {
+		st.pending = nil
+		return frame, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-st.ctx.Done():
+		return nil, context.Canceled
+	case f, ok := <-st.colour:
+		if !ok {
+			return nil, st.colourEnded()
+		}
+		if f.rawFmt == nil {
+			return nil, fmt.Errorf("the colour hub delivered a non-raw frame to a raw subscriber")
+		}
+		return f, nil
+	}
+}
+
+// colourEnded says why the shared colour hub closed this subscriber. Only a
+// producer that finished cleanly is a clean end (io.EOF). A failed capture,
+// or one an episode capture took over at its campaign's parameters, ends the
+// calibrated stream with that reason — the same answer StreamVideo gives —
+// rather than an end subscribers would read as the camera simply finishing.
+func (st *realsenseStream) colourEnded() error {
+	if err := st.hub.subscriberErr(st.subID); err != nil {
+		return err
+	}
+	if err := st.hub.terminalErr(); err != nil {
+		return err
+	}
+	if st.hub.wasRestarted() {
+		return streamreason.New(codes.Unavailable,
+			"an episode capture restarted the colour capture at the campaign's requested parameters; resubscribe to join the new stream",
+			streamreason.CameraProducerRestarted, nil)
+	}
+	return io.EOF
+}
+
+// assemble builds the published frame from a colour frame and its paired
+// depth plane (nil for none), aligning depth onto the colour grid.
+func (st *realsenseStream) assemble(frame *videoFrame, depth []byte) (*agentpbv2.CalibratedFrame, error) {
 	st.frameID++
 	out := &agentpbv2.CalibratedFrame{
 		FrameId:      st.frameID,
@@ -438,29 +593,18 @@ func (st *realsenseStream) Next(ctx context.Context) (*agentpbv2.CalibratedFrame
 		},
 		Source: st.source.name(),
 	}
-	if st.depthEnabled {
-		depth, err := st.pairDepth(frame.tsNs)
+	if depth != nil {
+		aligned, err := st.cal.AlignFrame(depth, st.depthIntrin, st.colourIntrin)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("aligning depth to colour: %w", err)
 		}
-		if depth == nil && time.Now().Before(st.warmupUntil) {
-			// Startup race, not a camera fact: wait for the partner.
-			st.frameID--
-			return st.Next(ctx)
-		}
-		if depth != nil {
-			aligned, err := st.cal.AlignFrame(depth, st.depthIntrin, st.colourIntrin)
-			if err != nil {
-				return nil, fmt.Errorf("aligning depth to colour: %w", err)
-			}
-			out.Depth = &agentpbv2.DepthPlane{
-				Data:         aligned,
-				Width:        st.colourIntrin.Width,
-				Height:       st.colourIntrin.Height,
-				BytesPerLine: st.colourIntrin.Width * 2,
-				ScaleM:       float32(st.cal.DepthScaleM),
-				Alignment:    agentpbv2.DepthPlane_ALIGNMENT_ALIGNED_TO_COLOUR,
-			}
+		out.Depth = &agentpbv2.DepthPlane{
+			Data:         aligned,
+			Width:        st.colourIntrin.Width,
+			Height:       st.colourIntrin.Height,
+			BytesPerLine: st.colourIntrin.Width * 2,
+			ScaleM:       float32(st.cal.DepthScaleM),
+			Alignment:    agentpbv2.DepthPlane_ALIGNMENT_ALIGNED_TO_COLOUR,
 		}
 	}
 	return out, nil
@@ -486,6 +630,7 @@ func (st *realsenseStream) Negotiated() *agentpbv2.CalibratedSource {
 		desc.DepthWidth, desc.DepthHeight = st.colourIntrin.Width, st.colourIntrin.Height
 		desc.Provides = append(desc.Provides, agentpbv2.FrameRequirement_FRAME_REQUIREMENT_ALIGNED_DEPTH)
 	} else {
+		desc.UnavailableReason = st.depthOff
 		desc.MaxFrameBytes = framesource.FrameBytes(st.colourIntrin.Width*2, st.colourIntrin.Height, 0, 0)
 	}
 	return desc

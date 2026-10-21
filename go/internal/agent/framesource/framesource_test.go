@@ -225,12 +225,20 @@ func TestWhySourceLacks_NamesTheReasonNotJustTheProperty(t *testing.T) {
 	if !strings.Contains(why, "no depth sensor") {
 		t.Errorf("WhySourceLacks = %q; an operator needs to know to stop looking for a setting", why)
 	}
-	// An unavailable source's own reason wins: "the helper is not installed" is
-	// more actionable than "this source has no depth sensor", and is true where
-	// the other is a guess.
-	unavailable := &agentpbv2.CalibratedSource{Source: "realsense", UnavailableReason: "helper not installed"}
-	if got := WhySourceLacks(unavailable, alignedDepth); got != "helper not installed" {
+	// An unavailable source's own reason wins: "calibration could not be read"
+	// is more actionable than "this source has no depth sensor", and is true
+	// where the other is a guess.
+	unavailable := &agentpbv2.CalibratedSource{Source: "realsense", UnavailableReason: "calibration could not be read"}
+	if got := WhySourceLacks(unavailable, alignedDepth); got != "calibration could not be read" {
 		t.Errorf("WhySourceLacks = %q", got)
+	}
+	// So does an available one's, for the depth it switched off: a RealSense
+	// has a depth sensor, and saying otherwise sends the operator away from
+	// the actual cause.
+	depthOff := &agentpbv2.CalibratedSource{Source: "realsense", Available: true,
+		UnavailableReason: "the camera's depth units could not be read: depth disabled"}
+	if got := WhySourceLacks(depthOff, alignedDepth); got != depthOff.UnavailableReason {
+		t.Errorf("WhySourceLacks = %q, want the source's own reason", got)
 	}
 }
 

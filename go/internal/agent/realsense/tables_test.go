@@ -236,7 +236,7 @@ func newFixtureTransport(t *testing.T) *fixtureTransport {
 }
 
 func TestReadCalibrationEndToEnd(t *testing.T) {
-	cal, err := ReadCalibration(newFixtureTransport(t))
+	cal, err := ReadCalibration(newFixtureTransport(t), "0b3a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,13 +276,63 @@ func TestClaimedAdvancedModeThatFailsGivesZeroScale(t *testing.T) {
 	// units read must yield scale 0 — a refusal downstream — never 1 mm.
 	ft := newFixtureTransport(t)
 	delete(ft.frames, [2]uint32{opGETADV, 9})
-	cal, err := ReadCalibration(ft)
+	cal, err := ReadCalibration(ft, "0b3a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cal.DepthScaleM != 0 {
 		t.Errorf("DepthScaleM = %v, want 0 (refuse, don't guess)", cal.DepthScaleM)
 	}
+}
+
+// A failed advanced-mode query is a failed read, not "advanced mode off": the
+// scale is refused, and the factory tables still arrive.
+func TestUnansweredAdvancedModeQueryGivesZeroScale(t *testing.T) {
+	ft := newFixtureTransport(t)
+	delete(ft.frames, [2]uint32{opUAMG, 0})
+	cal, err := ReadCalibration(ft, "0b3a")
+	if err != nil {
+		t.Fatalf("a units failure cost the factory tables: %v", err)
+	}
+	if cal.DepthScaleM != 0 {
+		t.Errorf("DepthScaleM = %v, want 0 (refuse, don't guess)", cal.DepthScaleM)
+	}
+	if _, err := ReadDepthScale(ft, "0b3a"); err == nil {
+		t.Error("ReadDepthScale reported no error for an unanswered UAMG")
+	}
+}
+
+// With advanced mode off the unit is the model's fixed one, and a D405's is a
+// tenth of everyone else's: 1 mm there would make every distance ten times
+// too large.
+func TestAdvancedModeOffUsesTheModelsFixedUnit(t *testing.T) {
+	for pid, want := range map[string]float64{"0b3a": 0.001, "0b5b": 0.0001, "0bff": 0.001} {
+		ft := newFixtureTransport(t)
+		ft.frames[[2]uint32{opUAMG, 0}] = replyFrame(opUAMG, []byte{0, 0, 0, 0})
+		delete(ft.frames, [2]uint32{opGETADV, 9}) // must not be asked
+		got, err := ReadDepthScale(ft, pid)
+		if err != nil {
+			t.Fatalf("pid %s: %v", pid, err)
+		}
+		near(t, "depth scale for pid "+pid, got, want, 1e-12)
+	}
+}
+
+func TestReadDepthScaleFromAdvancedMode(t *testing.T) {
+	got, err := ReadDepthScale(newFixtureTransport(t), "0b3a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	near(t, "depth scale", got, 0.001, 1e-12)
+}
+
+// replyFrame builds a successful HWM reply carrying payload.
+func replyFrame(opcode uint32, payload []byte) []byte {
+	rx := make([]byte, hwmFrameSize)
+	binary.LittleEndian.PutUint32(rx[0:], opcode)
+	copy(rx[4:], payload)
+	binary.LittleEndian.PutUint32(rx[hwmDataSizeAt:], uint32(len(payload)))
+	return rx
 }
 
 func TestBuildCommandFrame(t *testing.T) {

@@ -66,10 +66,10 @@ type Source interface {
 // returns io.EOF when the source ends normally.
 //
 // Close MUST be safe to call more than once and CONCURRENTLY with Next, and
-// must unblock a Next that is waiting. That is not a nicety: a helper process
-// blocked in a read does not notice a cancelled context, so closing the pipe
-// underneath it is the only thing that ends the capture — and the closing
-// happens on a different goroutine from the one waiting for the frame.
+// must unblock a Next that is waiting. That is not a nicety: a source blocked
+// in a device or pipe read does not notice a cancelled context, so closing
+// what it reads from is the only thing that ends the capture — and the
+// closing happens on a different goroutine from the one waiting for the frame.
 type Stream interface {
 	Next(ctx context.Context) (*agentpbv2.CalibratedFrame, error)
 	Close() error
@@ -218,8 +218,8 @@ func frameHas(f *agentpbv2.CalibratedFrame, r agentpbv2.FrameRequirement) bool {
 
 // WhySourceLacks explains, for the refusal metadata, why this source cannot
 // provide a property. An operator reading "aligned-depth: this camera has no
-// depth sensor" knows to stop looking for a setting; "the capture helper is not
-// installed" knows to install one.
+// depth sensor" knows to stop looking for a setting; "the camera's depth units
+// could not be read" knows to look at the camera.
 func WhySourceLacks(src *agentpbv2.CalibratedSource, r agentpbv2.FrameRequirement) string {
 	if !src.GetAvailable() && src.GetUnavailableReason() != "" {
 		return src.GetUnavailableReason()
@@ -227,6 +227,12 @@ func WhySourceLacks(src *agentpbv2.CalibratedSource, r agentpbv2.FrameRequiremen
 	switch r {
 	case agentpbv2.FrameRequirement_FRAME_REQUIREMENT_ALIGNED_DEPTH:
 		if src.GetDepthWidth() == 0 || src.GetDepthHeight() == 0 {
+			// An available source can still name why its depth is off (an
+			// unrecognised model, units it could not read): a depth camera
+			// told it has no depth sensor would go looking for the wrong fix.
+			if why := src.GetUnavailableReason(); why != "" {
+				return why
+			}
 			return "this source has no depth sensor"
 		}
 		return "this source's depth is in the depth sensor's own frame; it has no extrinsics to align it to the colour plane"

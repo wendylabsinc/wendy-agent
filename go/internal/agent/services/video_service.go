@@ -48,6 +48,7 @@ const (
 	v4l2PixFmtGrey          = 0x59455247 // 'GREY'
 	v4l2PixFmtZ16           = 0x2036315A // 'Z16 ' -- depth; named only so a refusal can say so (see rawPixelFormats)
 	v4l2FieldNone           = 1
+	v4l2BufFlagError        = 0x00000040 // V4L2_BUF_FLAG_ERROR: the driver delivered this buffer damaged
 
 	v4l2CapVideoCapture = 0x00000001
 	v4l2CapMetaCapture  = 0x00800000
@@ -2594,6 +2595,11 @@ func (s *VideoService) errCaptureSetup(ioctl, path string, errno unix.Errno) err
 type v4l2CaptureConfig struct {
 	pixelFormat   uint32
 	width, height uint32
+	// exactSize refuses a capture whose driver adjusted width x height in
+	// VIDIOC_S_FMT: a caller that interprets frames by the size it asked for
+	// (Z16 depth, read against that mode's factory intrinsics) has no use for
+	// any other.
+	exactSize bool
 	// tuneKeyframes caps the device encoder's keyframe interval — compressed
 	// formats only; a raw format has no encoder to tune.
 	tuneKeyframes bool
@@ -2660,6 +2666,7 @@ func (s *VideoService) captureDepthZ16(ctx context.Context, emit func([]byte, fr
 		pixelFormat:      v4l2PixFmtZ16,
 		width:            width,
 		height:           height,
+		exactSize:        true,
 		framerate:        framerate,
 		setFrameInterval: true,
 		formatUnsupported: func(msg string) error {
@@ -2729,6 +2736,10 @@ func (s *VideoService) captureV4L2Native(ctx context.Context, emit func([]byte, 
 	}
 	if vfmt.PixelFormat != cfg.pixelFormat {
 		return cfg.formatUnsupported("device switched pixel format away from " + fourccName(cfg.pixelFormat))
+	}
+	if cfg.exactSize && (vfmt.Width != cfg.width || vfmt.Height != cfg.height) {
+		return cfg.formatUnsupported(fmt.Sprintf("device adjusted %s %dx%d to %dx%d",
+			fourccName(cfg.pixelFormat), cfg.width, cfg.height, vfmt.Width, vfmt.Height))
 	}
 
 	// Best-effort: cap the camera encoder's keyframe interval. Non-fatal — many

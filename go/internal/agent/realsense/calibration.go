@@ -44,9 +44,9 @@ type Calibration struct {
 	HasRGB          bool
 
 	// DepthScaleM is metres per Z16 unit (0.001 for a stock D435i). It comes
-	// from the advanced-mode depth-units control when the device has one, and
-	// the documented 1000 µm default otherwise. Zero means unreadable, and a
-	// zero-scale calibration must be refused, never defaulted.
+	// from the advanced-mode depth-units control when advanced mode is on, and
+	// the model's fixed unit otherwise (1000 µm; 100 µm on a D405). Zero means
+	// unreadable, and a zero-scale calibration must be refused, never defaulted.
 	DepthScaleM float64
 
 	// BaselineMM is the stereo baseline from the coefficients table, in
