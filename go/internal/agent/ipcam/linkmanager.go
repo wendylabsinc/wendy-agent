@@ -311,7 +311,11 @@ func (m *LinkManager) ensureWatching(ctx context.Context, iface Interface) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	watch := &linkWatch{index: iface.Index, cancel: cancel}
-	events := make(chan *Packet, 32)
+	type watchEvent struct {
+		packet  *Packet
+		serving bool
+	}
+	events := make(chan watchEvent, 32)
 	m.running[link] = watch
 	// The clock a restored claim waits on: it is how long we have been listening
 	// for a competing DHCP server on this link in this process.
@@ -331,8 +335,8 @@ func (m *LinkManager) ensureWatching(ctx context.Context, iface Interface) {
 			select {
 			case <-ctx.Done():
 				return
-			case p := <-events:
-				m.processWatchPacket(ctx, link, watch, p)
+			case event := <-events:
+				m.processWatchPacket(ctx, link, watch, event.packet, event.serving)
 			}
 		}
 	}()
@@ -363,9 +367,13 @@ func (m *LinkManager) ensureWatching(ctx context.Context, iface Interface) {
 					stop()
 				}
 			}
+			// Do not promote a packet overheard before the claim merely because
+			// deferred registry work runs after the DHCP server starts.
+			_, claimed := m.claimed[link]
+			serving := claimed && m.stop[link] != nil && m.guard.State(link) == LinkServing
 			m.mu.Unlock()
 			select {
-			case events <- p:
+			case events <- watchEvent{packet: p, serving: serving}:
 			default:
 				// A queued event also performs pending disqualification cleanup.
 			}
@@ -381,7 +389,7 @@ func (m *LinkManager) ensureWatching(ctx context.Context, iface Interface) {
 
 // processWatchPacket performs deferred work only for the current watcher.
 // Serving was already cancelled by the reader if this link was disqualified.
-func (m *LinkManager) processWatchPacket(ctx context.Context, link string, watch *linkWatch, p *Packet) {
+func (m *LinkManager) processWatchPacket(ctx context.Context, link string, watch *linkWatch, p *Packet, observedServing bool) {
 	m.scanMu.Lock()
 	defer m.scanMu.Unlock()
 	m.mu.Lock()
@@ -396,7 +404,9 @@ func (m *LinkManager) processWatchPacket(ctx context.Context, link string, watch
 	m.logger.Info("dhcp seen on camera link",
 		zap.String("link", link), zap.String("type", p.Type.String()),
 		zap.String("mac", p.CHAddr.String()), zap.String("hostname", p.Hostname))
-	m.noteClient(link, p)
+	if observedServing {
+		m.noteClient(link, p)
+	}
 }
 
 // noteClient records clients only on a claimed camera link with a DHCP server.

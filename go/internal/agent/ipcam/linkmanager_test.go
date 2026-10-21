@@ -1183,3 +1183,34 @@ func TestNoteClientRequiresStartedServer(t *testing.T) {
 		t.Fatalf("client registered before server startup: %+v", got)
 	}
 }
+
+// Registry work can wait behind a scan while the link becomes a camera segment.
+// That must not turn an earlier passive observation into served-client evidence.
+func TestManagerDoesNotPromoteQueuedPreClaimClient(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "watcher", func() bool { return len(h.watchedLinks()) == 1 })
+	before := net.HardwareAddr{0, 1, 2, 3, 4, 5}
+	after := net.HardwareAddr{0, 1, 2, 3, 4, 6}
+	func() {
+		h.mgr.scanMu.Lock()
+		defer h.mgr.scanMu.Unlock()
+		h.feed("eth0", &Packet{Type: Discover, CHAddr: before, Hostname: "pre-claim"})
+		h.advance(unansweredWindow)
+		if !h.mgr.guard.ShouldClaim("eth0", h.mgr.now()) {
+			t.Fatal("unanswered link did not become claimable")
+		}
+		h.mgr.claim(ctx, cabledEth("eth0"), nil, []Interface{cabledEth("eth0")})
+		waitFor(t, "server", func() bool { return len(h.servedLinks()) == 1 })
+		h.feed("eth0", &Packet{Type: Request, CHAddr: after, Hostname: "served"})
+	}()
+	// Both packets traverse the same FIFO; seeing the latter proves that the
+	// deferred work for the pre-claim packet has finished too.
+	waitFor(t, "served client registration", func() bool { return len(h.reg.List()) != 0 })
+	cams := h.reg.List()
+	if len(cams) != 1 || cams[0].MAC != after.String() || !cams[0].DHCPServed {
+		t.Fatalf("queued passive observation became a camera: %+v", cams)
+	}
+}
