@@ -25,6 +25,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/linklocal"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -1362,7 +1363,7 @@ func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	latestVer, _, err := resolveAgentVersion(nightly)
 	if err != nil {
-		fmt.Printf("Could not check for agent updates: %v\n", err)
+		usermessage.Printf("Could not check for agent updates: %v\n", err)
 		return conn, nil
 	}
 

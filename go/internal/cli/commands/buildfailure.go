@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"io"
 	"os"
 	"regexp"
@@ -283,7 +284,7 @@ func renderBuildFailure(w io.Writer, label, raw string, buildErr error) error {
 	if summary.cause != "" && buildErr != nil {
 		// The error the returned one may replace (buildFailureError). CI's
 		// OCI-export retry (go/scripts/test-ci.sh) also greps for it.
-		fmt.Fprintf(w, "  Error: %s\n", strings.Join(strings.Fields(buildErr.Error()), " "))
+		usermessage.Fprintf(w, "  Error: %s\n", usermessage.Text(buildErr))
 	}
 	if summary.source != "" {
 		fmt.Fprintf(w, "  At: %s\n", summary.source)

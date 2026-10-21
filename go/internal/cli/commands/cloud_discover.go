@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -205,7 +206,7 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				message, err := unsetPickerDefault()
 				m.flashIsError = err != nil
 				if err != nil {
-					m.flashMessage = err.Error()
+					m.flashMessage = usermessage.Text(err)
 				} else {
 					m.defaultDevice, m.flashMessage = "", message
 					m.refreshTable()
@@ -217,7 +218,7 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.flashIsError = err != nil
 			if err != nil {
-				m.flashMessage = err.Error()
+				m.flashMessage = usermessage.Text(err)
 			} else {
 				m.defaultDevice = key
 				m.flashMessage = fmt.Sprintf("Default device set to %s.", m.devices[cursor].GetName())
@@ -333,7 +334,7 @@ func (m cloudDiscoverModel) View() string {
 	sb.WriteString("\n")
 
 	if m.err != nil {
-		sb.WriteString(m.viewLine(fmt.Sprintf("Error: %v", m.err)) + "\n")
+		sb.WriteString(m.viewLine(usermessage.Sprintf("Error: %v", m.err)) + "\n")
 	}
 	if len(m.devices) > 0 {
 		sb.WriteString(m.table.View() + "\n")

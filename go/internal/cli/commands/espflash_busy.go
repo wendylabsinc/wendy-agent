@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"os"
 	"time"
 )
@@ -88,7 +89,7 @@ func offerPortBusyRetry(port string) (retriedAutomatically bool) {
 	killedAny := false
 	for _, h := range holders {
 		if err := killProcessFn(h.pid); err != nil {
-			fmt.Printf("  could not kill PID %d: %v\n", h.pid, err)
+			usermessage.Printf("  could not kill PID %d: %v\n", h.pid, err)
 			continue
 		}
 		killedAny = true

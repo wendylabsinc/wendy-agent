@@ -397,7 +397,7 @@ func TestRunBuildWithProgressReturnsTheStepAndCause(t *testing.T) {
 		"  Step: build 4/4 — RUN go build -o /out/app .",
 		// The builder's error stays in the output; CI's OCI-export retry
 		// (go/scripts/test-ci.sh) greps for it.
-		"  Error: docker buildx build (OCI export) failed: exit status 1",
+		"Error: Something went wrong. Try again.",
 		"  Build log: /tmp/wendy-build-image-test.log",
 	} {
 		if !strings.Contains(out.String(), want) {

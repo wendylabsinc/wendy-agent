@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
@@ -139,15 +140,15 @@ func mountConfigPartition(partDev string) (configMount, error) {
 		path:     tmpDir,
 		elevated: !userWritable(tmpDir),
 		release: func() {
-			if out, err := exec.Command("diskutil", "unmount", tmpDir).CombinedOutput(); err != nil {
+			if _, err := exec.Command("diskutil", "unmount", tmpDir).CombinedOutput(); err != nil {
 				// Leave tmpDir alone: with the volume still mounted there,
 				// RemoveAll would delete the partition's contents, not the
 				// mount point. ejectDisk tears the mount down later anyway.
-				fmt.Printf("Warning: could not unmount config partition at %s: %s: %v\n", tmpDir, strings.TrimSpace(string(out)), err)
+				usermessage.Printf("Warning: could not unmount config partition at %s: %v\n", tmpDir, err)
 				return
 			}
 			if err := os.RemoveAll(tmpDir); err != nil {
-				fmt.Printf("Warning: could not remove temporary mount dir %s: %v\n", tmpDir, err)
+				usermessage.Printf("Warning: could not remove temporary mount dir %s: %v\n", tmpDir, err)
 			}
 		},
 	}, nil
@@ -173,7 +174,7 @@ func userWritable(dir string) bool {
 	name := f.Name()
 	f.Close() //nolint:errcheck
 	if err := os.Remove(name); err != nil {
-		fmt.Printf("Warning: could not remove write probe %s: %v\n", name, err)
+		usermessage.Printf("Warning: could not remove write probe %s: %v\n", name, err)
 	}
 	return true
 }

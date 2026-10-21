@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -91,7 +92,7 @@ func stopInterruptedApp(ctx context.Context, conn *grpcclient.AgentConnection, a
 	stopCtx, cancel := context.WithTimeout(context.Background(), attachedStopTimeout)
 	defer cancel()
 	if _, err := conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{AppName: name}); err != nil {
-		cliNotice("Could not stop %s: %v", containerDisplayName(appCfg), err)
+		cliNotice("%s", usermessage.Sprintf("Could not stop %s: %v", containerDisplayName(appCfg), err))
 		noteInterruptedApp(ctx, name, interruptedAppStopFailed, err)
 		return
 	}

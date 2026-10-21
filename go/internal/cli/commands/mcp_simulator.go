@@ -11,6 +11,7 @@ import (
 	"time"
 
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -69,7 +70,7 @@ func newSimulatorBackend(newStore func() (*vm.Store, error), resolve simulatorIm
 				}
 				info, err := readMCPSimulator(store, name)
 				if err != nil {
-					items = append(items, wendymcp.SimulatorInfo{Name: name, Device: "vm:" + name, State: "unknown", Error: err.Error()})
+					items = append(items, wendymcp.SimulatorInfo{Name: name, Device: "vm:" + name, State: "unknown", Error: usermessage.Text(err)})
 					continue
 				}
 				items = append(items, *info)
@@ -148,7 +149,7 @@ func readMCPSimulator(store *vm.Store, name string) (*wendymcp.SimulatorInfo, er
 	}
 	profile, exists, err := store.ReadRobotProfile(name)
 	if err != nil {
-		info.Error = err.Error()
+		info.Error = usermessage.Text(err)
 	} else if exists {
 		info.Profile = profile.Kind
 	} else {

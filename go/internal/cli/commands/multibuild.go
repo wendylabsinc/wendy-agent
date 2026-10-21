@@ -19,6 +19,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -874,7 +875,7 @@ func buildServicesParallelCore(
 			} else if err != nil {
 				if buildCtx.Err() == nil {
 					if !quietBuild {
-						cliLogln("Service %s build failed: %v", name, err)
+						cliLogln("%s", usermessage.Sprintf("Service %s build failed: %v", name, err))
 					}
 				}
 			} else if !quietBuild {
@@ -1380,7 +1381,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 				}
 				if recvErr != nil {
 					if runCtx.Err() == nil {
-						cliLogln("Warning: service %s stream: %v", name, recvErr)
+						cliLogln("%s", usermessage.Sprintf("Warning: service %s stream: %v", name, recvErr))
 					}
 					return
 				}

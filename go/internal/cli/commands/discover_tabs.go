@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -320,7 +321,7 @@ func copySimulatorAddress(choice *simulatorChoice) string {
 		return fmt.Sprintf("%s is not running — press s to start it.", choice.Name)
 	}
 	if err := clipboardWriter(choice.Address); err != nil {
-		return fmt.Sprintf("Copy failed: %v", err)
+		return usermessage.Sprintf("Copy failed: %v", err)
 	}
 	return "Copied " + choice.Address + " to clipboard."
 }

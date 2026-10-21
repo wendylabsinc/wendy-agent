@@ -10,6 +10,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
@@ -144,7 +145,7 @@ func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause er
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		fmt.Fprintf(os.Stderr, "Certificate refresh failed: %v\n", err)
+		usermessage.Fprintf(os.Stderr, "Certificate refresh failed: %v\n", err)
 		return nil, cause
 	}
 	conn, err := retry()
@@ -202,7 +203,7 @@ func autoSyncTimeAndRetry(ctx context.Context, cause error, retry func() (*grpcc
 		return nil, ctx.Err()
 	}
 	if syncErr != nil {
-		fmt.Fprintf(os.Stderr, "Could not broadcast a signed time proof: %v\n", syncErr)
+		usermessage.Fprintf(os.Stderr, "Could not broadcast a signed time proof: %v\n", syncErr)
 		return nil, cause
 	}
 	fmt.Fprintln(os.Stderr, "Signed time proof broadcast; device receipt and clock change are unconfirmed. Retrying the connection...")

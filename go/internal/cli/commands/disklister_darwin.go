@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"io"
 	"os"
 	"os/exec"
@@ -59,7 +60,7 @@ func listDrivesText() ([]drive, error) {
 	if err != nil {
 		// Surface a warning instead of silently ignoring the failure so that
 		// users can diagnose missing drives (e.g., SD cards in built-in readers).
-		fmt.Fprintf(os.Stderr, "warning: failed to list internal physical disks with diskutil: %v\n", err)
+		usermessage.Fprintf(os.Stderr, "warning: failed to list internal physical disks with diskutil: %v\n", err)
 	} else {
 		for _, d := range parseDiskutilOutput(internalOut, seen, false) {
 			if d.IsRemovable {
@@ -219,7 +220,7 @@ func unmountDarwinDisk(devPath string, run preparationCommand) error {
 func unmountBeforeWrite(d drive) error {
 	fmt.Printf("Preparing %s for writing...\n", d.DevicePath)
 	if err := stopTargetIndexing(d.DevicePath, runWithTimeout); err != nil {
-		fmt.Printf("Note: could not stop Spotlight on %s: %v\n", d.DevicePath, err)
+		usermessage.Printf("Note: could not stop Spotlight on %s: %v\n", d.DevicePath, err)
 	}
 	return unmountDisk(d.DevicePath)
 }

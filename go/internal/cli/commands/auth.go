@@ -20,6 +20,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -597,7 +598,7 @@ func refreshCerts(ctx context.Context, all bool) error {
 		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", label)))
 
 		if err := refreshCertsForAuthFn(ctx, auth); err != nil {
-			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", label, err)))
+			fmt.Println(tui.ErrorMessage(usermessage.Sprintf("Failed to refresh for %s: %v", label, err)))
 			failed = append(failed, fmt.Errorf("context %q: %w", auth.Name, err))
 			lastErr = err
 			continue

@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -758,7 +759,7 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.startingApp = ""
 		if msg.err != nil {
-			m.actionStatus = fmt.Sprintf("Error starting %s: %s", msg.app, userFacingGRPCError(msg.err))
+			m.actionStatus = usermessage.Sprintf("Error starting %s: %s", msg.app, userFacingGRPCError(msg.err))
 		} else {
 			m.actionStatus = "Started " + msg.app
 		}
@@ -838,7 +839,7 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stoppingApp = ""
 		if msg.err != nil {
-			m.actionStatus = fmt.Sprintf("Error stopping %s: %s", msg.app, userFacingGRPCError(msg.err))
+			m.actionStatus = usermessage.Sprintf("Error stopping %s: %s", msg.app, userFacingGRPCError(msg.err))
 		} else {
 			m.actionStatus = fmt.Sprintf("Stopped %s", msg.app)
 		}

@@ -3,7 +3,7 @@
 package commands
 
 import (
-	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"regexp"
 	"strings"
 	"time"
@@ -19,7 +19,7 @@ const markerTimeout = 10 * time.Second
 // abandon a goroutine that can later mount or modify the card after eject.
 func markFATVolumes(d drive) {
 	if err := markFATVolumesUnindexed(d); err != nil {
-		fmt.Printf("Note: could not mark %s's FAT volumes to skip Spotlight indexing: %v\n", d.DevicePath, err)
+		usermessage.Printf("Note: could not mark %s's FAT volumes to skip Spotlight indexing: %v\n", d.DevicePath, err)
 	}
 }
 

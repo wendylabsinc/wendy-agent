@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunkupload"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
@@ -135,7 +136,7 @@ func pushLayersResumingTunnelDrops(ctx context.Context, conn *grpcclient.AgentCo
 			cfg = gzipChunkUploadConfig
 			next, rerr = reconnectAgentAfterRestart(ctx, cur)
 		} else {
-			cliNotice("Connection dropped mid-transfer (%v); reconnecting to resume — chunks already staged on the device are skipped (attempt %d/%d)...", err, attempt+1, chunkPushResumeAttempts)
+			cliNotice("%s", usermessage.Sprintf("Connection dropped mid-transfer (%v); reconnecting to resume — chunks already staged on the device are skipped (attempt %d/%d)...", err, attempt+1, chunkPushResumeAttempts))
 			next, rerr = cur.Reconnect(ctx)
 		}
 		if rerr != nil {

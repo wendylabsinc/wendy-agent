@@ -115,7 +115,7 @@ func TestUIMemoryAmbiguousForgetKeepsBothNotes(t *testing.T) {
 	enterMemoryCommand(t, m, "/forget "+entries[0].ID[:8])
 	text, _ := m.transcriptContent(200)
 	text = ansi.Strip(text)
-	if !strings.Contains(text, "Could not forget note") || !strings.Contains(text, "ambiguous") {
+	if !strings.Contains(text, "Could not forget note") || !strings.Contains(text, "More than one saved note matches.") {
 		t.Fatalf("ambiguous deletion did not explain why the note could not be removed: %s", text)
 	}
 	for _, entry := range entries {

@@ -235,6 +235,7 @@ func (e *Engine) Turn(ctx context.Context, prompt string, emit func(Event), appr
 				}
 			}
 			if len(images) > 0 {
+				// usermessage: payload Tool results and images are model protocol data.
 				result = fmt.Sprintf("[%d image(s) attached for visual inspection.]\n%s", len(images), result)
 			}
 			result = truncateOutput(result)

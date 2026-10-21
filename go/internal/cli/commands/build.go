@@ -17,6 +17,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
@@ -893,7 +894,7 @@ func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string
 
 	product, err := swifttoolchain.FindSwiftProduct(dir)
 	if err != nil {
-		cliLogln("Warning: could not detect Swift product name (%v); using %q", err, appID)
+		cliLogln("%s", usermessage.Sprintf("Warning: could not detect Swift product name (%v); using %q", err, appID))
 		product = appID
 	}
 

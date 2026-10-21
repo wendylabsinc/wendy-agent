@@ -19,6 +19,7 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -728,10 +729,7 @@ func containerExitDetail(ctx context.Context, conn *grpcclient.AgentConnection, 
 // when the agent recorded a reason — so a bare "timed out" isn't the only thing
 // the user sees when a startup crash is the real cause (WDY-1819).
 func warnReadiness(ctx context.Context, conn *grpcclient.AgentConnection, appID string, err error) {
-	msg := err.Error()
-	if d := containerExitDetail(ctx, conn, appID); d != "" {
-		msg += " — " + d
-	}
+	msg := usermessage.Text(err)
 	cliLogln("Warning: %s", msg)
 }
 

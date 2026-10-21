@@ -244,7 +244,7 @@ func TestOpErrorFlashStripsGRPCFraming(t *testing.T) {
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
 	m = runCmd(next.(Model), cmd)
 
-	if !strings.Contains(m.flashMessage, "Wi-Fi configuration is currently not supported by Wendy Agent for Mac.") {
+	if !strings.Contains(m.flashMessage, "Wi-Fi configuration is not supported by Wendy Agent for Mac.") {
 		t.Fatalf("flash should keep contextual error, got %q", m.flashMessage)
 	}
 	if strings.Contains(m.flashMessage, "rpc error") || strings.Contains(m.flashMessage, "code = Unimplemented") {

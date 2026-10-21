@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -233,7 +234,7 @@ func runTourStep(ctx context.Context, out io.Writer, label string, run func() er
 		if !isInteractiveTerminalFn() {
 			return err
 		}
-		fmt.Fprintf(out, "\n%s needs attention: %v\nResolve the issue, then retry this step to continue the tour.\n", label, err)
+		usermessage.Fprintf(out, "\n%s needs attention: %v\nResolve the issue, then retry this step to continue the tour.\n", label, err)
 		retry, promptErr := confirmTourRetry(ctx, out)
 		if ctx.Err() != nil {
 			return ctx.Err()

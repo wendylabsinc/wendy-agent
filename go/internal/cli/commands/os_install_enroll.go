@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -141,7 +142,7 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 		if !interactive {
 			return nil, fmt.Errorf("--pre-enroll: %w", err)
 		}
-		fmt.Printf("Cannot pre-enroll: %v\n", err)
+		usermessage.Printf("Cannot pre-enroll: %v\n", err)
 		return nil, ackContinueUnenrolled()
 	}
 	if auth == nil {
@@ -157,7 +158,7 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 		if !interactive {
 			return nil, fmt.Errorf("--pre-enroll: resolving organization: %w", orgErr)
 		}
-		fmt.Printf("Cannot resolve organization: %v\n", orgErr)
+		usermessage.Printf("Cannot resolve organization: %v\n", orgErr)
 		return nil, ackContinueUnenrolled()
 	}
 
@@ -170,7 +171,7 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 	if !interactive {
 		return nil, fmt.Errorf("--pre-enroll: pre-enrollment failed: %w", enrollErr)
 	}
-	fmt.Printf("Pre-enrollment failed: %v\n", enrollErr)
+	usermessage.Printf("Pre-enrollment failed: %v\n", enrollErr)
 	return nil, ackContinueUnenrolled()
 }
 
@@ -221,7 +222,7 @@ func resolveACMEPreEnrollment(ctx context.Context, cfg *config.Config, opts preE
 		if !interactive {
 			return nil, fmt.Errorf("--pre-enroll: %w", err)
 		}
-		fmt.Printf("Cannot pre-enroll: %v\n", err)
+		usermessage.Printf("Cannot pre-enroll: %v\n", err)
 		return nil, ackContinueUnenrolled()
 	}
 	if auth == nil {
@@ -238,6 +239,6 @@ func resolveACMEPreEnrollment(ctx context.Context, cfg *config.Config, opts preE
 	if !interactive {
 		return nil, fmt.Errorf("--pre-enroll: pre-enrollment failed: %w", enrollErr)
 	}
-	fmt.Printf("Pre-enrollment failed: %v\n", enrollErr)
+	usermessage.Printf("Pre-enrollment failed: %v\n", enrollErr)
 	return nil, ackContinueUnenrolled()
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -76,8 +77,8 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 	var pf driverPreflight
 	dl, err := installedDriverAddons(ctx, conn)
 	if err != nil {
-		pf.unreadable = err.Error()
-		cliLogln("%s", tui.WarningMessage("Could not read the installed driver add-ons: "+err.Error()))
+		pf.unreadable = usermessage.Text(err)
+		cliLogln("%s", usermessage.Sprintf("%s", tui.WarningMessage("Could not read the installed driver add-ons: "+usermessage.Text(err))))
 		return pf
 	}
 	installed := dl.GetInstalled()
@@ -125,7 +126,7 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 	}
 
 	if targetErr != "" {
-		cliLogln("  target kernel could not be determined: %s", targetErr)
+		cliLogln("%s", usermessage.Sprintf("  target kernel could not be determined: %s", targetErr))
 		if stageDrivers {
 			for _, d := range atRisk {
 				pf.unstaged = append(pf.unstaged, unstagedAddon{d.GetName(), targetErr})
@@ -180,7 +181,7 @@ func releaseTargetKernel(deviceType, targetVersion string, pr int) (string, []ex
 	}
 	exts, err := driverExtensionsForFn(deviceType, targetVersion, pr)
 	if err != nil {
-		return "", nil, fmt.Sprintf("could not read the published add-ons: %v", err)
+		return "", nil, usermessage.Sprintf("could not read the published add-ons: %v", err)
 	}
 	set := map[string]bool{}
 	for _, e := range exts {
@@ -250,7 +251,7 @@ func stageRebuild(ctx context.Context, conn *grpcclient.AgentConnection, name, t
 		StageOnly:     true,
 	}
 	if err := runDriverStage(ctx, conn, spec); err != nil {
-		reason := fmt.Sprintf("staging failed: %v", err)
+		reason := usermessage.Sprintf("staging failed: %v", err)
 		cliLogln("  %s: %s", name, reason)
 		return reason
 	}
@@ -408,8 +409,8 @@ func driverRawsIn(dir string) ([]string, error) {
 func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, installed []*agentpbv2.InstalledDriver, dir, targetKernel, targetErr string, pf *driverPreflight) {
 	files, err := driverRawsIn(dir)
 	if err != nil {
-		pf.unreadable = err.Error()
-		cliLogln("%s", tui.WarningMessage("Could not read "+dir+": "+err.Error()))
+		pf.unreadable = usermessage.Text(err)
+		cliLogln("%s", usermessage.Sprintf("%s", tui.WarningMessage("Could not read "+dir+": "+usermessage.Text(err))))
 		return
 	}
 	cliLogln("Staging driver add-ons from %s", tui.Path(dir))
@@ -419,7 +420,7 @@ func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, install
 		name := strings.TrimSuffix(filepath.Base(path), ".raw")
 		present[name] = true
 		if err := stageLocalRebuild(ctx, conn, name, path, targetKernel); err != nil {
-			reason := fmt.Sprintf("staging failed: %v", err)
+			reason := usermessage.Sprintf("staging failed: %v", err)
 			cliLogln("  %s: %s", name, reason)
 			pf.unstaged = append(pf.unstaged, unstagedAddon{name, reason})
 			continue

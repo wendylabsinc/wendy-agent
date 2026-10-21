@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
@@ -202,7 +203,7 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 // because it did not answer in time (see discoverExternalDevicesReporting).
 func warnSkippedRuntimes(w io.Writer, skipped []error) {
 	for _, err := range skipped {
-		fmt.Fprintf(w, "Warning: %v; it is not listed.\n", err)
+		usermessage.Fprintf(w, "Warning: %v; it is not listed.\n", err)
 	}
 }
 
@@ -888,7 +889,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hasResults = true
 		m.refreshTable()
 		if msg.err != nil {
-			m.bleWarning = msg.err.Error()
+			m.bleWarning = usermessage.Text(msg.err)
 			return m, nil // stop retrying BLE scans when unavailable
 		}
 		m.bleWarning = ""
@@ -977,7 +978,7 @@ func (m discoverModel) View() string {
 	sb.WriteString("\n")
 
 	if m.err != nil {
-		sb.WriteString(m.viewLine(fmt.Sprintf("Error: %v", m.err)) + "\n")
+		sb.WriteString(m.viewLine(usermessage.Sprintf("Error: %v", m.err)) + "\n")
 	}
 
 	if !m.collection.IsEmpty() {
@@ -1385,7 +1386,7 @@ func agentAlreadyAtReleaseNote(deviceName, agentVer, releaseVer string) string {
 func discoverUpdateFlash(msg discoverUpdateDoneMsg) (message string, isError bool) {
 	switch {
 	case msg.err != nil:
-		return fmt.Sprintf("Update failed for %s: %v", msg.deviceName, msg.err), true
+		return usermessage.Sprintf("Update failed for %s: %v", msg.deviceName, msg.err), true
 	case msg.note != "":
 		return msg.note, false
 	default:
@@ -1738,10 +1739,10 @@ func firstNonEmpty(values ...string) string {
 func copyDeviceJSON(v interface{}) (message string, isError bool) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Sprintf("Copy failed: %v", err), true
+		return usermessage.Sprintf("Copy failed: %v", err), true
 	}
 	if err := clipboardWriter(string(data)); err != nil {
-		return fmt.Sprintf("Copy failed: %v", err), true
+		return usermessage.Sprintf("Copy failed: %v", err), true
 	}
 	return "Copied device info as JSON to clipboard.", false
 }
@@ -1853,7 +1854,7 @@ func copyToClipboard(text string) error {
 			if detail == "" {
 				detail = err.Error()
 			}
-			errs = append(errs, fmt.Sprintf("%s: %s", c.name, strings.TrimSpace(detail)))
+			errs = append(errs, fmt.Errorf("%s: %s", c.name, strings.TrimSpace(detail)).Error())
 			continue
 		}
 		return nil

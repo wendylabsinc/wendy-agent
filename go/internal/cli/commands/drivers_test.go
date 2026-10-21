@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -107,10 +108,13 @@ func TestDriverServiceErr(t *testing.T) {
 			t.Errorf("message %q missing %q", got, want)
 		}
 	}
-	// Every other failure has to reach the user unchanged.
+	// Keep the typed cause for classification, but display an approved sentence.
 	orig := status.Error(codes.Unavailable, "device is offline")
-	if driverServiceErr(orig) != orig {
-		t.Errorf("driverServiceErr rewrote a non-Unimplemented error")
+	if !errors.Is(driverServiceErr(orig), orig) {
+		t.Fatal("lost the typed cause")
+	}
+	if got := userFacingGRPCError(driverServiceErr(orig)); got != "Device is offline. Make sure it's on and connected, then try again." {
+		t.Errorf("message = %q", got)
 	}
 	if driverServiceErr(nil) != nil {
 		t.Error("driverServiceErr(nil) should stay nil")

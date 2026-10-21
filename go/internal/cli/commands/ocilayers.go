@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 )
@@ -1118,7 +1119,7 @@ func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, pl
 	// prune refuses must not lose the ability to build, so a prune failure is
 	// only a warning here.
 	if err := pruneOCILayoutDirIndex(destDir, platform); err != nil {
-		fmt.Fprintf(stderr, "warning: could not prune OCI layout index (continuing; superseded entries accumulate until a successful prune): %v\n", err)
+		usermessage.Fprintf(stderr, "warning: could not prune OCI layout index (continuing; superseded entries accumulate until a successful prune): %v\n", err)
 	}
 	return nil
 }
@@ -1134,7 +1135,7 @@ func buildImageToOCILayoutDirWithBuildkit(ctx context.Context, cwd, dockerfile, 
 		return err
 	}
 	if err := pruneOCILayoutDirIndex(destDir, platform); err != nil {
-		fmt.Fprintf(stderr, "warning: could not prune OCI layout index (continuing; superseded entries accumulate until a successful prune): %v\n", err)
+		usermessage.Fprintf(stderr, "warning: could not prune OCI layout index (continuing; superseded entries accumulate until a successful prune): %v\n", err)
 	}
 	return nil
 }

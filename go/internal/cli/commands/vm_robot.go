@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -597,7 +598,7 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if !isRobotTour(ctx) {
 		cliLogln("%s ready. Sandbox: %s", runtime.name, robotURL(port))
 		if err := browserOpen(robotURL(port)); err != nil {
-			cliLogln("Open %s in your browser to view the sandbox (auto-open failed: %v).", robotURL(port), err)
+			cliLogln("%s", usermessage.Sprintf("Open %s in your browser to view the sandbox (auto-open failed: %v).", robotURL(port), err))
 		}
 	}
 	return nil
@@ -1027,7 +1028,7 @@ func readSimulatorRobots(ctx context.Context, statuses []vm.Status) map[string]s
 	for _, status := range statuses {
 		profile, exists, err := store.ReadRobotProfile(status.Name)
 		if err != nil {
-			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: err.Error()}
+			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: usermessage.Text(err)}
 			continue
 		}
 		if !exists {
@@ -1035,7 +1036,7 @@ func readSimulatorRobots(ctx context.Context, statuses []vm.Status) map[string]s
 		}
 		runtime, err := robotRuntimeForKind(profile.Kind)
 		if err != nil {
-			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: err.Error()}
+			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: usermessage.Text(err)}
 			continue
 		}
 		info := simulatorRobotInfo{Kind: runtime.name, State: "stopped", Hint: "Press s to start " + status.Name + " and its robot; then 'wendy vm robot open " + status.Name + "' opens the sandbox."}
@@ -1064,10 +1065,10 @@ func readSimulatorRobots(ctx context.Context, statuses []vm.Status) map[string]s
 					}
 					info.Hint = "Sandbox: " + robotURL(port) + "; 'wendy vm robot open " + status.Name + "' opens it; 'wendy vm robot reset " + status.Name + "' resets the world."
 				} else {
-					info.Hint = err.Error()
+					info.Hint = usermessage.Text(err)
 				}
 			} else if err != nil {
-				info.Hint = err.Error()
+				info.Hint = usermessage.Text(err)
 			}
 			replies <- observation{status.Name, info}
 		}()

@@ -47,7 +47,7 @@ func TestLANBrowseOutcome_DevicesFoundOnlyWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want a warning only when devices were still found", err)
 	}
-	if !strings.Contains(warning, "dns-sd error -65563") {
+	if !strings.Contains(warning, "Something went wrong. Try again.") || strings.Contains(warning, "dns-sd error -65563") {
 		t.Fatalf("warning = %q, want it to carry the browse error", warning)
 	}
 }

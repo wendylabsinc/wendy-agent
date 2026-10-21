@@ -23,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/onboarding"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -1369,7 +1370,7 @@ func (m tourWizardModel) viewDeviceName(w int) string {
 	sb.WriteString(wizSubStyle.Render("Give your device a short, memorable hostname.") + "\n\n")
 	sb.WriteString(m.input.View() + "\n\n")
 	if m.inputErr != nil {
-		sb.WriteString(wizErrorStyle.Render("✗ "+m.inputErr.Error()) + "\n\n")
+		sb.WriteString(wizErrorStyle.Render("✗ "+usermessage.Text(m.inputErr)) + "\n\n")
 	} else {
 		sb.WriteString(wizBodyStyle.Width(w).Render("Lowercase letters, digits, and hyphens only. Min 3 characters.") + "\n\n")
 	}
@@ -1671,7 +1672,7 @@ func (m tourWizardModel) viewAIMCPSetup(w int) string {
 	} else {
 		for _, r := range m.mcpSetupResult {
 			if r.err != nil {
-				sb.WriteString(wizErrorStyle.Render(fmt.Sprintf("✗ %s: %v", r.tool, r.err)) + "\n")
+				sb.WriteString(wizErrorStyle.Render(usermessage.Sprintf("✗ %s: %v", r.tool, r.err)) + "\n")
 			} else {
 				sb.WriteString(wizSuccessStyle.Render(fmt.Sprintf("✓ %s configured", r.tool)) + "\n")
 			}
@@ -1743,7 +1744,7 @@ func (m tourWizardModel) viewError(w int) string {
 	var sb strings.Builder
 	sb.WriteString(wizErrorStyle.Render("Something went wrong") + "\n\n")
 	if m.err != nil {
-		sb.WriteString(wizBodyStyle.Width(w).Render(m.err.Error()) + "\n\n")
+		sb.WriteString(wizBodyStyle.Width(w).Render(usermessage.Text(m.err)) + "\n\n")
 	}
 	sb.WriteString(wizBodyStyle.Width(w).Render("You can restart the tour at any time with:") + "\n\n")
 	sb.WriteString("  " + wizCodeStyle.Render("wendy tour --hardware") + "\n\n")

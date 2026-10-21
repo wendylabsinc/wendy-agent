@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -224,7 +224,7 @@ func runOSInstallDirect(ctx context.Context, imagePath string, driveID string, f
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
-			fmt.Printf("Could not determine image size: %v\n", err)
+			usermessage.Printf("Could not determine image size: %v\n", err)
 		}
 	}
 	if err := checkImageFitsDrive(stream.uncompressedSize, *targetDrive); err != nil {
@@ -300,7 +300,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 
 	devices, err := getAvailableDevices()
 	if err != nil {
-		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
+		cliNotice("%s", usermessage.Sprintf("Warning: could not fetch Linux device manifest: %v", err))
 	}
 
 	var items []tui.PickerItem
@@ -413,7 +413,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		linuxDevices, err = getAvailableDevices()
 	}
 	if err != nil {
-		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
+		cliNotice("%s", usermessage.Sprintf("Warning: could not fetch Linux device manifest: %v", err))
 	}
 
 	// Fetch Wendy Lite boards and targets, keeping only boards with published
@@ -421,11 +421,11 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// picker and fail immediately after selection.
 	wliteBoards, err := WendyLiteBoardsWithFirmware(nightly)
 	if err != nil {
-		log.Printf("WARNING: could not fetch Wendy Lite board catalog: %v", err)
+		cliNotice("%s", usermessage.Sprintf("Warning: could not fetch Wendy Lite board catalog: %v", err))
 	}
 	wliteTargets, err := WendyLiteTargets()
 	if err != nil {
-		log.Printf("WARNING: could not fetch Wendy Lite target catalog: %v", err)
+		cliNotice("%s", usermessage.Sprintf("Warning: could not fetch Wendy Lite target catalog: %v", err))
 	}
 	// Drop targets with no board left so the picker never offers a target
 	// that leads to an empty second picker.
@@ -942,14 +942,14 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion, storage)
 		switch {
 		case zerr != nil:
-			fmt.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
+			usermessage.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
 		case berr != nil:
-			fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", berr)
+			usermessage.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", berr)
 		default:
 			if derr := downloadBmap(imgInfo.BmapURL, bmapCandidate); derr != nil {
-				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+				usermessage.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
 			} else if parsed, perr := parseBmap(readFileOrNil(bmapCandidate)); perr != nil {
-				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+				usermessage.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
 			} else {
 				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
 				imageSize = parsed.ImageSize
@@ -973,11 +973,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		if !noBmap && imgInfo.BmapURL != "" {
 			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion, storage)
 			if derr != nil {
-				fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
+				usermessage.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
 			} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
-				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+				usermessage.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
 			} else if parsed, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
-				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+				usermessage.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
 			} else if stream.uncompressedSize > 0 && parsed.ImageSize != stream.uncompressedSize {
 				fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
 			} else {
@@ -992,7 +992,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 				if errors.Is(err, context.Canceled) {
 					return err
 				}
-				fmt.Printf("Could not determine image size: %v\n", err)
+				usermessage.Printf("Could not determine image size: %v\n", err)
 			}
 		}
 		if stream.uncompressedSize > 0 {
@@ -2603,9 +2603,9 @@ func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceN
 		}
 
 		if requested {
-			fmt.Printf("\nWarning: could not apply provisioning data — --wifi / --device-name / --pre-enroll were requested but not written: %v\n", err)
+			usermessage.Printf("\nWarning: could not apply provisioning data — --wifi / --device-name / --pre-enroll were requested but not written: %v\n", err)
 		} else {
-			fmt.Printf("\nWarning: could not pre-configure the agent on the config partition: %v\n", err)
+			usermessage.Printf("\nWarning: could not pre-configure the agent on the config partition: %v\n", err)
 		}
 		fmt.Println("The OS image itself was written successfully — the device will still boot, run the agent baked into the image, and fetch updates after first boot.")
 

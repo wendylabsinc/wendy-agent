@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -458,7 +459,7 @@ func runTourEditableApp(ctx context.Context, out io.Writer, name, kind, appPath 
 				return ctx.Err()
 			}
 			if err != nil {
-				fmt.Fprintf(out, "Could not open the editor: %v\n", err)
+				usermessage.Fprintf(out, "Could not open the editor: %v\n", err)
 			}
 			if !opened || err != nil {
 				fmt.Fprintf(out, "Open %s in your preferred editor.\n", sourcePath)

@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // SpinnerDoneMsg signals that the async work is complete.
@@ -98,7 +99,7 @@ func (m SpinnerModel) View() string {
 	}
 	if m.done {
 		if m.err != nil {
-			return fmt.Sprintf("Error: %v\n", m.err)
+			return usermessage.Sprintf("Error: %v\n", m.err)
 		}
 		return ""
 	}

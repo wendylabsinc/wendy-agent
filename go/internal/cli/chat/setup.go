@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // SetupOptions controls guided configuration before the conversation starts.
@@ -117,7 +118,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 		chooseProvider = false
 		cfg, err = ResolveConnection(cfg)
 		if err != nil {
-			ui.Note("That connection needs another look: " + err.Error())
+			ui.Note("That connection needs another look: " + usermessage.Text(err))
 			chooseProvider = true
 			continue
 		}
@@ -165,7 +166,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 					choices = append(choices, setupChoice{"address", "Change server address", "Use the API address shown in your local AI app."})
 				}
 				choices = append(choices, setupChoice{"back", "Choose another AI", "Go back to local and cloud options."})
-				choice, choiceErr := ui.Choose(ctx, "Let's get you connected", err.Error(), choices)
+				choice, choiceErr := ui.Choose(ctx, "Let's get you connected", usermessage.Text(err), choices)
 				if choiceErr != nil {
 					return Config{}, choiceErr
 				}
@@ -217,7 +218,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 						return Config{}, err
 					}
 					if err != nil {
-						ui.Note("The download didn't finish: " + err.Error())
+						ui.Note("The download didn't finish: " + usermessage.Text(err))
 					}
 				}
 				continue
@@ -247,7 +248,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 			cfg.Model = model
 			resolved, err := ResolveConfig(cfg)
 			if err != nil {
-				ui.Note(err.Error())
+				ui.Note(usermessage.Text(err))
 				continue
 			}
 			toSave := resolved
@@ -260,7 +261,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 				}
 			}
 			if err := backend.save(toSave); err != nil {
-				ui.Note("You're connected, but I couldn't remember this setup: " + err.Error())
+				ui.Note("You're connected, but I couldn't remember this setup: " + usermessage.Text(err))
 			} else {
 				ui.Note("Ready. Next time, just run wendy chat. Use --setup whenever you want to switch AI.")
 			}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 )
@@ -191,10 +192,10 @@ func deployToTargets(ctx context.Context, targets []fleetTarget, cwd string, app
 		fmt.Printf("\n── %s ──\n", target.Name)
 
 		if derr := deployToTarget(ctx, target, cwd, appCfg, opts); derr != nil {
-			res.Error = derr.Error()
+			res.Error = usermessage.Text(derr)
 			failures++
 			results = append(results, res)
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", target.Name, derr)
+			usermessage.Fprintf(os.Stderr, "  ✗ %s: %v\n", target.Name, derr)
 			if !opts.keepGoing {
 				// Surface the failure but return what we have so callers can report.
 				return results, failures

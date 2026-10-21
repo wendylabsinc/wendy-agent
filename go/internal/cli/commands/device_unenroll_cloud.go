@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudunenroll"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
@@ -268,14 +269,14 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 			"assetDeleted": result.AssetDeleted,
 		}
 		if err != nil {
-			out["cloudError"] = err.Error()
+			out["cloudError"] = usermessage.Text(err)
 		}
 		if reset != nil {
 			out["deviceId"] = deviceID
 			out["assetAlreadyAbsent"] = assetAbsent
 		}
 		if resetErr != nil {
-			out["resetError"] = resetErr.Error()
+			out["resetError"] = usermessage.Text(resetErr)
 		}
 		if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(out); encodeErr != nil {
 			return encodeErr

@@ -5,6 +5,7 @@ package t234
 import (
 	"context"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"strings"
 	"time"
 )
@@ -15,7 +16,7 @@ import (
 func (s *Stage2) releaseLegacy(ctx context.Context, disk UMSDisk) error {
 	fmt.Fprintf(s.Out, "  releasing %s (legacy handoff)\n", disk.DevPath)
 	if err := s.RunHelper(ctx, HelperRequest{LegacyEject: true, Writer: WriterOptions{Device: disk.DevPath}}, nil); err != nil {
-		fmt.Fprintf(s.Out, "  warning: legacy release failed (%v); checking whether the disk disconnected\n", err)
+		usermessage.Fprintf(s.Out, "  warning: legacy release failed (%v); checking whether the disk disconnected\n", err)
 	}
 	// A command can fail after it removed the device. Observe the handoff
 	// before the fallback, so it cannot disconnect the next stage's gadget.

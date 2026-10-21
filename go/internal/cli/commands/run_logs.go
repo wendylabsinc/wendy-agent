@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -113,5 +114,5 @@ func isContainerStreamLog(scope *commonpb.InstrumentationScope, record *logspb.L
 }
 
 func runLogStreamWarning(err error) {
-	cliNotice("Notice: native application logs unavailable (%v)", err)
+	cliNotice("%s", usermessage.Sprintf("Notice: native application logs unavailable (%v)", err))
 }

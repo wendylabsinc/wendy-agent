@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -56,7 +57,7 @@ func newDataExportStreamCmd() *cobra.Command {
 					if !follow || cmd.Context().Err() != nil || !retryRecordingExport(err) {
 						return err
 					}
-					fmt.Fprintf(cmd.ErrOrStderr(), "Export interrupted; retained data will be retried: %v\n", err)
+					usermessage.Fprintf(cmd.ErrOrStderr(), "Export interrupted; retained data will be retried: %v\n", err)
 				} else if follow && count == 0 {
 					if err := os.Remove(destination); err != nil {
 						return err

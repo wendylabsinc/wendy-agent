@@ -11,6 +11,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -199,7 +200,7 @@ func awaitAppReady(ctx context.Context, c waitReadyChecks) waitReadyOutcome {
 				// The run's task exited before the app became ready, and the
 				// app runs again with no start resetting its count.
 				err := commandErrorf(errAppCrashed, "app %s exited before becoming ready and was restarted by its restart policy; see its logs with `wendy device logs --app %s`", c.appID, c.appID)
-				return waitReadyOutcome{Status: waitReadyStatusCrashed, Readiness: onFailure, Message: err.Error(), err: err, record: container, observed: true}
+				return waitReadyOutcome{Status: waitReadyStatusCrashed, Readiness: onFailure, Message: userFacingGRPCError(err), err: err, record: container, observed: true}
 			}
 		}
 		if checked && c.probe(ctx) {
@@ -227,7 +228,7 @@ func awaitAppReady(ctx context.Context, c waitReadyChecks) waitReadyOutcome {
 
 func notReadyOutcome(readiness, format string, args ...any) waitReadyOutcome {
 	err := commandErrorf(errReadinessTimeout, format, args...)
-	return waitReadyOutcome{Status: waitReadyStatusNotReady, Readiness: readiness, Message: err.Error(), err: err}
+	return waitReadyOutcome{Status: waitReadyStatusNotReady, Readiness: readiness, Message: userFacingGRPCError(err), err: err}
 }
 
 // unreportedExitOutcome is --wait-ready's outcome for an app it cannot tell
@@ -258,7 +259,7 @@ func crashedOutcome(appID string, c *agentpb.AppContainer, baseline uint32, read
 	default:
 		return waitReadyOutcome{}, false
 	}
-	out := waitReadyOutcome{Status: waitReadyStatusCrashed, Readiness: readiness, Message: err.Error(), err: err, record: c, observed: true}
+	out := waitReadyOutcome{Status: waitReadyStatusCrashed, Readiness: readiness, Message: userFacingGRPCError(err), err: err, record: c, observed: true}
 	if c != nil && c.GetTerminationReason() != "" {
 		code := c.GetExitCode()
 		out.ExitCode, out.TerminationReason = &code, c.GetTerminationReason()
@@ -667,7 +668,7 @@ func stopUnreadyApp(conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfi
 	stopCtx, cancel := context.WithTimeout(context.Background(), attachedStopTimeout)
 	defer cancel()
 	if _, err := conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{AppName: appCfg.ContainerName()}); err != nil {
-		cliNotice("Could not stop %s: %v", containerDisplayName(appCfg), err)
+		cliNotice("%s", usermessage.Sprintf("Could not stop %s: %v", containerDisplayName(appCfg), err))
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/buildargs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -453,7 +454,7 @@ func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.
 			return
 		}
 		if err := validateBuildArgPair(key, value); err != nil {
-			cliLogln("Warning: ignoring device-reported build arg %s=%q: %v", key, value, err)
+			cliLogln("%s", usermessage.Sprintf("Warning: ignoring device-reported build arg %s=%q: %v", key, value, err))
 			return
 		}
 		buildArgs[key] = value
@@ -2506,7 +2507,7 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 		return fmt.Errorf("chunk-diff image preparation failed and --chunking=force disables the registry fallback: %w", chunkErr)
 	} else {
 		noteComposeChunkStall(logOutput, chunkErr, uploadCfg)
-		fmt.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
+		usermessage.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
 		if reporter, ok := streamOutput.(interface{ ReportRegistryFallback(error) }); ok {
 			reporter.ReportRegistryFallback(chunkErr)
 		}

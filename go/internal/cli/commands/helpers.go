@@ -27,6 +27,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -2053,7 +2054,7 @@ func lkgDialFailureReason(conn *grpcclient.AgentConnection, mtlsErr, err error) 
 	case conn == nil:
 		return "ladder returned no connection"
 	case mtlsErr != nil:
-		return fmt.Sprintf("ladder downgraded to plaintext though the cache entry advertised mTLS: %v", mtlsErr)
+		return fmt.Errorf("ladder downgraded to plaintext though the cache entry advertised mTLS: %w", mtlsErr).Error()
 	default:
 		return "ladder downgraded to plaintext though the cache entry advertised mTLS"
 	}
@@ -3029,7 +3030,7 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	osName := resp.GetOs()
 
 	if err := performAgentUpdate(ctx, conn, osName, arch, false); err != nil {
-		fmt.Fprintf(os.Stderr, "Update failed: %v\nContinuing with existing connection.\n", err)
+		usermessage.Fprintf(os.Stderr, "Update failed: %v\nContinuing with existing connection.\n", err)
 		return conn, nil
 	}
 

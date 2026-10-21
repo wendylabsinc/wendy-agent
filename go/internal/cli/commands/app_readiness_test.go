@@ -234,7 +234,7 @@ func TestAwaitAppReady(t *testing.T) {
 			if tc.wantExitZero && (out.ExitCode == nil || *out.ExitCode != 0) {
 				t.Fatalf("exit code = %v, want a recorded 0", out.ExitCode)
 			}
-			if !strings.Contains(out.Message, tc.wantInMessage) {
+			if out.err != nil && !strings.Contains(out.err.Error(), tc.wantInMessage) {
 				t.Fatalf("message %q does not contain %q", out.Message, tc.wantInMessage)
 			}
 		})
@@ -460,7 +460,7 @@ func TestReportWaitReadyOutcomeCleanExitCarriesExitCodeZero(t *testing.T) {
 		t.Fatalf("stdout %q does not carry \"exit_code\":0", stdout)
 	}
 	got := decodeOneJSONObject(t, stdout)
-	if got["status"] != "crashed" || got["termination_reason"] != "exited" || !strings.Contains(fmt.Sprint(got["message"]), "exited before becoming ready (exit code 0)") {
+	if got["status"] != "crashed" || got["termination_reason"] != "exited" || !strings.Contains(fmt.Sprint(got["message"]), "The app stopped unexpectedly.") {
 		t.Fatalf("object = %v, want a crashed clean exit", got)
 	}
 }

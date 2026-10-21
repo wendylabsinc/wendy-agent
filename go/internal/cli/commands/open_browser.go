@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 func newOpenBrowserCmd() *cobra.Command {
@@ -29,7 +30,7 @@ func newOpenBrowserCmd() *cobra.Command {
 			}
 
 			if err := openBrowser(rawURL); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Could not open browser: %v\n", err)
+				usermessage.Fprintf(cmd.ErrOrStderr(), "Could not open browser: %v\n", err)
 				fmt.Fprintln(cmd.OutOrStdout(), rawURL)
 				return nil
 			}

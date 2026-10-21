@@ -28,6 +28,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -793,7 +794,7 @@ func newDeviceSetupCmd() *cobra.Command {
 						return fmt.Errorf("device name is required")
 					}
 					if enrollErr := runEnrollDevice(ctx, conn, auth, deviceName, 0); enrollErr != nil {
-						fmt.Printf("Enrollment failed: %v\n", enrollErr)
+						usermessage.Printf("Enrollment failed: %v\n", enrollErr)
 					}
 				}
 				fmt.Println()
@@ -806,14 +807,14 @@ func newDeviceSetupCmd() *cobra.Command {
 				if errors.Is(pickErr, ErrUserCancelled) {
 					fmt.Println("WiFi setup skipped.")
 				} else {
-					fmt.Printf("WiFi scan failed: %v\n", pickErr)
+					usermessage.Printf("WiFi scan failed: %v\n", pickErr)
 				}
 			} else {
 				fmt.Print("Password (leave empty for open networks): ")
 				passwordBytes, readErr := term.ReadPassword(int(os.Stdin.Fd()))
 				fmt.Println()
 				if readErr != nil {
-					fmt.Printf("Failed to read password: %v\n", readErr)
+					usermessage.Printf("Failed to read password: %v\n", readErr)
 				} else {
 					password := strings.TrimSpace(string(passwordBytes))
 					fmt.Printf("Connecting to %s...\n", ssid)
@@ -822,9 +823,9 @@ func newDeviceSetupCmd() *cobra.Command {
 						Password: password,
 					})
 					if connectErr != nil {
-						fmt.Printf("Failed to connect to WiFi: %v\n", connectErr)
+						usermessage.Printf("Failed to connect to WiFi: %v\n", connectErr)
 					} else if !wifiConnResp.GetSuccess() {
-						fmt.Printf("Failed to connect: %s\n", wifiConnResp.GetErrorMessage())
+						usermessage.Printf("Failed to connect: %s\n", usermessage.Server(wifiConnResp.GetErrorMessage()))
 					} else {
 						fmt.Printf("Connected to %s.\n", ssid)
 					}
@@ -835,7 +836,7 @@ func newDeviceSetupCmd() *cobra.Command {
 			fmt.Println()
 			versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 			if err != nil {
-				fmt.Printf("Unable to check agent version: %v\n", err)
+				usermessage.Printf("Unable to check agent version: %v\n", err)
 			} else {
 				fmt.Printf("Agent version: %s\n", versionResp.GetVersion())
 				if agentBehindCLI(version.Version, versionResp.GetVersion()) {
@@ -953,7 +954,7 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) e
 	if err != nil {
 		return enrollmentWifiError(err)
 	} else if !wifiResp.GetSuccess() {
-		fmt.Printf("WiFi connection failed: %s\n", wifiResp.GetErrorMessage())
+		usermessage.Printf("WiFi connection failed: %s\n", usermessage.Server(wifiResp.GetErrorMessage()))
 	} else {
 		fmt.Printf("Connected to %s.\n", ssid)
 	}
@@ -967,7 +968,7 @@ func enrollmentWifiError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	fmt.Printf("WiFi setup failed: %v\n", err)
+	usermessage.Printf("WiFi setup failed: %v\n", err)
 	return nil
 }
 
@@ -1150,8 +1151,8 @@ func reportStaleCertificate(err error) {
 		plainNotice("warning: %s. Sign in again to get a new one: wendy auth login", err.Error())
 		return
 	}
-	fmt.Fprintln(os.Stderr, tui.WarningMessage(capitalizeFirst(err.Error())+"."))
-	fmt.Fprintln(os.Stderr, "  Sign in again to get a new one: wendy auth login")
+	fmt.Fprintln(os.Stderr, tui.WarningMessage(usermessage.Text(err)))
+	fmt.Fprintln(os.Stderr, "Sign in again to get a new one. Run 'wendy auth login'.")
 }
 
 // capitalizeFirst upper-cases the first rune so an error string reads as a
@@ -1306,7 +1307,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					"cloud":          cloudConn.Target(),
 				}
 				if cloudErr != nil {
-					out["cloudError"] = cloudErr.Error()
+					out["cloudError"] = usermessage.Text(cloudErr)
 					out["retryCommand"] = retryCommand
 				}
 				data, marshalErr := json.MarshalIndent(out, "", "  ")
@@ -1412,6 +1413,7 @@ func formatKernelLogRecord(rec *agentpb.KernelLogRecord) string {
 	ts := rec.GetTimestampUs()
 	sec := ts / 1_000_000
 	usec := ts % 1_000_000
+	// usermessage: payload Kernel logs are requested device output.
 	return fmt.Sprintf("[%5d.%06d] %s", sec, usec, rec.GetMessage())
 }
 
@@ -2350,7 +2352,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		if prNumber > 0 {
 			return osUpdateOutcome{}, fmt.Errorf("reconnecting for the PR %d OS update: %w", prNumber, err)
 		}
-		fmt.Printf("Could not check for OS updates: %v\n", err)
+		usermessage.Printf("Could not check for OS updates: %v\n", err)
 		return osUpdateOutcome{}, nil
 	}
 	defer conn.Close()
@@ -2390,7 +2392,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 			if prNumber > 0 {
 				return osUpdateOutcome{}, fmt.Errorf("reading the device version for the PR %d OS update: %w", prNumber, err)
 			}
-			fmt.Printf("Could not check for OS updates: %v\n", err)
+			usermessage.Printf("Could not check for OS updates: %v\n", err)
 			return osUpdateOutcome{}, nil
 		}
 
@@ -2414,7 +2416,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 			if prNumber > 0 {
 				return osUpdateOutcome{}, err
 			}
-			fmt.Printf("Could not check for OS updates: %v\n", err)
+			usermessage.Printf("Could not check for OS updates: %v\n", err)
 			return osUpdateOutcome{}, nil
 		}
 
@@ -2435,7 +2437,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		// agent update above already succeeded.
 		if decision != osActionAlreadyCurrent {
 			if err := osUpdateStackMismatch(versionResp, u); err != nil {
-				fmt.Printf("An OS update is available (%s), but it cannot be applied to this device: %v\n", latestVer, err)
+				usermessage.Printf("An OS update is available (%s), but it cannot be applied to this device: %v\n", latestVer, err)
 				return osUpdateOutcome{}, nil
 			}
 		}
@@ -2520,7 +2522,7 @@ func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConn
 	ssid, err := pickWifiNetwork(ctx, &SelectedDevice{Agent: conn})
 	if err != nil {
 		if !errors.Is(err, ErrUserCancelled) {
-			fmt.Println(tui.WarningMessage(fmt.Sprintf("WiFi selection failed: %v", err)))
+			fmt.Println(tui.WarningMessage(usermessage.Sprintf("WiFi selection failed: %v", err)))
 		}
 		return
 	}
@@ -2548,9 +2550,9 @@ func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConn
 	resp, err := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{Ssid: ssid, Password: password})
 	switch {
 	case err != nil:
-		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %v", ssid, err)))
+		fmt.Println(tui.WarningMessage(usermessage.Sprintf("Could not connect to %s: %v", ssid, err)))
 	case !resp.GetSuccess():
-		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %s", ssid, resp.GetErrorMessage())))
+		fmt.Println(tui.WarningMessage(usermessage.Sprintf("Could not connect to %s: %s", ssid, usermessage.Server(resp.GetErrorMessage()))))
 	default:
 		cliSuccess("Device connected to %s.", ssid)
 	}

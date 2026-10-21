@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/dustin/go-humanize"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
 
@@ -312,7 +313,7 @@ func (ld *lockedDisk) close() {
 	// double-close once the finalizer ran, with undefined behavior if Windows
 	// reused the handle value.
 	if cerr := ld.diskFile.Close(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: closing %s: %v\n", ld.devPath, cerr)
+		usermessage.Fprintf(os.Stderr, "warning: closing %s: %v\n", ld.devPath, cerr)
 	}
 	ld.closeVolumeHandles()
 
@@ -346,13 +347,8 @@ func (ld *lockedDisk) close() {
 	if !ld.isRemovable {
 		cleanupScript += fmt.Sprintf("; Set-Disk -Number %d -IsOffline $true", ld.diskNum)
 	}
-	if output, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", cleanupScript).CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(output))
-		if msg != "" {
-			fmt.Fprintf(os.Stderr, "warning: failed to set disk %d offline: %v: %s\n", ld.diskNum, err, msg)
-		} else {
-			fmt.Fprintf(os.Stderr, "warning: failed to set disk %d offline: %v\n", ld.diskNum, err)
-		}
+	if _, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", cleanupScript).CombinedOutput(); err != nil {
+		usermessage.Fprintf(os.Stderr, "Warning: could not take disk %d offline: %v\n", ld.diskNum, err)
 	}
 }
 

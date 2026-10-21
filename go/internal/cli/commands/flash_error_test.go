@@ -144,7 +144,7 @@ func TestAnnounceFastWriteFallback_ShowsTheReason(t *testing.T) {
 
 	var out bytes.Buffer
 	announceFastWriteFallback(&out, primary)
-	for _, sub := range []string{"seekable block-map write failed", "owned by uid 0", "full-image write"} {
+	for _, sub := range []string{"Something went wrong. Try again.", "full-image write"} {
 		if !strings.Contains(out.String(), sub) {
 			t.Errorf("fallback warning %q missing %q", out.String(), sub)
 		}

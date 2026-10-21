@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -140,7 +141,7 @@ func serveFoxgloveForward(ctx context.Context, listener net.Listener, client age
 		go func() {
 			defer active.Done()
 			if err := forwardFoxgloveConnection(ctx, local, client); err != nil && ctx.Err() == nil {
-				cliLogln("Foxglove connection failed: %v", err)
+				cliLogln("%s", usermessage.Sprintf("Foxglove connection failed: %v", err))
 			}
 		}()
 	}

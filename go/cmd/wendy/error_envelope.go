@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // errorEnvelope is the single line JSON mode writes to stderr for a failed
@@ -48,14 +49,15 @@ func reportFailure(stderr io.Writer, err error, executed *cobra.Command, args []
 	if errors.As(err, &reported) {
 		return reported.ExitCode()
 	}
+	usermessage.Debug(err)
 	class := errorClass(err)
 	outcome := outcomeForClass(class)
-	// A panic's stack is what a bug report needs. JSON mode prints it before
-	// the envelope, which stays the last line; text mode after the message.
+	// Keep panic diagnostics behind the existing debug flag. JSON mode
+	// keeps the envelope last even when a debug stack precedes it.
 	var internal *internalError
 	isInternal := errors.As(err, &internal)
 	if commands.JSONErrorsRequested(executed, args) {
-		if isInternal {
+		if isInternal && os.Getenv("WENDY_TLS_DEBUG") != "" {
 			fmt.Fprintf(stderr, "%s\n", bytes.TrimRight(internal.stack, "\n"))
 		}
 		if writeErrorEnvelope(stderr, newErrorEnvelope(err, class, outcome, executed)) == nil {
@@ -65,7 +67,7 @@ func reportFailure(stderr io.Writer, err error, executed *cobra.Command, args []
 		// through so the failure is still reported, as text.
 	}
 	fmt.Fprintln(stderr, renderError(err))
-	if isInternal {
+	if isInternal && os.Getenv("WENDY_TLS_DEBUG") != "" {
 		fmt.Fprintf(stderr, "\n%s", internal.stack)
 	}
 	return outcome.exit
@@ -90,28 +92,15 @@ func newErrorEnvelope(err error, class string, outcome errorOutcome, executed *c
 }
 
 // plainErrorReport returns err as the unstyled text renderError would show,
-// minus the recovery steps, which it returns separately: the steps
-// formatError adds and those attached anywhere in err's chain.
+// minus the approved recovery steps, which it returns separately.
+// Arbitrary diagnostic strings and attached steps are never display text.
 func plainErrorReport(err error) (string, []string) {
-	var text string
-	var steps []string
-	var diagnostic interface {
-		error
-		CLIMessage() string
-	}
-	if errors.As(err, &diagnostic) {
-		// CLIMessage is a styled rendering of the text Error() already holds.
-		text = err.Error()
-	} else {
-		f := formatErrorParts(err)
-		text, steps = f.text, f.steps
-	}
-	steps = append(steps, commands.NextSteps(err)...)
-	text = commands.StripNextSteps(text, err)
-	for _, step := range steps {
+	f := formatErrorParts(err)
+	text := f.text
+	for _, step := range f.steps {
 		text = withoutStep(text, step)
 	}
-	return strings.TrimSpace(ansi.Strip(text)), cleanSteps(steps)
+	return strings.TrimSpace(ansi.Strip(text)), cleanSteps(f.steps)
 }
 
 // withoutStep removes the first occurrence of step from text, together with

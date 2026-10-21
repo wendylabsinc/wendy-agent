@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -579,12 +580,12 @@ func newROS2ParamCmd() *cobra.Command {
 				return ros2RPCError(err)
 			}
 			if jsonOutput {
-				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": resp.GetMessage()})
+				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": ros2ActionMessage(resp.GetSuccess())})
 			}
 			if !resp.GetSuccess() {
 				return fmt.Errorf("setting parameter: %s", resp.GetMessage())
 			}
-			cliSuccess("%s", resp.GetMessage())
+			cliSuccess("Action completed.")
 			return nil
 		},
 	}
@@ -958,12 +959,12 @@ func newROS2LifecycleCmd() *cobra.Command {
 				return ros2RPCError(err)
 			}
 			if jsonOutput {
-				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": resp.GetMessage()})
+				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": ros2ActionMessage(resp.GetSuccess())})
 			}
 			if !resp.GetSuccess() {
 				return fmt.Errorf("transition failed: %s", resp.GetMessage())
 			}
-			cliSuccess("%s", resp.GetMessage())
+			cliSuccess("Action completed.")
 			return nil
 		},
 	}
@@ -1065,9 +1066,9 @@ func newROS2ComponentCmd() *cobra.Command {
 				return ros2RPCError(err)
 			}
 			if jsonOutput {
-				return printROS2JSON(map[string]any{"uid": resp.GetUid(), "nodeName": resp.GetNodeName(), "message": resp.GetMessage()})
+				return printROS2JSON(map[string]any{"uid": resp.GetUid(), "nodeName": resp.GetNodeName(), "message": "Action completed."})
 			}
-			cliSuccess("%s", resp.GetMessage())
+			cliSuccess("Action completed.")
 			return nil
 		},
 	}
@@ -1091,7 +1092,7 @@ func newROS2ComponentCmd() *cobra.Command {
 
 			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
 			defer rpcCancel()
-			resp, err := client.client.UnloadComponent(rpcCtx, &agentpbv2.UnloadROS2ComponentRequest{
+			_, err = client.client.UnloadComponent(rpcCtx, &agentpbv2.UnloadROS2ComponentRequest{
 				DomainId:  ros2DomainPtr(unloadDomain),
 				Container: args[0],
 				Uid:       uint32(uid),
@@ -1100,9 +1101,9 @@ func newROS2ComponentCmd() *cobra.Command {
 				return ros2RPCError(err)
 			}
 			if jsonOutput {
-				return printROS2JSON(map[string]any{"message": resp.GetMessage()})
+				return printROS2JSON(map[string]any{"message": "Action completed."})
 			}
-			cliSuccess("%s", resp.GetMessage())
+			cliSuccess("Action completed.")
 			return nil
 		},
 	}
@@ -1341,7 +1342,7 @@ func newROS2BagRecordCmd() *cobra.Command {
 			}
 			cliLogln("Recording %s to bag %q on the device. Press ctrl-c to stop.", topicsDesc, first.GetBagName())
 			if m := first.GetMessage(); m != "" {
-				cliLogln("Note: %s", m)
+				cliLogln("Recording has started.")
 			}
 
 			// Wait for ctrl-c or an unsolicited terminal message (recorder error).
@@ -1822,4 +1823,11 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 	// instead of being rejected as unknown flags of this command (WDY-1553).
 	cmd.Flags().SetInterspersed(false)
 	return cmd
+}
+
+func ros2ActionMessage(success bool) string {
+	if success {
+		return "Action completed."
+	}
+	return usermessage.Generic
 }

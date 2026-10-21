@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
@@ -111,7 +112,7 @@ func startSimulatorRow(item tui.PickerItem) (flash string, isErr bool, name stri
 	}
 	st, err := vmStatusFn(choice.Name)
 	if err != nil {
-		return err.Error(), true, ""
+		return usermessage.Text(err), true, ""
 	}
 	if st.Running {
 		return fmt.Sprintf("%s is already running.", choice.Name), false, ""
@@ -133,7 +134,7 @@ func stopSimulatorRow(ctx context.Context, item tui.PickerItem) (string, bool) {
 	}
 	st, err := vmStatusFn(choice.Name)
 	if err != nil {
-		return err.Error(), true
+		return usermessage.Text(err), true
 	}
 	if !st.Running {
 		return fmt.Sprintf("%s is not running", choice.Name), false
@@ -141,7 +142,7 @@ func stopSimulatorRow(ctx context.Context, item tui.PickerItem) (string, bool) {
 	// The same wait as `wendy vm stop`: long enough for an ordinary guest
 	// shutdown, so one is never shown as a failure.
 	if err := stopVMFn(ctx, choice.Name, false, vmStopGrace); err != nil {
-		return err.Error(), true
+		return usermessage.Text(err), true
 	}
 	return fmt.Sprintf("Stopped %s.", choice.Name), false
 }
@@ -173,10 +174,10 @@ func removeSimulatorRow(item tui.PickerItem) (string, bool, *tui.PickerItem) {
 	}
 	store, err := vm.NewStore()
 	if err != nil {
-		return err.Error(), true, &item
+		return usermessage.Text(err), true, &item
 	}
 	if err := store.Remove(choice.Name); err != nil {
-		return err.Error(), true, &item
+		return usermessage.Text(err), true, &item
 	}
 	return fmt.Sprintf("Removed %s.", choice.Name), false, nil
 }
@@ -319,7 +320,7 @@ func (m simulatorPickerModel) View() string {
 		return "Looking for local VMs..."
 	}
 	if m.err != nil {
-		return "Could not read the VM store: " + m.err.Error()
+		return "Could not read the VM store: " + usermessage.Text(m.err)
 	}
 	return m.picker.View()
 }

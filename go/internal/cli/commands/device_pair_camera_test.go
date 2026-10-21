@@ -91,7 +91,7 @@ func TestCameraPairDiscoveryFiltersLocalAndRetainsOfflineCameras(t *testing.T) {
 	}
 	c.err = errors.New("device disconnected")
 	m, _ = cameraPairUpdate(m, m.Init()())
-	if len(m.devices) != 2 || !strings.Contains(m.View(), "device disconnected") {
+	if len(m.devices) != 2 || !strings.Contains(m.View(), "Something went wrong. Try again.") {
 		t.Fatal("failed discovery discarded known cameras or hid its error")
 	}
 	c.err = nil
@@ -159,11 +159,11 @@ func TestCameraPairOperationFailurePreservesState(t *testing.T) {
 	m, _ = cameraPairUpdate(m, cameraPairScanMsg{devices: []*agentpb.VideoDevice{{Id: 42, Transport: agentpb.VideoTransport_VIDEO_TRANSPORT_IP}}})
 	m.busy = true
 	m, _ = cameraPairUpdate(m, cameraPairOpMsg{id: 42, err: errors.New("save failed")})
-	if m.busy || m.devices[0].HasCredentials || !strings.Contains(m.message, "save failed") {
+	if m.busy || m.devices[0].HasCredentials || !strings.Contains(m.message, "Something went wrong. Try again.") {
 		t.Fatal("failed save changed pairing state")
 	}
 	m, _ = cameraPairUpdate(m, cameraPairOpMsg{id: 42, forgot: true, err: errors.New("forget failed")})
-	if len(m.devices) != 1 || !strings.Contains(m.message, "forget failed") {
+	if len(m.devices) != 1 || !strings.Contains(m.message, "Something went wrong. Try again.") {
 		t.Fatal("failed forget removed a camera")
 	}
 }

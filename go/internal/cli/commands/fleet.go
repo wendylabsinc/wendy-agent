@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -284,7 +285,7 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 		res := fleetMembershipResult{Device: dev}
 		asset, rErr := resolveCloudAsset(assets, dev)
 		if rErr != nil {
-			res.Error = rErr.Error()
+			res.Error = usermessage.Text(rErr)
 			failures++
 			results = append(results, res)
 			continue
@@ -312,7 +313,7 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 			Tags: newTags,
 		}); uErr != nil {
 			res.Changed = false
-			res.Error = uErr.Error()
+			res.Error = usermessage.Text(uErr)
 			failures++
 		}
 		results = append(results, res)

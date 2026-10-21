@@ -22,6 +22,7 @@ import (
 	"github.com/google/gousb"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/adbproto"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 const (
@@ -191,14 +192,14 @@ func openOnce(wantPath string, strict bool) (*Device, error) {
 	if err != nil {
 		// Logged (not just returned) because Open()'s retry loop otherwise swallows
 		// why the claim keeps failing.
-		fmt.Fprintf(os.Stderr, "wendy adb: usb %s: claiming config %d failed: %v\n", adbPortKey(dev.Desc), cfgNum, err)
+		usermessage.Fprintf(os.Stderr, "wendy adb: usb %s: claiming config %d failed: %v\n", adbPortKey(dev.Desc), cfgNum, err)
 		dev.Close()
 		ctx.Close()
 		return nil, fmt.Errorf("claiming config %d: %w", cfgNum, err)
 	}
 	iface, err := cfg.Interface(ifNum, altNum)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wendy adb: usb %s: claiming interface %d.%d failed: %v\n", adbPortKey(dev.Desc), ifNum, altNum, err)
+		usermessage.Fprintf(os.Stderr, "wendy adb: usb %s: claiming interface %d.%d failed: %v\n", adbPortKey(dev.Desc), ifNum, altNum, err)
 		cfg.Close()
 		dev.Close()
 		ctx.Close()
@@ -232,7 +233,7 @@ func openOnce(wantPath string, strict bool) (*Device, error) {
 		// Surface why here: Open() retries internally and often the process is killed
 		// mid-retry before Open() returns, so this is the only place the underlying
 		// reason (adbd not up, USB read error, auth) is visible in the flash log.
-		fmt.Fprintf(os.Stderr, "wendy adb: claimed ADB interface at usb %s but CNXN handshake failed: %v\n", adbPortKey(dev.Desc), err)
+		usermessage.Fprintf(os.Stderr, "wendy adb: claimed ADB interface at usb %s but CNXN handshake failed: %v\n", adbPortKey(dev.Desc), err)
 		d.Close()
 		return nil, err
 	}

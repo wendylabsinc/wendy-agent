@@ -370,7 +370,7 @@ func TestSensorPairErrorsPreservePairingsAndBlockUnauthorizedPair(t *testing.T) 
 	client.discoverErr = status.Error(codes.Internal, "LAN unavailable")
 	updated, _ = m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if len(m.rows) != 2 || !strings.Contains(m.View(), "LAN unavailable") || !strings.Contains(m.View(), "not reachable") || strings.Contains(m.View(), "rpc error") {
+	if len(m.rows) != 2 || !strings.Contains(m.View(), "Something went wrong. Try again.") || !strings.Contains(m.View(), "not reachable") || strings.Contains(m.View(), "rpc error") {
 		t.Fatalf("failed scan lost rows or error context: %s", m.View())
 	}
 	// A failed forget leaves the saved pairing available for retry.
@@ -452,7 +452,7 @@ func TestSensorPairScanCancellationKeepsKnownDevices(t *testing.T) {
 	// The fake device answers a cancelled call the way gRPC does.
 	updated, _ := m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if client.discoveries != 1 || len(m.devices) != 1 || m.scanning || !strings.Contains(m.message, "context canceled") {
+	if client.discoveries != 1 || len(m.devices) != 1 || m.scanning || !strings.Contains(m.message, "The action was cancelled.") {
 		t.Fatalf("cancelled scan discarded known devices or stayed scanning: %q", m.message)
 	}
 	// A local scan cut short by cancellation is reported the same way.
@@ -465,7 +465,7 @@ func TestSensorPairScanCancellationKeepsKnownDevices(t *testing.T) {
 	h.client = &unimplementedDiscoveryClient{client}
 	updated, _ = m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if len(m.devices) != 1 || !strings.Contains(m.message, "context canceled") {
+	if len(m.devices) != 1 || !strings.Contains(m.message, "The action was cancelled.") {
 		t.Fatalf("cancelled local scan discarded known devices: %q", m.message)
 	}
 }
@@ -549,7 +549,7 @@ func TestSensorPairFallsBackToLocalScanOnlyForOldAgents(t *testing.T) {
 	h.client, h.discoverLocal = old, nil
 	updated, _ = m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if !strings.Contains(m.message, "update it") || len(m.rows) != 1 {
+	if !strings.Contains(m.message, "Update its agent") || len(m.rows) != 1 {
 		t.Fatalf("missing update hint or lost known sources: %q", m.message)
 	}
 }
@@ -559,10 +559,10 @@ func TestSensorPairDeviceDiscoveryErrorsAreNotReplacedByLocalScan(t *testing.T) 
 		err  error
 		want string
 	}{
-		{status.Error(codes.Unavailable, "tunnel closed"), "device is not reachable"},
-		{status.Error(codes.PermissionDenied, "org mismatch"), "not authorized"},
-		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"), "the device did not finish scanning its network in time"},
-		{status.Error(codes.Internal, "sensor source discovery failed on this device"), "the device could not scan its network: sensor source discovery failed on this device"},
+		{status.Error(codes.Unavailable, "tunnel closed"), "Device is not reachable"},
+		{status.Error(codes.PermissionDenied, "org mismatch"), "You don't have permission"},
+		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"), "The device did not finish scanning its network in time"},
+		{status.Error(codes.Internal, "sensor source discovery failed on this device"), "Something went wrong. Try again."},
 	} {
 		client := &pairTestClient{}
 		h := pairTestHandler(client)

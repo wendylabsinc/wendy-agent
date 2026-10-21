@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -145,7 +146,7 @@ func waitForAttachedReadiness(ctx context.Context, conn *grpcclient.AgentConnect
 	warned := false
 	err = continueReadiness(ctx, ticker.C, deadline.C, probe, running, func(err error) {
 		if !warned {
-			cliLogln("Warning: %v; continuing to observe startup.", err)
+			cliLogln("%s", usermessage.Sprintf("Warning: %v; continuing to observe startup.", err))
 			warned = true
 		}
 	})

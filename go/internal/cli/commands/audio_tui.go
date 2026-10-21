@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -131,7 +132,7 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case audioOpResultMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.flash = msg.err.Error()
+			m.flash = usermessage.Text(msg.err)
 			m.isError = true
 			return m, nil
 		}
@@ -165,7 +166,7 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flash = "Listening stopped."
 		m.isError = msg.err != nil
 		if msg.err != nil {
-			m.flash = msg.err.Error()
+			m.flash = usermessage.Text(msg.err)
 		}
 		return m, nil
 	case tea.KeyMsg:

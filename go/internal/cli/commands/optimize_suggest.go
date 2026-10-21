@@ -10,6 +10,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -69,7 +70,7 @@ func maybeSuggestOptimizeAfterBuild(tally tui.BuildTally, elapsed time.Duration)
 
 	applied, err := optimize.ApplyFixes(findings)
 	if err != nil {
-		cliNotice("Could not apply fixes: %v", err)
+		cliNotice("%s", usermessage.Sprintf("Could not apply fixes: %v", err))
 		return
 	}
 	n := 0

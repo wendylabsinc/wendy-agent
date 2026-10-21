@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -82,7 +83,7 @@ func newDeviceRenameCmd() *cobra.Command {
 					out["assetId"] = prov.GetAssetId()
 				}
 				if cloudErr != nil {
-					out["cloudError"] = cloudErr.Error()
+					out["cloudError"] = usermessage.Text(cloudErr)
 				}
 				data, marshalErr := json.MarshalIndent(out, "", "  ")
 				if marshalErr != nil {
@@ -95,7 +96,7 @@ func newDeviceRenameCmd() *cobra.Command {
 				case prov == nil:
 					fmt.Println(tui.WarningMessage("Device is not enrolled in Wendy Cloud; skipped cloud rename."))
 				case cloudErr != nil:
-					fmt.Println(tui.WarningMessage(fmt.Sprintf("Hostname updated, but the Wendy Cloud rename failed: %v", cloudErr)))
+					fmt.Println(tui.WarningMessage(usermessage.Sprintf("Hostname updated, but the Wendy Cloud rename failed: %v", cloudErr)))
 				default:
 					fmt.Printf("Renamed asset %d in Wendy Cloud.\n", prov.GetAssetId())
 				}
@@ -171,7 +172,7 @@ func repointDefaultDevice(name string) {
 		return true, nil
 	})
 	if err != nil {
-		cliLogln("Warning: renamed device but could not update the default device: %v", err)
+		cliLogln("%s", usermessage.Sprintf("Warning: renamed device but could not update the default device: %v", err))
 	}
 }
 

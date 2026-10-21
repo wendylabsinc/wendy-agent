@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 const maxProgressDetailLines = 4
@@ -139,7 +140,7 @@ func (m ProgressModel) View() string {
 			}
 			return fmt.Sprintf("%s (failed)\n%s%s%s\n", m.title, details, m.progress.ViewAs(percent), byteInfo)
 		}
-		return fmt.Sprintf("Error: %v\n", m.err)
+		return usermessage.Sprintf("Error: %v\n", m.err)
 	}
 
 	if m.done {

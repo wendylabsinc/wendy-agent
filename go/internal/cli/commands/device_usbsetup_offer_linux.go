@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 )
 
@@ -123,7 +124,7 @@ func maybeOfferUSBSetup(ctx context.Context) error {
 	confirmed, err := tui.Confirm("Configure the USB-C link to this Wendy device now?")
 	if err != nil {
 		if !errors.Is(err, tui.ErrCancelled) {
-			fmt.Printf("Skipping USB setup: %v\n", err)
+			usermessage.Printf("Skipping USB setup: %v\n", err)
 		}
 		return nil
 	}
@@ -135,13 +136,13 @@ func maybeOfferUSBSetup(ctx context.Context) error {
 	// tui.Confirm has fully exited here, so the terminal is back in cooked mode
 	// and sudo can prompt for a password safely.
 	if err := preAuthElevation(); err != nil {
-		fmt.Printf("USB setup needs sudo: %v\n", err)
+		usermessage.Printf("USB setup needs sudo: %v\n", err)
 		return nil
 	}
 
 	self, err := os.Executable()
 	if err != nil {
-		fmt.Printf("USB setup failed: %v\n", err)
+		usermessage.Printf("USB setup failed: %v\n", err)
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, "sudo", self, "__usb-setup", "--iface", iface)

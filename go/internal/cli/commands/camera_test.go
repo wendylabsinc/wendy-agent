@@ -522,7 +522,7 @@ func TestCameraViewPreservesRemotePipelineDiagnostic(t *testing.T) {
 		} else {
 			err = playVideoWithGStreamer(context.Background(), stream, false)
 		}
-		if err == nil || !strings.Contains(userFacingGRPCError(err), message) {
+		if err == nil || !strings.Contains(err.Error(), message) || userFacingGRPCError(err) != "Something went wrong. Try again." {
 			t.Fatalf("stdout=%v: remote diagnostic was lost: %v", stdout, err)
 		}
 	}

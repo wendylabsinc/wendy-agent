@@ -92,3 +92,7 @@ Discover cloud-enrolled devices:
 ```sh
 wendy cloud discover
 ```
+
+## CLI messages
+
+CLI failures shown to people must go through `go/internal/cli/usermessage` and the command failure printer. Use sentence case and a full stop, and never include raw server, agent, library, or transport text; keep raw diagnostics behind the existing debug switch.

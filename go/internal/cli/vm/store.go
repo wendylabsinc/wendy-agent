@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -154,7 +155,7 @@ func (s *Store) CreateFromWithRobotProfileContext(ctx context.Context, name stri
 			return
 		}
 		if rmErr := os.RemoveAll(dir); rmErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not clean up %s: %v; "+
+			usermessage.Fprintf(os.Stderr, "warning: could not clean up %s: %v; "+
 				"remove it before retrying\n", dir, rmErr)
 		}
 	}()

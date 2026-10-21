@@ -20,6 +20,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -251,7 +252,7 @@ func (s *watchDeployState) ensureLogStream(conn *grpcclient.AgentConnection, app
 			resp, recvErr := stream.Recv()
 			if recvErr != nil {
 				if recvErr != io.EOF && logCtx.Err() == nil {
-					cliNotice("Watch log stream ended: %v; it will reconnect after the next deploy", recvErr)
+					cliNotice("%s", usermessage.Sprintf("Watch log stream ended: %v; it will reconnect after the next deploy", recvErr))
 				}
 				s.logMu.Lock()
 				if s.logGen == gen {
@@ -476,7 +477,7 @@ func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) 
 			if !ok {
 				return nil
 			}
-			cliLogln("watch error: %v", watchErr)
+			cliLogln("%s", usermessage.Sprintf("watch error: %v", watchErr))
 		case <-timer.C:
 			if pending {
 				pending = false
@@ -538,7 +539,7 @@ func (d *debouncedDeployer) trigger(parent context.Context) {
 				}
 				return
 			}
-			cliLogln("✗ deploy failed: %v (still watching)", err)
+			cliLogln("%s", usermessage.Sprintf("✗ deploy failed: %v (still watching)", err))
 			return
 		}
 		if runCtx.Err() == nil {

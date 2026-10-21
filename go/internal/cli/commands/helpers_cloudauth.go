@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc/codes"
@@ -183,7 +184,7 @@ func offerReloginOnUnauthenticated(ctx context.Context, auth *config.AuthConfig,
 		return false
 	}
 	if lerr := relogin(ctx, auth); lerr != nil {
-		fmt.Fprintln(os.Stderr, tui.ErrorMessage(fmt.Sprintf("Login failed: %v", lerr)))
+		fmt.Fprintln(os.Stderr, tui.ErrorMessage(usermessage.Sprintf("Login failed: %v", lerr)))
 		return false
 	}
 	return true

@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -244,7 +245,7 @@ func newOrgPicker(orgs []*cloudpb.Organization, cfg *config.Config, copyOnEnter 
 		}
 		c, err := config.Load()
 		if err != nil {
-			return fmt.Sprintf("Could not remove credentials: %v", err), true, nil
+			return usermessage.Sprintf("Could not remove credentials: %v", err), true, nil
 		}
 		filtered := c.Auth[:0]
 		for _, a := range c.Auth {
@@ -254,7 +255,7 @@ func newOrgPicker(orgs []*cloudpb.Organization, cfg *config.Config, copyOnEnter 
 		}
 		c.Auth = filtered
 		if err := config.Save(c); err != nil {
-			return fmt.Sprintf("Could not save config: %v", err), true, nil
+			return usermessage.Sprintf("Could not save config: %v", err), true, nil
 		}
 		delete(credIDs, orgID)
 		// Move the row to "Not authenticated" rather than removing it entirely.
@@ -351,7 +352,7 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 		if alwaysPickOrg {
 			return OrgResolution{}, fmt.Errorf("fetching organizations: %w", listErr)
 		}
-		fmt.Printf("Warning: could not fetch organizations (%v). Falling back to certificate org.\n", listErr)
+		usermessage.Printf("Warning: could not fetch organizations (%v). Falling back to certificate org.\n", listErr)
 		certOrgID := int32(0)
 		if len(auth.Certificates) > 0 {
 			certOrgID = int32(auth.Certificates[0].OrganizationID)

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -158,7 +159,7 @@ func serveSelectedTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *
 	defer tcpConn.Close()
 	tunnel, err := asset.openTunnel(ctx, brokerConn, auth, remotePort)
 	if err != nil {
-		cliLogln("Cloud tunnel failed: %v", err)
+		cliLogln("%s", usermessage.Sprintf("Cloud tunnel failed: %v", err))
 		return
 	}
 	relayTunnel(ctx, tcpConn, tunnel)

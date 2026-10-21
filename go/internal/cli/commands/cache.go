@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -263,7 +264,7 @@ func newCacheListCmd() *cobra.Command {
 
 				for _, item := range selected {
 					if err := os.RemoveAll(item.Value); err != nil {
-						fmt.Fprintf(os.Stderr, "error: removing %s: %v\n", item.Label, err)
+						usermessage.Fprintf(os.Stderr, "error: removing %s: %v\n", item.Label, err)
 					} else {
 						fmt.Printf("Deleted %s\n", item.Label)
 					}

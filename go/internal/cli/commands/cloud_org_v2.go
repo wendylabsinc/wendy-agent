@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
@@ -151,13 +152,13 @@ var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg 
 			id, _ := item.Value.(string)
 			c, err := config.Load()
 			if err != nil {
-				return fmt.Sprintf("Could not remove credentials: %v", err), true, nil
+				return usermessage.Sprintf("Could not remove credentials: %v", err), true, nil
 			}
 			if !removeCloudSessionCreds(c, auth.CloudGRPC, id) {
 				return fmt.Sprintf("No credentials stored for %s.", item.Name), true, nil
 			}
 			if err := config.Save(c); err != nil {
-				return fmt.Sprintf("Could not save config: %v", err), true, nil
+				return usermessage.Sprintf("Could not save config: %v", err), true, nil
 			}
 			// Keep the row visible: the account still belongs to the org, it
 			// just has no local credentials now.

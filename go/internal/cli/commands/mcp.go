@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -104,7 +105,7 @@ func newMCPServer(deviceFlag string, toolGroups []string) (*wendymcp.Server, err
 		// passed here is ignored.
 		srv.SetStartupConnect(func(connectCtx context.Context) {
 			if err := srv.ConnectToOnStartup(connectCtx, ""); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not connect to agent socket: %v\n", err)
+				usermessage.Fprintf(os.Stderr, "Warning: could not connect to agent socket: %v\n", err)
 			}
 		})
 	case address != "":
@@ -112,7 +113,7 @@ func newMCPServer(deviceFlag string, toolGroups []string) (*wendymcp.Server, err
 		startupAddress := address
 		srv.SetStartupConnect(func(connectCtx context.Context) {
 			if err := srv.ConnectToOnStartup(connectCtx, startupAddress); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not connect to %s: %v\n", startupAddress, err)
+				usermessage.Fprintf(os.Stderr, "Warning: could not connect to %s: %v\n", startupAddress, err)
 			}
 		})
 	}

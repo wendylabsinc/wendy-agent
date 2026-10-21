@@ -198,7 +198,7 @@ func runReportingWaitReadyFailure(ctx context.Context, opts runOptions, run func
 			App:       state.app,
 			Device:    state.device,
 			Readiness: readinessNotChecked,
-			Message:   err.Error(),
+			Message:   userFacingGRPCError(err),
 		})
 	}
 	return err

@@ -227,7 +227,7 @@ func checkFailedWaitReadyObject(t *testing.T, stdout string, runErr error, app, 
 		t.Fatal("the run succeeded; want a failure")
 	}
 	got := decodeOneJSONObject(t, stdout)
-	if got["status"] != waitReadyStatusFailed || got["readiness"] != readinessNotChecked || got["message"] != runErr.Error() {
+	if got["status"] != waitReadyStatusFailed || got["readiness"] != readinessNotChecked || got["message"] != userFacingGRPCError(runErr) {
 		t.Fatalf("object = %v, want status failed / readiness not_checked / message %q", got, runErr.Error())
 	}
 	for key, want := range map[string]string{"app": app, "device": device} {

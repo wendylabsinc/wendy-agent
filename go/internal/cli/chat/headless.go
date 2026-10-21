@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"io"
 	"strings"
 	"sync"
@@ -98,7 +99,7 @@ func RunHeadless(ctx context.Context, opts HeadlessOptions) error {
 	text := full.String()
 	mu.Unlock()
 	if err != nil {
-		write(headlessEvent{Type: "error", Text: err.Error()})
+		write(headlessEvent{Type: "error", Text: usermessage.Text(err)})
 		return err
 	}
 	if opts.JSON {

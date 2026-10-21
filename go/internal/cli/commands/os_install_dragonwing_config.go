@@ -10,6 +10,7 @@ import (
 	"github.com/diskfs/go-diskfs/disk"
 	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/wendylabsinc/wendy/go/internal/cli/qdl"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
@@ -47,8 +48,8 @@ func resolveSeedAgent(out io.Writer, detail func(string)) ([]byte, string) {
 	agent, version, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		// Written to out as well, so the flash log keeps it for a post-mortem.
-		fmt.Fprintf(out, "warning: could not download wendy-agent (%v)\n", err)
-		return nil, fmt.Sprintf("could not download wendy-agent (%v); the board keeps the agent baked into its image", err)
+		usermessage.Fprintf(out, "warning: could not download wendy-agent (%v)\n", err)
+		return nil, usermessage.Sprintf("could not download wendy-agent (%v); the board keeps the agent baked into its image", err)
 	}
 	detail("agent " + version)
 	return agent, ""

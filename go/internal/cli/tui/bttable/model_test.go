@@ -511,13 +511,13 @@ func TestStaleFlashClearIgnored(t *testing.T) {
 func TestUserFacingErrorStripsGRPCFraming(t *testing.T) {
 	err := status.Error(codes.Internal, "failed to connect bluetooth peripheral: boom")
 	got := userFacingError(err)
-	if got != "failed to connect bluetooth peripheral: boom" {
+	if got != "Something went wrong. Try again." {
 		t.Errorf("userFacingError = %q", got)
 	}
 	if strings.Contains(got, "rpc error") {
 		t.Errorf("grpc framing leaked into UI string: %q", got)
 	}
-	if userFacingError(errors.New("plain")) != "plain" {
+	if userFacingError(errors.New("plain")) != "Something went wrong. Try again." {
 		t.Errorf("non-grpc error should fall back to Error()")
 	}
 }
@@ -532,7 +532,7 @@ func TestOpErrorFlashIsSanitized(t *testing.T) {
 	if strings.Contains(m.flashMessage, "rpc error") {
 		t.Errorf("op error flash should be sanitized, got %q", m.flashMessage)
 	}
-	if !strings.Contains(m.flashMessage, "pair failed") {
+	if !strings.Contains(m.flashMessage, "Something went wrong. Try again.") || strings.Contains(m.flashMessage, "pair failed") {
 		t.Errorf("sanitized flash should keep the useful message, got %q", m.flashMessage)
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/archive"
 	"github.com/wendylabsinc/wendy/go/internal/cli/qdl"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
@@ -592,7 +593,7 @@ func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf
 		}
 		// Worded for both outcomes: the warning is printed whether or not the
 		// flash that follows it succeeds.
-		warn(fmt.Sprintf("Could not write the config partition (%v) — it was blanked instead, so the board comes up unprovisioned.", err))
+		warn(usermessage.Sprintf("Could not write the config partition (%v) — it was blanked instead, so the board comes up unprovisioned.", err))
 		if err := plan.Blank(dragonwingConfigLabel, zerosPath); err != nil {
 			return nil, err
 		}

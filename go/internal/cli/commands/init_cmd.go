@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
@@ -1066,7 +1067,7 @@ func maybeGitInit(dir string, opts initOptions) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		cliNotice("  Warning: git init failed: %v", err)
+		cliNotice("%s", usermessage.Sprintf("  Warning: git init failed: %v", err))
 	}
 
 	return nil

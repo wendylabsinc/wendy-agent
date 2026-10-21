@@ -24,6 +24,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -201,7 +202,7 @@ func (w *imageBuildProgressWriter) ReportChunkIndex(current, total int64, rate f
 func (w *imageBuildProgressWriter) ReportRegistryFallback(reason error) {
 	detail := "chunk preparation unavailable"
 	if reason != nil {
-		detail = fmt.Sprintf("chunk preparation unavailable: %v", reason)
+		detail = usermessage.Sprintf("Chunk preparation unavailable: %v", reason)
 	}
 	w.emitEvent(tui.BuildStepEvent{
 		ID:      "registry-fallback",
@@ -362,7 +363,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 			} else if err != nil {
 				if buildCtx.Err() == nil {
 					if !quietBuild {
-						cliLogln("Service %s build failed: %v", name, err)
+						cliLogln("%s", usermessage.Sprintf("Service %s build failed: %v", name, err))
 					}
 				}
 			} else if !quietBuild {

@@ -9,10 +9,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestUserFacingGRPCErrorShowsTunnelVerdict(t *testing.T) {
+func TestUserFacingGRPCErrorMapsTunnelVerdict(t *testing.T) {
 	err := status.Error(codes.Unavailable, `connection error: desc = "transport: authentication handshake failed: cloud tunnel closed by broker: rpc error: code = PermissionDenied desc = user is not a current member of this organization"`)
 	got := userFacingGRPCError(err)
-	if !strings.Contains(got, "user is not a current member of this organization") || !strings.Contains(got, "PermissionDenied") {
+	if got != "You don't have permission to do this. Check your access and try again." {
 		t.Fatalf("poll error %q hides the broker's verdict", got)
 	}
 	if strings.Contains(got, "authentication handshake failed") {
@@ -33,7 +33,7 @@ func TestAppsDashboardModel_PollErrorsShowTunnelVerdict(t *testing.T) {
 			m := newAppsDashboardModel(nil, context.Background())
 			updated, _ := m.Update(msg)
 			flash := updated.(appsDashboardModel).flash
-			if !strings.Contains(flash, "Wendy Cloud closed the tunnel") || !strings.Contains(flash, "PermissionDenied") {
+			if !strings.Contains(flash, "You don't have permission to do this. Check your access and try again.") {
 				t.Fatalf("flash = %q, want the broker's verdict", flash)
 			}
 			if strings.Contains(flash, "authentication handshake failed") {

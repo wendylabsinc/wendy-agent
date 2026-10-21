@@ -54,7 +54,7 @@ func TestWifiScanFailureNotice(t *testing.T) {
 	}{
 		{"no adapter", errNoWifiAdapter, "No WiFi adapter detected on this machine."},
 		{"wrapped no adapter", fmt.Errorf("scan: %w", errNoWifiAdapter), "No WiFi adapter detected on this machine."},
-		{"generic failure", errors.New("exit status 1: something broke"), "WiFi scan failed: exit status 1: something broke"},
+		{"generic failure", errors.New("exit status 1: something broke"), "WiFi scan failed: Something went wrong. Try again."},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

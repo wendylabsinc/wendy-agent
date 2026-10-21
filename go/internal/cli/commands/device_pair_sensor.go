@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -104,7 +105,7 @@ func sensorDiscoveryError(ctx context.Context, err error) error {
 		}
 		return errors.New("the device did not finish scanning its network in time")
 	}
-	return fmt.Errorf("the device could not scan its network: %s", userFacingGRPCError(err))
+	return fmt.Errorf("the device could not scan its network: %w", err)
 }
 
 func (h *sensorPairHandler) pair(source models.DiscoveredDevice) tea.Cmd {
@@ -305,14 +306,14 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.devices = msg.devices
 			m.localNetwork = msg.localNetwork
 		} else {
-			errors = append(errors, "Discovery failed: "+msg.discoveryErr.Error())
+			errors = append(errors, "Discovery failed: "+usermessage.Text(msg.discoveryErr))
 		}
 		m.pairingsKnown = msg.pairingsErr == nil
 		m.principalPairing = msg.principalPairing
 		if m.pairingsKnown {
 			m.pairings = msg.pairings
 		} else {
-			errors = append(errors, "Could not load pairings: "+msg.pairingsErr.Error())
+			errors = append(errors, "Could not load pairings: "+usermessage.Text(msg.pairingsErr))
 		}
 		m.message = strings.Join(errors, "\n")
 		m.refreshRows()
@@ -320,7 +321,7 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sensorPairOpMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
+			m.message = usermessage.Text(msg.err)
 			return m, nil
 		}
 		pairings := make([]*agentpbv2.SensorPairing, 0, len(m.pairings)+1)

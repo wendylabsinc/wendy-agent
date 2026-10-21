@@ -18,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -699,7 +700,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 	if bc.AppType == liteclient.AppTypeWasm {
 		if err := client.StopApp(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+			usermessage.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
 		}
 	}
 
@@ -744,7 +745,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 			return fmt.Errorf("device reset: %w", err)
 		}
 		if err := client.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
+			usermessage.Fprintf(os.Stderr, "warning: close: %v\n", err)
 		}
 
 		fmt.Println("Waiting for device to come back...")
@@ -827,10 +828,10 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		// fast. If the detach never arrives, the rolling attach lease makes
 		// the device stop streaming on its own.
 		if err := consoleDetach(true); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: console detach: %v\n", err)
+			usermessage.Fprintf(os.Stderr, "warning: console detach: %v\n", err)
 		}
 		if err := client.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
+			usermessage.Fprintf(os.Stderr, "warning: close: %v\n", err)
 		}
 		return nil
 	}
@@ -1254,7 +1255,7 @@ func connectSerialWithRetry(ctx context.Context, client *liteclient.WendyLiteCli
 			return nil
 		}
 		if attempt < serialConnectMaxAttempts {
-			fmt.Fprintf(os.Stderr, "connecting to %s failed (%v), retrying (%d/%d)...\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
+			usermessage.Fprintf(os.Stderr, "connecting to %s failed (%v), retrying (%d/%d)...\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

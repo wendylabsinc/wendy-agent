@@ -179,7 +179,7 @@ func cleanRPCError(err error) error {
 	case codes.PermissionDenied:
 		return fmt.Errorf("not authorized to pair with this device")
 	default:
-		return fmt.Errorf("sensor pairing request failed: %s", userFacingGRPCError(err))
+		return fmt.Errorf("sensor pairing request failed: %w", err)
 	}
 }
 

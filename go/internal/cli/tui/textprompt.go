@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // ValidateFunc validates user input. Return nil on success, or an error
@@ -69,7 +70,7 @@ func (m TextPromptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			value := strings.TrimSpace(m.input.Value())
 			if m.Validate != nil {
 				if err := m.Validate(value); err != nil {
-					m.err = err.Error()
+					m.err = usermessage.Text(err)
 					return m, nil
 				}
 			}

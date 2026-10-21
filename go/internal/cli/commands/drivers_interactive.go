@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -39,7 +40,7 @@ func runDriversInteractive(ctx context.Context, source driverManifestOptions) er
 			return err
 		}
 		// A registry outage must not prevent removal of an installed add-on.
-		cliLogln("%s", tui.WarningMessage(fmt.Sprintf("Could not list published drivers: %v", err)))
+		cliLogln("%s", usermessage.Sprintf("%s", tui.WarningMessage(usermessage.Sprintf("Could not list published drivers: %v", err))))
 		cliLogln("Installed drivers can still be removed.")
 		exts = nil
 	}

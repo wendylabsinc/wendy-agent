@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // deviceMarkers are substrings that indicate a flash failure came from the
@@ -94,6 +95,6 @@ const flashDeviceFailureHint = "The target device rejected or lost the write, so
 // announceFastWriteFallback says why the fast write failed before the full
 // write starts; once the fallback succeeds nothing else would report it.
 func announceFastWriteFallback(w io.Writer, primary error) {
-	fmt.Fprintln(w, tui.WarningMessage("Fast write failed; falling back to a full-image write, which takes longer:"))
-	fmt.Fprintln(w, strings.TrimSpace(primary.Error()))
+	fmt.Fprintln(w, tui.WarningMessage("Fast write failed. Falling back to a full-image write, which takes longer."))
+	fmt.Fprintln(w, usermessage.Text(primary))
 }

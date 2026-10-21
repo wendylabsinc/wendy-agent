@@ -8,6 +8,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -120,7 +121,7 @@ func buildServicesRemote(
 		// read as built — the deploy below would otherwise create a container
 		// from whatever older image still holds this :latest name.
 		if err := reportedDeliveryError(result, spec.GetPushTarget().GetAssetId()); err != nil {
-			fmt.Fprintf(logOut, "delivery to the device failed: %v\n", err)
+			usermessage.Fprintf(logOut, "delivery to the device failed: %v\n", err)
 			return fmt.Errorf("image built on %s but could not be delivered to the device: %w", host, err)
 		}
 		return nil

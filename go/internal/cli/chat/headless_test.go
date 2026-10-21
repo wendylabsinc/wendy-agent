@@ -113,7 +113,7 @@ func TestHeadlessReportsErrorsAsEvents(t *testing.T) {
 	}
 	events := decodeLines(t, out.String())
 	last := events[len(events)-1]
-	if last["type"] != "error" || !strings.Contains(last["text"].(string), "deadline") {
+	if last["type"] != "error" || last["text"] != "Connection timed out." {
 		t.Fatalf("last event = %v", last)
 	}
 	if err := RunHeadless(context.Background(), HeadlessOptions{Engine: engine, Prompt: "  "}); err == nil {

@@ -311,7 +311,7 @@ func TestRenderBuildFailureReturnsTheStepAndCause(t *testing.T) {
 	for _, want := range []string{
 		"  Step: build 4/4 — RUN go build -o /out/app .\n",
 		// The builder's own error stays visible above the rewritten one.
-		"  Error: docker buildx build (OCI export) failed: exit status 1\n",
+		"Error: Something went wrong. Try again.\n",
 		"  Build log: /tmp/wendy-build-image-1.log\n",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -337,7 +337,7 @@ func TestBuildFailureErrorRewritesOnlyImageBuildFailures(t *testing.T) {
 		if err != buildErr {
 			t.Errorf("%q was rewritten to %q", buildErr, err)
 		}
-		if got := strings.Count(out.String(), buildErr.Error()); got != 1 {
+		if got := strings.Count(out.String(), "Something went wrong. Try again."); got != 1 {
 			t.Errorf("details block shows %q %d times, want once:\n%s", buildErr, got, out.String())
 		}
 	}

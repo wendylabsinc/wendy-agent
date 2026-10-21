@@ -11,8 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	"google.golang.org/grpc/status"
 )
 
 // mode tracks which sub-view the model is showing.
@@ -835,29 +835,8 @@ func flashFor(msg OpResultMsg) (string, bool) {
 	return "", false
 }
 
-// userFacingError renders a remote error for display, preferring the gRPC
-// status description so internal "rpc error: code = ..." framing is not shown
-// in the table status line. Non-gRPC errors fall back to their plain text.
-func userFacingError(err error) string {
-	if err == nil {
-		return ""
-	}
-	if _, ok := status.FromError(err); ok {
-		if desc, descOK := grpcDescFromErrorString(err.Error()); descOK {
-			return desc
-		}
-	}
-	return err.Error()
-}
-
-func grpcDescFromErrorString(msg string) (string, bool) {
-	idx := strings.Index(msg, "desc = ")
-	if idx < 0 {
-		return "", false
-	}
-	desc := strings.TrimSpace(msg[idx+len("desc = "):])
-	return desc, desc != ""
-}
+// userFacingError shares the CLI's approved message boundary.
+func userFacingError(err error) string { return usermessage.Text(err) }
 
 func clearFlashAfter(d time.Duration) tea.Cmd {
 	return func() tea.Msg {

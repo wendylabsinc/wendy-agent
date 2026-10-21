@@ -19,6 +19,7 @@ package memguard
 
 import (
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"io"
 	"log"
 	"os"
@@ -119,7 +120,7 @@ func check(cfg *config) bool {
 	fmt.Fprintf(cfg.stderr, "\nwendy: memory limit exceeded: %s of live heap, ceiling is %s.\n",
 		formatMiB(live), formatMiB(cfg.limit))
 	if path, err := cfg.dump(); err != nil {
-		fmt.Fprintf(cfg.stderr, "wendy: could not write a heap profile: %v\n", err)
+		usermessage.Fprintf(cfg.stderr, "wendy: could not write a heap profile: %v\n", err)
 	} else {
 		fmt.Fprintf(cfg.stderr, "wendy: heap profile written to %s\n", path)
 		fmt.Fprintf(cfg.stderr, "wendy: please attach it to a bug report — inspect it with:\n")

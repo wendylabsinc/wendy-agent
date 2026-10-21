@@ -24,7 +24,7 @@ func TestPickerFailedDefaultSavePreservesMarker(t *testing.T) {
 		m = updated.(PickerModel)
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 		m = updated.(PickerModel)
-		if m.DefaultKey != defaultKey || !m.flashIsError || m.flashMessage != "cannot save config" {
+		if m.DefaultKey != defaultKey || !m.flashIsError || m.flashMessage != "Something went wrong. Try again." {
 			t.Fatalf("failed save changed UI state: key=%q error=%t message=%q", m.DefaultKey, m.flashIsError, m.flashMessage)
 		}
 	}

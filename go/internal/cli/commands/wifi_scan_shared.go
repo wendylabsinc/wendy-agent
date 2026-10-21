@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"os/exec"
 )
 
@@ -67,6 +68,6 @@ func wifiScanFailureNotice(scanErr error) string {
 	case errors.Is(scanErr, errNoWifiAdapter):
 		return "No WiFi adapter detected on this machine."
 	default:
-		return fmt.Sprintf("WiFi scan failed: %v", scanErr)
+		return usermessage.Sprintf("WiFi scan failed: %v", scanErr)
 	}
 }

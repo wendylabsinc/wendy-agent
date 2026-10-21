@@ -9,9 +9,9 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // Action is the intent the user picked. When a Handler is attached the model
@@ -239,7 +239,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			// Keep the previously-known peripherals on a failed scan.
 			m.scanSeen = map[string]bool{}
-			return m, m.setFlash(fmt.Sprintf("Scan failed: %s", userFacingError(msg.Err)), true)
+			return m, m.setFlash(usermessage.Sprintf("Scan failed: %s", userFacingError(msg.Err)), true)
 		}
 		// Reconcile: drop devices that this completed scan did not report.
 		m.peripherals = pruneUnseen(m.peripherals, m.scanSeen)
@@ -452,32 +452,9 @@ func flashFor(msg OpResultMsg) (string, bool) {
 	return "", false
 }
 
-// userFacingError renders a remote error for display, preferring the gRPC
-// status message so internal "rpc error: code = ..." framing and metadata are
-// not surfaced in the UI. Non-gRPC errors fall back to their plain text.
-func userFacingError(err error) string {
-	if err == nil {
-		return ""
-	}
-	if _, ok := status.FromError(err); ok {
-		if desc, descOK := grpcDescFromErrorString(err.Error()); descOK {
-			return desc
-		}
-	}
-	return err.Error()
-}
+// userFacingError shares the CLI's approved message boundary.
+func userFacingError(err error) string { return usermessage.Text(err) }
 
-func grpcDescFromErrorString(msg string) (string, bool) {
-	idx := strings.Index(msg, "desc = ")
-	if idx < 0 {
-		return "", false
-	}
-	desc := strings.TrimSpace(msg[idx+len("desc = "):])
-	return desc, desc != ""
-}
-
-// setFlash sets a transient message and returns a command that clears it after
-// flashDuration, unless a newer flash supersedes it first (tracked by token).
 func (m *Model) setFlash(msg string, isErr bool) tea.Cmd {
 	m.setFlashText(msg, isErr)
 	token := m.flashToken

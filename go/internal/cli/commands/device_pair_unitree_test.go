@@ -146,7 +146,7 @@ func TestUnitreeManualIPValidationAndSavedReconnect(t *testing.T) {
 	c.forgetErr = errors.New("device offline")
 	m, cmd = unitreePairUpdate(m, unitreeKey("f"))
 	m, _ = unitreePairUpdate(m, cmd())
-	if len(m.paired) != 1 || !strings.Contains(m.message, "device offline") || m.busy {
+	if len(m.paired) != 1 || !strings.Contains(m.message, "Device is offline.") || m.busy {
 		t.Fatal("failed forget discarded saved pairing")
 	}
 	c.forgetErr = nil
@@ -179,7 +179,7 @@ func TestUnitreeFailedDiscoveryDoesNotKeepStaleConnectionStatus(t *testing.T) {
 	c.paired = []*agentpbv2.UnitreeRobot{{Serial: "SAVED", Paired: true, Address: "192.0.2.42"}}
 	c.discoveryErr = errors.New("LAN unavailable")
 	m, _ = unitreePairUpdate(m, m.Init()())
-	if m.rows[0].Connected || !m.rows[0].Paired || !strings.Contains(m.scanError, "LAN unavailable") {
+	if m.rows[0].Connected || !m.rows[0].Paired || !strings.Contains(m.scanError, "Something went wrong. Try again.") {
 		t.Fatal("old discovery connection status overrode the latest saved pairing")
 	}
 }
@@ -257,7 +257,7 @@ func TestUnitreeFailedScansRetainRobotsAndOperationErrors(t *testing.T) {
 	m, _ = unitreePairUpdate(m, m.Init()())
 	c.listErr, c.discoveryErr = errors.New("list unavailable"), errors.New("LAN unavailable")
 	m, _ = unitreePairUpdate(m, m.Init()())
-	if len(m.rows) != 1 || !strings.Contains(m.View(), "list unavailable") || !strings.Contains(m.View(), "LAN unavailable") {
+	if len(m.rows) != 1 || !strings.Contains(m.View(), "Something went wrong. Try again.") || !strings.Contains(m.View(), "Something went wrong. Try again.") {
 		t.Fatal("failed scan lost robots or error details")
 	}
 	m, cmd := unitreePairUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})

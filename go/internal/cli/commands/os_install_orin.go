@@ -20,6 +20,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/t234"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
@@ -110,7 +111,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	// Otherwise macOS asks about each flashing disk it can't read, and choosing
 	// Eject there releases the disk before the flash is done with it.
 	if releaseClaims, err := t234.SuppressDiskPrompts(); err != nil {
-		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not stop macOS disk prompts (%v). If macOS says a disk is not readable, choose Ignore.", err)))
+		fmt.Println(tui.WarningMessage(usermessage.Sprintf("Could not stop macOS disk prompts (%v). If macOS says a disk is not readable, choose Ignore.", err)))
 	} else {
 		defer releaseClaims()
 	}
@@ -217,7 +218,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err != nil {
 		// The console can vanish with the process (UAC-relaunched window), so
 		// the flash log must record why the flash stopped, not just where.
-		fmt.Fprintf(logW, "\nFAILED (step %d): %v\n", failedID, err)
+		usermessage.Fprintf(logW, "\nFAILED (step %d): %v\n", failedID, err)
 		switch {
 		case errors.Is(err, tui.ErrCancelled):
 			if failedID >= orinStepCommands && massStorage != nil && massStorage.HandoffStarted {
@@ -369,7 +370,7 @@ func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, de
 	detail("downloading agent")
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
-		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
+		usermessage.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {
 		detail("agent " + agentVer)
 	}

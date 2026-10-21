@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // displayAddress strips a trailing numeric port from an address for display in
@@ -654,7 +655,7 @@ func (m *PickerModel) setDefault(item PickerItem) {
 	m.flashMessage, err = m.OnSetDefault(item)
 	m.flashIsError = err != nil
 	if err != nil {
-		m.flashMessage = err.Error()
+		m.flashMessage = usermessage.Text(err)
 		return
 	}
 	m.DefaultKey = strings.ToLower(pickerItemKey(item))
@@ -665,7 +666,7 @@ func (m *PickerModel) unsetDefault() {
 	m.flashMessage, err = m.OnUnsetDefault()
 	m.flashIsError = err != nil
 	if err != nil {
-		m.flashMessage = err.Error()
+		m.flashMessage = usermessage.Text(err)
 		return
 	}
 	m.DefaultKey = ""

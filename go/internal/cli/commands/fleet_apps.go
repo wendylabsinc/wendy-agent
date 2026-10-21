@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -138,7 +139,7 @@ func gatherFleetApps(ctx context.Context, targets []fleetTarget) []fleetAppRow {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				rows = append(rows, fleetAppRow{Device: target.Name, Error: err.Error()})
+				rows = append(rows, fleetAppRow{Device: target.Name, Error: usermessage.Text(err)})
 				return nil
 			}
 			if len(containers) == 0 {

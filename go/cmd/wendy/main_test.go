@@ -33,18 +33,11 @@ func (diagnosticTestError) CLIMessage() string {
 	return "✗ Connection blocked\n\n  wendy device unpin device.local"
 }
 
-func TestRenderErrorKeepsDiagnosticPresentationAndContext(t *testing.T) {
-	diagnostic := diagnosticTestError{}
-	for _, tc := range []struct {
-		err  error
-		want string
-	}{
-		{diagnostic, diagnostic.CLIMessage()},
-		{fmt.Errorf("connecting: %w", diagnostic), "connecting: " + diagnostic.CLIMessage()},
-		{errors.Join(diagnostic, errors.New("other device failed")), diagnostic.CLIMessage() + "\nother device failed"},
-	} {
-		if got := renderError(tc.err); got != tc.want {
-			t.Errorf("diagnostic lost context or was restyled: got %q, want %q", got, tc.want)
+func TestRenderErrorNeverUsesArbitraryDiagnosticText(t *testing.T) {
+	for _, err := range []error{diagnosticTestError{}, fmt.Errorf("connecting: %w", diagnosticTestError{}), errors.Join(diagnosticTestError{}, errors.New("raw sibling detail"))} {
+		got := renderError(err)
+		if !strings.Contains(got, "Something went wrong. Try again.") || strings.Contains(got, "programmatic") || strings.Contains(got, "sibling") {
+			t.Errorf("unsafe diagnostic: %q", got)
 		}
 	}
 }
@@ -517,7 +510,7 @@ func TestFormatError_EnrollmentTokenUnavailableIsCloudError(t *testing.T) {
 	err := fmt.Errorf("creating enrollment token: %w", status.Error(codes.Unavailable, "connection refused"))
 
 	got := formatError(err).Error()
-	want := "creating enrollment token: Could not connect to Wendy Cloud. Please try again later."
+	want := "Wendy Cloud is unavailable. Please try again later."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -530,7 +523,7 @@ func TestFormatError_LocalPKICoreUnavailable(t *testing.T) {
 	err := fmt.Errorf("creating enrollment token from pki-core services.orb.local:50051: %w", status.Error(codes.Unavailable, "connection refused"))
 
 	got := formatError(err).Error()
-	want := "creating enrollment token from pki-core services.orb.local:50051: Could not connect to local pki-core. Check that the gRPC endpoint is reachable from this machine."
+	want := "The local certificate service is unavailable. Check that it is running and try again."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -539,7 +532,7 @@ func TestFormatError_LocalPKICoreUnavailable(t *testing.T) {
 	}
 }
 
-func TestFormatError_CloudUnavailablePreservesDetails(t *testing.T) {
+func TestFormatError_CloudUnavailableHidesRawDetails(t *testing.T) {
 	for _, prefix := range []string{
 		"creating enrollment token: ",
 		"creating enrollment token from pki-core services.orb.local:50051: ",
@@ -549,7 +542,11 @@ func TestFormatError_CloudUnavailablePreservesDetails(t *testing.T) {
 			"enrollment signer is unavailable",
 		} {
 			err := fmt.Errorf("%s%w", prefix, status.Error(codes.Unavailable, detail))
-			if got, want := formatError(err).Error(), prefix+detail; got != want {
+			want := "Wendy Cloud is unavailable. Please try again later."
+			if strings.Contains(prefix, "pki-core") {
+				want = "The local certificate service is unavailable. Check that it is running and try again."
+			}
+			if got := formatError(err).Error(); got != want {
 				t.Errorf("formatError() = %q, want %q", got, want)
 			}
 		}
@@ -560,7 +557,7 @@ func TestFormatError_UnimplementedPreservesContextualDescription(t *testing.T) {
 	err := fmt.Errorf("listing audio devices: %w", status.Error(codes.Unimplemented, "Audio device management is currently not supported by Wendy Agent for Mac."))
 
 	got := formatError(err).Error()
-	want := "listing audio devices: Audio device management is currently not supported by Wendy Agent for Mac."
+	want := "Audio device management is not supported by Wendy Agent for Mac."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -573,7 +570,7 @@ func TestFormatError_UnimplementedKeepsUpdateHintForUnknownMethod(t *testing.T) 
 	err := fmt.Errorf("listing volumes: %w", status.Error(codes.Unimplemented, "unknown method ListVolumes for service agent.ContainerService"))
 
 	got := formatError(err).Error()
-	want := "listing volumes: Not supported by this agent version. Try updating the agent."
+	want := "Not supported by this agent version. Try updating the agent."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -583,7 +580,7 @@ func TestFormatError_UnimplementedKeepsUpdateHintForGeneratedStub(t *testing.T) 
 	err := fmt.Errorf("listing volumes: %w", status.Error(codes.Unimplemented, "method ListVolumes not implemented"))
 
 	got := formatError(err).Error()
-	want := "listing volumes: Not supported by this agent version. Try updating the agent."
+	want := "Not supported by this agent version. Try updating the agent."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -597,7 +594,7 @@ func TestFormatError_GenuineCertRejectionKeepsClockSkewAdvice(t *testing.T) {
 		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
 
 	got := formatError(err).Error()
-	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "wendy device sync-time") || strings.Contains(got, "ssh ") {
+	if !strings.Contains(got, "clock") || !strings.Contains(got, "wendy device sync-time") || strings.Contains(got, "ssh ") {
 		t.Fatalf("genuine cert rejection should keep clock-skew advice, got %q", got)
 	}
 }
@@ -611,7 +608,7 @@ func TestFormatError_X509VerifyFailureKeepsClockSkewAdvice(t *testing.T) {
 		`connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate has expired or is not yet valid"`))
 
 	got := formatError(err).Error()
-	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "wendy device sync-time") || strings.Contains(got, "ssh ") {
+	if !strings.Contains(got, "clock") || !strings.Contains(got, "wendy device sync-time") || strings.Contains(got, "ssh ") {
 		t.Fatalf("x509 verify failure should keep clock-skew advice, got %q", got)
 	}
 }
@@ -726,22 +723,11 @@ func TestIsSetupCommand(t *testing.T) {
 // failure (clouddefaults.BrokerTunnelConn). The presenter must show that
 // verdict rather than the transport envelope, and must not blame the device
 // clock or reachability: the device was never reached.
-func TestFormatError_CloudTunnelVerdictIsShown(t *testing.T) {
+func TestFormatError_CloudTunnelVerdictIsMapped(t *testing.T) {
 	inner := `connection error: desc = "transport: authentication handshake failed: cloud tunnel closed by broker: rpc error: code = PermissionDenied desc = user is not a current member of this organization"`
-	err := formatError(fmt.Errorf("getting agent version: %w", status.Error(codes.Unavailable, inner)))
-	msg := err.Error()
-	if !strings.HasPrefix(msg, "getting agent version: ") {
-		t.Errorf("lost the command context prefix: %q", msg)
-	}
-	for _, want := range []string{"Wendy Cloud", "user is not a current member of this organization", "PermissionDenied"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message %q lacks %q", msg, want)
-		}
-	}
-	for _, noise := range []string{"authentication handshake failed", "connection error", "transport:", "clock", "offline"} {
-		if strings.Contains(msg, noise) {
-			t.Errorf("message %q still carries %q", msg, noise)
-		}
+	got := formatError(fmt.Errorf("getting agent version: %w", status.Error(codes.Unavailable, inner))).Error()
+	if got != "You don't have permission to do this. Check your access and try again." {
+		t.Fatalf("message = %q", got)
 	}
 }
 
@@ -772,22 +758,15 @@ var refusedDial = status.Error(codes.Unavailable,
 
 // A hint appended after the gRPC error (fmt.Errorf("...: %w\n  hint")) used to
 // vanish when formatError replaced the transport text with fixed prose.
-func TestFormatError_KeepsHintAppendedAfterGRPCError(t *testing.T) {
-	err := fmt.Errorf("default device %q is set but could not be reached: %w\n  Confirm it with 'wendy device get-default'.",
-		"127.0.0.1:1", refusedDial)
-	want := `default device "127.0.0.1:1" is set but could not be reached: ` +
-		"Could not connect to device. Is it powered on and connected to the network?\n" +
-		"  Confirm it with 'wendy device get-default'."
-	if got := formatError(err).Error(); got != want {
-		t.Errorf("formatError() = %q, want %q", got, want)
+func TestFormatError_DropsUntrustedWrappingAndSuffixes(t *testing.T) {
+	err := fmt.Errorf("raw context: %w\n  raw suffix", refusedDial)
+	got := formatError(err).Error()
+	if got != "Could not connect to device. Make sure it's on and connected, then try again." {
+		t.Fatalf("message = %q", got)
 	}
-
-	// The Unavailable-with-description branch keeps the suffix too, once.
-	err = fmt.Errorf("registering deployment with Cloud: %w; use --skip-cloud-registration for an offline deployment",
-		status.Error(codes.Unavailable, "deployment registry is restarting"))
-	want = "registering deployment with Cloud: deployment registry is restarting; use --skip-cloud-registration for an offline deployment"
-	if got := formatError(err).Error(); got != want {
-		t.Errorf("formatError() = %q, want %q", got, want)
+	err = fmt.Errorf("registering deployment with Cloud: %w; raw recovery detail", status.Error(codes.Unavailable, "deployment registry is restarting"))
+	if got := formatError(err).Error(); got != "Device is unavailable." {
+		t.Fatalf("message = %q", got)
 	}
 }
 
@@ -797,13 +776,13 @@ func TestFormatErrorParts_ReportsItsOwnSteps(t *testing.T) {
 	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
 		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
 	f := formatErrorParts(err)
-	wantText := "querying device version: TLS handshake rejected by device (possible clock skew or cert mismatch).\n" +
+	wantText := "The device rejected the secure connection. Its clock or certificates may need attention.\n" +
 		"  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n" +
-		"  For full TLS details rerun with WENDY_TLS_DEBUG=1"
+		"  For full connection details, rerun with WENDY_TLS_DEBUG=1."
 	if f.text != wantText {
 		t.Errorf("text = %q, want %q", f.text, wantText)
 	}
-	wantSteps := []string{"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.", "For full TLS details rerun with WENDY_TLS_DEBUG=1"}
+	wantSteps := []string{"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.", "For full connection details, rerun with WENDY_TLS_DEBUG=1."}
 	if strings.Join(f.steps, "|") != strings.Join(wantSteps, "|") {
 		t.Errorf("steps = %q, want %q", f.steps, wantSteps)
 	}
@@ -813,7 +792,7 @@ func TestFormatErrorParts_ReportsItsOwnSteps(t *testing.T) {
 // told apart from it; formatError keeps its long-standing behaviour.
 func TestFormatError_FlattenedGRPCErrorStillRewrites(t *testing.T) {
 	err := fmt.Errorf("listing volumes: %v", status.Error(codes.Unimplemented, "unknown method ListVolumes for service x"))
-	if got, want := formatError(err).Error(), "listing volumes: Not supported by this agent version. Try updating the agent."; got != want {
+	if got, want := formatError(err).Error(), "Not supported by this agent version. Try updating the agent."; got != want {
 		t.Errorf("formatError() = %q, want %q", got, want)
 	}
 }
@@ -835,9 +814,9 @@ func TestFormatError_ConnectErrorsNameTheDevice(t *testing.T) {
 		want string
 	}{
 		{dialedError{"127.0.0.1:1", refusedDial},
-			"Could not connect to device at 127.0.0.1:1. Is it powered on and connected to the network?"},
+			"Could not connect to device at 127.0.0.1:1. Make sure it's on and connected, then try again."},
 		{refusedDial,
-			"Could not connect to device. Is it powered on and connected to the network?"},
+			"Could not connect to device. Make sure it's on and connected, then try again."},
 		{dialedError{"10.0.0.9:50051", status.Error(codes.DeadlineExceeded, "context deadline exceeded")},
 			"Connection to device at 10.0.0.9:50051 timed out."},
 		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"),
@@ -891,9 +870,9 @@ func TestFormatError_UnresolvedDeviceNamesTheHost(t *testing.T) {
 			`connection error: desc = "transport: Error while dialing: dial tcp: lookup nosuchhost.invalid: no such host"`)},
 			"Could not resolve device host nosuchhost.invalid.\n  Check the name, or connect by IP address."},
 		{dialedError{"wendyos-x.local:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
-			"Could not resolve device host wendyos-x.local.\n  The device may be offline, or mDNS may be blocked on this network; connect by IP address to rule that out."},
+			"Could not resolve device host wendyos-x.local.\n  The device may be offline, or local discovery may be blocked on this network. Connect by IP address to check."},
 		{dialedError{"wendyos-zzz:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
-			"Could not resolve device host wendyos-zzz.\n  The device may be offline, or mDNS may be blocked on this network; connect by IP address to rule that out."},
+			"Could not resolve device host wendyos-zzz.\n  The device may be offline, or local discovery may be blocked on this network. Connect by IP address to check."},
 		// A fully qualified name's trailing dot must not double the full stop.
 		{dialedError{"nosuchhost.invalid.:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
 			"Could not resolve device host nosuchhost.invalid.\n  Check the name, or connect by IP address."},

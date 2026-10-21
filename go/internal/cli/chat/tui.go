@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // UIOptions supplies the agent and the session information displayed by Run.
@@ -287,7 +288,7 @@ func (m *chatModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if canceled {
 				m.appendEntry("notice", "Canceled", "You can send another message.")
 			} else if msg.err != nil {
-				m.appendEntry("error", "Agent error", msg.err.Error())
+				m.appendEntry("error", "Agent error", usermessage.Text(msg.err))
 			}
 			m.canceling = false
 			m.finishVoiceTurn(msg.err, canceled)
@@ -514,7 +515,13 @@ func (m *chatModel) submit(prompt string) tea.Cmd {
 		if id == "" {
 			m.appendEntry("notice", "Choose a note", "Use /memory to find its short ID, then /forget <id> to delete it.")
 		} else if err := m.opts.Engine.ForgetMemory(m.ctx, id); err != nil {
-			m.appendEntry("error", "Could not forget note", err.Error())
+			var ambiguous *ambiguousMemoryIDError
+			if errors.As(err, &ambiguous) {
+				m.appendEntry("error", "Could not forget note", usermessage.Explain(err, "memory_ambiguous").Text())
+				m.appendMemoryEntry(chatEntry{kind: "memory", title: "Matching notes", memory: &memoryDisplay{entries: ambiguous.matches, fullIDs: true}})
+			} else {
+				m.appendEntry("error", "Could not forget note", usermessage.Text(err))
+			}
 		} else {
 			m.appendEntry("notice", "Note forgotten", "Removed the selected note from memory.")
 		}
@@ -911,7 +918,7 @@ func (m *chatModel) handleVoiceMessage(msg voiceMessage) tea.Cmd {
 		if event.Type == "error" {
 			detail := "Voice connection failed."
 			if event.Err != nil {
-				detail = event.Err.Error()
+				detail = usermessage.Text(event.Err)
 			}
 			m.appendEntry("error", "Voice unavailable", detail+"\nText chat remains available. Use /voice to retry or /voice setup to change credentials privately.")
 		} else {
@@ -930,7 +937,7 @@ func (m *chatModel) finishVoiceTurn(err error, canceled bool) {
 	}
 	text := strings.TrimSpace(m.turnReply)
 	if err != nil {
-		text = "I couldn't complete the task: " + err.Error()
+		text = "I couldn't complete the task: " + usermessage.Text(err)
 	}
 	if text == "" {
 		return

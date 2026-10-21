@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"io"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -273,29 +273,7 @@ func appsDashPollFlash(err error) string {
 }
 
 func userFacingGRPCError(err error) string {
-	if err == nil {
-		return ""
-	}
-	// A broker-closed tunnel: the verdict inside the handshake failure is the
-	// whole story, so show it instead of the transport envelope.
-	if verdict, ok := clouddefaults.ExplainTunnelClose(err.Error()); ok {
-		return "Wendy Cloud closed the tunnel: " + verdict
-	}
-	if _, ok := status.FromError(err); ok {
-		if desc, descOK := grpcDescFromErrorString(err.Error()); descOK {
-			return desc
-		}
-	}
-	return err.Error()
-}
-
-func grpcDescFromErrorString(msg string) (string, bool) {
-	idx := strings.Index(msg, "desc = ")
-	if idx < 0 {
-		return "", false
-	}
-	desc := strings.TrimSpace(msg[idx+len("desc = "):])
-	return desc, desc != ""
+	return usermessage.Explain(err, ExecutionErrorClass(err)).Text()
 }
 
 // --- Polling goroutines ---
@@ -535,7 +513,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case appsDashActionResultMsg:
 		if msg.err != nil {
-			m.flash = fmt.Sprintf("Error: %s", msg.err)
+			m.flash = usermessage.Sprintf("Error: %s", msg.err)
 		} else {
 			m.flash = msg.text
 		}

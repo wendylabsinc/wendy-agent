@@ -24,6 +24,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashengine"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
@@ -263,7 +264,7 @@ func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceN
 	detail("downloading agent")
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
-		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
+		usermessage.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {
 		detail("agent " + agentVer)
 	}

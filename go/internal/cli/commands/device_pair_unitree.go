@@ -15,6 +15,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/unitreecloud"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
@@ -316,7 +317,7 @@ func (m *unitreePairModel) refreshRows(selectedSerial string) {
 
 func (m unitreePairModel) beginLogin() (tea.Model, tea.Cmd) {
 	if m.handler.transportError != nil {
-		m.message = m.handler.transportError.Error()
+		m.message = usermessage.Text(m.handler.transportError)
 		return m, nil
 	}
 	m.form, m.passwordFocused, m.message = unitreeLoginForm, false, ""
@@ -346,7 +347,7 @@ func unitreePairIPv4(address string) (string, error) {
 func (m unitreePairModel) connect(d *agentpbv2.UnitreeRobot, address string) (tea.Model, tea.Cmd) {
 	ip, err := unitreePairIPv4(address)
 	if err != nil {
-		m.message = err.Error()
+		m.message = usermessage.Text(err)
 		return m, nil
 	}
 	key := ""
@@ -394,7 +395,7 @@ func (m unitreePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case unitreePairLoginMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
+			m.message = usermessage.Text(msg.err)
 			return m, nil
 		}
 		m.account = msg.account

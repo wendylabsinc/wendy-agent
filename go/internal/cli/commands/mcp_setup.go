@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
@@ -24,7 +25,7 @@ func newMCPSetupCmd() *cobra.Command {
 			results := append(append([]mcpSetupResult(nil), mcpResults...), installSkillsForAllTools()...)
 			for _, r := range results {
 				if r.err != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "✗ %s: %v\n", r.tool, r.err)
+					usermessage.Fprintf(cmd.OutOrStdout(), "✗ %s: %v\n", r.tool, r.err)
 				} else {
 					fmt.Fprintf(cmd.OutOrStdout(), "✓ %s: configured at %s\n", r.tool, r.path)
 				}

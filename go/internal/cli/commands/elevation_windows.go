@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"golang.org/x/sys/windows"
 )
 
@@ -136,7 +137,7 @@ func requireElevation(purpose string, extraArgs ...string) error {
 		// If the elevation check itself fails, don't block the caller —
 		// surface the warning and let the operation fail with its own error
 		// (e.g. "Access denied") if we really were unprivileged.
-		fmt.Fprintf(os.Stderr, "warning: could not determine elevation state: %v\n", err)
+		usermessage.Fprintf(os.Stderr, "warning: could not determine elevation state: %v\n", err)
 		return nil
 	}
 	if elevated {

@@ -38,30 +38,30 @@ func TestExecuteRecoveringTurnsAPanicIntoAnInternalError(t *testing.T) {
 
 func TestReportFailure_InternalError(t *testing.T) {
 	_, err := executeRecovering(func() (*cobra.Command, error) { panic(errors.New("nil map write")) })
-
-	var out strings.Builder
-	if code := reportFailure(&out, err, nil, []string{"--json"}); code != 70 {
-		t.Errorf("exit = %d, want 70", code)
-	}
-	// JSON mode is what a non-terminal run gets, so the stack must not be
-	// lost there: it comes first, and the envelope stays the last line.
-	stack, envelope, ok := cutLastLine(out.String())
-	if !ok || !strings.Contains(stack, "goroutine ") || !strings.Contains(stack, "panic_test.go") {
-		t.Errorf("JSON mode must print the stack before the envelope:\n%s", out.String())
-	}
-	got := decodeEnvelope(t, envelope)
-	if got.Code != "internal_error" || got.Exit != 70 || got.Retryable ||
-		got.Message != "internal error: nil map write" || len(got.NextSteps) != 1 {
-		t.Errorf("envelope = %+v", got)
-	}
-
-	out.Reset()
-	if code := reportFailure(&out, err, nil, []string{"--json=false"}); code != 70 {
-		t.Errorf("text-mode exit = %d, want 70", code)
-	}
-	text := out.String()
-	if !strings.Contains(text, "internal error: nil map write") || !strings.Contains(text, "goroutine ") {
-		t.Errorf("text mode must show the error and the stack for a bug report:\n%s", text)
+	for _, debug := range []string{"", "1"} {
+		t.Setenv("WENDY_TLS_DEBUG", debug)
+		for _, args := range [][]string{{"--json"}, {"--json=false"}} {
+			var out strings.Builder
+			if code := reportFailure(&out, err, nil, args); code != 70 {
+				t.Errorf("exit = %d, want 70", code)
+			}
+			if debug == "" {
+				if strings.Contains(out.String(), "goroutine ") || strings.Contains(out.String(), "nil map write") {
+					t.Errorf("raw panic reached normal output: %s", out.String())
+				}
+			} else if !strings.Contains(out.String(), "goroutine ") || !strings.Contains(out.String(), "panic_test.go") {
+				t.Errorf("debug stack missing: %s", out.String())
+			}
+			if args[0] == "--json" {
+				_, envelope, _ := cutLastLine(out.String())
+				got := decodeEnvelope(t, envelope)
+				if got.Code != "internal_error" || got.Exit != 70 || got.Retryable || got.Message != "Something went wrong. Try again." {
+					t.Errorf("envelope = %+v", got)
+				}
+			} else if !strings.Contains(out.String(), "Something went wrong. Try again.") {
+				t.Errorf("message missing: %s", out.String())
+			}
+		}
 	}
 }
 

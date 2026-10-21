@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // Keep presentation separate from memoryJSON, which supplies complete records
@@ -15,6 +16,7 @@ type memoryDisplay struct {
 	query   string
 	enabled bool
 	detail  bool
+	fullIDs bool
 }
 
 type memoryDisplayLine struct {
@@ -25,7 +27,7 @@ type memoryDisplayLine struct {
 func (m *chatModel) showMemoryNotes(query string) {
 	entries, err := m.opts.Engine.MemoryNotes(m.ctx, query)
 	if err != nil {
-		m.appendEntry("error", "Memory unavailable", err.Error())
+		m.appendEntry("error", "Memory unavailable", usermessage.Text(err))
 		return
 	}
 	m.appendMemoryEntry(chatEntry{
@@ -37,7 +39,7 @@ func (m *chatModel) showMemoryNotes(query string) {
 func (m *chatModel) showMemoryNote(ref string) {
 	entry, err := m.opts.Engine.MemoryNote(m.ctx, ref)
 	if err != nil {
-		m.appendEntry("error", "Could not open note", err.Error())
+		m.appendEntry("error", "Could not open note", usermessage.Text(err))
 		return
 	}
 	m.appendMemoryEntry(chatEntry{
@@ -116,6 +118,9 @@ func (d *memoryDisplay) lines() []memoryDisplayLine {
 		add("", plain)
 		add("• "+entry.Title, chatTitle)
 		add(memoryMetadata(entry), chatDim)
+		if d.fullIDs {
+			add("ID: "+entry.ID, chatDim)
+		}
 		add(ansi.Truncate(chatSingleLine(entry.Content), 160, "…"), plain)
 	}
 	return lines

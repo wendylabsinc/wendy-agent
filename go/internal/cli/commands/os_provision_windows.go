@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
@@ -50,7 +51,7 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 			if retErr == nil {
 				retErr = fmt.Errorf("config partition write succeeded but cleanup failed (disk may still be online with phantom drive letters): %w", cleanupErr)
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: failed to unmount/offline disk %d during cleanup: %v\n", diskNum, cleanupErr)
+				usermessage.Fprintf(os.Stderr, "warning: failed to unmount/offline disk %d during cleanup: %v\n", diskNum, cleanupErr)
 			}
 		}
 	}()
@@ -241,7 +242,7 @@ func ejectDisk(d drive) {
 	}
 	diskNum, err := parseDiskNumber(d.DevicePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot eject %s: %v\n", d.DevicePath, err)
+		usermessage.Fprintf(os.Stderr, "warning: cannot eject %s: %v\n", d.DevicePath, err)
 		return
 	}
 	// Idempotent: writeConfigPartition's deferred cleanup already took the
@@ -264,8 +265,8 @@ func ejectDisk(d drive) {
 			"if (-not $d.IsOffline) { Set-Disk -Number %d -IsOffline $true -ErrorAction Stop }",
 		diskNum, diskNum,
 	)
-	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	_, err = exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to take disk %d offline (it may still be online with assigned drive letters): %v: %s\n", diskNum, err, strings.TrimSpace(string(out)))
+		usermessage.Fprintf(os.Stderr, "Warning: could not take disk %d offline. It may still be online with assigned drive letters. %v\n", diskNum, err)
 	}
 }

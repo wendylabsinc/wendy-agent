@@ -61,7 +61,7 @@ func TestUncreatedSimulatorCannotBeDefault(t *testing.T) {
 	if defaultKey(t) != "existing.local" || m.picker.DefaultKey != "existing.local" {
 		t.Fatal("placeholder replaced existing default")
 	}
-	if !strings.Contains(m.View(), "create the simulator") {
+	if !strings.Contains(m.View(), "Create the simulator") {
 		t.Fatal("missing explanation")
 	}
 }
@@ -470,7 +470,7 @@ func TestCloudSelectorKeepsValidCertificateWhenRenewalRefused(t *testing.T) {
 					t.Fatal(err)
 				}
 			})
-			if !connected || !strings.Contains(strings.ToLower(warning), refusal.reason) {
+			if !connected || !strings.Contains(warning, "Sign in again") || strings.Contains(warning, refusal.reason) {
 				t.Fatalf("renewal refusal did not warn and continue: connected=%v, warning=%q", connected, warning)
 			}
 		})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"time"
 )
 
@@ -92,7 +93,7 @@ func (e *Engine) learnMemory(ctx context.Context, prompt string, emit func(Event
 	}()
 	prior, err := e.memory.store.Search(ctx, prompt, "", 8)
 	if err != nil {
-		emit(Event{Type: "memory", Text: "Could not review notes: " + err.Error()})
+		emit(Event{Type: "memory", Text: "Could not review notes: " + usermessage.Text(err)})
 		return
 	}
 	data, _ := json.Marshal(struct {
@@ -108,7 +109,7 @@ func (e *Engine) learnMemory(ctx context.Context, prompt string, emit func(Event
 	}, []Tool{tool}, func(string) {})
 	if err != nil {
 		if e.MemoryEnabled() && !errors.Is(err, context.Canceled) {
-			emit(Event{Type: "memory", Text: "Could not save new lessons; the task result is unchanged. " + err.Error()})
+			emit(Event{Type: "memory", Text: "Could not save new lessons; the task result is unchanged. " + usermessage.Text(err)})
 		}
 		return
 	}
@@ -134,7 +135,7 @@ func (e *Engine) learnMemory(ctx context.Context, prompt string, emit func(Event
 		}
 		output, err := e.memory.Execute(ctx, call)
 		if err != nil {
-			emit(Event{Type: "memory", Text: "Could not save a note: " + err.Error()})
+			emit(Event{Type: "memory", Text: "Could not save a note: " + usermessage.Text(err)})
 			continue
 		}
 		emit(Event{Type: "memory", Text: output})

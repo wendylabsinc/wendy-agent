@@ -125,7 +125,7 @@ func TestCloudDiscoverInteractiveV2EmptyAndError(t *testing.T) {
 		m = updated.(cloudDiscoverModel)
 		want := "No online devices found"
 		if fail {
-			want = "membership required"
+			want = "You don't have permission"
 		}
 		if !m.hasResults || !strings.Contains(m.View(), want) || len(m.devices) != 0 {
 			t.Fatalf("unexpected scan state: %s", m.View())

@@ -11,6 +11,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
@@ -248,7 +249,7 @@ func unrecordedIdentityWarning(hostname string, keys []string, updateErr error) 
 	for i, key := range keys {
 		quoted[i] = strconv.Quote(key)
 	}
-	return fmt.Sprintf("wendy: device identity for %s was not recorded: another wendy process holds the config lock (%v)\n", strings.Join(quoted, " and "), updateErr)
+	return usermessage.Sprintf("wendy: device identity for %s was not recorded: another wendy process holds the config lock (%v)\n", strings.Join(quoted, " and "), updateErr)
 }
 
 // fallbackAction is what enforceDeviceIdentity's read-only fallback does with
@@ -438,7 +439,7 @@ func refuseDevicePin(diagnostic devicePinDiagnostic) error {
 // heading, or printing a second copy while the error is propagated.
 func (e *deviceIdentityRefusalError) CLIMessage() string {
 	if e.diagnostic == nil {
-		return tui.ErrorMessage(e.Error())
+		return tui.ErrorMessage(usermessage.Explain(e, "device_identity_mismatch").Text())
 	}
 	return e.diagnostic.message(true)
 }

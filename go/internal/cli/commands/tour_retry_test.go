@@ -40,7 +40,7 @@ func TestTourStepRetriesUntilReady(t *testing.T) {
 	if err != nil || prompts != 2 || attempts != 3 {
 		t.Fatalf("error=%v prompts=%d attempts=%d", err, prompts, attempts)
 	}
-	if !strings.Contains(out.String(), "Starting the simulator needs attention: context deadline exceeded") {
+	if !strings.Contains(out.String(), "Starting the simulator needs attention: Connection timed out.") {
 		t.Fatalf("missing explanation: %s", out.String())
 	}
 }
@@ -148,7 +148,7 @@ func TestTourStepReloadsCorrectedProject(t *testing.T) {
 	if err != nil || prompts != 1 || got != want {
 		t.Fatalf("error=%v prompts=%d project=%+v, want %+v", err, prompts, got, want)
 	}
-	if !strings.Contains(out.String(), path) {
+	if !strings.Contains(out.String(), "Something went wrong. Try again.") || strings.Contains(out.String(), path) {
 		t.Fatalf("missing file to correct: %s", out.String())
 	}
 }

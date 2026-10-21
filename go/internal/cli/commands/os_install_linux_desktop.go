@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
@@ -159,7 +160,7 @@ func installDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, m
 			if !interactive {
 				return fmt.Errorf("--pre-enroll: %w", aErr)
 			}
-			fmt.Fprintf(os.Stdout, "Cannot pre-enroll: %v\n", aErr)
+			usermessage.Fprintf(os.Stdout, "Cannot pre-enroll: %v\n", aErr)
 			// fall through to plain instructions
 		} else if auth != nil {
 			org, oErr := resolveOrg(ctx, auth, false)
@@ -170,7 +171,7 @@ func installDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, m
 				if !interactive {
 					return fmt.Errorf("--pre-enroll: resolving organization: %w", oErr)
 				}
-				fmt.Fprintf(os.Stdout, "Cannot resolve organization: %v\n", oErr)
+				usermessage.Fprintf(os.Stdout, "Cannot resolve organization: %v\n", oErr)
 			} else {
 				provName, nErr := resolveDeviceName(deviceName)
 				if nErr != nil {
@@ -181,7 +182,7 @@ func installDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, m
 					if !interactive {
 						return fmt.Errorf("--pre-enroll: creating enrollment token: %w", tErr)
 					}
-					fmt.Fprintf(os.Stdout, "Could not create enrollment token: %v\n", tErr)
+					usermessage.Fprintf(os.Stdout, "Could not create enrollment token: %v\n", tErr)
 				} else {
 					token, cloudHost, orgName, expiresAt = tok, auth.CloudGRPC, org.Name, exp
 				}

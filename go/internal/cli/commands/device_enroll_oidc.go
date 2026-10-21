@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
@@ -45,7 +46,7 @@ func runOIDCEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, 
 	agent := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn)
 	hw, err := cloudenroll.ReadHardware(ctx, conn.Conn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v; enrolling without hardware details.\n", err)
+		usermessage.Fprintf(os.Stderr, "Warning: %v; enrolling without hardware details.\n", err)
 	}
 
 	tokenCtx, err := cloudContext(ctx, auth)

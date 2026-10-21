@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
@@ -77,7 +78,7 @@ func (o runOptions) reportDetachedRun(ctx context.Context, conn *grpcclient.Agen
 		result.Device = "vm:" + name
 	}
 	if err != nil {
-		cliNotice("App started, but its URL could not be determined: %v", err)
+		cliNotice("%s", usermessage.Sprintf("App started, but its URL could not be determined: %v", err))
 	} else {
 		host := conn.Host
 		if name != "" {
@@ -92,7 +93,7 @@ func (o runOptions) reportDetachedRun(ctx context.Context, conn *grpcclient.Agen
 				if name != "" {
 					candidate, err = mappedVMAppURL(ctx, name, candidate)
 					if err != nil {
-						cliNotice("App started, but its URL could not be determined: %v", err)
+						cliNotice("%s", usermessage.Sprintf("App started, but its URL could not be determined: %v", err))
 						continue
 					}
 				}

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,13 +12,12 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
 	"github.com/wendylabsinc/wendy/go/internal/cli/memguard"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
-	"google.golang.org/grpc/status"
 )
 
 func main() {
@@ -253,237 +251,21 @@ func errorClass(err error) string {
 	return commands.ExecutionErrorClass(err)
 }
 
-// renderError lets actionable errors style their heading separately from the
-// recovery steps. Use errors.As because commands may add context with %w.
+// renderError and the JSON envelope share the CLI message boundary.
 func renderError(err error) string {
-	var diagnostic interface {
-		error
-		CLIMessage() string
-	}
-	if errors.As(err, &diagnostic) && strings.Contains(err.Error(), diagnostic.Error()) {
-		// Preserve surrounding action context and any joined sibling errors.
-		return strings.Replace(err.Error(), diagnostic.Error(), diagnostic.CLIMessage(), 1)
-	}
-	return tui.ErrorMessage(formatError(err).Error())
+	return tui.ErrorMessage(formatErrorParts(err).text)
 }
 
-// formattedError is formatError's result: the text shown to a person, and
-// the recovery steps formatError itself put at the end of that text, so JSON
-// mode can report them as next_steps instead of burying them in the message.
 type formattedError struct {
 	text  string
 	steps []string
 }
 
 func formatError(err error) error {
-	f := formatErrorParts(err)
-	if f.text == err.Error() {
-		return err
-	}
-	return errors.New(f.text)
+	return errors.New(formatErrorParts(err).text)
 }
 
 func formatErrorParts(err error) formattedError {
-	msg := err.Error()
-	if !strings.Contains(msg, "rpc error: code = ") {
-		return formattedError{text: msg}
-	}
-
-	// prefix is the context callers wrapped around the gRPC error (e.g.
-	// "starting agent update: "), grpcText the status error's own text, and
-	// suffix whatever a caller appended after it, typically a recovery hint
-	// added with fmt.Errorf("...: %w\n  hint"). Only grpcText is rewritten
-	// below, so the hint survives.
-	prefix, grpcText, suffix := splitGRPCMessage(err, msg)
-	rewrite := func(headline string, steps ...string) formattedError {
-		text := prefix + headline
-		for _, step := range steps {
-			text += "\n  " + step
-		}
-		return formattedError{text: text + suffix, steps: steps}
-	}
-
-	// A cloud tunnel the broker closed carries the broker's verdict inside the
-	// handshake failure (clouddefaults.BrokerTunnelConn). That verdict is the
-	// actionable part: it is neither a cert problem nor a dead device, so show
-	// it before the handshake heuristics below can misread it as either.
-	if verdict, ok := clouddefaults.ExplainTunnelClose(msg); ok {
-		return rewrite("Wendy Cloud closed the tunnel to the device: "+verdict,
-			"For full tunnel details rerun with WENDY_TLS_DEBUG=1")
-	}
-
-	isPKICoreCall := strings.Contains(prefix, "pki-core")
-	isCloudCall := strings.Contains(prefix, "issuing certificate") ||
-		strings.Contains(prefix, "refreshing certificate") ||
-		strings.Contains(prefix, "creating enrollment token") ||
-		strings.Contains(prefix, "connecting to cloud")
-
-	// A genuine mTLS rejection carries a TLS-alert / cert-verification marker: the
-	// device rejected our client cert ("remote error: tls: bad certificate"),
-	// required one ("certificate required"), or our client rejected the device's
-	// server cert ("tls: failed to verify certificate: x509: ..."). These
-	// warrant certificate/clock guidance, but do not prove a clock problem.
-	isCertRejection := strings.Contains(msg, "tls:") ||
-		strings.Contains(msg, "bad certificate") ||
-		strings.Contains(msg, "certificate required")
-
-	// A bare "authentication handshake failed" with a transport-death cause (EOF,
-	// a closed pipe, a reset) is NOT a cert rejection — the far side vanished
-	// mid-handshake before any TLS alert. This is the signature of an unreachable
-	// device or, over a cloud tunnel, an offline broker / a device not connected
-	// to it: the tunnel byte pipe is dead, so the first RPC's handshake reads a
-	// closed pipe. Blaming the device clock here sends the user to ssh a box they
-	// can't reach.
-	isTransportHandshakeDrop := !isCertRejection &&
-		strings.Contains(msg, "authentication handshake failed") &&
-		(strings.Contains(msg, "EOF") ||
-			strings.Contains(msg, "read/write on closed pipe") ||
-			strings.Contains(msg, "connection reset") ||
-			strings.Contains(msg, "broken pipe"))
-
-	// Name the device when the error records which address was dialled.
-	device := "device"
-	addr := deviceAddress(err)
-	if addr != "" {
-		device = "device at " + addr
-	}
-
-	switch {
-	case addr != "" && strings.Contains(msg, "code = Unavailable") && isResolverMissText(grpcText):
-		// The resolver's own text ("produced zero addresses") never names
-		// the host it could not find.
-		host := addr
-		if h, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
-			host = h
-		}
-		// "host." is a fully qualified name; its dot would double the stop.
-		host = strings.TrimSuffix(host, ".")
-		// A device name resolved over mDNS (.local or bare) is classified as
-		// unreachable: it only resolves while the device is on the network.
-		if commands.DeviceDialErrorClass(err) == "device_unreachable" {
-			return rewrite("Could not resolve device host "+host+".",
-				"The device may be offline, or mDNS may be blocked on this network; connect by IP address to rule that out.")
-		}
-		return rewrite("Could not resolve device host "+host+".", "Check the name, or connect by IP address.")
-	case strings.Contains(msg, "code = Unavailable") && isCertRejection && !isPKICoreCall && !isCloudCall:
-		return rewrite("TLS handshake rejected by device (possible clock skew or cert mismatch).",
-			"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
-			"For full TLS details rerun with WENDY_TLS_DEBUG=1")
-	case strings.Contains(msg, "code = Unavailable") && isTransportHandshakeDrop && !isPKICoreCall && !isCloudCall:
-		return rewrite("Secure connection dropped during the TLS handshake.\n  The device may be offline or unreachable. If you are connecting through Wendy Cloud, the tunnel broker or the device's link to it may be down.",
-			"For full TLS details rerun with WENDY_TLS_DEBUG=1")
-	case strings.Contains(msg, "code = Unavailable") && strings.Contains(msg, "connection refused"):
-		if isPKICoreCall {
-			return rewrite("Could not connect to local pki-core. Check that the gRPC endpoint is reachable from this machine.")
-		}
-		if isCloudCall {
-			return rewrite("Could not connect to Wendy Cloud. Please try again later.")
-		}
-		return rewrite("Could not connect to " + device + ". Is it powered on and connected to the network?")
-	case strings.Contains(msg, "code = Unavailable"):
-		// Cloud and PKI services can return actionable dependency failures.
-		// Keep that explanation instead of replacing it with a generic outage.
-		if isPKICoreCall || isCloudCall {
-			if desc, ok := grpcDesc(grpcText); ok {
-				return rewrite(desc)
-			}
-		}
-		if isPKICoreCall {
-			return rewrite("Local pki-core is unavailable.")
-		}
-		if isCloudCall {
-			return rewrite("Wendy Cloud is unavailable. Please try again later.")
-		}
-		// Preserve the server's description when it provides actionable
-		// detail (e.g. "WiFi management is not available (nmcli not found)").
-		// Only fall back to the generic message for transport-level errors
-		// that lack a useful desc.
-		if idx := strings.Index(grpcText, "desc = "); idx >= 0 && strings.TrimSpace(grpcText[idx+len("desc = "):]) != "" {
-			return rewrite(grpcText[idx+len("desc = "):])
-		}
-		return rewrite(capitalize(device) + " is unavailable.")
-	case strings.Contains(msg, "code = DeadlineExceeded"):
-		if device != "device" {
-			return rewrite("Connection to " + device + " timed out.")
-		}
-		return rewrite("Connection timed out.")
-	case strings.Contains(msg, "code = Unimplemented"):
-		// Preserve intentional, contextual Unimplemented descriptions from the
-		// agent (for example Wendy Agent for Mac feature gaps). Keep the legacy
-		// update hint only for generic protocol-mismatch responses where gRPC or
-		// an old agent did not recognize the service/method.
-		if desc, ok := grpcDesc(grpcText); ok && !isGenericUnimplementedDesc(desc) {
-			return rewrite(desc)
-		}
-		return rewrite("Not supported by this agent version. Try updating the agent.")
-	default:
-		// Strip transport noise, keep the desc message.
-		if desc, ok := grpcDesc(grpcText); ok {
-			return rewrite(desc)
-		}
-		return formattedError{text: msg}
-	}
-}
-
-// splitGRPCMessage cuts msg around the text of the gRPC status error inside
-// err. When the chain holds no real status error (the caller flattened it
-// with %v), the gRPC text runs to the end of msg and nothing after it can be
-// told apart from it, which is how formatError always treated messages.
-func splitGRPCMessage(err error, msg string) (prefix, grpcText, suffix string) {
-	var statusErr interface {
-		error
-		GRPCStatus() *status.Status
-	}
-	if errors.As(err, &statusErr) {
-		if own := statusErr.Error(); own != "" {
-			if i := strings.Index(msg, own); i >= 0 {
-				return msg[:i], own, msg[i+len(own):]
-			}
-		}
-	}
-	i := strings.Index(msg, "rpc error: code = ")
-	return msg[:i], msg[i:], ""
-}
-
-// isResolverMissText reports whether a gRPC error's text says a host name
-// resolved to no address.
-func isResolverMissText(grpcText string) bool {
-	return strings.Contains(grpcText, "produced zero addresses") || strings.Contains(grpcText, "no such host")
-}
-
-// deviceAddress returns the address a failed device connection was aimed at
-// when the error records one (commands wraps device dials so it does).
-func deviceAddress(err error) string {
-	var dial interface{ DeviceAddress() string }
-	if errors.As(err, &dial) {
-		return dial.DeviceAddress()
-	}
-	return ""
-}
-
-// capitalize upper-cases the first byte of an ASCII phrase.
-func capitalize(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-func grpcDesc(msg string) (string, bool) {
-	idx := strings.Index(msg, "desc = ")
-	if idx < 0 {
-		return "", false
-	}
-	desc := strings.TrimSpace(msg[idx+len("desc = "):])
-	return desc, desc != ""
-}
-
-func isGenericUnimplementedDesc(desc string) bool {
-	lower := strings.ToLower(strings.TrimSpace(desc))
-	if lower == "" {
-		return true
-	}
-	return strings.HasPrefix(lower, "unknown service ") ||
-		strings.HasPrefix(lower, "unknown method ") ||
-		(strings.HasPrefix(lower, "method ") && strings.HasSuffix(lower, " not implemented"))
+	r := usermessage.Explain(err, commands.ExecutionErrorClass(err))
+	return formattedError{text: r.Text(), steps: r.Steps}
 }
