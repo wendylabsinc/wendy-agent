@@ -40,6 +40,12 @@ func reissueCurrentCertificate(ctx context.Context, auth *config.AuthConfig) err
 		return err
 	}
 	if current.Name != auth.Name || !sameOAuthSession(current, auth) {
+		// A saved selector can use its own still-valid certificate without
+		// spending another context's sign-in or reporting a failed operation.
+		notAfter, expiryErr := leafNotAfterFn(auth.Certificates[0].PemCertificate)
+		if expiryErr == nil && timeNowFn().Before(notAfter) {
+			return nil
+		}
 		return fmt.Errorf("certificate belongs to context %q; run 'wendy auth use %s', then 'wendy auth refresh-certs', then retry", auth.Name, auth.Name)
 	}
 	automaticCertReissue.Lock()

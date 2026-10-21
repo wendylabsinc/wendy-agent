@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -471,3 +472,39 @@ func TestOIDCCertificateRefreshStopsAtFailedRotationCheckpoint(t *testing.T) {
 	}
 }
 
+func TestNonCurrentCertificateReissueIsQuietUntilExpiry(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	auth, tokens, issues := reissueTestSession(t, 200, testOperatorTenant, now, now.Add(time.Hour))
+	keyPEM, _ := auth.OAuthDPoPKey()
+	key, _ := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+	until := now.Add(5 * time.Minute)
+	auth.Certificates[0].PemCertificate = reissueTestLeaf(t, key, testOperatorTenant, testOperatorSubject, until.Add(-time.Hour), until)
+	other := *auth
+	other.Name = "other"
+	other.CloudGRPC = "other.example:443"
+	if err := config.Save(&config.Config{CurrentContext: "other", Auth: []config.AuthConfig{*auth, other}}); err != nil {
+		t.Fatal(err)
+	}
+	var notices bytes.Buffer
+	oldNotice, oldNow := noticeOut, timeNowFn
+	noticeOut = &notices
+	timeNowFn = func() time.Time { return now }
+	t.Cleanup(func() { noticeOut, timeNowFn = oldNotice, oldNow })
+	for range 3 {
+		stdout, stderr := captureBoth(t, func() {
+			if err := prepareDefaultCloudCertificate(context.Background(), auth); err != nil {
+				t.Error(err)
+			}
+		})
+		if stdout != "" || stderr != "" || notices.Len() != 0 {
+			t.Fatalf("non-current certificate produced a false warning: %q %q %q", stdout, stderr, notices.String())
+		}
+	}
+	now = until
+	if err := prepareDefaultCloudCertificate(context.Background(), auth); err == nil || !strings.Contains(err.Error(), "wendy auth use current") {
+		t.Fatalf("expired non-current certificate lost switch guidance: %v", err)
+	}
+	if tokens.Load() != 0 || issues.Load() != 0 {
+		t.Fatalf("non-current selector spent authority: %d/%d", tokens.Load(), issues.Load())
+	}
+}
