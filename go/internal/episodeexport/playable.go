@@ -105,6 +105,9 @@ type ClipResult struct {
 	// Skipped counts frames the index named but which could not be muxed
 	// because their bytes were missing, truncated, or held no coded picture.
 	Skipped int
+	// Fragments counts transport chunks joined back onto the preceding access
+	// unit. These index records are not lost pictures.
+	Fragments int
 	// SkippedReason quotes the first failure behind Skipped, so a clip that
 	// lost frames for one systemic reason (a segment file that is not there,
 	// an index whose offsets run past the end of a truncated segment) names
@@ -236,6 +239,7 @@ func convertSource(episodeDir, sourceDir, indexPath, out string) (ClipResult, er
 	stats, writeErr := muxAnnexBToMP4(f, episodeDir, frames)
 	closeErr := f.Close()
 	result.Frames, result.Skipped, result.Segments = stats.frames, stats.skipped, stats.segments
+	result.Fragments = stats.fragments
 	result.SkippedReason = stats.skipReason
 	result.BFrames = stats.bFrames
 	result.UndecodedSliceHeaders = stats.undecodedSliceHeaders
@@ -319,6 +323,7 @@ type sample struct {
 
 type muxStats struct {
 	frames, skipped, segments int
+	fragments                 int
 	min, max, mean            time.Duration
 	bFrames                   bool
 	// skipReason is the first error behind skipped, kept so a clip that lost
@@ -383,6 +388,11 @@ func muxAnnexBToMP4(w *os.File, episodeDir string, frames []cameraIndexLine) (mu
 	var stats muxStats
 	segments := &segmentReader{root: episodeDir, seen: map[string]bool{}}
 	defer segments.Close()
+	var err error
+	frames, stats.fragments, err = joinIndexedH264Fragments(segments, frames)
+	if err != nil {
+		return stats, err
+	}
 
 	ftyp := box("ftyp", concat(
 		[]byte("isom"), u32(0x200),
