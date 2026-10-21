@@ -7,7 +7,7 @@ pass `--all`. OIDC sessions use their refresh token and PKI identity endpoint
 to obtain a fresh operator certificate. Certificate-only sessions use the renew
 frontend described below. Cloud does not relay either request.
 
-A renewal is a re-issue, not a re-key of the same certificate: the CLI generates
+For certificate-only renewal, the CLI generates
 a new key pair of the same algorithm as the current one (an ML-DSA-65 session
 stays ML-DSA-65), builds a CSR for it, and posts the CSR to the renew frontend
 over mTLS, presenting the certificate being renewed. Next to the CSR the body
@@ -44,10 +44,10 @@ With more than one stored context and none selected, the command asks you to
 pick one with `wendy auth use` or pass `--all` rather than guessing. To refresh
 another context, switch to it first with `wendy auth use <context>`.
 
-Refreshing an OIDC session spends its refresh token, so a context you did not
-select is never touched. This holds for the "Refresh certificates and retry?"
-offer after a rejected device connection too: when the rejected certificate
-belongs to another context, the CLI names it and asks you to switch with
+Refreshing an OIDC session spends its refresh token, so automatic re-issuance
+only uses the current context. It runs without a confirmation prompt, including
+in non-interactive and JSON commands. When the rejected certificate belongs to
+another context, the CLI names it and asks you to switch with
 `wendy auth use <context>` first instead of refreshing the current one. When
 the device does not reveal its organization and several contexts hold
 certificates, the CLI lists them and refreshes none.
@@ -71,9 +71,25 @@ mints, so no renew host is ever derived from one.
 
 The CLI renews ahead of expiry without being asked: when an auth session is
 resolved and its certificate has less than 15 minutes of validity left, the
-renewal happens before the connection is attempted. This command is the manual
-trigger for the same path, and is useful when a certificate is close to expiry
-and you would rather not discover it mid-command.
+renewal happens before the connection is attempted. Existing X.509 renewal
+still runs first and requires the old certificate to be valid.
+
+For an OIDC operator session, if renewal cannot replace the certificate, the CLI
+silently obtains a fresh certificate through the current sign-in session. This
+also works after the old certificate expires. Connection recovery uses the same
+path. The CLI attempts automatic re-issuance at most once per invocation,
+including refusals and failed connection retries. The explicit command remains
+available.
+
+A replacement must match the tenant, operator and CSR key and have more than
+15 minutes remaining. The CLI permits its issuance time to be up to 60 seconds
+ahead of this computer's clock, without extending its expiry. A held certificate
+further in the future reports a clock error without spending a refresh token.
+
+PKI and network failures preserve a still-valid certificate. Auth refusing the
+sign-in session requires `wendy auth login`; PKI refusals alone do not. Rotated
+refresh tokens are saved even if certificate issuance fails, and a failed save
+stops the command.
 
 ## What renewal will not do
 
@@ -84,9 +100,10 @@ and you would rather not discover it mid-command.
   path at all; log in again to be issued one that does.
 - **No roll-forward from an expired certificate.** Renewal requires a
   currently-valid certificate to present. Once yours has expired the renew
-  frontend needs an approved grant, which the CLI cannot mint — log in again
-  with [`wendy cloud login`](../cloud/login.md), which issues a fresh
-  certificate outright.
+  frontend needs an approved grant, which the CLI cannot mint. An OIDC session
+  can instead obtain a new certificate through its valid sign-in session; the
+  expired leaf supplies no issuance authority. Certificate-only sessions still
+  need a fresh login.
 - **Renewals are budgeted per lineage, and the budget is inherited rather than
   requested.** A plain operator certificate renews a fixed number of times and
   then has to be re-minted.
@@ -94,8 +111,8 @@ and you would rather not discover it mid-command.
   all** unless their tenant has opted in.
 
 Each of these arrives as an explicit refusal and is reported as itself, not
-retried as a generic failure. In an interactive terminal the refusals that only
-a new certificate can resolve offer to log you in again on the spot.
+retried as a generic failure. Certificate-only sessions keep the interactive
+refresh and login offers. OIDC sessions ask for sign-in only when Auth refuses.
 
 ## Related
 

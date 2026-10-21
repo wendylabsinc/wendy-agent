@@ -389,6 +389,15 @@ func requestPKIIdentityCertificate(
 	if expectedTenant != "" && identity.TenantUUID != expectedTenant {
 		return config.CertificateInfo{}, fmt.Errorf("pki-core returned tenant %q while renewing tenant %q", identity.TenantUUID, expectedTenant)
 	}
+	// Apply the same small issuance skew on initial sign-in and re-issue.
+	// Never extend expiry or accept an inverted validity interval.
+	now := timeNowFn()
+	if !now.Before(leaf.NotAfter) || !leaf.NotBefore.Before(leaf.NotAfter) {
+		return config.CertificateInfo{}, fmt.Errorf("pki-core returned an expired or invalid certificate validity interval")
+	}
+	if leaf.NotBefore.After(now.Add(certificateIssuanceSkew)) {
+		return config.CertificateInfo{}, fmt.Errorf("pki-core certificate is not yet valid; check this computer's clock")
+	}
 	return config.CertificateInfo{
 		PemCertificate:      leafPEM,
 		PemCertificateChain: chainPEM,
@@ -429,12 +438,20 @@ func splitCertificateChainPEM(chain []byte) (string, string, *x509.Certificate, 
 // the session's P-256 Lite leaf instead of the primary: same token and DPoP
 // key, a fresh P-256 CSR key.
 func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite bool) error {
+	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() == "" {
+		return fmt.Errorf("stored OAuth session has no authoritative tenant certificate")
+	}
+	expectedTenant := auth.Certificates[0].TenantUUID()
+	heldPrincipal, err := certs.ParsePrincipal(auth.Certificates[0].CertificatePrincipal())
+	if err != nil {
+		return fmt.Errorf("reading stored operator identity: %w", err)
+	}
 	refreshToken, err := auth.OAuthRefreshToken()
 	if err != nil {
 		return fmt.Errorf("loading OAuth refresh token: %w", err)
 	}
 	if refreshToken == "" {
-		return fmt.Errorf("OAuth session has no refresh token; sign in again")
+		return fmt.Errorf("OAuth session has no refresh token")
 	}
 	privateKeyPEM, err := auth.OAuthDPoPKey()
 	if err != nil {
@@ -486,10 +503,9 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 	if subject == "" {
 		return fmt.Errorf("pki-core identity token carries no sub claim")
 	}
-	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() == "" {
-		return fmt.Errorf("stored OAuth session has no authoritative tenant certificate; sign in again")
+	if subject != heldPrincipal.EntityID {
+		return fmt.Errorf("pki-core identity token identifies a different operator")
 	}
-	expectedTenant := auth.Certificates[0].TenantUUID()
 
 	csrKeyPEM := privateKeyPEM
 	if lite {
@@ -507,6 +523,15 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 	if lite {
 		if err := checkLiteOperatorLeaf(certInfo.PemCertificate); err != nil {
 			return err
+		}
+	}
+	if !lite {
+		leaf, err := storedLeaf(certInfo.PemCertificate)
+		if err != nil {
+			return err
+		}
+		if leaf.NotAfter.Sub(timeNowFn()) <= renewLeadTime {
+			return fmt.Errorf("pki-core replacement certificate is already inside the %s renewal margin", renewLeadTime)
 		}
 	}
 	cloudToken, err := refreshOIDCToken(
