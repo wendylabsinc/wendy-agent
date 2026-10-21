@@ -147,7 +147,7 @@ func certificateRenewalMargin(certPEM string) time.Duration {
 		// lead time when the full validity interval cannot be read.
 		return renewLeadTime
 	}
-	return min(renewLeadTime, leaf.NotAfter.Sub(leaf.NotBefore)/3)
+	return max(0, min(renewLeadTime, leaf.NotAfter.Sub(leaf.NotBefore)/3))
 }
 
 // certNeedsRenewal reports whether the leaf is close enough to expiry to renew.

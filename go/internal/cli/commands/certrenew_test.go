@@ -429,3 +429,16 @@ func TestCertificateRenewalMarginScalesWithLifetime(t *testing.T) {
 		})
 	}
 }
+
+func TestCertificateRenewalMarginClampsInvalidLifetime(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, lifetime := range []time.Duration{0, -time.Second, -time.Hour} {
+		t.Run(lifetime.String(), func(t *testing.T) {
+			_, key := newP256KeyPEM(t)
+			leaf := reissueTestLeaf(t, key, testOperatorTenant, testOperatorSubject, now, now.Add(lifetime))
+			if margin := certificateRenewalMargin(leaf); margin != 0 {
+				t.Fatalf("invalid signed lifetime produced margin %s, want zero", margin)
+			}
+		})
+	}
+}
