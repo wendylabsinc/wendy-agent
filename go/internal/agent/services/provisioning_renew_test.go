@@ -192,6 +192,48 @@ func TestRenewalSwitchesP256DeviceToMLDSA65(t *testing.T) {
 	}
 }
 
+// Steady state: an ML-DSA-65 device renews again over mTLS with its ML-DSA-65
+// leaf and stays ML-DSA-65.
+func TestRenewalMLDSA65DeviceRenewsAgain(t *testing.T) {
+	ca := newRenewCA(t)
+	f, endpoint, roots := startFakeRenew(t, renewed(t, ca))
+	svc, dir, _ := enrolledForRenewal(t, ca, endpoint, roots)
+	if ok, err := svc.RenewIfDue(context.Background(), time.Now()); !ok || err != nil {
+		t.Fatalf("first RenewIfDue = %v, %v", ok, err)
+	}
+	first := NewProvisioningService(zap.NewNop(), dir)
+	firstCert, _, firstKey := first.ProvisioningCerts()
+
+	// Two thirds into the 90-day leaf: due again.
+	if ok, err := first.RenewIfDue(context.Background(), time.Now().Add(65*24*time.Hour)); !ok || err != nil {
+		t.Fatalf("second RenewIfDue = %v, %v", ok, err)
+	}
+	if f.requests.Load() != 2 {
+		t.Fatalf("renew requests = %d, want 2", f.requests.Load())
+	}
+	if leaf, _ := storedDeviceLeaf(firstCert); len(f.presented) == 0 || !f.presented[0].Equal(leaf) {
+		t.Fatal("second renewal did not present the ML-DSA-65 leaf over mTLS")
+	}
+	if pub, ok := f.csr.PublicKey.(*mldsa.PublicKey); !ok || pub.Parameters() != mldsa.MLDSA65() {
+		t.Fatalf("renewal CSR key = %T, want ML-DSA-65", f.csr.PublicKey)
+	}
+
+	certPEM, _, keyPEM := NewProvisioningService(zap.NewNop(), dir).ProvisioningCerts()
+	if certPEM == firstCert || string(keyPEM) == string(firstKey) {
+		t.Fatal("reloaded identity is still the first renewal's")
+	}
+	leaf, err := storedDeviceLeaf(certPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub, ok := leaf.PublicKey.(*mldsa.PublicKey); !ok || pub.Parameters() != mldsa.MLDSA65() {
+		t.Fatalf("renewed leaf key = %T, want ML-DSA-65", leaf.PublicKey)
+	}
+	if _, err := certs.TLSKeyPair(certPEM, "", string(keyPEM)); err != nil || !isMLDSA65Key(keyPEM) {
+		t.Fatalf("reloaded identity is not a matching ML-DSA-65 pair: %v", err)
+	}
+}
+
 // A refusal (here: tier policy not permitting ML-DSA) is an explicit error,
 // sent once, and leaves the current identity untouched: never a P-256 retry.
 func TestRenewalRefusalIsExplicitAndNotRetriedWithP256(t *testing.T) {

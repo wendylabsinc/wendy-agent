@@ -38,6 +38,7 @@ type Signer struct {
 	key      *mldsa.PrivateKey
 	leafDER  []byte
 	tenant   string
+	resource string
 	audience string
 	now      func() time.Time
 	random   io.Reader
@@ -64,15 +65,15 @@ func New(certPEM, keyPEM string) (*Signer, error) {
 		return nil, fmt.Errorf("device signing leaf names %q, not a device principal", principal)
 	}
 	return &Signer{
-		key: key, leafDER: pair.Certificate[0], tenant: id.TenantUUID,
+		key: key, leafDER: pair.Certificate[0], tenant: id.TenantUUID, resource: principal,
 		audience: brokerAudience, now: time.Now, random: rand.Reader,
 	}, nil
 }
 
 // Sign wraps req for method (e.g. "/wendycloud.v2.DevicePostboxService/AckHead").
-// resource is the method's target resource from cloud's RequestSigning.md; the
-// caller supplies it because it is part of each method's contract.
-func (s *Signer) Sign(method, resource string, req proto.Message, correlationID string) (*cloudpbv2.SignedRequest, error) {
+// target.resource is the leaf's own SPIFFE URI: a device only ever signs for
+// itself (service-protos conformance/reqsig device profile).
+func (s *Signer) Sign(method string, req proto.Message, correlationID string) (*cloudpbv2.SignedRequest, error) {
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling %s: %w", method, err)
@@ -91,7 +92,7 @@ func (s *Signer) Sign(method, resource string, req proto.Message, correlationID 
 		"iat":            now,
 		"nonce":          base64.RawURLEncoding.EncodeToString(nonce),
 		"operation":      strings.TrimPrefix(method, "/"),
-		"target":         map[string]any{"resource": resource, "tenant": s.tenant},
+		"target":         map[string]any{"resource": s.resource, "tenant": s.tenant},
 	})
 	if err != nil {
 		return nil, err

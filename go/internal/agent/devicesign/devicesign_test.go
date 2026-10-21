@@ -59,7 +59,7 @@ func TestSignProducesDeviceSignedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := &cloudpbv2.SignedRequest{Payload: []byte("inner")} // any message will do
-	signed, err := s.Sign("/wendycloud.v2.DevicePostboxService/AckHead", "device/sim", req, "corr-1")
+	signed, err := s.Sign("/wendycloud.v2.DevicePostboxService/AckHead", req, "corr-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSignProducesDeviceSignedRequest(t *testing.T) {
 	}
 	sum := sha256.Sum256(signed.Payload)
 	if claims.Operation != "wendycloud.v2.DevicePostboxService/AckHead" ||
-		claims.Target["tenant"] != tenant || claims.Target["resource"] != "device/sim" ||
+		claims.Target["tenant"] != tenant || claims.Target["resource"] != principal ||
 		claims.BodySHA256 != base64.RawURLEncoding.EncodeToString(sum[:]) ||
 		claims.CorrelationID != "corr-1" || claims.Aud != brokerAudience || claims.Nonce == "" {
 		t.Fatalf("claims = %+v", claims)
