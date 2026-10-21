@@ -134,7 +134,7 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time, slots ...int) ([
 	return append(replies, out...), changed, err
 }
 
-// manifestPayload is a constant-time lookup for a previously advertised record.
+// manifestPayload recovers one previously advertised record by its store key.
 // The pool checks the exact digest so a replacement cannot serve different bytes.
 func (d *Directory) manifestPayload(principal string, now time.Time) []byte {
 	d.mu.Lock()

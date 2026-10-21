@@ -84,6 +84,10 @@ func TestQueuedDirectCatalogueRenewalRechecksBeforeHubSend(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				runtime.syncPeers(ctx)
 				p := runtime.peers[peer.ID]
+				// This fixture targets the pre-encoded direct catalogue queue.
+				// Router peers use the separately tested pooled HAVE/WANT path.
+				p.syncer.Close()
+				p.syncer = NewSynchronizer(relay, cache)
 				defer func() { cancel(); synctest.Wait(); p.syncer.Close() }()
 				if !runtime.queue(p, inventoryMessage{Message: Message{Kind: "identity-request", Principal: p534}}) {
 					t.Fatal("barrier queue")

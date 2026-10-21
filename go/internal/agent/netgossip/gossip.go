@@ -230,6 +230,9 @@ func (s *Session) Offer(data []byte, expires, now time.Time, loaders ...func(tim
 // Store access runs outside the pool mutex and costs at most one keyed lookup
 // and one envelope hash. Missing or superseded authoritative bodies are ignored.
 func (s *Session) Lookup(id ID, now time.Time) []byte {
+	if s.closed || id.Type != s.kind {
+		return nil
+	}
 	p := s.pool
 	p.mu.Lock()
 	p.prune(now)

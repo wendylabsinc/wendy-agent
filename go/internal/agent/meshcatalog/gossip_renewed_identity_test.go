@@ -183,3 +183,200 @@ func TestServiceGossipUnavailableDoesNotConsumeDescriptorHint(t *testing.T) {
 		t.Fatal("retry lost descriptor or body progress", out, err)
 	}
 }
+
+func TestServiceGossipWarmRenewalKeepsOneVerifiedDownload(t *testing.T) {
+	for _, mode := range []string{"complete", "replacement", "deadline", "mismatched-completion", "capacity", "close"} {
+		t.Run(mode, func(t *testing.T) {
+			old, current := newFixture(t), newFixture(t)
+			old.now = current.now
+			verify := func(chain [][]byte, now time.Time) (localmesh.Identity, error) {
+				if id, err := current.creds[p534].Verify(chain, now); err == nil {
+					return id, nil
+				}
+				return old.creds[p534].Verify(chain, now)
+			}
+			cache, err := localmesh.OpenIdentityCache("", localmesh.DefaultCacheLimits(), verify, old.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dest, err := NewCatalog("default", old.creds[p534].Device, 32, old.creds[p534], cache, func(string, string, uint16) error { return nil }, nil, func([]Receipt) error { return nil }, old.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = cache.Put(old.creds[p533].Certificate.Certificate, old.now); err != nil {
+				t.Fatal(err)
+			}
+			source, sourceCache := current.newCatalog(t, p533, "default", nil, nil)
+			w, err := source.Publish(testSpec(), old.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool := netgossip.NewPool()
+			sender := NewSynchronizer(source, sourceCache, netgossip.NewPool())
+			receiver, alternate := NewSynchronizer(dest, cache, pool), NewSynchronizer(dest, cache, pool)
+			defer sender.Close()
+			defer receiver.Close()
+			defer alternate.Close()
+			have := sender.Record(w, old.now)
+			if len(have) != 1 {
+				t.Fatal("publication needs more than one slot")
+			}
+			want, _, err := receiver.Receive(have[0], old.now)
+			if err != nil || len(want) != 1 {
+				t.Fatal(want, err)
+			}
+			if out, _, err := alternate.Receive(have[0], old.now); err != nil || len(out) != 0 {
+				t.Fatal("alternate duplicated warm body download", out, err)
+			}
+			out, _, err := sender.Receive(want[0], old.now, 0)
+			if err != nil || len(out) != 2 || out[0].Certificate == nil || out[1].Gossip == nil {
+				t.Fatal("missing descriptor before DATA", out, err)
+			}
+			requests, _, err := receiver.Receive(out[0], old.now)
+			if err != nil || len(requests) != 1 {
+				t.Fatal(requests, err)
+			}
+			if mode == "capacity" {
+				for range maxPendingRecords {
+					receiver.pending[p534] = append(receiver.pending[p534], pendingServiceRecord{wire: w})
+				}
+			}
+			_, changed, err := receiver.Receive(out[1], old.now)
+			if mode == "capacity" {
+				if !errors.Is(err, errPendingIdentities) {
+					t.Fatal("pending limit was bypassed", err)
+				}
+			} else if err != nil || len(changed) != 0 || !receiver.PendingIdentity() || len(dest.Snapshot(old.now)) != 0 {
+				t.Fatal("warm body gained authority before current chain completed", changed, err)
+			}
+			at := old.now
+			switch mode {
+			case "complete":
+				var chunks []Message
+				for _, request := range requests {
+					next, _, err := sender.Receive(request, at)
+					if err != nil {
+						t.Fatal(err)
+					}
+					chunks = append(chunks, next...)
+				}
+				changed, err := exchangeWarmServiceMessages(sender, receiver, chunks, at)
+				if err != nil || len(changed) != 1 || receiver.PendingIdentity() || alternate.PendingAnnouncements(at) || len(dest.Snapshot(at)) != 1 {
+					t.Fatal("verified pooled renewal did not resolve shared receipt", changed, err)
+				}
+				return
+			case "replacement":
+				_, _, err = receiver.Receive(Message{Kind: "certificate", Certificate: localmesh.DescribeCertificates(p533, old.creds[p533].Certificate.Certificate)}, at)
+			case "deadline":
+				at = at.Add(testSpec().Lease + time.Second)
+				_, _, err = receiver.ContinueCertificates(at, 0)
+			case "mismatched-completion":
+				_, _, err = receiver.certificateResult(nil, []string{p533}, nil, at)
+			case "close":
+				receiver.Close()
+			}
+			if err != nil && mode != "capacity" {
+				t.Fatal(err)
+			}
+			if next := alternate.gossip.Poll(at, 1); len(next) != 1 || next[0].Op != "want" {
+				t.Fatal("dropped service candidate stranded shared request", next)
+			}
+		})
+	}
+}
+
+func TestServiceGossipRequiresExactCurrentArtifactBeforeExport(t *testing.T) {
+	f := newFixture(t)
+	catalog, cache := f.newCatalog(t, p533, "default", nil, nil)
+	first, err := catalog.Publish(testSpec(), f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := NewSynchronizer(catalog, cache, netgossip.NewPool())
+	defer sender.Close()
+	have := sender.Record(first, f.now)
+	peer := netgossip.NewPool().NewSession(netgossip.Service)
+	defer peer.Close()
+	want, _, err := peer.Receive(*have[0].Gossip, f.now)
+	if err != nil || want == nil {
+		t.Fatal(want, err)
+	}
+	current, err := catalog.Publish(testSpec(), f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := sender.Record(first, f.now); len(out) != 0 {
+		t.Fatal("queued superseded artifact was re-advertised")
+	}
+	out, _, err := sender.Receive(Message{Kind: "gossip", Gossip: want}, f.now)
+	if err != nil || len(out) != 1 || out[0].Gossip == nil || out[0].Gossip.Op != "unavailable" {
+		t.Fatal("cached old body bypassed exact current artifact gate", out, err)
+	}
+	if out := sender.Record(current, f.now); len(out) != 1 {
+		t.Fatal("replacement lost publication progress")
+	}
+}
+
+func TestServiceGossipSameLeafIssuerChangeRefreshesDescriptorImmediately(t *testing.T) {
+	now, old, current, verify := serviceIssuerRenewalFixture(t, time.Hour)
+	newSide := func() (*Catalog, *localmesh.IdentityCache) {
+		cache, err := localmesh.OpenIdentityCache("", localmesh.DefaultCacheLimits(), verify, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := NewCatalog("default", old.Device, 32, old, cache, func(string, string, uint16) error { return nil }, nil, func([]Receipt) error { return nil }, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, cache
+	}
+	source, sourceCache := newSide()
+	dest, cache := newSide()
+	sender := NewSynchronizer(source, sourceCache, netgossip.NewPool())
+	receiver := NewSynchronizer(dest, cache, netgossip.NewPool())
+	defer sender.Close()
+	defer receiver.Close()
+	spec := testSpec()
+	spec.Lease = 10 * time.Second
+	first, err := source.Publish(spec, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchangeServiceMessages(t, sender, receiver, sender.Record(first, now), now)
+	if _, err = sourceCache.Put(current.Certificate.Certificate, now); err != nil {
+		t.Fatal(err)
+	}
+	source.creds = current
+	wire, err := source.Publish(testSpec(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := sender.Record(wire, now)
+	want, _, err := receiver.Receive(have[0], now)
+	if err != nil || len(want) != 1 {
+		t.Fatal(want, err)
+	}
+	out, _, err := sender.Receive(want[0], now, 0)
+	if err != nil || len(out) != 2 || out[0].Certificate == nil {
+		t.Fatal("fresh leaf hint suppressed changed issuer descriptor", out, err)
+	}
+	requests, _, err := receiver.Receive(out[0], now)
+	if err != nil || len(requests) != 1 || requests[0].Certificate.Request.Hash == wire.Fingerprint {
+		t.Fatal("renewed issuer behind known leaf was not fetched", requests, err)
+	}
+	if _, changed, err := receiver.Receive(out[1], now); err != nil || len(changed) != 0 {
+		t.Fatal("issuer lifetime candidate gained authority before chain completion", changed, err)
+	}
+	var chunks []Message
+	for _, request := range requests {
+		next, _, err := sender.Receive(request, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, next...)
+	}
+	changed, err := exchangeWarmServiceMessages(sender, receiver, chunks, now)
+	if err != nil || len(changed) != 1 || len(dest.Snapshot(now)) != 1 || dest.Snapshot(now)[0].Generation != 2 {
+		t.Fatal("same-leaf pooled service issuer renewal failed", changed, err)
+	}
+}

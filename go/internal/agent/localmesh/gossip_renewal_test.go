@@ -295,3 +295,67 @@ func TestManifestGossipDroppedWarmCandidateReleasesAlternate(t *testing.T) {
 		})
 	}
 }
+
+func TestClosedManifestGossipCannotRestartKnownIdentityRepair(t *testing.T) {
+	f := newGossipManifestRenewal(t, true)
+	exchangeDirectoryMessages(t, f.sender, f.receiver, f.sender.Record(f.wire, f.now), f.now)
+	*f.allowOld = false
+	if _, err := f.source.cache.Put(f.renewed.Certificate.Certificate, f.now); err != nil {
+		t.Fatal(err)
+	}
+	f.receiver.Close()
+	have := f.sender.Record(f.wire, f.now)
+	if out, changed, err := f.receiver.Receive(have[0], f.now); err == nil || len(out) != 0 || len(changed) != 0 || len(f.receiver.pending) != 0 {
+		t.Fatal("closed session revived pending identity repair", out, changed, err)
+	}
+}
+
+func TestManifestGossipSameLeafIssuerChangeRefreshesDescriptorImmediately(t *testing.T) {
+	f := sameLeafIssuerRenewalFixture(t, time.Hour)
+	sender := f.source(t, f.old)
+	receiver, dest, _ := f.receiver(t)
+	sender.gossip = netgossip.NewPool().NewSession(netgossip.Manifest)
+	receiver.gossip = netgossip.NewPool().NewSession(netgossip.Manifest)
+	m := routeManifest(f.old.Device, f.now)
+	m.Expires = f.now.Add(10 * time.Second).UnixMilli()
+	first, err := SignManifest(m, f.old.Certificate.Certificate, f.old.Signer, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sender.directory.Accept(first, f.now); err != nil {
+		t.Fatal(err)
+	}
+	exchangeDirectoryMessages(t, sender, receiver, sender.Record(first, f.now), f.now)
+	if _, err = sender.cache.Put(f.renewed.Certificate.Certificate, f.now); err != nil {
+		t.Fatal(err)
+	}
+	m.Revision++
+	m.Expires = f.now.Add(time.Minute).UnixMilli()
+	wire, err := SignManifest(m, f.renewed.Certificate.Certificate, f.renewed.Signer, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sender.directory.Accept(wire, f.now); err != nil {
+		t.Fatal(err)
+	}
+	have := sender.Record(wire, f.now)
+	want, _, err := receiver.Receive(have[0], f.now)
+	if err != nil || len(want) != 1 {
+		t.Fatal(want, err)
+	}
+	out, _, err := sender.Receive(want[0], f.now, 0)
+	if err != nil || len(out) != 2 || out[0].Certificate == nil {
+		t.Fatal("fresh leaf hint suppressed changed issuer descriptor", out, err)
+	}
+	requests, _, err := receiver.Receive(out[0], f.now)
+	if err != nil || len(requests) != 1 || requests[0].Certificate.Request.Hash == certificateHash(f.renewed.Certificate.Certificate[0]) {
+		t.Fatal("renewed issuer behind known leaf was not fetched", requests, err)
+	}
+	if _, changed, err := receiver.Receive(out[1], f.now); err != nil || len(changed) != 0 {
+		t.Fatal("same-leaf lifetime candidate escaped exact-chain wait", changed, err)
+	}
+	changed, err := driveWarmCertificateFetch(sender, receiver, requests, f.now)
+	if err != nil || len(changed) != 1 || len(dest.Snapshot(f.now)) != 1 || dest.Snapshot(f.now)[0].Revision != 2 {
+		t.Fatal("same-leaf pooled issuer renewal failed", changed, err)
+	}
+}

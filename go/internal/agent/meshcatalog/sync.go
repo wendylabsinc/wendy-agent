@@ -37,6 +37,9 @@ func (m Message) validate() error {
 	if m.Kind != "certificate" && m.Certificate != nil {
 		return errors.New("unexpected service certificate message")
 	}
+	if m.Kind != "gossip" && m.Gossip != nil {
+		return errors.New("unexpected service gossip payload")
+	}
 	switch m.Kind {
 	case "gossip":
 		if m.Gossip == nil || m.Gossip.Type != netgossip.Service || m.Record != nil || len(m.Bundle) != 0 || m.Principal != "" {
@@ -280,12 +283,17 @@ func (s *Synchronizer) receive(m Message, now time.Time) (replies []Message, cha
 				s.pending[principal] = append(s.pending[principal], entry)
 			}
 		}
-		for _, entry := range pending {
+		for i, entry := range pending {
 			if entry.renewal != nil {
 				continue
 			}
 			_, admitted, err := s.receive(Message{Kind: "record", Record: &entry.wire}, now)
 			if err != nil {
+				for _, remaining := range pending[i:] {
+					if remaining.renewal == nil {
+						s.discardService(remaining.wire)
+					}
+				}
 				return nil, nil, err
 			}
 			changed = append(changed, admitted...)
@@ -361,6 +369,7 @@ func (s *Synchronizer) receive(m Message, now time.Time) (replies []Message, cha
 			pending := pendingServiceRecord{wire: cloneWire(*m.Record), renewal: renewal}
 			incomingBytes := pendingServiceBytes(pending)
 			if count >= maxPendingRecords || retainedBytes+incomingBytes > maxPendingRecordBytes {
+				s.discardService(*m.Record)
 				return nil, nil, errPendingIdentities
 			}
 			var record Record
@@ -405,12 +414,25 @@ func (s *Synchronizer) certificateResult(messages []*localmesh.CertificateMessag
 		delete(s.pending, principal)
 	}
 	for _, principal := range completed {
-		for _, w := range ready[principal] {
+		entries := ready[principal]
+		delete(ready, principal)
+		for i, w := range entries {
 			if !s.pendingReady(principal, w, now) {
+				s.discardService(w.wire)
 				continue
 			}
 			out, admitted, err := s.receive(Message{Kind: "record", Record: &w.wire}, now)
 			if err != nil {
+				// All completions were detached before replay. Release the
+				// remaining unverified claims even when the first retry fails.
+				for _, remaining := range entries[i:] {
+					s.discardService(remaining.wire)
+				}
+				for _, unprocessed := range ready {
+					for _, remaining := range unprocessed {
+						s.discardService(remaining.wire)
+					}
+				}
 				return nil, nil, err
 			}
 			replies = append(replies, out...)
@@ -438,6 +460,11 @@ func (s *Synchronizer) ContinueCertificates(now time.Time, slots ...int) ([]Mess
 }
 
 func (s *Synchronizer) Close() {
+	for _, entries := range s.pending {
+		for _, entry := range entries {
+			s.discardService(entry.wire)
+		}
+	}
 	s.certificates.Close()
 	clear(s.pending)
 	if s.gossip != nil {
@@ -493,6 +520,7 @@ func (s *Synchronizer) prunePending(now time.Time) {
 			if entry.renewal != nil {
 				chain, _, active := s.certificates.PendingChain(principal, now)
 				if !entry.renewal.deadline.After(now) || !active || !sameServiceChain(entry.renewal.chain, chain) {
+					s.discardService(entry.wire)
 					continue
 				}
 			}

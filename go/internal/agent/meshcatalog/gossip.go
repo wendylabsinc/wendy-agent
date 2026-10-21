@@ -15,7 +15,7 @@ func (s *Synchronizer) offerService(w SignedRecord, now time.Time) []Message {
 	if json.Unmarshal(w.Body, &record) != nil {
 		return nil
 	}
-	if chain, _, ok := s.cache.Get(record.Key.Device, now); !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
+	if _, ok := s.catalog.CurrentRecordChain(w, now); !ok {
 		return nil
 	}
 	data, err := json.Marshal(w)
@@ -63,8 +63,8 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 			if json.Unmarshal(payload, &w) != nil || json.Unmarshal(w.Body, &r) != nil {
 				return nil, nil, errors.New("invalid cached service artifact")
 			}
-			chain, _, ok := s.cache.Get(r.Key.Device, now)
-			if !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
+			chain, ok := s.catalog.CurrentRecordChain(w, now)
+			if !ok {
 				return []Message{{Kind: "gossip", Gossip: netgossip.Unavailable(*m.Gossip)}}, nil, nil
 			}
 			descriptor = localmesh.DescribeCertificates(r.Key.Device, chain)
@@ -118,14 +118,14 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 // servicePayload recovers one current record without an attacker-driven scan.
 func (c *Catalog) servicePayload(key Key, now time.Time) []byte {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	e, ok := c.entries[key]
-	if !ok || !time.UnixMilli(e.record.Expires).After(now) {
+	c.mu.Unlock()
+	if !ok {
 		return nil
 	}
-	// A principal can now name a renewed certificate. Its current eligibility
-	// must not restore an artifact signed by the previously cached leaf.
-	if chain, _, ok := c.cache.Get(e.record.Key.Device, now); !ok || localmesh.Fingerprint(chain) != e.wire.Fingerprint {
+	// Recheck the exact immutable wire outside c.mu. Current trust, effective
+	// issuer lifetime and any replacement must still permit this same artifact.
+	if _, ok := c.CurrentRecordChain(e.wire, now); !ok {
 		return nil
 	}
 	data, _ := json.Marshal(e.wire)
@@ -133,6 +133,9 @@ func (c *Catalog) servicePayload(key Key, now time.Time) []byte {
 }
 
 func (s *Synchronizer) discardService(w SignedRecord) {
+	if s.gossip == nil {
+		return
+	}
 	data, _ := json.Marshal(w)
 	s.gossip.Discard(data)
 }
