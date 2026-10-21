@@ -47,9 +47,10 @@ func (l *radioLink) matchesDisconnect(v map[string]string) bool {
 
 type ndpTuple struct{ peer, init, id string }
 
-// Repeated successful NDP signaling without any authenticated data traffic can
-// outlive per-NDP cleanup. Cycle only after a previously authenticated session
-// loses every healthy neighbor, and several replacement NDPs also fail.
+// Repeated NDP setup failures or successful signaling without authenticated
+// traffic can outlive per-NDP cleanup. Cycle only after a previously
+// authenticated session loses every healthy neighbor and several replacements
+// also fail. Discovery alone must not trigger recovery.
 type radioRecovery struct {
 	authenticated bool
 	outage        time.Time
@@ -70,6 +71,16 @@ func (r *radioRecovery) observe(now time.Time, healthy bool) {
 func (r *radioRecovery) connected() {
 	if !r.outage.IsZero() {
 		r.replacements++
+	}
+}
+
+// setupFailed is called only after disconnectedPeer matches an owned NDP.
+// Pending paths that time out never emit CONNECTED, but must still count toward
+// the existing warm recovery budget. A normal established-path teardown, or a
+// rejected replacement with a reused ID, is not another failed setup attempt.
+func (r *radioRecovery) setupFailed(link *radioLink, event map[string]string) {
+	if link != nil && link.peer.NDI == "" && strings.TrimSuffix(event["failure"], ",") == "1" {
+		r.connected()
 	}
 }
 

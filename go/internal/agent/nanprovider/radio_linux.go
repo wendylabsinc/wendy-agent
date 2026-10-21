@@ -512,6 +512,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			emit(p)
 		case "NAN-NDP-DISCONNECTED":
 			if p, ok := disconnectedPeer(v, local, active); ok {
+				recovery.setupFailed(active[p.NMI], v)
 				emit(p)
 				delete(active, p.NMI)
 			}

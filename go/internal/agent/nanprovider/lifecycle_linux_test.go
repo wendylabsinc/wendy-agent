@@ -175,3 +175,53 @@ func TestRadioRecoveryKeepsHigherPeerAsRendezvous(t *testing.T) {
 		t.Fatal("peer recovery did not cancel our fallback")
 	}
 }
+
+func TestWarmRecoveryCountsMatchedSetupFailuresWithoutConnectedEvents(t *testing.T) {
+	now := time.Unix(1000, 0)
+	pending := &radioLink{peer: radioPeer{ID: "1"}}
+	failed := map[string]string{"ndp_id": "1", "failure": "1"}
+	r := radioRecovery{hasLowerPeer: true}
+	for i := 0; i < 12; i++ {
+		r.setupFailed(pending, failed)
+	}
+	if r.expired(now.Add(time.Hour)) {
+		t.Fatal("unauthenticated setup failures triggered recovery")
+	}
+	r.observe(now, true)
+	r.observe(now.Add(time.Second), false)
+	for i := 0; i < 2; i++ {
+		r.setupFailed(pending, failed)
+	}
+	if r.expired(now.Add(time.Hour)) {
+		t.Fatal("fewer than three replacements triggered recovery")
+	}
+	r.setupFailed(pending, failed)
+	if r.expired(now.Add(270*time.Second)) || !r.expired(now.Add(271*time.Second)) {
+		t.Fatal("setup-only failures did not use the staggered warm deadline")
+	}
+	r.observe(now.Add(272*time.Second), true)
+	if r.expired(now.Add(time.Hour)) || r.replacements != 0 {
+		t.Fatal("a healthy neighbor did not cancel recovery")
+	}
+}
+
+func TestWarmRecoveryIgnoresNormalTeardownAndUnmatchedSetupFailure(t *testing.T) {
+	now := time.Unix(1000, 0)
+	r := radioRecovery{}
+	r.observe(now, true)
+	r.observe(now.Add(time.Second), false)
+	for _, tc := range []struct {
+		link  *radioLink
+		event map[string]string
+	}{
+		{nil, map[string]string{"failure": "1"}},
+		{&radioLink{}, map[string]string{"failure": "0"}},
+		{&radioLink{}, map[string]string{}},
+		{&radioLink{peer: radioPeer{NDI: "02:00:00:00:00:02"}}, map[string]string{"failure": "1"}},
+	} {
+		r.setupFailed(tc.link, tc.event)
+	}
+	if r.replacements != 0 {
+		t.Fatal("non-setup events counted toward recovery")
+	}
+}
