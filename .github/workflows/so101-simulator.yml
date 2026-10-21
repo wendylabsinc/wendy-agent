@@ -10,7 +10,6 @@ on:
       - 'web-client/desktop/**'
       - 'web-client/tsconfig.desktop.json'
       - 'web-client/electron/**'
-      - 'web-client/mcp-app/**'
       - '.github/workflows/so101-simulator.yml'
   workflow_dispatch:
 permissions:
@@ -36,7 +35,7 @@ jobs:
           cache-dependency-path: go.sum
       - name: Install CLI system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libusb-1.0-0-dev pkg-config
-      - name: Linux host profile, VM backend, gateway and source-cache contracts
+      - name: Linux host profile, VM backend, MCP simulator tools and source-cache contracts
         run: go test ./go/internal/cli/vm ./go/internal/cli/commands ./go/internal/cli/mcp ./go/internal/shared/appconfig ./go/simulator/... -count=1 -timeout=180s
       - name: Build the shipped runtime on the native CPU architecture
         run: docker build -t so101-ci go/simulator/so101
@@ -53,7 +52,5 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
-      - run: npm ci && npm run check && npm test && npm run build
-        working-directory: web-client/mcp-app
       - run: npm ci --ignore-scripts --omit=optional && npm run desktop:check && npm run desktop:test
         working-directory: web-client

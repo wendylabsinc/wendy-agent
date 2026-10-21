@@ -942,6 +942,10 @@ type VideoService struct {
 	links       *ipcam.LinkManager
 	loopback    cameraLoopback
 	ros2Cameras *ros2camera.Manager
+	// sensorFrames carries SensorLink camera frames to the hub in-process, so
+	// the hub never opens an MCU-band node (see sensorlink_camera_feed.go). Nil
+	// in tests and builds without sensor pairing, which read the node as before.
+	sensorFrames *SensorFrameFeed
 
 	// twoPlaneState holds the two-plane camera data path's nodes and pumps.
 	twoPlaneState
@@ -1055,12 +1059,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger, pool *rtps.Pool, r
 
 	// Load persisted network cameras. A failure here must not stop the video
 	// service: local cameras still work without it.
-	if err := svc.registry.Load(); err != nil {
-		logger.Warn("loading network camera registry failed", zap.Error(err))
-	}
-	if err := svc.credentials.Load(); err != nil {
-		logger.Warn("loading network camera credentials failed", zap.Error(err))
-	}
+	svc.loadNetworkCameras()
 	svc.controls = newCameraControlStore(cameraControlsPath)
 	svc.applyLocalControls = applyCameraControlsV4L2
 	svc.controlDefaultsFor = cameraControlDefaults
@@ -1389,6 +1388,28 @@ func (s *VideoService) resolveSource(devID uint32) (videoSource, error) {
 	}
 	path := fmt.Sprintf("/dev/video%d", devID)
 	return videoSource{kind: sourceV4L2, key: path, path: path}, nil
+}
+
+// loadNetworkCameras cleans old passive DHCP observations before discovery and
+// loopback creation. If either file cannot be read, keep all records: absence of
+// credentials has not been established safely.
+func (s *VideoService) loadNetworkCameras() {
+	registryErr := s.registry.Load()
+	if registryErr != nil {
+		s.logger.Warn("loading network camera registry failed", zap.Error(registryErr))
+	}
+	credentialsErr := s.credentials.Load()
+	if credentialsErr != nil {
+		s.logger.Warn("loading network camera credentials failed", zap.Error(credentialsErr))
+	}
+	if registryErr == nil && credentialsErr == nil {
+		before := len(s.registry.List())
+		if err := s.registry.PruneUnconfirmedDHCP(s.credentials.Has); err != nil {
+			s.logger.Warn("cleaning legacy DHCP camera observations failed", zap.Error(err))
+		} else if removed := before - len(s.registry.List()); removed > 0 {
+			s.logger.Info("removed unconfirmed DHCP camera observations", zap.Int("count", removed))
+		}
+	}
 }
 
 // SetCameraCredentials stores the login for a network camera. The secret is
@@ -1998,26 +2019,14 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 		// holding a decoded frame, so there is nothing raw to offer.
 		h.rawNotOffered("network cameras deliver encoded video only")
 		err = s.runIPProducer(ctx, broadcast, path, req)
-	} else {
-		transport, _ := s.classifyTransport(filepath.Base(path))
-		libcameraID := s.lookupLibcameraID(ctx, transport)
-
-		// Re-assert any persisted exposure/gain before the pipeline opens the
-		// node, so a stream reconnect does not revert to the firmware default.
-		s.applyStoredCameraControls(path)
-
-		// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
-		// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
-		// nvarguscamerasrc on Jetson).
-		if transport == camera.TransportCSI {
-			s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
-			// The ISP pipeline (libcamerasrc / Argus) produces processed video for
-			// the encoder; the sensor's own frames never reach the agent as bytes.
-			h.rawNotOffered("CSI cameras are captured through the ISP pipeline; raw frames are not offered")
-			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID, pipeWireSource{}, noRawSink{})
-		} else {
-			err = s.captureLocalCamera(ctx, broadcast, path, req, transport, libcameraID, h)
+	} else if s.sensorFrames != nil && isSensorLinkCameraPath(path) {
+		err = s.streamSensorLinkCamera(ctx, broadcast, path, req, h)
+		if errors.Is(err, errSensorFeedNotJPEG) {
+			s.logger.Info("SensorLink camera sends H.264, reading its node", zap.String("device", path))
+			err = s.captureNode(ctx, broadcast, path, req, h)
 		}
+	} else {
+		err = s.captureNode(ctx, broadcast, path, req, h)
 	}
 	if err != nil && ctx.Err() == nil {
 		s.logger.Error("video producer exited with error", zap.String("device", path), zap.Error(err))
@@ -2050,6 +2059,28 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	// Signal that the device fd is fully released. getOrCreateHub waits on
 	// this before opening a new producer to avoid EBUSY on reconnect.
 	close(h.done)
+}
+
+// captureNode captures a camera by opening its /dev/video node.
+func (s *VideoService) captureNode(ctx context.Context, broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, h *deviceHub) error {
+	transport, _ := s.classifyTransport(filepath.Base(path))
+	libcameraID := s.lookupLibcameraID(ctx, transport)
+
+	// Re-assert any persisted exposure/gain before the pipeline opens the
+	// node, so a stream reconnect does not revert to the firmware default.
+	s.applyStoredCameraControls(path)
+
+	// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
+	// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
+	// nvarguscamerasrc on Jetson).
+	if transport == camera.TransportCSI {
+		s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
+		// The ISP pipeline (libcamerasrc / Argus) produces processed video for
+		// the encoder; the sensor's own frames never reach the agent as bytes.
+		h.rawNotOffered("CSI cameras are captured through the ISP pipeline; raw frames are not offered")
+		return s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID, pipeWireSource{}, noRawSink{})
+	}
+	return s.captureLocalCamera(ctx, broadcast, path, req, transport, libcameraID, h)
 }
 
 // captureLocalCamera reads a USB/unknown camera, preferring the cheapest source: raw V4L2

@@ -109,9 +109,10 @@ The draft implementation now includes the pilot gateway, plugin package,
 RobotCompanion example and verification scripts. The built React/TypeScript app
 in `web-client/mcp-app/` replaces `robot_panel.html` and its hand-written bridge.
 The embedded output is `go/internal/cli/mcp/desktop_app.html`. Go tests and the
-official SDK replace the pilot bridge tests. See
-[implementation status](../plugins/wendy-chatgpt/SPEC.md) for completed behavior,
-device checks and remaining host verification. The durable delivery service and
+official SDK replace the pilot bridge tests. The desktop gateway and its
+implementation status page have since been removed; the hosted relay
+(`wendy cloud mcp`) is described in the
+[plugin README](../plugins/wendy-chatgpt/README.md). The durable delivery service and
 automatic fleet rollout described in this plan remain follow-on work.
 
 ## What the user sees

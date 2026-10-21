@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -196,18 +198,20 @@ func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*
 // same-CA-issued cert (a different asset in the same org, or a user cert)
 // could otherwise impersonate the mDNS-advertised target and MITM the
 // connection. The returned config's VerifyPeerCertificate runs the normal
-// chain check first, then requires the peer leaf to parse as a wendy asset
-// identity with id wantAssetID, in this device's own tenant.
+// chain check first, then pins the peer: when wantPeer is a device UUID it
+// applies VerifyPeerDevice (the device-to-device rule); otherwise wantPeer is a
+// legacy int32 asset id and the leaf must be that asset in this device's own
+// tenant.
 //
 // The tenant is read off certPEM — this device's own leaf — rather than passed
 // in: the invariant a mesh dial enforces is "the same tenant I am in", and both
 // callers were already passing their own org. Deriving it here means a device
 // whose certificate has moved from a urn:wendy org to a pki-core tenant SPIFFE
 // principal compares like with like without either caller learning about it.
-// A device that cannot determine its own tenant skips the tenant half of the
-// check (the asset id still pins), mirroring the interceptor's grace behaviour
-// rather than bricking mesh on an unidentifiable leaf.
-func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, wantAssetID string) (*tls.Config, error) {
+// On the legacy pin, a device that cannot determine its own tenant skips the
+// tenant half of the check (the asset id still pins); the device rule has no
+// such grace.
+func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, wantPeer string) (*tls.Config, error) {
 	base, err := NewClientTLSConfig(certPEM, chainPEM, keyPEM, logger)
 	if err != nil {
 		return nil, err
@@ -225,6 +229,12 @@ func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *z
 		if err != nil {
 			return fmt.Errorf("mtls: parsing peer certificate: %w", err)
 		}
+		if _, err := uuid.Parse(wantPeer); err == nil {
+			return VerifyPeerDevice(leaf, ownScope.TenantUUID, wantPeer)
+		}
+		// Legacy pin: wantPeer is the int32 cloud asset id the v1 mesh data
+		// plane addresses peers by (mDNS TXT "assetid" → meshDialLAN). It goes
+		// with the mesh data-plane cutover to the device UUID (WDY-3919).
 		ident, found, err := certs.IdentityFromCert(leaf)
 		if err != nil {
 			return fmt.Errorf("mtls: parsing peer wendy identity: %w", err)
@@ -232,22 +242,10 @@ func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *z
 		if !found {
 			return errors.New("mtls: peer certificate carries no wendy identity")
 		}
-		if ident.EntityType != certs.EntityAsset {
-			return fmt.Errorf("mtls: expected peer asset %s in %s, got entity type %q", wantAssetID, ownScope, ident.EntityType)
-		}
-		// wantAssetID is the int32 cloud asset id the mesh addresses peers by
-		// (mDNS TXT "assetid" → meshDialLAN). A device enrolled directly against
-		// pki-core over ACME is named "device/<deviceID>" instead and has no
-		// such id, so it cannot be reached over the mesh LAN path at all — the
-		// gap is in mesh addressing, not here, and closing it means teaching
-		// discovery to advertise the principal (WDY-2968 follow-up).
-		if ident.EntityID != wantAssetID {
-			return fmt.Errorf("mtls: expected peer asset %s in %s, got asset %s in %s",
-				wantAssetID, ownScope, ident.EntityID, ident.Scope())
-		}
-		if haveOwnScope && !ident.Scope().Matches(ownScope) {
-			return fmt.Errorf("mtls: expected peer asset %s in %s, got asset %s in %s",
-				wantAssetID, ownScope, ident.EntityID, ident.Scope())
+		if ident.EntityType != certs.EntityAsset || ident.EntityID != wantPeer ||
+			(haveOwnScope && !ident.Scope().Matches(ownScope)) {
+			return fmt.Errorf("mtls: expected peer asset %s in %s, got %s %s in %s",
+				wantPeer, ownScope, ident.EntityType, ident.EntityID, ident.Scope())
 		}
 		return nil
 	}
@@ -284,4 +282,23 @@ func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *z
 		return pinnedVerify(rawCerts, nil)
 	}
 	return base, nil
+}
+
+// VerifyPeerDevice is the device-to-device rule, applied after the chain check
+// (tenant Device CA or its Lite sibling, up to the platform Root): the peer leaf
+// carries exactly one tenant SPIFFE device principal, its tenant is ownTenant,
+// and its device UUID is wantDevice, the roster entry for the dialed name. The
+// address the dial went to is only a routing hint and proves nothing.
+func VerifyPeerDevice(leaf *x509.Certificate, ownTenant, wantDevice string) error {
+	if ownTenant == "" {
+		return fmt.Errorf("mtls: expected peer device %s, but this device has no tenant identity", wantDevice)
+	}
+	peer, err := meshid.DeviceFromCert(leaf)
+	if err != nil {
+		return fmt.Errorf("mtls: expected peer device %s: %w", wantDevice, err)
+	}
+	if peer.Tenant().String() != ownTenant || peer.UUID().String() != wantDevice {
+		return fmt.Errorf("mtls: expected peer device %s in tenant %s, got %s", wantDevice, ownTenant, peer.Principal())
+	}
+	return nil
 }

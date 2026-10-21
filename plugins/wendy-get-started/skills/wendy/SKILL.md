@@ -25,8 +25,6 @@ skips confirmation for those tools only. `device_connect` and local discovery
 through `device_list` require explicit `--allow-tool` permission and per-call
 terminal confirmation. `--allow-all` permits every supported relay tool and
 skips all per-call confirmations. `--auto-accept` controls ChatGPT pairing only.
-Local desktop gateways and separately configured standalone Cloud gateways use
-`list_robots` and `inspect_robot`.
 Use the connected server's tools and explicit target identifiers. Use CLI
 commands only when a terminal on the intended computer is available. A skill
 cannot grant access or add tools missing from the server.
@@ -162,37 +160,6 @@ name what remains unverified.
 
 Without MCP, `wendy --json vm list` lists simulators and
 `wendy run --device vm:<name>` boots an existing one before deploying.
-
-### ChatGPT and Codex desktop gateway
-
-`wendy mcp setup chatgpt` installs a separate, scoped gateway (`wendy mcp
-gateway`) with its own tools. They take a `robot_id` from `list_robots`, not a
-device selector, and appear only when the gateway policy grants their scope:
-
-- Devices: `list_robots`, `search_devices`, `inspect_robot`, `identify_device`,
-  `open_robot`, `open_devices`, `read_device_logs`, `read_device_metrics`,
-  `read_device_settings`, `update_device_settings`.
-- Cameras: `capture_robot_image` for one still image. `start_camera_preview`,
-  `read_camera_preview` and `stop_camera_preview` run a live view in the Wendy
-  panel; its frames are not sent to the model.
-- Apps: `start_robot_app`, `stop_robot_app`, `open_robot_app`.
-- Projects and deploys: `list_workspaces`, `list_workspace_files`,
-  `read_workspace_file`, `write_workspace_file`, `validate_device_project`,
-  `plan_fleet_deployment`, `start_device_deployment`, `get_deployment_job`,
-  `cancel_deployment_job`; see `wendy-app-lifecycle`.
-- Detection: `list_device_triggers`, `configure_device_trigger`,
-  `deploy_yolo_detector`, `inspect_yolo_detector`, `stop_yolo_detector`,
-  `list_device_events`, `wait_for_device_event`, `read_device_notifications`;
-  see `wendy-data`.
-- Host and simulators, when permitted: the same `os_install_plan`,
-  `os_list_drives` and `os_install_*` job tools as the `setup` group, and
-  `simulator_list`, `simulator_create`, `simulator_start`,
-  `simulator_update_agent`, `simulator_viewer`, `simulator_stop`,
-  `simulator_delete`, and `simulator_scene_read`, `simulator_scene_pause` and
-  `simulator_scene_close` for the observer view.
-
-`--developer-tools` adds the full `wendy mcp serve` server beside the gateway,
-with its own connection; never use it to bypass access the gateway denied.
 
 ## Common Tasks
 
