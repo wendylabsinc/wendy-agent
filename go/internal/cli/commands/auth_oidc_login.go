@@ -530,8 +530,9 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 		if err != nil {
 			return err
 		}
-		if leaf.NotAfter.Sub(timeNowFn()) <= renewLeadTime {
-			return fmt.Errorf("pki-core replacement certificate is already inside the %s renewal margin", renewLeadTime)
+		margin := certificateRenewalMargin(certInfo.PemCertificate)
+		if leaf.NotAfter.Sub(timeNowFn()) <= margin {
+			return fmt.Errorf("The replacement certificate is already inside its %s renewal margin. Try again later.", margin)
 		}
 	}
 	cloudToken, err := refreshOIDCToken(

@@ -160,7 +160,7 @@ func prepareDefaultCloudCertificate(ctx context.Context, auth *config.AuthConfig
 		return err
 	}
 	now := timeNowFn()
-	if !certNeedsRenewal(notAfter, now) {
+	if !certNeedsRenewal(notAfter, now, certificateRenewalMargin(auth.Certificates[0].PemCertificate)) {
 		return err
 	}
 	if auth.OAuthIssuer != "" && auth.ServiceAccount == "" {

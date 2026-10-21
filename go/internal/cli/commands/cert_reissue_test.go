@@ -124,7 +124,10 @@ func TestAutomaticCertificateReissueSpendAndCustody(t *testing.T) {
 		{"ten second skew", 200, testOperatorTenant, now.Add(10 * time.Second), now.Add(time.Hour), 2, 1, false, false},
 		{"one minute skew", 200, testOperatorTenant, now.Add(time.Minute), now.Add(time.Hour), 2, 1, false, false},
 		{"excessive skew", 200, testOperatorTenant, now.Add(61 * time.Second), now.Add(time.Hour), 1, 1, true, false},
-		{"short replacement", 200, testOperatorTenant, now, now.Add(renewLeadTime - time.Second), 1, 1, true, false},
+		{"ten minute policy", 200, testOperatorTenant, now, now.Add(10 * time.Minute), 2, 1, false, false},
+		{"fifteen minute policy", 200, testOperatorTenant, now, now.Add(15 * time.Minute), 2, 1, false, false},
+		{"one second policy", 200, testOperatorTenant, now, now.Add(time.Second), 2, 1, false, false},
+		{"already inside adaptive margin", 200, testOperatorTenant, now.Add(-8 * time.Minute), now.Add(2 * time.Minute), 1, 1, true, false},
 		{"expired replacement", 200, testOperatorTenant, now.Add(-time.Hour), now, 1, 1, true, false},
 		{"tenant mismatch", 200, "11111111-1111-4111-8111-111111111111", now, now.Add(time.Hour), 1, 1, true, false},
 		{"PKI permanent refusal", 403, testOperatorTenant, now, now.Add(time.Hour), 1, 1, true, false},
@@ -344,5 +347,21 @@ func TestAutomaticCertificateReissueRechecksExpiryAfterFailure(t *testing.T) {
 	refreshDefaultCloudCertificateFn = func(context.Context, *config.AuthConfig) error { now = until; return refused }
 	if err := prepareDefaultCloudCertificate(context.Background(), auth); !errors.Is(err, refused) {
 		t.Fatalf("certificate expired during re-issue but was retained as usable: %v", err)
+	}
+}
+
+func TestExplicitCertificateRefreshAcceptsShortPolicyLifetime(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	_, tokens, issues := reissueTestSession(t, 200, testOperatorTenant, now, now.Add(10*time.Minute))
+	oldNow := timeNowFn
+	timeNowFn = func() time.Time { return now }
+	t.Cleanup(func() { timeNowFn = oldNow })
+	for range 2 {
+		if err := refreshCerts(context.Background(), false); err != nil {
+			t.Fatalf("explicit refresh rejected short tenant policy: %v", err)
+		}
+	}
+	if tokens.Load() != 4 || issues.Load() != 2 {
+		t.Fatalf("explicit refresh counts=%d/%d", tokens.Load(), issues.Load())
 	}
 }

@@ -139,9 +139,21 @@ func tenantPrincipalFor(certPEM string) (string, bool) {
 	return certs.TenantPrincipalFromCert(leaf)
 }
 
+// certificateRenewalMargin leaves two thirds of even a short policy lifetime
+// usable before renewal. Keep the historical ceiling for longer certificates.
+func certificateRenewalMargin(certPEM string) time.Duration {
+	leaf, err := storedLeaf(certPEM)
+	if err != nil {
+		// Callers diagnose unreadable expiry separately; retain the existing
+		// lead time when the full validity interval cannot be read.
+		return renewLeadTime
+	}
+	return min(renewLeadTime, leaf.NotAfter.Sub(leaf.NotBefore)/3)
+}
+
 // certNeedsRenewal reports whether the leaf is close enough to expiry to renew.
-func certNeedsRenewal(notAfter, now time.Time) bool {
-	return notAfter.Sub(now) < renewLeadTime
+func certNeedsRenewal(notAfter, now time.Time, margin time.Duration) bool {
+	return notAfter.Sub(now) < margin
 }
 
 // renewEndpoint resolves the explicit override or a documented deployment URL.
@@ -472,7 +484,7 @@ func ensureFreshCertificate(ctx context.Context, auth *config.AuthConfig) error 
 		// diagnose; the connection attempt reports it with better context.
 		return nil
 	}
-	if !certNeedsRenewal(notAfter, timeNowFn()) {
+	if !certNeedsRenewal(notAfter, timeNowFn(), certificateRenewalMargin(auth.Certificates[0].PemCertificate)) {
 		return nil
 	}
 
