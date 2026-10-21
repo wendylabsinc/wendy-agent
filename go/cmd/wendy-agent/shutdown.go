@@ -22,11 +22,10 @@ const (
 	// grpcDrainTimeout is how long in-flight RPCs get to finish before the
 	// servers cancel them.
 	grpcDrainTimeout = 5 * time.Second
-	// appStopTimeout bounds stopping apps when the host shuts down: their
-	// SIGTERM grace, the wait after SIGKILL, and deleting their tasks. It must
-	// outlast the grace plus the SIGKILL wait: a cancelled wait reads as an
-	// exit, and the task would never get its SIGKILL.
-	appStopTimeout = agentcontainerd.HostShutdownGrace + 15*time.Second
+	// appStopTimeout bounds one sweep of stopping apps when the host shuts
+	// down: their SIGTERM grace, the wait after SIGKILL, and deleting their
+	// tasks.
+	appStopTimeout = agentcontainerd.HostShutdownTimeout
 	// backgroundStopTimeout is how long background loops get to notice the
 	// cancellation and return.
 	backgroundStopTimeout = 5 * time.Second
@@ -57,7 +56,9 @@ type agentShutdown struct {
 	hostShuttingDown func(context.Context) bool
 	// cancel stops the restart monitor and the background loops.
 	cancel context.CancelFunc
-	// stopApps stops every app; nil when containerd is unavailable.
+	// stopApps stops every running app and returns how many it stopped; nil
+	// when containerd is unavailable. run calls it a second time for apps
+	// started while the first call ran.
 	stopApps func(context.Context) (int, error)
 	servers  []namedGRPCServer
 	// shutdownHTTP stops the OTLP/HTTP receiver.
@@ -92,12 +93,14 @@ func (s *agentShutdown) run() {
 	// being stopped below.
 	s.cancel()
 
+	stoppingApps := hostDown && s.stopApps != nil
 	var steps sync.WaitGroup
-	if hostDown && s.stopApps != nil {
+	if stoppingApps {
+		s.logger.Info("Host is shutting down; stopping apps")
 		steps.Add(1)
 		go func() {
 			defer steps.Done()
-			s.stopAppsForHostShutdown()
+			s.stopAppsForHostShutdown("running")
 		}()
 	}
 	drain := orDefault(s.grpcDrainTimeout, grpcDrainTimeout)
@@ -124,6 +127,15 @@ func (s *agentShutdown) run() {
 	}
 	steps.Wait()
 
+	// The servers have stopped now, but a start that was already past its
+	// checks when the apps were listed, from an RPC that was still draining or
+	// a restart under way, can have left a task the sweep above never saw.
+	// Usually there is none and this is one listing. Should it find an app and
+	// the first sweep was slow too, the watchdog still bounds the total.
+	if stoppingApps {
+		s.stopAppsForHostShutdown("started during shutdown")
+	}
+
 	if s.background != nil {
 		limit := orDefault(s.backgroundStopTimeout, backgroundStopTimeout)
 		if !waitTimeout(s.background, limit) {
@@ -134,17 +146,19 @@ func (s *agentShutdown) run() {
 		zap.Bool("host_shutdown", hostDown), zap.Duration("took", time.Since(start)))
 }
 
-func (s *agentShutdown) stopAppsForHostShutdown() {
-	s.logger.Info("Host is shutting down; stopping apps")
+// stopAppsForHostShutdown runs one sweep of stopApps; which names it in the log.
+func (s *agentShutdown) stopAppsForHostShutdown(which string) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), orDefault(s.appStopTimeout, appStopTimeout))
 	defer cancel()
 	n, err := s.stopApps(ctx)
 	if err != nil {
-		s.logger.Warn("Some apps did not stop cleanly for host shutdown", zap.Int("tasks", n), zap.Error(err))
+		s.logger.Warn("Some apps did not stop cleanly for host shutdown",
+			zap.String("apps", which), zap.Int("tasks", n), zap.Error(err))
 		return
 	}
-	s.logger.Info("Stopped apps for host shutdown", zap.Int("tasks", n), zap.Duration("took", time.Since(start)))
+	s.logger.Info("Stopped apps for host shutdown",
+		zap.String("apps", which), zap.Int("tasks", n), zap.Duration("took", time.Since(start)))
 }
 
 // stopGRPCServer lets in-flight RPCs finish for up to timeout, then cancels

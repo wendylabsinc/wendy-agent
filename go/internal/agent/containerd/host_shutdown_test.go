@@ -29,7 +29,9 @@ func TestHostShutdownStopsTasksInParallel(t *testing.T) {
 	if err := c.terminateTasksConcurrently(context.Background(), tasks, grace, time.Second); err != nil {
 		t.Fatalf("terminateTasksConcurrently() = %v", err)
 	}
-	if elapsed := time.Since(start); elapsed >= 3*grace {
+	// One after another takes at least n grace periods; allow all but one of
+	// them for a slow runner.
+	if elapsed := time.Since(start); elapsed >= (n-1)*grace {
 		t.Errorf("stopping %d tasks took %v; want about one grace period (%v), not one each", n, elapsed, grace)
 	}
 	for i, f := range fakes {
@@ -101,6 +103,19 @@ func TestHostShutdownReportsEveryFailureAndStillStopsTheRest(t *testing.T) {
 	}
 	if !good.deleted {
 		t.Error("one task's failure kept another from being stopped")
+	}
+}
+
+func TestNoAppStartsOnceHostShutdownBegins(t *testing.T) {
+	// Neither a draining deploy RPC nor a restart already under way may
+	// start an app after the stop sweep has listed the running ones.
+	c := &Client{namespace: "default"}
+	c.hostShutdown.Store(true)
+	if _, err := c.StartContainer(context.Background(), "com.example.app", "", nil); !errors.Is(err, errHostShuttingDown) {
+		t.Errorf("StartContainer error = %v; want errHostShuttingDown", err)
+	}
+	if _, err := c.StartContainerWithStdin(context.Background(), "com.example.app", strings.NewReader("input"), "", nil); !errors.Is(err, errHostShuttingDown) {
+		t.Errorf("StartContainerWithStdin error = %v; want errHostShuttingDown", err)
 	}
 }
 

@@ -57,6 +57,8 @@ import (
 
 var errAppStopping = errors.New("app is currently being stopped")
 
+var errHostShuttingDown = errors.New("host is shutting down")
+
 // Compile-time check that *Client satisfies services.ContainerdClient.
 var _ services.ContainerdClient = (*Client)(nil)
 
@@ -167,6 +169,11 @@ type Client struct {
 	// cleanup phase. Checked by create/start paths to reject concurrent lifecycle races
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
+
+	// hostShutdown is set when StopTasksForHostShutdown begins and never
+	// cleared: the host is powering off, so start paths refuse to create a task
+	// and the exits that stop causes are not recorded.
+	hostShutdown atomic.Bool
 
 	// ros2ExecRefs counts active ExecROS2 calls per sidecar name. Protected by mu.
 	// Teardown paths check this before SIGKILLing a sidecar (WDY-1702 H5).
@@ -2149,6 +2156,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	if c.appStopping[appID] {
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
+	if c.hostShutdown.Load() {
+		return nil, fmt.Errorf("starting %q: %w", appName, errHostShuttingDown)
+	}
 
 	// Start streams one container's output, so a bare appID naming a group is
 	// an error here rather than a fan-out.
@@ -2324,6 +2334,11 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	muHeld = true
 	if c.appStopping[appID] {
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
+	}
+	// Host shutdown lists tasks without this mutex, so a start already past
+	// this check can still be missed; the agent sweeps again for it.
+	if c.hostShutdown.Load() {
+		return nil, fmt.Errorf("starting %q: %w", appName, errHostShuttingDown)
 	}
 
 	if restartPolicy != nil {
@@ -3852,11 +3867,15 @@ func (c *Client) streamOutput(
 		)
 		// Persist why this run ended so a stopped/crashed container can explain
 		// itself later (the task and this live stream are about to disappear).
+		// Not when the host is powering off: StopTasksForHostShutdown ended the
+		// run, and its 137 or 143 would show the app as crashed after the reboot.
 		// Detached context: the RPC ctx may be torn down the instant we return.
-		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		reason := classifyExit(code, taskOOMKilled(recCtx, task))
-		c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
-		cancel()
+		if !c.hostShutdown.Load() {
+			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reason := classifyExit(code, taskOOMKilled(recCtx, task))
+			c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
+			cancel()
+		}
 	}
 
 	if taskExited {

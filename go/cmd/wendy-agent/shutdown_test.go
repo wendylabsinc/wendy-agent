@@ -145,11 +145,18 @@ func (r *shutdownRecorder) String() string {
 	return strings.Join(r.steps, ",")
 }
 
+// recordingServer drains at once and records that it has.
+type recordingServer struct{ rec *shutdownRecorder }
+
+func (s recordingServer) GracefulStop() { s.rec.add("servers stopped") }
+func (s recordingServer) Stop()         {}
+
 func newRecordedShutdown(rec *shutdownRecorder, hostDown bool) *agentShutdown {
 	return &agentShutdown{
 		logger:           zap.NewNop(),
 		hostShuttingDown: func(context.Context) bool { return hostDown },
 		cancel:           func() { rec.add("cancel") },
+		servers:          []namedGRPCServer{{"agent", recordingServer{rec}}},
 		stopApps: func(ctx context.Context) (int, error) {
 			_, ok := ctx.Deadline()
 			rec.mu.Lock()
@@ -165,9 +172,12 @@ func TestShutdownStopsAppsWhenTheHostIsGoingDown(t *testing.T) {
 	rec := &shutdownRecorder{}
 	newRecordedShutdown(rec, true).run()
 	// The restart monitor must be stopped before the apps, or it would start
-	// them again.
-	if got := rec.String(); got != "cancel,stop apps" {
-		t.Errorf("steps = %q, want cancel then stop apps", got)
+	// them again. Apps are stopped while the servers drain, then once more
+	// after the servers have stopped, for any app an RPC started meanwhile.
+	switch got := rec.String(); got {
+	case "cancel,stop apps,servers stopped,stop apps", "cancel,servers stopped,stop apps,stop apps":
+	default:
+		t.Errorf("steps = %q, want cancel, stop apps alongside the servers, then stop apps again", got)
 	}
 	if !rec.appCtxDeadline {
 		t.Error("stopping apps was not given a deadline")
@@ -179,7 +189,7 @@ func TestShutdownLeavesAppsRunningWhenOnlyTheAgentRestarts(t *testing.T) {
 	// the next agent adopts them.
 	rec := &shutdownRecorder{}
 	newRecordedShutdown(rec, false).run()
-	if got := rec.String(); got != "cancel" {
+	if got := rec.String(); got != "cancel,servers stopped" {
 		t.Errorf("steps = %q, want the apps left running", got)
 	}
 }

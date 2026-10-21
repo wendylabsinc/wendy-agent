@@ -27,6 +27,12 @@ const wendyLabelPrefix = "sh.wendy/"
 // stopGracePeriod, the grace `wendy device apps stop` gives an app.
 const HostShutdownGrace = stopGracePeriod
 
+// HostShutdownTimeout is the deadline StopTasksForHostShutdown needs: the
+// grace, the wait after SIGKILL, and deleting the tasks. A shorter one cuts
+// those waits short, and a cancelled wait reads as an exit, so the task would
+// never get its SIGKILL.
+const HostShutdownTimeout = HostShutdownGrace + killWaitTimeout + 10*time.Second
+
 // shutdownTask is one task StopTasksForHostShutdown stops.
 type shutdownTask struct {
 	containerID string
@@ -51,8 +57,14 @@ type shutdownTask struct {
 // brings every app back on the next boot exactly as after a power cut.
 //
 // The caller must have stopped the restart monitor first. Restarts stay
-// suppressed for the stopped tasks for the rest of the process's life.
+// suppressed for the stopped tasks for the rest of the process's life. From
+// the first call on, the client also refuses to start any app and records no
+// exits, so an app shows its last real exit after the reboot rather than
+// these. A start already past that refusal can still create a task after the
+// listing below; calling this again once the agent's servers have stopped
+// finds it.
 func (c *Client) StopTasksForHostShutdown(ctx context.Context, grace time.Duration) (int, error) {
+	c.hostShutdown.Store(true)
 	ctx = c.withNamespace(ctx)
 	ctrs, err := c.client.Containers(ctx)
 	if err != nil {
