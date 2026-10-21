@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -46,8 +47,8 @@ func Config(auth *config.AuthConfig, deviceID, csrURL, timeURL, brokerHost strin
 		return nil, fmt.Errorf("enrollment requires a tenant operator identity")
 	}
 	tenant := principal.TenantUUID
-	if len(deviceID) == 0 || len(deviceID) > 64 || strings.Trim(deviceID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
-		return nil, fmt.Errorf("device ID must contain 1–64 letters, digits, dots, underscores or hyphens")
+	if id, err := uuid.Parse(deviceID); err != nil || id.String() != deviceID {
+		return nil, fmt.Errorf("device ID must be a canonical lowercase UUID")
 	}
 	if csrURL == "" {
 		host := cloudenroll.PKISiblingHost(auth.PKIEndpoint, "csr")

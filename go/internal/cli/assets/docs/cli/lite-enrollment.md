@@ -17,6 +17,18 @@ device determines the protocol: agent gRPC for WendyOS, or WendyCom over USB for
 Lite. Omit `--device` to use the normal picker, or use a USB device ID shown by
 `wendy discover`. The hidden `wendy device enroll` alias uses the same dispatch.
 
+Each new Lite enrollment generates a canonical lowercase UUID for the device's
+PKI identity. The signed Cloud request and USB configuration use that same UUID;
+the factory hardware ID is recorded separately as the asset's serial number.
+USB unenrollment uses the board's reported `enrolled_device_id`, falling back to
+the hardware-derived `lite-` identity only when older firmware omits that field.
+
+Boards enrolled with a hardware-derived ID can report `Invalid enrollment
+configuration` after updating to firmware that requires UUIDs. Use this CLI to
+unenroll and re-enroll the board over USB. This clears the old credentials while
+preserving Wi-Fi and apps. Changing only the stored ID would leave it inconsistent
+with the issued certificate.
+
 The board needs Wi-Fi and the enrollment-capable firmware from
 [wendy-lite#57](https://github.com/wendylabsinc/wendy-lite/pull/57) and its dedicated
 identity partition. Trust bundles can be provisioned during enrollment, so

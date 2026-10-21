@@ -172,6 +172,35 @@ func TestLiteUnenrollRequiresUsableIdentity(t *testing.T) {
 	}
 }
 
+func TestLiteUnenrollUsesReportedEnrollmentIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, hardware, enrolled, want string }{
+		{"UUID", "441bf6804824", "00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000004"},
+		{"legacy reported", "441bf6804824", "lite-441bf6804824", "lite-441bf6804824"},
+		{"legacy omitted", "441bf6804824", "", "lite-441bf6804824"},
+		{"legacy prefixed", "lite-441bf6804824", "", "lite-441bf6804824"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveLiteUnenrollmentHooks(t)
+			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: tc.hardware, EnrolledDeviceID: tc.enrolled}}
+			connectLiteUnenrollmentFn = func(models.ExternalDevice) (liteUnenrollmentDevice, error) { return device, nil }
+			called := false
+			unenrollLiteCloudFn = func(_ *cobra.Command, _, deviceID string, _ bool, reset func() error) error {
+				called = true
+				if deviceID != tc.want {
+					t.Fatalf("Cloud removal ID = %q, want %q", deviceID, tc.want)
+				}
+				// The reset still binds the hardware ID, not the Cloud UUID.
+				return reset()
+			}
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			if err := runLiteDeviceUnenroll(cmd, liteUnenrollUSBTarget(), "", false); err != nil || !called {
+				t.Fatalf("unenroll: called=%v error=%v", called, err)
+			}
+		})
+	}
+}
+
 func TestLiteUnenrollPreservesCloudConfirmation(t *testing.T) {
 	preserveLiteUnenrollmentHooks(t)
 	connectLiteUnenrollmentFn = func(models.ExternalDevice) (liteUnenrollmentDevice, error) {
