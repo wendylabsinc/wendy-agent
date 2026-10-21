@@ -6,8 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"net"
 	"net/netip"
 	"sync"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshsession"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,21 +58,21 @@ type udpProxyFlow struct {
 // original destinations inside their service CIDR. One QUIC connection per
 // source/destination tuple preserves independent reply mappings.
 type UDPProxy struct {
-	vips        *VIPTable
-	dialer      UDPDialer
-	sources     UDPSourcePolicy
-	mu          sync.Mutex
-	flows       map[udpKey]*udpProxyFlow
-	conn        *net.UDPConn
-	closed      bool
-	replyListen func(netip.AddrPort) (*net.UDPConn, error)
+	vips    *VIPTable
+	dialer  UDPDialer
+	sources UDPSourcePolicy
+	mu      sync.Mutex
+	flows   map[udpKey]*udpProxyFlow
+	conn    *net.UDPConn
+	closed  bool
+	replies *udpReplySender
 }
 
 func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy, vips *VIPTable) (*UDPProxy, error) {
 	if dialer == nil || sources == nil || vips == nil {
 		return nil, errors.New("missing UDP net dialer or app source registry")
 	}
-	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), replyListen: listenUDPReply}, nil
+	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow)}, nil
 }
 
 func (p *UDPProxy) Start(addr string) error {
@@ -101,12 +100,23 @@ func (p *UDPProxy) Start(addr string) error {
 	if err != nil {
 		return err
 	}
+	replies, err := newUDPReplySender()
+	if err != nil {
+		_ = pc.Close()
+		return err
+	}
 	p.mu.Lock()
-	if p.closed {
+	if p.closed || p.conn != nil {
+		closed := p.closed
 		p.mu.Unlock()
 		_ = pc.Close()
-		return net.ErrClosed
+		_ = replies.Close()
+		if closed {
+			return net.ErrClosed
+		}
+		return errors.New("net UDP proxy is already started")
 	}
+	p.replies = replies
 	p.conn = pc.(*net.UDPConn)
 	p.mu.Unlock()
 	go p.readLoop()
@@ -132,10 +142,14 @@ func (p *UDPProxy) Close() error {
 	for _, flow := range p.flows {
 		flow.cancel()
 	}
+	var errs []error
 	if p.conn != nil {
-		return p.conn.Close()
+		errs = append(errs, p.conn.Close())
 	}
-	return nil
+	if p.replies != nil {
+		errs = append(errs, p.replies.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func (p *UDPProxy) readLoop() {
@@ -242,11 +256,6 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 		return
 	}
 	defer remote.Close()
-	reply, err := p.replyListen(key.destination)
-	if err != nil {
-		return
-	}
-	defer reply.Close()
 	failed := make(chan struct{})
 	go func() {
 		defer close(failed)
@@ -255,10 +264,8 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 			if err != nil {
 				return
 			}
-			_ = reply.SetWriteDeadline(time.Now().Add(time.Second))
 			if err := p.sources.WithSourceToken(key.source.Addr(), key.destination.Addr(), key.ifindex, key.token, func() error {
-				_, err := reply.WriteToUDPAddrPort(data, key.source)
-				return err
+				return p.replies.Send(data, key.destination, key.source)
 			}); err != nil {
 				return
 			}
@@ -287,36 +294,4 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 			idle.Reset(udpFlowIdle)
 		}
 	}
-}
-
-func listenUDPReply(source netip.AddrPort) (*net.UDPConn, error) {
-	// TPROXY first looks for an established socket matching the original
-	// tuple, before using its configured listener port. Connecting this reply
-	// socket would therefore divert subsequent app packets into its unread
-	// receive queue. Leave it unconnected and address each authorized reply
-	// explicitly, so every request stays owned by the proxy listener.
-	lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
-		var sockErr error
-		err := raw.Control(func(fd uintptr) {
-			if sockErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_FREEBIND, 1); sockErr != nil {
-				return
-			}
-			if sockErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); sockErr != nil {
-				return
-			}
-			if sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); sockErr != nil {
-				return
-			}
-			sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-		})
-		if err != nil {
-			return err
-		}
-		return sockErr
-	}}
-	conn, err := lc.ListenPacket(context.Background(), "udp4", source.String())
-	if err != nil {
-		return nil, fmt.Errorf("UDP reply bind %s: %w", source, err)
-	}
-	return conn.(*net.UDPConn), nil
 }

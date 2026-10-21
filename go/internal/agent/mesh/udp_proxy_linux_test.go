@@ -4,6 +4,7 @@ package mesh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
@@ -79,6 +80,12 @@ func (s namespaceSource) WithSourceToken(ip, dst netip.Addr, ifindex int, token 
 // destination, ingress ifindex, and transparent VIP reply path. Run in a
 // disposable Docker network namespace with WENDY_TEST_NETNS=1.
 func TestUDPProxyRedirectNamespace(t *testing.T) {
+	for _, port := range []uint16{7777, UDPProxyPort, 47777} {
+		t.Run(strconv.Itoa(int(port)), func(t *testing.T) { testUDPProxyRedirectNamespace(t, port) })
+	}
+}
+
+func testUDPProxyRedirectNamespace(t *testing.T, targetPort uint16) {
 	if os.Getenv("WENDY_TEST_NETNS") != "1" {
 		t.Skip("requires privileged disposable network namespace")
 	}
@@ -134,7 +141,7 @@ func TestUDPProxyRedirectNamespace(t *testing.T) {
 	sourceToken.Store(1)
 	p, err := NewUDPProxy(UDPDialFunc(func(_ context.Context, peer meshid.Device, port uint16) (UDPFlow, error) {
 		t.Logf("UDP dial peer=%s port=%d", peer, port)
-		if peer != device || port != 7777 {
+		if peer != device || port != targetPort {
 			return nil, fmt.Errorf("denied port")
 		}
 		return &echoUDPFlow{replies: make(chan []byte, 32), t: t, onSend: func(data []byte) {
@@ -147,16 +154,17 @@ func TestUDPProxyRedirectNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	baseReplyListen := p.replyListen
-	p.replyListen = func(src netip.AddrPort) (*net.UDPConn, error) {
-		conn, err := baseReplyListen(src)
-		t.Logf("reply socket %s: %v", src, err)
-		if err == nil && conn.RemoteAddr() != nil {
-			t.Error("transparent reply socket must remain unconnected")
+	// This host socket exclusively owns the same numbered port as a remote
+	// service. The VIP flow must never bind it or deliver app requests to it.
+	var hostListener *net.UDPConn
+	if targetPort == 47777 {
+		hostListener, err = net.ListenUDP("udp4", &net.UDPAddr{Port: int(targetPort)})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return conn, err
+		defer hostListener.Close()
 	}
-	if err := p.Start("0.0.0.0:0"); err != nil {
+	if err := p.Start("0.0.0.0:" + strconv.Itoa(UDPProxyPort)); err != nil {
 		t.Fatal(err)
 	}
 	proxyPort := p.Addr().(*net.UDPAddr).Port
@@ -208,9 +216,10 @@ for index in range(1, 4):
     data,addr=s.recvfrom(1024)
     assert data==payload and addr==('10.99.0.1',7777),(index,data,addr)
 print('VIP_REPEAT_REPLY_OK',flush=True)
-# Both flows bind replies at the same VIP:port. Keep two different app
+# Both flows receive replies from the same VIP:port. Keep two different app
 # source tuples active and verify that responses cannot cross between them.
 other=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+other.bind(('0.0.0.0',50059))
 other.settimeout(3)
 for index in range(3):
     s.sendto(('first-%d'%index).encode(),('10.99.0.1',7777))
@@ -220,14 +229,32 @@ for index in range(3):
     assert a==('first-%d'%index).encode() and aa==('10.99.0.1',7777),(a,aa)
     assert b==('other-%d'%index).encode() and ba==('10.99.0.1',7777),(b,ba)
 print('VIP_TUPLE_ISOLATION_OK',flush=True)
+# Verify both send and reply paths preserve every byte at the payload bound,
+# including odd lengths. Packet vectors cover checksum-zero encoding.
+for client in (s,other):
+    for payload in (b'x', b'hello', b'\x87'*1000):
+        client.sendto(payload,('10.99.0.1',7777))
+        data,addr=client.recvfrom(1024)
+        assert data==payload and addr==('10.99.0.1',7777),(len(payload),len(data),addr)
+print('VIP_MAX_PAYLOAD_BOTH_DIRECTIONS_OK',flush=True)
+# For the 7777 case this tuple and payload calculate to UDP checksum zero.
+# The checked 0xffff wire representation must still reach a real UDP socket.
+zero=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+zero.bind(('0.0.0.0',41000))
+zero.settimeout(3)
+zero.sendto(b'\x02\x9c',('10.99.0.1',7777))
+data,addr=zero.recvfrom(1024)
+assert data==b'\x02\x9c' and addr==('10.99.0.1',7777),(data,addr)
+zero.close()
+print('VIP_ZERO_CHECKSUM_REPLY_OK',flush=True)
 s.settimeout(0.4)
 s.sendto(b'denied',('10.99.0.1',7778))
 try:
     data,addr=s.recvfrom(1024)
     raise AssertionError((data,addr))
 except socket.timeout: print('DENIED_PORT_OK',flush=True)
-# Revoke the admitted source while its first flow still owns a reply
-# socket. Its pending reply, later packets, and a new tuple must all stop.
+# Revoke the admitted source while its first flow is still active.
+# Its pending reply, later packets, and a new tuple must all stop.
 s.sendto(b'revoke-source',('10.99.0.1',7777))
 try:
     raise AssertionError(s.recvfrom(1024))
@@ -240,10 +267,10 @@ for client in (s,other,socket.socket(socket.AF_INET,socket.SOCK_DGRAM)):
     except socket.timeout: pass
 print('SOURCE_REVOCATION_OK',flush=True)
 `
-	cmd := exec.Command("ip", "netns", "exec", ns, "python3", "-c", script)
+	cmd := exec.Command("ip", "netns", "exec", ns, "python3", "-c", strings.ReplaceAll(script, "7777", strconv.Itoa(int(targetPort))))
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "VIP_REPLY_OK") || !strings.Contains(string(out), "VIP_REPEAT_REPLY_OK") || !strings.Contains(string(out), "VIP_TUPLE_ISOLATION_OK") || !strings.Contains(string(out), "DENIED_PORT_OK") || !strings.Contains(string(out), "SOURCE_REVOCATION_OK") {
+	if err != nil || !strings.Contains(string(out), "VIP_REPLY_OK") || !strings.Contains(string(out), "VIP_REPEAT_REPLY_OK") || !strings.Contains(string(out), "VIP_TUPLE_ISOLATION_OK") || !strings.Contains(string(out), "VIP_MAX_PAYLOAD_BOTH_DIRECTIONS_OK") || !strings.Contains(string(out), "VIP_ZERO_CHECKSUM_REPLY_OK") || !strings.Contains(string(out), "DENIED_PORT_OK") || !strings.Contains(string(out), "SOURCE_REVOCATION_OK") {
 		if rules, ruleErr := exec.Command("ip", "-4", "rule", "show").CombinedOutput(); ruleErr == nil {
 			t.Logf("policy rules:\n%s", rules)
 		}
@@ -260,4 +287,20 @@ print('SOURCE_REVOCATION_OK',flush=True)
 		}
 		t.Fatalf("namespace UDP echo/denial: %v: %s", err, out)
 	}
+	if hostListener != nil {
+		_ = hostListener.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, _, err := hostListener.ReadFromUDP(make([]byte, 1024)); err == nil {
+			t.Fatal("remote VIP traffic reached the host's exclusive UDP listener")
+		} else if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
+			t.Fatalf("host listener was damaged: %v", err)
+		}
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.replies.Send([]byte("closed"), netip.AddrPortFrom(dst, targetPort), netip.MustParseAddrPort("10.79.42.2:50059")); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("proxy close did not retire its raw reply socket: %v", err)
+	}
+
 }
