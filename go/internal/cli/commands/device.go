@@ -3023,6 +3023,9 @@ func agentRestartTimeoutFor(osName string) time.Duration {
 func uploadAgentBinary(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string, jsonOutput bool) error {
 	if isInteractiveTerminal() && !jsonOutput {
 		s := tui.NewSpinner("Uploading agent binary...")
+		if progressHintsOff(ctx) {
+			s = s.WithoutHints()
+		}
 		p := tui.NewProgressProgram(s)
 
 		go func() {

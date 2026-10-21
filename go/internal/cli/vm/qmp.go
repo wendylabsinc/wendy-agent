@@ -137,12 +137,13 @@ func (s *Store) TCPPortMapping(ctx context.Context, name string, guestPort int) 
 	}
 	// Three different problems with three different fixes. A stopped VM used
 	// to be blamed on its networking, sending people after a --net flag when
-	// all it needed was a boot.
+	// all it needed was a boot. The fix is a command rather than a key in
+	// 'wendy discover': MCP tools and scripts read this too.
 	switch {
 	case !st.Exists:
 		return 0, fmt.Errorf("no VM named %q", name)
 	case !st.Running:
-		return 0, fmt.Errorf("VM %q is stopped; start it with 'wendy device info --device vm:%s' or press s in 'wendy discover'", name, name)
+		return 0, fmt.Errorf("VM %q is stopped; start it with 'wendy device info --device vm:%s'", name, name)
 	case st.State.NetMode != NetUser:
 		return 0, fmt.Errorf("VM %q is not running with user networking", name)
 	}

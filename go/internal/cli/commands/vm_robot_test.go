@@ -291,6 +291,23 @@ func TestRobotProvisionLockSerializesSameVMAndAllowsDifferentVMs(t *testing.T) {
 	last()
 }
 
+func TestRobotOpenNamesAMissingVMAsMissing(t *testing.T) {
+	// The profile is read before the port forward, so a mistyped name was
+	// reported as a VM without a robot profile rather than as no VM at all.
+	store := robotTestStore(t)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	if err := runVMRobot(cmd, "open", "ghost"); err == nil || err.Error() != `no VM named "ghost"` {
+		t.Errorf("missing VM: %v", err)
+	}
+	if err := store.CreateFrom("generic", strings.NewReader("disk"), 4, 1024, vm.Meta{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runVMRobot(cmd, "open", "generic"); !errors.Is(err, vm.ErrRobotProfileMissing) {
+		t.Errorf("VM without a profile: %v", err)
+	}
+}
+
 func TestRobotStartAndUpdateRejectGenericVMWithoutBooting(t *testing.T) {
 	store := robotTestStore(t)
 	for _, action := range []string{"start", "restart", "update"} {

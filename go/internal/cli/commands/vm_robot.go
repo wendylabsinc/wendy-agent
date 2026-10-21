@@ -703,13 +703,23 @@ func robotEndpoint(ctx context.Context, name string) (*vm.Store, vm.RobotProfile
 		return store, profile, 0, err
 	}
 	if !exists {
-		return store, profile, 0, vm.ErrRobotProfileMissing
+		return store, profile, 0, robotProfileMissing(store, name)
 	}
 	port, err := store.TCPPortMapping(ctx, name, vm.RobotSandboxGuestPort)
 	if err == nil && port == 0 {
 		err = fmt.Errorf("robot sandbox has no live forward; connect to vm:%s to provision it", name)
 	}
 	return store, profile, port, err
+}
+
+// robotProfileMissing explains a VM without a robot profile. A VM that does not
+// exist has none either, but "no robot profile" would send the user off to
+// configure one on a name that was simply mistyped.
+func robotProfileMissing(store *vm.Store, name string) error {
+	if st, err := store.Status(name); err == nil && !st.Exists {
+		return fmt.Errorf("no VM named %q", name)
+	}
+	return vm.ErrRobotProfileMissing
 }
 
 func newVMRobotCmd() *cobra.Command {

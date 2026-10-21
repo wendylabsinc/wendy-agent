@@ -276,6 +276,10 @@ func TestTCPPortMappingNamesWhyThereIsNoForward(t *testing.T) {
 		!strings.Contains(err.Error(), "--device vm:sim") || strings.Contains(err.Error(), "networking") {
 		t.Errorf("stopped VM: %v, want it called stopped with a way to start it", err)
 	}
+	// MCP tools surface this error too, and an agent cannot press a key.
+	if err != nil && strings.Contains(err.Error(), "press s") {
+		t.Errorf("stopped VM: %v names a TUI key", err)
+	}
 
 	// Only a VM that is really up without a user-mode forward gets the
 	// networking explanation.

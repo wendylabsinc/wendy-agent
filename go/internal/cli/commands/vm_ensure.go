@@ -261,6 +261,9 @@ func connectSimulatorChoice(ctx context.Context, choice *simulatorChoice, suppre
 	if choice == nil {
 		return nil, fmt.Errorf("no simulator selected")
 	}
+	// All of this is simulator setup -- the boot wait, an agent update and the
+	// robot build -- so none of its progress views rotate tips about projects.
+	ctx = withoutProgressHints(ctx)
 
 	if choice.Create {
 		if err := createSimulator(choice.Name); err != nil {
