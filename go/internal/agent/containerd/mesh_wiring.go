@@ -637,7 +637,7 @@ func (c *Client) releaseMeshIngress(containerName string) {
 	delete(c.meshIngressRuns, containerName)
 }
 
-// teardownMeshEgress removes the host iptables rules (ACCEPT + REDIRECT)
+// teardownMeshEgress removes the exact owner's TCP, UDP and ingress rules
 // installed by applyMeshEgress and releases the container's DNS-listener
 // reference. It is a complete no-op for apps without the mesh entitlement.
 // The iptables removals are skipped when ip is empty. Lifecycle callers use
@@ -665,7 +665,11 @@ func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, contai
 		if err != nil {
 			return err
 		}
-		errs = append(errs, removeMeshEgressRule(ip, cidr), removeMeshEgressRedirect(ip, cidr, mesh.ProxyPort), removeMeshUDPEgressIntercept(ip, cidr, containerName, mesh.UDPProxyPort))
+		errs = append(errs,
+			removeMeshEgressRule(ip, cidr),
+			removeMeshEgressRedirect(ip, cidr, mesh.ProxyPort),
+			removeMeshUDPEgressIntercept(ip, cidr, containerName, mesh.UDPProxyPort),
+		)
 		for _, pm := range ent.Ports {
 			remove := removeMeshIngressPortForward
 			if pm.Protocol == "udp" {

@@ -55,8 +55,10 @@ func newMeshRetirementFixture(t *testing.T, service string) *meshRetirementFixtu
 		t.Fatal(err)
 	}
 	oldRule, oldRedirect, oldPort := removeMeshEgressRule, removeMeshEgressRedirect, removeMeshIngressPortForward
+	oldUDPIntercept := removeMeshUDPEgressIntercept
 	t.Cleanup(func() {
 		removeMeshEgressRule, removeMeshEgressRedirect, removeMeshIngressPortForward = oldRule, oldRedirect, oldPort
+		removeMeshUDPEgressIntercept = oldUDPIntercept
 	})
 	check := func(label, ip string) error {
 		if ip != f.ip {
@@ -77,6 +79,12 @@ func newMeshRetirementFixture(t *testing.T, service string) *meshRetirementFixtu
 	removeMeshEgressRule = func(ip, cidr string) error { return check("accept", ip) }
 	removeMeshEgressRedirect = func(ip, cidr string, port int) error { return check("redirect", ip) }
 	removeMeshIngressPortForward = func(host uint16, ip string, port uint16) error { return check("ingress", ip) }
+	removeMeshUDPEgressIntercept = func(ip, cidr, owner string, port int) error {
+		if owner != f.container {
+			t.Fatalf("UDP interception used shared bridge rather than exact container: %q", owner)
+		}
+		return check("udp-intercept", ip)
+	}
 	return f
 }
 func (f *meshRetirementFixture) writeProof(t *testing.T, path, ip string) {
@@ -99,7 +107,7 @@ func TestMeshProofRetirementUsesPinnedExactOwnerBeforeDEL(t *testing.T) {
 			if err := f.client.retireMeshNetwork(f.container, f.labels, ""); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.calls) != 3 {
+			if len(f.calls) != 4 {
 				t.Fatalf("retirement calls=%v", f.calls)
 			}
 			if _, err := os.Stat(networkSandboxResultPath(f.container)); !errors.Is(err, os.ErrNotExist) {
@@ -117,7 +125,7 @@ func TestMeshProofRetirementUsesPinnedExactOwnerBeforeDEL(t *testing.T) {
 			if err := f.client.retireMeshNetwork(f.container, f.labels, f.client.serviceIPs[f.app][service]); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.calls) != 3 || len(f.store.GetByID(sibling, "eth0")) != 1 {
+			if len(f.calls) != 4 || len(f.store.GetByID(sibling, "eth0")) != 1 {
 				t.Fatal("repeat cleanup touched a sibling")
 			}
 		})
@@ -245,7 +253,7 @@ func TestDeleteUnknownTaskKeepsAllocationPinned(t *testing.T) {
 	if len(f.store.GetByID(f.container, "eth0")) != 1 {
 		t.Fatal("unknown task released an address")
 	}
-	if len(f.calls) != 3 {
+	if len(f.calls) != 4 {
 		t.Fatalf("exact rules were not retired before checking task: %v", f.calls)
 	}
 	if f.client.serviceIPs[f.app][""] != "" {
