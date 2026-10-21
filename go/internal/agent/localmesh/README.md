@@ -54,6 +54,18 @@ removal, cancellation or listener/mDNS failure closes the worker's endpoint,
 pending handshakes and attached links before restart. Existing link costs,
 control stream, carrier DATAGRAM framing, Babel/TUN and MTU remain unchanged.
 
+## Wi-Fi Aware recovery
+
+Repeated failed data paths can trigger one retry of the router's private NAN
+interface during an outage. A neighbor must remain authenticated for a full
+minute before this private-interface retry becomes available for a later
+outage. Discovery messages and transient handshakes cannot renew that budget.
+
+The stronger radio-wide recovery still requires ownership of the shared NAN
+interface, no application-owned NAN interface and the existing no-receive
+evidence. It remains limited to one attempt per provider run. Recovery never
+restarts the supplicant or station Wi-Fi.
+
 ## Identity and addressing
 
 The complete principal

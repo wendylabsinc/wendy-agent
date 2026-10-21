@@ -39,8 +39,10 @@ const NANLinkCost uint16 = 512
 
 // Provider owns one Wi-Fi Aware session and its NDI. The caller owns and runs
 // the shared localmesh Node. Recreate this provider when enrolled identity or
-// trust material changes. Run retries stalled data paths within a bounded
-// recovery budget. An error after a recovery attempt waits for cancellation
+// trust material changes. Run bounds recovery within each outage; a minute
+// with an authenticated neighbor rearms its private-interface retry. Radio-wide
+// management recovery is limited to one attempt per Run. An error after a
+// recovery attempt waits for cancellation
 // instead of letting a caller restart that budget. It drains owned NDPs before
 // removing the NDI; the caller may retry initial setup and radio failures.
 type Provider struct {
@@ -173,7 +175,7 @@ func (p Provider) Run(parent context.Context) error {
 	// explicit, separate operation. External nan0 is never restarted here.
 	recovery := nanRecovery{ownsSession: plan.own}
 	for {
-		err := p.runNDIEpoch(ctx, id, logger, recovery)
+		err := p.runNDIEpoch(ctx, id, logger, &recovery)
 		if err != nil && ctx.Err() == nil && p.Status != nil {
 			p.Status(localmesh.CarrierStatus{Err: err})
 		}
@@ -211,6 +213,26 @@ const (
 
 type nanRecovery struct {
 	ownsSession, ndiReset, sessionReset bool
+}
+
+// rearmAfterStableAuthentication rearms private-interface recovery only after
+// one neighbor has remained authenticated for a full minute. Transient
+// handshakes and uninterrupted outages cannot renew the budget. Radio-wide
+// management recovery remains limited to one attempt for the provider's lifetime.
+//
+// Only the current radio loop uses this state while its provider waits for it
+// to finish; the provider chooses the next action after that loop has joined.
+func (r *nanRecovery) rearmAfterStableAuthentication(now time.Time, links map[string]*radioLink) bool {
+	if !r.ndiReset {
+		return false
+	}
+	for _, link := range links {
+		if link.healthy && !link.since.IsZero() && now.Sub(link.since) >= time.Minute {
+			r.ndiReset = false
+			return true
+		}
+	}
+	return false
 }
 
 // canReset distinguishes the private NDI retry from the stronger evidence
@@ -284,7 +306,7 @@ func hasAppNANNDI() bool {
 	return false
 }
 
-func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *zap.Logger, recovery nanRecovery) error {
+func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *zap.Logger, recovery *nanRecovery) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	// The exclusive reservation and initial reclaim have established that this
