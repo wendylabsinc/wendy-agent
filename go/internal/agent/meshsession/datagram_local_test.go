@@ -55,7 +55,7 @@ func TestLocalUDPAppEchoAndIncarnationRevocation(t *testing.T) {
 		if err := flow.Send(payload); err != nil {
 			t.Fatal(err)
 		}
-		got, err := flow.Receive(ctx)
+		got, err := readUDPMessage(flow, ctx)
 		if err != nil || !bytes.Equal(got, payload) {
 			t.Fatalf("echo %v %v", got, err)
 		}
@@ -75,7 +75,7 @@ func TestLocalUDPAppEchoAndIncarnationRevocation(t *testing.T) {
 	if err := flow.Send([]byte("old flow")); !errors.Is(err, meshingress.ErrPortDenied) && !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("revoked send: %v", err)
 	}
-	if _, err := flow.Receive(ctx); !errors.Is(err, meshingress.ErrPortDenied) && !errors.Is(err, net.ErrClosed) {
+	if _, err := readUDPMessage(flow, ctx); !errors.Is(err, meshingress.ErrPortDenied) && !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("revoked receive: %v", err)
 	}
 	fresh, err := DialLocalUDP(ctx, testUDPAuthorization{r}, port)
@@ -86,7 +86,7 @@ func TestLocalUDPAppEchoAndIncarnationRevocation(t *testing.T) {
 	if err := fresh.Send([]byte("new flow")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fresh.Receive(ctx); err != nil {
+	if _, err := readUDPMessage(fresh, ctx); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -112,16 +112,16 @@ func TestLocalUDPReceiveCancellationAndClose(t *testing.T) {
 	if _, err := DialLocalUDP(ctx, testUDPAuthorization{r}, port); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	if _, err := flow.Receive(ctx); !errors.Is(err, context.Canceled) {
+	if _, err := readUDPMessage(flow, ctx); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := flow.Receive(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := readUDPMessage(flow, ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := flow.Receive(context.Background()); done <- err }()
+	go func() { _, err := readUDPMessage(flow, context.Background()); done <- err }()
 	_ = flow.Close()
 	select {
 	case err := <-done:
@@ -194,5 +194,75 @@ func TestSelfUDPReplacesSourceGuardWithSingleCombinedGuard(t *testing.T) {
 	case <-endpoint.Done():
 	case <-time.After(time.Second):
 		t.Fatal("idle destination lease did not retire flow")
+	}
+}
+
+func TestUDPReceiveSerializationHonorsCancellationAndRetirement(t *testing.T) {
+	for _, kind := range []string{"self", "QUIC"} {
+		t.Run(kind, func(t *testing.T) {
+			a, b := fixtureCredentials(t)
+			r := meshingress.NewRegistry()
+			port := udpLifecycleApp(t, r, "receive")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			var receive func(context.Context) (*udpmessage.Message, error)
+			var closeFlow func() error
+			var lock *udpReceiveLock
+			var done <-chan struct{}
+			if kind == "self" {
+				f, err := DialLocalUDP(ctx, testUDPAuthorization{r}, port)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receive, closeFlow, lock, done = f.Receive, f.Close, &f.readMu, f.endpoint.Done()
+			} else {
+				address := lifecycleServer(t, b, testUDPAuthorization{r}, true)
+				f, err := DialUDP(ctx, a, b.Device, address, port)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receive, closeFlow, lock, done = f.Receive, f.Close, &f.readMu, f.endpoint.Done()
+			}
+			defer closeFlow()
+			if err := lock.lock(ctx, done); err != nil {
+				t.Fatal(err)
+			}
+			defer lock.unlock()
+			short, stop := context.WithTimeout(ctx, 20*time.Millisecond)
+			defer stop()
+			canceled := make(chan error, 1)
+			go func() {
+				message, err := receive(short)
+				if message != nil {
+					message.Release()
+				}
+				canceled <- err
+			}()
+			select {
+			case err := <-canceled:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("serialized receive ignored cancellation")
+			}
+			retired := make(chan error, 1)
+			go func() {
+				message, err := receive(context.Background())
+				if message != nil {
+					message.Release()
+				}
+				retired <- err
+			}()
+			closeFlow()
+			select {
+			case err := <-retired:
+				if !errors.Is(err, net.ErrClosed) {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("serialized receive ignored close")
+			}
+		})
 	}
 }

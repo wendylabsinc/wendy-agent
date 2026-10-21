@@ -16,9 +16,10 @@ const udpFlowIdle = 30 * time.Second
 const udpDialTimeout = 40 * time.Second
 
 // UDPFlow sends and receives complete unreliable UDP messages, including empty.
+// Every received Message must be released after final local delivery or discard.
 type UDPFlow interface {
 	Send([]byte) error
-	Receive(context.Context) ([]byte, error)
+	Receive(context.Context) (*udpmessage.Message, error)
 	Close() error
 }
 type UDPDialRequest struct {

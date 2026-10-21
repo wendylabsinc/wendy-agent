@@ -272,13 +272,7 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 	go func() {
 		defer close(failed)
 		for {
-			data, err := remote.Receive(ctx)
-			if err != nil {
-				return
-			}
-			if err := flow.endpoint.Deliver(func() error {
-				return p.replies.Send(data, key.destination, key.source, key.ifindex)
-			}); err != nil {
+			if err := p.deliverReply(ctx, remote, flow, key); err != nil {
 				return
 			}
 		}
@@ -303,4 +297,16 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 			idle.Reset(udpFlowIdle)
 		}
 	}
+}
+
+// Keep the full message charge through the final source-token-protected write.
+func (p *UDPProxy) deliverReply(ctx context.Context, remote UDPFlow, flow *udpProxyFlow, key udpKey) error {
+	message, err := remote.Receive(ctx)
+	if err != nil {
+		return err
+	}
+	defer message.Release()
+	return flow.endpoint.Deliver(func() error {
+		return p.replies.Send(message.Payload, key.destination, key.source, key.ifindex)
+	})
 }

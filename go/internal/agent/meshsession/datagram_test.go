@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshingress"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 )
 
 type testUDPAuthorization struct{ *meshingress.Registry }
@@ -69,7 +70,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 		if err := flow.Send(payload); err != nil {
 			t.Fatal(err)
 		}
-		got, err := flow.Receive(ctx)
+		got, err := readUDPMessage(flow, ctx)
 		if err != nil || !bytes.Equal(got, payload) {
 			t.Fatalf("UDP echo = %v, %v", got, err)
 		}
@@ -90,7 +91,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	if err := flow.Send([]byte("after stop")); err == nil {
 		recvCtx, cancelRecv := context.WithTimeout(ctx, 250*time.Millisecond)
 		defer cancelRecv()
-		if got, err := flow.Receive(recvCtx); err == nil {
+		if got, err := readUDPMessage(flow, recvCtx); err == nil {
 			t.Fatalf("revoked app received reply %q", got)
 		}
 	}
@@ -102,7 +103,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	if err := replacement.Send([]byte("new owner")); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := replacement.Receive(ctx); err != nil || !bytes.Equal(got, []byte("new owner")) {
+	if got, err := readUDPMessage(replacement, ctx); err != nil || !bytes.Equal(got, []byte("new owner")) {
 		t.Fatalf("replacement echo = %q, %v", got, err)
 	}
 	cancel()
@@ -125,4 +126,17 @@ func localEchoMaximum() int {
 		return MaxUDPMessageSize
 	}
 	return 8192
+}
+
+// Test exchanges consume immediately. Production callers retain message charges
+// until final delivery/discard and explicitly Release on every return path.
+func readUDPMessage(flow interface {
+	Receive(context.Context) (*udpmessage.Message, error)
+}, ctx context.Context) ([]byte, error) {
+	message, err := flow.Receive(ctx)
+	if message == nil {
+		return nil, err
+	}
+	defer message.Release()
+	return message.Payload, err
 }

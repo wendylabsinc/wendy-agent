@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"golang.org/x/sys/unix"
 	"net"
@@ -37,13 +38,13 @@ func (f *echoUDPFlow) Send(data []byte) error {
 	f.replies <- append([]byte(nil), data...)
 	return nil
 }
-func (f *echoUDPFlow) Receive(ctx context.Context) ([]byte, error) {
+func (f *echoUDPFlow) Receive(ctx context.Context) (*udpmessage.Message, error) {
 	select {
 	case data := <-f.replies:
 		if f.t != nil {
 			f.t.Logf("QUIC message reply bytes=%d", len(data))
 		}
-		return data, nil
+		return &udpmessage.Message{Payload: data}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -88,7 +89,15 @@ func TestUDPProxyRedirectNamespace(t *testing.T) {
 	}
 }
 
-func testUDPProxyRedirectNamespace(t *testing.T, targetPort uint16) {
+func TestUDPProxyFullCeilingMTU576Namespace(t *testing.T) {
+	testUDPProxyRedirectNamespace(t, 7777, 576)
+}
+
+func testUDPProxyRedirectNamespace(t *testing.T, targetPort uint16, localMTU ...int) {
+	mtu := 1500
+	if len(localMTU) > 0 {
+		mtu = localMTU[0]
+	}
 	if os.Getenv("WENDY_TEST_NETNS") != "1" {
 		t.Skip("requires privileged disposable network namespace")
 	}
@@ -114,11 +123,11 @@ func testUDPProxyRedirectNamespace(t *testing.T, targetPort uint16) {
 	run("ip", "link", "set", "wudp-a", "netns", ns)
 	run("ip", "link", "set", "wudp-h", "master", "wudp-br")
 	run("ip", "addr", "add", "10.79.42.1/24", "dev", "wudp-br")
-	run("ip", "link", "set", "wudp-br", "up")
-	run("ip", "link", "set", "wudp-h", "up")
+	run("ip", "link", "set", "wudp-br", "mtu", strconv.Itoa(mtu), "up")
+	run("ip", "link", "set", "wudp-h", "mtu", strconv.Itoa(mtu), "up")
 	run("ip", "netns", "exec", ns, "ip", "addr", "add", "10.79.42.2/24", "dev", "wudp-a")
 	run("ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up")
-	run("ip", "netns", "exec", ns, "ip", "link", "set", "wudp-a", "up")
+	run("ip", "netns", "exec", ns, "ip", "link", "set", "wudp-a", "mtu", strconv.Itoa(mtu), "up")
 	run("ip", "netns", "exec", ns, "ip", "route", "add", "10.99.0.0/16", "via", "10.79.42.1")
 	run("ip", "netns", "exec", ns, "ping", "-c", "1", "-W", "1", "10.79.42.1")
 	iface, err := net.InterfaceByName("wudp-br")
@@ -240,6 +249,9 @@ print('VIP_TUPLE_ISOLATION_OK',flush=True)
 # Verify both send and reply paths preserve every byte at the payload bound,
 # including odd lengths. Packet vectors cover checksum-zero encoding.
 for client in (s,other):
+    # The reduced-MTU fixture deliberately permits application fragmentation.
+    # The ordinary MTU1500 test still sends1472 with default socket policy.
+    if LOCAL_MTU < 1500: client.setsockopt(socket.IPPROTO_IP,10,0)
     for payload in (b'', b'x', b'hello', b'\x87'*1000, b'\x87'*1001, b'\x87'*1472):
         client.sendto(payload,('10.99.0.1',7777))
         data,addr=client.recvfrom(65535)
@@ -284,7 +296,7 @@ for client in (s,other,socket.socket(socket.AF_INET,socket.SOCK_DGRAM)):
     except socket.timeout: pass
 print('SOURCE_REVOCATION_OK',flush=True)
 `
-	cmd := exec.Command("ip", "netns", "exec", ns, "python3", "-c", strings.ReplaceAll(script, "7777", strconv.Itoa(int(targetPort))))
+	cmd := exec.Command("ip", "netns", "exec", ns, "python3", "-c", strings.ReplaceAll(strings.ReplaceAll(script, "7777", strconv.Itoa(int(targetPort))), "LOCAL_MTU", strconv.Itoa(mtu)))
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "VIP_REPLY_OK") || !strings.Contains(string(out), "VIP_REPEAT_REPLY_OK") || !strings.Contains(string(out), "VIP_TUPLE_ISOLATION_OK") || !strings.Contains(string(out), "VIP_MAX_PAYLOAD_BOTH_DIRECTIONS_OK") || !strings.Contains(string(out), "VIP_ZERO_CHECKSUM_REPLY_OK") || !strings.Contains(string(out), "DENIED_PORT_OK") || !strings.Contains(string(out), "SOURCE_REVOCATION_OK") {

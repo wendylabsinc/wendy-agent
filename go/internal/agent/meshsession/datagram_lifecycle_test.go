@@ -77,7 +77,7 @@ func TestUDPConnectionOwnsOneFlowAndCannotMixTCP(t *testing.T) {
 	if err := flow.Send([]byte("original owner")); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := flow.Receive(ctx); err != nil || string(data) != "original owner" {
+	if data, err := readUDPMessage(flow, ctx); err != nil || string(data) != "original owner" {
 		t.Fatalf("original flow: %q %v", data, err)
 	}
 	tcpFlow, err := Dial(ctx, a, b.Device, endpoint, tcp)
@@ -242,7 +242,7 @@ func TestManagedUDPRevokedOnClientCloseAndRouteCut(t *testing.T) {
 			if err := first.Send([]byte("echo")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := first.Receive(ctx); err != nil {
+			if _, err := readUDPMessage(first, ctx); err != nil {
 				t.Fatal(err)
 			}
 			switch action {
@@ -271,7 +271,7 @@ func TestManagedUDPRevokedOnClientCloseAndRouteCut(t *testing.T) {
 				if err := fresh.Send([]byte("restored")); err != nil {
 					t.Fatal(err)
 				}
-				if got, err := fresh.Receive(ctx); err != nil || string(got) != "restored" {
+				if got, err := readUDPMessage(fresh, ctx); err != nil || string(got) != "restored" {
 					t.Fatalf("recovery %q %v", got, err)
 				}
 			}

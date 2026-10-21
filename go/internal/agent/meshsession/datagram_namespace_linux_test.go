@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshingress"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 )
 
 // A destination app replies to the proxy's bridge address, not the VIP route.
@@ -94,7 +95,7 @@ while True:
 			defer remote.Close()
 			type messageFlow interface {
 				Send([]byte) error
-				Receive(context.Context) ([]byte, error)
+				Receive(context.Context) (*udpmessage.Message, error)
 			}
 			for _, path := range []struct {
 				name string
@@ -108,7 +109,7 @@ while True:
 					if err := path.flow.Send(p); err != nil {
 						t.Fatal(err)
 					}
-					got, err := path.flow.Receive(ctx)
+					got, err := readUDPMessage(path.flow, ctx)
 					if err != nil || !bytes.Equal(got, p) {
 						t.Fatalf("%s MTU%d size%d got%d: %v", path.name, mtu, size, len(got), err)
 					}

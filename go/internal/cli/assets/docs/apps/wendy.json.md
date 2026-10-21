@@ -300,8 +300,8 @@ IP networking access.
 | `"host"` | Shares the host network stack (visibility: bind host ports, see interfaces). Does **not** grant the ability to reconfigure host networking. |
 | `"host-admin"` | Host networking **plus** `CAP_NET_ADMIN` — allows reconfiguring interfaces, routes, and netfilter. Only request this if your app genuinely manages the network; it is a high-privilege capability. |
 | `"none"` | Networking fully disabled — no namespace connectivity of any kind. |
-| `"bridge"` | Isolated network namespace with a private IP, outbound internet via NAT, and working DNS — but **no** host/LAN-published ports. Use this for apps that need to reach the internet without exposing anything locally. Cross-device access to a bridge app is via a `mesh` entitlement, not this one. |
-| `"mesh"` | Isolated network namespace chained into the wendy-mesh CNI, with a route to a `serviceCIDR` (required for this mode — a valid CIDR string) so the app can reach other meshed devices/services. Optionally set `ports` (host→container mappings) so mesh peers can dial in. |
+| `"bridge"` | Isolated network namespace with a private IP, outbound internet via NAT, and working DNS — but **no** host/LAN-published ports. Use this for apps that need to reach the internet without exposing anything locally. Use Wendy Net networking for cross-device app access. |
+| `"mesh"` | Private app networking through Wendy Net. Set `serviceCIDR` to `10.99.0.0/16`, the currently supported service address range. Publish incoming ports with `ports` to let apps on other devices connect. |
 
 > **Security note:** `CAP_NET_ADMIN` (host network reconfiguration) is granted only by `"host-admin"`, never by plain `"host"`. Apps that previously relied on `CAP_NET_ADMIN` under `"host"` must switch to `"host-admin"`.
 
@@ -319,24 +319,25 @@ Wendy Net UDP services declare `protocol: "udp"` on each published port:
 ```
 
 The service listens on its container address (or `0.0.0.0:7777`). Other
-net apps send to this device's service VIP on UDP port `47777`. TCP remains
+Wendy Net apps send to this device's service address on UDP port `47777`. TCP remains
 the default when `protocol` is omitted; TCP and UDP mappings with the same
 host port are independent. Only a running app's explicitly published UDP
 ports accept peer traffic. UDP DNS-SD announcements require a matching UDP
 mapping and use service types ending in `._udp`.
 
-UDP preserves each IPv4 message from zero through 65,507 bytes. Messages
-travel in chunks of at most 1,000 bytes and are delivered only when complete.
-Loss, congestion, capacity limits or a 30-second message deadline can drop a
-whole message; delivery remains unreliable, so applications handle retries.
+#### UDP delivery limits
+
+UDP messages can contain zero through 65,507 bytes. Delivery is unreliable:
+applications must handle missing messages and retries. Large messages need more
+bandwidth and are delivered only when complete; loss or congestion can drop the
+whole message.
 Large local messages may require the application to allow IPv4 fragmentation
 on its own socket. Wendy Net does not change application DF policy or lower
 the container interface MTU. Devices must support the same UDP message
 protocol version; incompatible peers are rejected explicitly.
 A source/destination tuple expires after 30 seconds without an app request;
-its next request establishes a fresh authenticated flow. New flows on slow
-links can take longer to establish than exchanges on an existing socket.
-Net UDP requires Linux TPROXY support on the device.
+its next request establishes a fresh authenticated flow. The first request after an idle period may take longer, especially over Bluetooth.
+Use a WendyOS image with Wendy Net UDP support.
 
 ### `gpu`
 
@@ -514,7 +515,7 @@ Registers the container as a [Model Context Protocol (MCP)](https://modelcontext
 |-------|------|-------------|
 | `port` | integer | TCP port on which the container's MCP server listens (required). |
 
-The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.io/specification) transport on `0.0.0.0:<port>`. See the [MCPExample](../Examples/MCPExample/README.md) for a complete Python reference implementation.
+The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.io/specification) transport on `0.0.0.0:<port>`. See the [MCPExample](/docs/advanced/Examples/MCPExample/) for a complete Python reference implementation.
 
 > **Note:** The `mcp` entitlement is typically combined with `{ "type": "network", "mode": "host" }` so that the agent can reach the container's MCP port over loopback.
 

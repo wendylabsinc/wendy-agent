@@ -99,36 +99,53 @@ func InitMeshUDPTProxy(proxyPort int) error {
 // EnsureMeshUDPTProxyPolicy repairs the marked packet route if another
 // network manager removes it after agent startup. It leaves app rules intact.
 func EnsureMeshUDPTProxyPolicy() error {
-	rules, err := meshUDPCommand("ip", "-4", "rule", "show", "pref", meshUDPPriority)
+	rule, route, err := meshUDPPolicyState()
 	if err != nil {
 		return err
 	}
-	ruleLines := nonemptyLines(rules)
-	if len(ruleLines) > 1 || len(ruleLines) == 1 && (!strings.Contains(ruleLines[0], "fwmark "+meshUDPMark+" ") || !strings.HasSuffix(ruleLines[0], "lookup "+meshUDPTable)) {
-		return errors.New("foreign IPv4 policy rule owns net UDP priority 18864")
-	}
-	routes, routeErr := meshUDPCommand("ip", "-4", "route", "show", "table", meshUDPTable)
-	if routeErr != nil && !strings.Contains(routes, "FIB table does not exist") {
-		return routeErr
-	}
-	routeLines := nonemptyLines(routes)
-	if routeErr != nil {
-		routeLines = nil
-	}
-	if len(routeLines) > 1 || len(routeLines) == 1 && !strings.HasPrefix(routeLines[0], "local default dev lo ") {
-		return errors.New("foreign route owns net UDP table 18867")
-	}
-	if len(routeLines) == 0 {
+	if !route {
 		if _, err := meshUDPCommand("ip", "-4", "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", meshUDPTable); err != nil {
 			return err
 		}
 	}
-	if len(ruleLines) == 0 {
+	if !rule {
 		if _, err := meshUDPCommand("ip", "-4", "rule", "add", "pref", meshUDPPriority, "fwmark", meshUDPMark, "lookup", meshUDPTable); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func ownedMeshUDPPolicyRule(line string) bool {
+	return strings.Join(strings.Fields(line), " ") == meshUDPPriority+": from all fwmark "+meshUDPMark+" lookup "+meshUDPTable
+}
+func ownedMeshUDPPolicyRoute(line string) bool {
+	return strings.Join(strings.Fields(line), " ") == "local default dev lo scope host"
+}
+
+// Validate the complete installed skeleton, including implicit source scope.
+// Matching only the mark/table could adopt a foreign source-specific rule.
+func meshUDPPolicyState() (rule, route bool, err error) {
+	rules, err := meshUDPCommand("ip", "-4", "rule", "show", "pref", meshUDPPriority)
+	if err != nil {
+		return false, false, err
+	}
+	ruleLines := nonemptyLines(rules)
+	if len(ruleLines) > 1 || len(ruleLines) == 1 && !ownedMeshUDPPolicyRule(ruleLines[0]) {
+		return false, false, errors.New("foreign IPv4 policy rule owns net UDP priority 18864")
+	}
+	routes, routeErr := meshUDPCommand("ip", "-4", "route", "show", "table", meshUDPTable)
+	if routeErr != nil && !strings.Contains(routes, "FIB table does not exist") {
+		return false, false, routeErr
+	}
+	routeLines := nonemptyLines(routes)
+	if routeErr != nil {
+		routeLines = nil
+	}
+	if len(routeLines) > 1 || len(routeLines) == 1 && !ownedMeshUDPPolicyRoute(routeLines[0]) {
+		return false, false, errors.New("foreign route owns net UDP table 18867")
+	}
+	return len(ruleLines) == 1, len(routeLines) == 1, nil
 }
 
 func nonemptyLines(s string) []string {
@@ -197,23 +214,40 @@ func removeMeshUDPInterceptRule(args []string) error {
 func CloseMeshUDPTProxy() error {
 	meshUDPInterceptMu.Lock()
 	defer meshUDPInterceptMu.Unlock()
-	if _, err := meshUDPCommand("iptables", "-t", "mangle", "-F", MeshUDPChainName); err != nil {
+	rule, route, err := meshUDPPolicyState()
+	if err != nil {
 		return err
 	}
-	clear(meshUDPInterceptOwners)
-	if exists, err := meshUDPRuleExists("PREROUTING", []string{"-j", MeshUDPChainName}); err != nil {
-		return err
-	} else if exists {
-		if _, err := meshUDPCommand("iptables", "-t", "mangle", "-D", "PREROUTING", "-j", MeshUDPChainName); err != nil {
+	// A retry may start after the chain was deleted but a policy deletion
+	// failed. Missing owned state is already retired, not a cleanup failure.
+	_, chainErr := meshUDPCommand("iptables", "-t", "mangle", "-S", MeshUDPChainName)
+	var exitErr *exec.ExitError
+	if chainErr != nil && (!errors.As(chainErr, &exitErr) || exitErr.ExitCode() != 1) {
+		return chainErr
+	}
+	if chainErr == nil {
+		if _, err := meshUDPCommand("iptables", "-t", "mangle", "-F", MeshUDPChainName); err != nil {
+			return err
+		}
+		if exists, err := meshUDPRuleExists("PREROUTING", []string{"-j", MeshUDPChainName}); err != nil {
+			return err
+		} else if exists {
+			if _, err := meshUDPCommand("iptables", "-t", "mangle", "-D", "PREROUTING", "-j", MeshUDPChainName); err != nil {
+				return err
+			}
+		}
+		if _, err := meshUDPCommand("iptables", "-t", "mangle", "-X", MeshUDPChainName); err != nil {
 			return err
 		}
 	}
-	if _, err := meshUDPCommand("iptables", "-t", "mangle", "-X", MeshUDPChainName); err != nil {
-		return err
+	clear(meshUDPInterceptOwners)
+	if rule {
+		if _, err := meshUDPCommand("ip", "-4", "rule", "del", "pref", meshUDPPriority, "fwmark", meshUDPMark, "lookup", meshUDPTable); err != nil {
+			return err
+		}
 	}
-	if _, err := meshUDPCommand("ip", "-4", "rule", "del", "pref", meshUDPPriority, "fwmark", meshUDPMark, "lookup", meshUDPTable); err != nil {
-		return err
+	if route {
+		_, err = meshUDPCommand("ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", meshUDPTable)
 	}
-	_, err := meshUDPCommand("ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", meshUDPTable)
 	return err
 }

@@ -63,7 +63,7 @@ func TestAppQUICLearnsDelayedPathAndQuiesces(t *testing.T) {
 	if err := flow.Send(nonce); err != nil {
 		t.Fatal(err)
 	}
-	got, err := flow.Receive(ctx)
+	got, err := readUDPMessage(flow, ctx)
 	if err != nil || !bytes.Equal(got, nonce) {
 		t.Fatalf("delayed authorized echo failed: %q %v", got, err)
 	}

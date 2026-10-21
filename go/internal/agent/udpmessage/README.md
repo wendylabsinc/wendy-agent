@@ -36,8 +36,10 @@ space before copying or fragmenting. RX/TX limits per flow are 4/8 messages and
 256 KiB each direction; per authenticated peer 16/32 and 1 MiB; per node 128/256
 and 8 MiB. Empty and small messages cost at least 256 bytes. There are at most
 256 flows, 32 per peer. Metadata is separately bounded by these counts, a fixed
-window and a fixed fragment-presence array. Completed RX ownership transfers to
-one bounded caller; only whole messages reach a local UDP write. At RX pressure,
+window and a fixed fragment-presence array. Completed RX messages retain their byte/count reservation until the caller
+explicitly releases them after final delivery or discard. Completed ownership
+cannot be evicted for new assemblies; concurrent receivers remain within the
+same RX limits. Only whole messages reach a local UDP write. At RX pressure,
 up to four old incomplete assemblies are evicted, favoring this flow, then this
 peer, then an over-share peer, then the oldest global candidate. Terminal IDs
 remain suppressed after eviction.
@@ -61,7 +63,8 @@ quantum. Source and destination incarnation tokens are checked in one registry
 read lock; nesting read locks would deadlock behind a queued revocation writer.
 Lease notifications immediately retire pending dials and idle flows. Credentials,
 route loss, connection close and endpoint close retain their existing cancellation
-paths. Close joins the current bounded admission before releasing queued buffers.
+paths. Close joins the current bounded admission before retiring queued, incomplete
+and completed message charges. Message Release is idempotent after retirement.
 
 Linux local delivery uses IP_MTU_DISCOVER=DONT on the agent's connected sockets;
 read buffers accept the complete ceiling and MSG_TRUNC/MSG_CTRUNC discard a read.
@@ -111,8 +114,8 @@ TransportAdmissions means successful local QUIC enqueue or local kernel write,
 not network emission or delivery. LocalDeliveryAdmissions counts successful
 complete-message local kernel writes (a subset of transport admissions for self
 traffic, plus final destination/source delivery writes). ReceivedChunks counts decoded chunks including
-duplicates; ReassembledMessages means full bytes handed to the local caller,
-not application delivery. BudgetRejects, CanceledMessages (queued/incomplete messages retired on close),
+duplicates; ReassembledMessages means full owned bytes handed to the local caller,
+not application delivery. BudgetRejects, CanceledMessages (queued, incomplete and completed messages retired on close),
 ExpiredMessages, EvictedMessages,
 MalformedChunks, DuplicateChunks, LateChunks, ConflictingMessages,
 TransportQueueRefusals, SizeDrops, GuardRejects and TransportFailures classify

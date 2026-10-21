@@ -1,7 +1,9 @@
 package meshsession
 
 import (
+	"context"
 	"net/netip"
+	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 )
@@ -30,3 +32,26 @@ func udpOptions(options []UDPOptions) UDPOptions {
 	}
 	return options[0]
 }
+
+// Only one scanner consumes an endpoint's chunks/socket at a time. Waiting for
+// another receiver must still honor cancellation and endpoint retirement.
+type udpReceiveLock struct {
+	once sync.Once
+	gate chan struct{}
+}
+
+func (l *udpReceiveLock) lock(ctx context.Context, retired <-chan struct{}) error {
+	l.once.Do(func() { l.gate = make(chan struct{}, 1) })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case l.gate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-retired:
+		return udpmessage.ErrClosed
+	}
+}
+func (l *udpReceiveLock) unlock() { <-l.gate }

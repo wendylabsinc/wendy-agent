@@ -1,6 +1,6 @@
 ---
 title: Share and discover app services
-description: Publish TCP services across Wendy Net using mDNS, with an app-owned discovery socket.
+description: Publish TCP or UDP services across Wendy Net using mDNS, with an app-owned discovery socket.
 ---
 
 Let an app on one Wendy device find and connect to an app on another. Your app
@@ -27,7 +27,7 @@ Merge this into its `wendy.json`:
       "mode": "mesh",
       "serviceCIDR": "10.99.0.0/16",
       "ports": [
-        { "host": 18080, "container": 8080 }
+        { "host": 18080, "container": 8080, "protocol": "tcp" }
       ]
     }
   ]
@@ -41,6 +41,10 @@ Do not replace this with the device's LAN subnet.
 Run your server on the container's address or `0.0.0.0:8080`, not loopback alone.
 The example publishes TCP port 18080 for other Wendy Net apps. Choose an unused
 published port if another app on the same device already uses it.
+
+For UDP, set `"protocol": "udp"` and advertise a type ending in `._udp`.
+Omitting `protocol` selects TCP. TCP and UDP mappings are separate, even when
+they use the same port number.
 
 Deploy after saving:
 
@@ -114,7 +118,7 @@ check: verify an actual request to the discovered server.
 2. Confirm both apps run with the intended private network and `serviceCIDR`.
 3. Check the publisher listens on the container port and advertises its own IPv4
    address, a complete service record, and the matching transport type.
-4. Check the declared port mapping.
+4. Check the declared port mapping. Publishing TCP does not authorize UDP.
 5. Resolve from the client app and test the returned endpoint, rather than an
    address copied from another device.
 

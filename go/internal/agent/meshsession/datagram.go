@@ -70,6 +70,7 @@ type DatagramFlow struct {
 	conn        *quic.Conn
 	endpoint    *udpmessage.Endpoint
 	ownsManager bool
+	readMu      udpReceiveLock
 	once        sync.Once
 }
 
@@ -91,6 +92,9 @@ func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer meshi
 	}
 	if _, err := limitSessionLifetime(credentials, conn); err != nil {
 		return fail(err)
+	}
+	if !udpDatagramsSupported(conn) {
+		return fail(ErrUDPUnsupported)
 	}
 	maximum := MaxUDPTransportChunk
 	stream, err := requestAppPort(ctx, conn, port, udpOpenMagic, &maximum)
@@ -149,6 +153,14 @@ func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer meshi
 	}()
 	return f, nil
 }
+
+// Both message directions require the independently negotiated transport
+// capability. A valid WAU2 envelope cannot enable QUIC DATAGRAMs by itself.
+func udpDatagramsSupported(conn *quic.Conn) bool {
+	capability := conn.ConnectionState().SupportsDatagrams
+	return capability.Local && capability.Remote
+}
+
 func quicUDPAdmission(conn *quic.Conn) func([]byte) error {
 	return func(b []byte) error {
 		err := conn.TrySendDatagram(b)
@@ -168,21 +180,25 @@ func (f *DatagramFlow) Send(payload []byte) error {
 	}
 	return f.endpoint.Send(payload)
 }
-func (f *DatagramFlow) Receive(ctx context.Context) ([]byte, error) {
+func (f *DatagramFlow) Receive(ctx context.Context) (*udpmessage.Message, error) {
 	if f == nil || f.conn == nil {
 		return nil, net.ErrClosed
 	}
+	if err := f.readMu.lock(ctx, f.endpoint.Done()); err != nil {
+		return nil, localUDPError(err)
+	}
+	defer f.readMu.unlock()
 	for {
 		frame, err := f.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			return nil, err
 		}
-		payload, complete, err := f.endpoint.ReceiveFrame(frame)
+		message, err := f.endpoint.ReceiveFrame(frame)
 		if err != nil {
 			return nil, err
 		}
-		if complete {
-			return payload, nil
+		if message != nil {
+			return message, nil
 		}
 	}
 }
@@ -205,6 +221,10 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 		return
 	}
 	if binary.BigEndian.Uint16(rest[:2]) != 0 || binary.BigEndian.Uint32(rest[2:6]) != MaxUDPMessageSize || binary.BigEndian.Uint16(rest[6:8]) < udpmessage.MinChunkSize || binary.BigEndian.Uint16(rest[8:]) != 0 {
+		_ = writeUDPAck(stream, 2)
+		return
+	}
+	if !udpDatagramsSupported(conn) {
 		_ = writeUDPAck(stream, 2)
 		return
 	}
@@ -316,14 +336,16 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 		if err != nil {
 			return
 		}
-		payload, complete, err := endpoint.ReceiveFrame(frame)
+		message, err := endpoint.ReceiveFrame(frame)
 		if err != nil {
 			return
 		}
-		if !complete {
+		if message == nil {
 			continue
 		}
-		if err := endpoint.Deliver(func() error { return writeLocalUDP(local, payload) }); err != nil {
+		err = endpoint.Deliver(func() error { return writeLocalUDP(local, message.Payload) })
+		message.Release()
+		if err != nil {
 			return
 		}
 	}

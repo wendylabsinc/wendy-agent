@@ -81,7 +81,7 @@ func TestReorderDuplicatesConflictsAndTerminalIDs(t *testing.T) {
 	count := (len(p) + 979) / 980
 	for i := count - 1; i >= 0; i-- {
 		frame := encode(1, p, 980, i)
-		got, done, err := e.ReceiveFrame(frame)
+		got, done, err := receiveFrame(e, frame)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,37 +93,37 @@ func TestReorderDuplicatesConflictsAndTerminalIDs(t *testing.T) {
 			t.Fatal("partial delivery")
 		}
 		if i > 0 {
-			if _, done, _ := e.ReceiveFrame(frame); done {
+			if _, done, _ := receiveFrame(e, frame); done {
 				t.Fatal("duplicate delivery")
 			}
 		}
 	}
-	if _, done, _ := e.ReceiveFrame(encode(1, p, 980, 0)); done {
+	if _, done, _ := receiveFrame(e, encode(1, p, 980, 0)); done {
 		t.Fatal("terminal message resurrected")
 	}
 	assertEmpty(t, m)
 	// A conflicting duplicate poisons the ID, including all future fragments.
-	_, _, _ = e.ReceiveFrame(encode(2, p, 980, 0))
+	_, _, _ = receiveFrame(e, encode(2, p, 980, 0))
 	bad := encode(2, p, 980, 0)
 	bad[20] ^= 1
-	_, _, _ = e.ReceiveFrame(bad)
+	_, _, _ = receiveFrame(e, bad)
 	for i := 1; i < count; i++ {
-		if _, done, _ := e.ReceiveFrame(encode(2, p, 980, i)); done {
+		if _, done, _ := receiveFrame(e, encode(2, p, 980, i)); done {
 			t.Fatal("conflict delivered")
 		}
 	}
 	assertEmpty(t, m)
-	_, _, _ = e.ReceiveFrame(encode(3, p, 980, 0))
+	_, _, _ = receiveFrame(e, encode(3, p, 980, 0))
 	*now = now.Add(Lifetime - time.Second)
-	_, _, _ = e.ReceiveFrame(encode(3, p, 980, 0))
+	_, _, _ = receiveFrame(e, encode(3, p, 980, 0))
 	*now = now.Add(time.Second)
-	_, _, _ = e.ReceiveFrame(encode(3, p, 980, 1))
+	_, _, _ = receiveFrame(e, encode(3, p, 980, 1))
 	assertEmpty(t, m)
 	// A valid new ID advances the fixed window. IDs below the floor stay rejected.
-	if _, done, _ := e.ReceiveFrame(encode(WindowSize+10, nil, 980, 0)); !done {
+	if _, done, _ := receiveFrame(e, encode(WindowSize+10, nil, 980, 0)); !done {
 		t.Fatal("empty message not delivered")
 	}
-	if _, done, _ := e.ReceiveFrame(encode(4, nil, 980, 0)); done {
+	if _, done, _ := receiveFrame(e, encode(4, nil, 980, 0)); done {
 		t.Fatal("old ID accepted")
 	}
 	// Invalid geometry must never move the high watermark.
@@ -131,7 +131,7 @@ func TestReorderDuplicatesConflictsAndTerminalIDs(t *testing.T) {
 	bad = encode(1, nil, 980, 0)
 	binary.BigEndian.PutUint64(bad[4:12], ^uint64(0))
 	bad[3] = 1
-	_, _, _ = e.ReceiveFrame(bad)
+	_, _, _ = receiveFrame(e, bad)
 	if e.high != old {
 		t.Fatal("malformed frame advanced window")
 	}
@@ -172,7 +172,7 @@ func TestBudgetsEvictBoundedlyAndRelease(t *testing.T) {
 	for peer := 1; peer <= NodeRXMessages/FlowRXMessages; peer++ {
 		e := endpoint(t, m, peer)
 		for id := uint64(1); id <= FlowRXMessages; id++ {
-			_, _, err := e.ReceiveFrame(encode(id, partial, 980, 0))
+			_, _, err := receiveFrame(e, encode(id, partial, 980, 0))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -182,7 +182,7 @@ func TestBudgetsEvictBoundedlyAndRelease(t *testing.T) {
 		t.Fatal(m.Snapshot())
 	}
 	fresh := endpoint(t, m, 100)
-	_, _, err := fresh.ReceiveFrame(encode(1, partial, 980, 0))
+	_, _, err := receiveFrame(fresh, encode(1, partial, 980, 0))
 	if err != nil || len(fresh.assemblies) != 1 || m.Snapshot().EvictedMessages != 1 {
 		t.Fatalf("fresh peer starved: %+v %v", m.Snapshot(), err)
 	}
@@ -310,7 +310,7 @@ func TestSchedulerAbsoluteExpiryRevocationAndPathReduction(t *testing.T) {
 	}
 	assertEmpty(t, m)
 	// A local path shrink must not narrow the independent receive capacity.
-	if _, done, err := e.ReceiveFrame(encode(1, make([]byte, 980), 980, 0)); err != nil || !done {
+	if _, done, err := receiveFrame(e, encode(1, make([]byte, 980), 980, 0)); err != nil || !done {
 		t.Fatal("TX reduction affected RX", err)
 	}
 	e = endpoint(t, m, 4)
@@ -459,7 +459,7 @@ func TestUnadmittedMessagesRestrideAfterAnotherMessageShrinksPath(t *testing.T) 
 		if len(frame) > 500 {
 			return &ChunkTooLarge{Maximum: 500}
 		}
-		_, complete, err := rx.ReceiveFrame(frame)
+		_, complete, err := receiveFrame(rx, frame)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -479,5 +479,108 @@ func TestUnadmittedMessagesRestrideAfterAnotherMessageShrinksPath(t *testing.T) 
 	if delivered != 2 || m.Snapshot().SizeDrops != 0 || e.maximum != 500 {
 		t.Fatalf("unadmitted message dropped after capacity change: delivered=%d %+v", delivered, m.Snapshot())
 	}
+	assertEmpty(t, m)
+}
+
+// Tests consume messages immediately; production keeps ownership through delivery.
+func receiveFrame(e *Endpoint, frame []byte) ([]byte, bool, error) {
+	message, err := e.ReceiveFrame(frame)
+	if message == nil {
+		return nil, false, err
+	}
+	defer message.Release()
+	return message.Payload, true, err
+}
+
+func TestCompletedMessagesStayChargedUntilDeliveryOrDiscard(t *testing.T) {
+	m, _ := manualManager(t)
+	e := endpoint(t, m, 1)
+	payload := bytes.Repeat([]byte{0x71}, MaxMessageSize)
+	var message *Message
+	for i := 0; i < (len(payload)+979)/980; i++ {
+		got, err := e.ReceiveFrame(encode(1, payload, 980, i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			message = got
+		}
+	}
+	if message == nil || !bytes.Equal(message.Payload, payload) {
+		t.Fatal("message incomplete")
+	}
+	if s := m.Snapshot(); s.RXBytes != MaxMessageSize || s.RXMessages != 1 {
+		t.Fatalf("completed payload escaped RX accounting: %+v", s)
+	}
+	entered, finish, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		defer message.Release()
+		done <- e.Deliver(func() error { close(entered); <-finish; return nil })
+	}()
+	<-entered
+	if s := m.Snapshot(); s.RXBytes != MaxMessageSize || s.RXMessages != 1 {
+		t.Fatalf("held delivery escaped RX accounting: %+v", s)
+	}
+	close(finish)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// Join the release, which follows delivery and may race the channel send.
+	message.Release()
+	assertEmpty(t, m)
+	pending, err := e.RetainReceived(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Close()
+	called := false
+	if err := e.Deliver(func() error { called = true; return nil }); !errors.Is(err, ErrClosed) || called {
+		t.Fatal("canceled completed message delivered")
+	}
+	pending.Release()
+	pending.Release()
+	assertEmpty(t, m)
+}
+
+func TestConcurrentCompletedReceivesCannotEscapeFlowBudget(t *testing.T) {
+	m, _ := manualManager(t)
+	e := endpoint(t, m, 1)
+	results := make(chan *Message, 16)
+	var workers sync.WaitGroup
+	for id := uint64(1); id <= 16; id++ {
+		workers.Add(1)
+		go func(id uint64) {
+			defer workers.Done()
+			message, err := e.ReceiveFrame(encode(id, []byte("complete"), 980, 0))
+			if err != nil {
+				t.Error(err)
+			}
+			results <- message
+		}(id)
+	}
+	workers.Wait()
+	close(results)
+	var held []*Message
+	for message := range results {
+		if message != nil {
+			held = append(held, message)
+		}
+	}
+	if len(held) != FlowRXMessages {
+		t.Fatalf("held %d complete messages, limit %d", len(held), FlowRXMessages)
+	}
+	if s := m.Snapshot(); s.RXMessages != FlowRXMessages || s.RXBytes != 256*FlowRXMessages || s.BudgetRejects != 12 {
+		t.Fatalf("concurrent ownership escaped limits: %+v", s)
+	}
+	for _, message := range held {
+		message.Release()
+	}
+	assertEmpty(t, m)
+	// A new ID progresses once a completed caller relinquishes its charge.
+	message, err := e.ReceiveFrame(encode(17, nil, 980, 0))
+	if err != nil || message == nil {
+		t.Fatalf("recovery after completed release: %v", err)
+	}
+	message.Release()
 	assertEmpty(t, m)
 }

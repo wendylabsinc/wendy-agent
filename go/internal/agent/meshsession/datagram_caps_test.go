@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func TestUDPVersionAndCapacityNegotiation(t *testing.T) {
 	if err := flow.Send(p); err != nil {
 		t.Fatal(err)
 	}
-	got, err := flow.Receive(ctx)
+	got, err := readUDPMessage(flow, ctx)
 	if err != nil || !bytes.Equal(got, p) {
 		t.Fatalf("negotiated echo %d: %v", len(got), err)
 	}
@@ -147,5 +148,111 @@ func TestUDPNewClientRejectsOldMissingCapabilityACK(t *testing.T) {
 	case <-done:
 	case <-ctx.Done():
 		t.Fatal("old-peer fixture did not retire")
+	}
+}
+
+// UDP capability negotiation must reject a TLS-authenticated QUIC peer that
+// omitted DATAGRAM support, before any local endpoint or delivery socket exists.
+func TestUDPRejectsPeerWithoutQUICDatagrams(t *testing.T) {
+	a, b := fixtureCredentials(t)
+	r := meshingress.NewRegistry()
+	port := udpLifecycleApp(t, r, "echo")
+	server, err := NewServer(b, testUDPAuthorization{r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	listener, err := quic.ListenAddr("127.0.0.1:0", server.TLSConfig(), quicConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept(ctx)
+		if err == nil {
+			server.serve(ctx, conn)
+		}
+	}()
+	cfg, err := a.PeerTLSWithTickets(b.Device, ALPN, "app-quic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := quicConfig()
+	config.EnableDatagrams = false
+	conn, err := quic.DialAddr(ctx, listener.Addr().String(), cfg, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseWithError(0, "done")
+	if stream, err := requestAppPort(ctx, conn, port, udpOpenMagic); !errors.Is(err, ErrUDPUnsupported) {
+		if stream != nil {
+			stream.CancelRead(0)
+			stream.Close()
+		}
+		t.Fatalf("peer without DATAGRAM capability accepted: %v", err)
+	}
+	if got := server.udpManager.Snapshot(); got.Flows != 0 || got.SocketBytes != 0 {
+		t.Fatalf("unsupported peer allocated resources: %+v", got)
+	}
+}
+
+func TestUDPClientRejectsServerWithoutQUICDatagrams(t *testing.T) {
+	a, b := fixtureCredentials(t)
+	server, err := NewServer(b, allowPort(func(uint16) bool { return false }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	config := quicConfig()
+	config.EnableDatagrams = false
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	remoteContexts := make(chan context.Context, 1)
+	transport := &quic.Transport{Conn: socket, ConnContext: func(ctx context.Context, _ *quic.ClientInfo) (context.Context, error) {
+		remoteContexts <- ctx
+		return ctx, nil
+	}}
+	defer transport.Close()
+	listener, err := transport.Listen(server.TLSConfig(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	// Observe the transport lifetime directly. The rejecting client can close
+	// before the server queues the handshake for application Accept.
+	flow, err := DialUDP(ctx, a, b.Device, netip.MustParseAddrPort(listener.Addr().String()), 7777)
+	if flow != nil {
+		flow.Close()
+	}
+	if !errors.Is(err, ErrUDPUnsupported) {
+		t.Fatalf("no-DATAGRAM server not rejected at capability gate: %v", err)
+	}
+	var remote context.Context
+	select {
+	case remote = <-remoteContexts:
+	case <-ctx.Done():
+		t.Fatal("server did not observe the QUIC connection")
+	}
+	select {
+	case <-remote.Done():
+		cause := context.Cause(remote)
+		var application *quic.ApplicationError
+		var transport *quic.TransportError
+		// Before 1-RTT keys are available QUIC carries an application close
+		// as the APPLICATION_ERROR transport code, without its app code.
+		applicationClose := errors.As(cause, &application) && application.Remote && application.ErrorCode == 1
+		earlyClose := errors.As(cause, &transport) && transport.Remote && transport.ErrorCode == quic.ApplicationErrorErrorCode
+		if !applicationClose && !earlyClose {
+			t.Fatalf("unexpected connection retirement: %v", cause)
+		}
+	case <-ctx.Done():
+		t.Fatal("unsupported connection not retired")
 	}
 }

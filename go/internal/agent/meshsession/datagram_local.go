@@ -22,7 +22,7 @@ type LocalDatagramFlow struct {
 	port        uint16
 	token       uint64
 	endpoint    *udpmessage.Endpoint
-	readMu      sync.Mutex
+	readMu      udpReceiveLock
 	once        sync.Once
 	ownsManager bool
 }
@@ -140,9 +140,11 @@ func localUDPError(err error) error {
 	}
 	return err
 }
-func (f *LocalDatagramFlow) Receive(ctx context.Context) ([]byte, error) {
-	f.readMu.Lock()
-	defer f.readMu.Unlock()
+func (f *LocalDatagramFlow) Receive(ctx context.Context) (*udpmessage.Message, error) {
+	if err := f.readMu.lock(ctx, f.endpoint.Done()); err != nil {
+		return nil, localUDPError(err)
+	}
+	defer f.readMu.unlock()
 	buf := make([]byte, MaxUDPMessageSize+1)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -171,9 +173,14 @@ func (f *LocalDatagramFlow) Receive(ctx context.Context) ([]byte, error) {
 		if err := f.endpoint.WithGuard(func() error { return nil }); err != nil {
 			return nil, localUDPError(err)
 		}
-		return buf[:n], nil
+		message, err := f.endpoint.RetainReceived(buf[:n])
+		if errors.Is(err, udpmessage.ErrCapacity) {
+			continue
+		}
+		return message, localUDPError(err)
 	}
 }
+
 func (f *LocalDatagramFlow) Close() error {
 	if f == nil {
 		return nil

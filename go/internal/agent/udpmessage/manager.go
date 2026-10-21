@@ -179,6 +179,7 @@ type Endpoint struct {
 	nextID, high   uint64
 	states         [WindowSize]uint8
 	assemblies     map[uint64]*assembly
+	completed      map[*Message]struct{}
 	rx, tx         usage
 	done           chan struct{}
 	retired        chan struct{}
@@ -202,7 +203,7 @@ func (m *Manager) Open(peer meshid.Device, guard Guard) (*Endpoint, error) {
 		m.peers[peer] = p
 		m.order = append(m.order, p)
 	}
-	e := &Endpoint{manager: m, peer: p, guard: guard, maximum: MaxChunkSize, receiveMaximum: MaxChunkSize, nextID: 1, assemblies: make(map[uint64]*assembly), done: make(chan struct{}), retired: make(chan struct{})}
+	e := &Endpoint{manager: m, peer: p, guard: guard, maximum: MaxChunkSize, receiveMaximum: MaxChunkSize, nextID: 1, assemblies: make(map[uint64]*assembly), completed: make(map[*Message]struct{}), done: make(chan struct{}), retired: make(chan struct{})}
 	p.flows = append(p.flows, e)
 	m.stats.Flows++
 	m.stats.FlowHighWater = max(m.stats.FlowHighWater, m.stats.Flows)
@@ -327,7 +328,7 @@ func (e *Endpoint) Close() {
 	m := e.manager
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.stats.CanceledMessages += uint64(len(e.queue) + len(e.assemblies))
+	m.stats.CanceledMessages += uint64(len(e.queue) + len(e.assemblies) + len(e.completed))
 	for _, msg := range e.queue {
 		m.releaseLocked(msg.reservation)
 	}
@@ -336,6 +337,10 @@ func (e *Endpoint) Close() {
 		m.releaseLocked(a.reservation)
 	}
 	clear(e.assemblies)
+	for msg := range e.completed {
+		m.releaseLocked(msg.reservation)
+	}
+	clear(e.completed)
 	p := e.peer
 	for i, item := range p.flows {
 		if item == e {
@@ -533,9 +538,51 @@ func (e *Endpoint) evictLocked() bool {
 	return true
 }
 
-// ReceiveFrame never returns a partial message. The caller rechecks its local
-// delivery token after completion; the guard also bounds receive allocation.
-func (e *Endpoint) ReceiveFrame(frame []byte) (payload []byte, complete bool, err error) {
+// Message retains the RX reservation through a final local delivery. Release
+// must follow every successful owned receive, including failed delivery.
+// Completed messages cannot be evicted to admit more incomplete traffic.
+type Message struct {
+	Payload     []byte
+	reservation *reservation
+}
+
+func (msg *Message) Release() {
+	if msg == nil || msg.reservation == nil {
+		return
+	}
+	r := msg.reservation
+	m := r.endpoint.manager
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(r.endpoint.completed, msg)
+	m.releaseLocked(r)
+}
+
+// RetainReceived reserves and copies one complete local read before delivery.
+// The full-size socket read buffer has its separate bounded scratch allowance.
+func (e *Endpoint) RetainReceived(payload []byte) (*Message, error) {
+	if len(payload) > MaxMessageSize {
+		return nil, ErrMalformed
+	}
+	m := e.manager
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e.closed.Load() {
+		return nil, ErrClosed
+	}
+	r, err := m.reserveLocked(e, len(payload), false)
+	if err != nil {
+		m.stats.BudgetRejects++
+		return nil, err
+	}
+	msg := &Message{Payload: append([]byte(nil), payload...), reservation: r}
+	e.completed[msg] = struct{}{}
+	return msg, nil
+}
+
+// ReceiveFrame never returns partial data and retains completed bytes until
+// Release or endpoint retirement. The caller must recheck final delivery tokens.
+func (e *Endpoint) ReceiveFrame(frame []byte) (message *Message, err error) {
 	m := e.manager
 	m.mu.Lock()
 	maximum, guard := e.receiveMaximum, e.guard
@@ -545,7 +592,7 @@ func (e *Endpoint) ReceiveFrame(frame []byte) (payload []byte, complete bool, er
 		m.mu.Lock()
 		m.stats.MalformedChunks++
 		m.mu.Unlock()
-		return nil, false, nil
+		return nil, nil
 	}
 	err = guard(func() error {
 		m.mu.Lock()
@@ -611,11 +658,10 @@ func (e *Endpoint) ReceiveFrame(frame []byte) (payload []byte, complete bool, er
 		a.present[f.index] = true
 		a.received++
 		if a.received == a.count {
-			payload = a.data
-			complete = true
+			message = &Message{Payload: a.data, reservation: a.reservation}
+			e.completed[message] = struct{}{}
 			delete(e.assemblies, f.id)
 			e.states[f.id%WindowSize] = 2
-			m.releaseLocked(a.reservation)
 			m.stats.ReassembledMessages++
 		}
 		return nil
@@ -623,7 +669,7 @@ func (e *Endpoint) ReceiveFrame(frame []byte) (payload []byte, complete bool, er
 	if err != nil {
 		m.RecordDenied()
 	}
-	return payload, complete, err
+	return message, err
 }
 
 // RecordDenied counts a rejected authorization without attacker-controlled labels.
