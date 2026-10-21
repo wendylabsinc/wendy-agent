@@ -55,6 +55,8 @@ type mcpServer struct {
 	proxyDiag            []proxyDiagEntry
 	containerMCP         *containerMCPManager
 	runCommandFn         func(context.Context, []string, commandTarget, int) (string, bool, error)
+	runLogs              map[string]runLogRecord
+	runLogOrder          []string
 	updateAgentCommandFn func(context.Context, []string, commandTarget, int) (string, bool, error)
 	agentUpdateMu        sync.Mutex
 	installation         onboarding.Backend
@@ -300,6 +302,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 	s.registerAuthTools(srv)
 	s.registerGuideResource(srv)
 	s.registerDiagnosticsResource(srv)
+	s.registerRunLogResource(srv)
 	s.registerPrompts(srv)
 	s.registerDeviceTools(srv)
 	s.registerContainerTools(srv)
