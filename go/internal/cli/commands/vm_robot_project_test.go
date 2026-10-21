@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -127,6 +128,21 @@ func TestSceneRequestDoesNotFollowRedirect(t *testing.T) {
 	port := server.Listener.Addr().(*net.TCPAddr).Port
 	if _, err := sceneRequest(context.Background(), port, nil); err == nil || !strings.Contains(err.Error(), "307") {
 		t.Fatalf("redirect accepted: %v", err)
+	}
+}
+
+func TestSceneRequestReportsServerErrorText(t *testing.T) {
+	const reason = "project rejected; previous scene retained: crate: sizes must be positive"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": reason})
+	}))
+	defer server.Close()
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	_, err := sceneRequest(context.Background(), port, map[string]any{})
+	var rejected *sceneProjectHTTPError
+	if !errors.As(err, &rejected) || rejected.Code != http.StatusBadRequest || rejected.Message != reason {
+		t.Fatalf("rejection did not carry the server's reason: %v", err)
 	}
 }
 
@@ -301,5 +317,80 @@ func TestSceneWatchRetriesDisconnectWithoutResettingAcknowledgedContentTwice(t *
 				t.Fatalf("attempts=%d commits=%d; expected retry and exactly one commit", attempts, commits)
 			}
 		})
+	}
+}
+
+func TestSceneWatchReappliesProjectAfterRuntimeRestartBetweenHeartbeats(t *testing.T) {
+	folder := sceneFixture(t, "")
+	var mu sync.Mutex
+	var id, revision string
+	commits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost {
+			var body struct {
+				ID    string            `json:"project_id"`
+				Base  string            `json:"base_revision"`
+				Files map[string][]byte `json:"files"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body.Base != revision {
+				http.Error(w, `{"error": "project revision changed"}`, http.StatusBadRequest)
+				return
+			}
+			if body.Files != nil {
+				id = body.ID
+				revision = fmt.Sprintf("revision-%d", commits)
+				commits++
+			}
+		}
+		_ = json.NewEncoder(w).Encode(sceneProjectStatus{ID: id, Revision: revision})
+	}))
+	defer server.Close()
+	old := resolveSceneProjectEndpoint
+	defer func() { resolveSceneProjectEndpoint = old }()
+	resolveSceneProjectEndpoint = func(context.Context, sceneLink) (int, vm.RobotProfile, error) {
+		return server.Listener.Addr().(*net.TCPAddr).Port, vm.RobotProfile{SourceDigest: "pin"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := &cobra.Command{}
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	done := make(chan error, 1)
+	go func() {
+		done <- watchScene(ctx, cmd, folder, sceneLink{VM: "test", Profile: "go2", ID: strings.Repeat("a", 32)})
+	}()
+	waitFor := func(count int) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			n := commits
+			mu.Unlock()
+			if n >= count {
+				return
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("watch stopped instead of reapplying the project: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+		t.Fatalf("watch did not commit %d snapshots", count)
+	}
+	waitFor(1)
+	// The runtime restarted between heartbeats: no request failed, but it now
+	// serves the managed default world without a project.
+	mu.Lock()
+	id, revision = "", ""
+	mu.Unlock()
+	waitFor(2)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -219,6 +219,8 @@ func sceneEndpoint(ctx context.Context, link sceneLink) (int, vm.RobotProfile, e
 	return port, profile, nil
 }
 
+var errSceneVMLinkedElsewhere = errors.New("VM already has another linked project; use its folder or restart the managed runtime to relink")
+
 type sceneProjectHTTPError struct {
 	Code    int
 	Message string
@@ -257,7 +259,14 @@ func sceneRequest(ctx context.Context, port int, body any) (sceneProjectStatus, 
 		return status, err
 	}
 	if resp.StatusCode != 200 {
-		return status, &sceneProjectHTTPError{Code: resp.StatusCode, Message: strings.TrimSpace(string(payload))}
+		message := strings.TrimSpace(string(payload))
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(payload, &failure) == nil && failure.Error != "" {
+			message = failure.Error
+		}
+		return status, &sceneProjectHTTPError{Code: resp.StatusCode, Message: message}
 	}
 	if err := json.Unmarshal(payload, &status); err != nil {
 		return status, err
@@ -304,7 +313,16 @@ func runVMRobotProject(cmd *cobra.Command, action, folder string) error {
 		if err != nil {
 			return err
 		}
+		live, err := sceneRequest(ctx, port, nil)
+		if err != nil {
+			return err
+		}
 		if action == "init" {
+			// A new folder gets a new identity; refuse before creating it so a
+			// retry after restarting the runtime is not blocked by the folder.
+			if live.ID != "" {
+				return errSceneVMLinkedElsewhere
+			}
 			if err := os.Mkdir(folder, 0755); err != nil {
 				return fmt.Errorf("init requires a new folder: %w", err)
 			}
@@ -339,7 +357,7 @@ func runVMRobotProject(cmd *cobra.Command, action, folder string) error {
 		// Repeated link to the same VM keeps the stable project identity.
 		if old, err := readSceneLink(folder); err == nil {
 			if old.VM != name || old.Profile != profile.Kind {
-				return fmt.Errorf("folder is already linked to VM %s", old.VM)
+				return fmt.Errorf("folder is already linked to VM %s; remove %s to link it elsewhere", old.VM, sceneLinkFile)
 			}
 			link = old
 		} else {
@@ -352,12 +370,8 @@ func runVMRobotProject(cmd *cobra.Command, action, folder string) error {
 			}
 			link.ID = hex.EncodeToString(id)
 		}
-		live, err := sceneRequest(ctx, port, nil)
-		if err != nil {
-			return err
-		}
 		if live.ID != "" && live.ID != link.ID {
-			return fmt.Errorf("VM already has another linked project; use its folder or restart the managed runtime to relink")
+			return errSceneVMLinkedElsewhere
 		}
 		data, _ := json.MarshalIndent(link, "", "  ")
 		if _, err := root.Lstat(sceneLinkFile); os.IsNotExist(err) {
@@ -480,6 +494,11 @@ func watchScene(ctx context.Context, cmd *cobra.Command, folder string, link sce
 		}
 		if live.ID != "" && live.ID != link.ID {
 			return fmt.Errorf("VM is now linked to another project; watcher stopped")
+		}
+		if connected && base != "" && live.ID == "" {
+			// A runtime restarted between heartbeats serves the default world
+			// without a project. Reapply this folder as after a lost connection.
+			connected = false
 		}
 		if connected && live.Revision != base && live.Revision == snapshot.Revision && localErr == nil {
 			base = live.Revision
