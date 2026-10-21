@@ -1166,7 +1166,7 @@ func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID 
 	if deviceID == "" {
 		return nil, fmt.Errorf("missing Wendy Lite device identity")
 	}
-	deviceID = "lite-" + strings.TrimPrefix(deviceID, "lite-")
+	deviceID = enrollmentDeviceID(deviceID)
 	opts.ExpectedIdentity = &certs.WendyIdentity{
 		EntityType: certs.EntityAsset, EntityID: deviceID, TenantUUID: identity.TenantUUID,
 		Principal: "spiffe://wendy.sh/tenant/" + identity.TenantUUID + "/device/" + deviceID,
