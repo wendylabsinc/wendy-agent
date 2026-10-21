@@ -4,7 +4,6 @@ package nanprovider
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -115,7 +114,13 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 		}
 	}
 	presence := func(n uint16) string {
-		return hex.EncodeToString([]byte("wendy-nan:1:" + testDevice(t, n).UUID().String()))
+		t.Helper()
+		claim := presenceFixture(t, testTenant(t).String(), testDevice(t, n).UUID().String())
+		ssi, err := encodePresence(claim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ssi
 	}
 	for i, bad := range invalidNANTargets {
 		if strings.ContainsAny(bad, " \t\n") {
