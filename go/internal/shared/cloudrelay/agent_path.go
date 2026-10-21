@@ -128,7 +128,22 @@ func (a *Agent) watchPresencePath(ctx context.Context, p *peer.Peer, endpoint st
 			continue
 		}
 		if reachable(ctx, endpoint) {
-			return errPresencePathMoved
+			// DNS/TLS can take seconds. The probe may even succeed through
+			// the original route if it was restored in the meantime. Require
+			// the same candidate after the probe before cancelling presence
+			// and its active sessions; any replacement must stabilize anew.
+			if presenceSourceRemoved(p, a.sourceAddresses) {
+				return errPresenceSourceRemoved
+			}
+			source, err := preferred(remote)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err == nil && source.Equal(candidate) {
+				return errPresencePathMoved
+			}
+			candidate, stable, wait, penalty = nil, 0, 0, 0
+			continue
 		}
 		penalty = min(max(2*penalty, 1), 30)
 		wait = penalty

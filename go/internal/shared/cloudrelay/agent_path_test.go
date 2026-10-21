@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,6 +71,81 @@ func TestPresencePathRequiresStableReachableSource(t *testing.T) {
 	}
 	if probes != 2 {
 		t.Fatalf("probes = %d", probes)
+	}
+}
+
+func TestPresencePathRechecksSourceAfterProbe(t *testing.T) {
+	for _, restored := range []bool{true, false} {
+		t.Run(map[bool]string{true: "original route restored", false: "different route selected"}[restored], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			local := net.ParseIP("192.0.2.1")
+			source := net.ParseIP("192.0.2.2")
+			p := &peer.Peer{LocalAddr: &net.TCPAddr{IP: local}, Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.100"), Port: 443}}
+			checks, probes := 0, 0
+			a := &Agent{sourceCheckInterval: time.Millisecond,
+				sourceAddresses: func() ([]net.Addr, error) { return []net.Addr{&net.IPAddr{IP: local}}, nil },
+				preferredSource: func(*net.TCPAddr) (net.IP, error) {
+					checks++
+					if restored && checks >= 4 {
+						cancel()
+					}
+					return source, nil
+				},
+				pathReachable: func(context.Context, string) bool {
+					probes++
+					if probes == 1 {
+						// The broker probe finishes after routing has changed again.
+						source = net.ParseIP("192.0.2.3")
+						if restored {
+							source = local
+						}
+					} else if checks < 5 {
+						t.Fatal("replacement candidate did not stabilize before its probe")
+					}
+					return true
+				},
+			}
+			err := a.watchPresencePath(ctx, p, "unused")
+			if restored {
+				if !errors.Is(err, context.Canceled) || probes != 1 {
+					t.Fatalf("restored route disconnected presence: err=%v probes=%d", err, probes)
+				}
+			} else if !errors.Is(err, errPresencePathMoved) || probes != 2 {
+				t.Fatalf("replacement route was not independently probed: err=%v probes=%d", err, probes)
+			}
+		})
+	}
+}
+
+func TestPresencePathProbeBackoffDoesNotDelaySourceRemoval(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	local := net.ParseIP("192.0.2.1")
+	p := &peer.Peer{LocalAddr: &net.TCPAddr{IP: local}, Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.100"), Port: 443}}
+	checks := 0
+	var probedAt []int
+	a := &Agent{sourceCheckInterval: time.Millisecond,
+		sourceAddresses: func() ([]net.Addr, error) {
+			if checks >= 69 {
+				return nil, nil
+			}
+			return []net.Addr{&net.IPAddr{IP: local}}, nil
+		},
+		preferredSource: func(*net.TCPAddr) (net.IP, error) {
+			checks++
+			return net.ParseIP("192.0.2.2"), nil
+		},
+		pathReachable: func(context.Context, string) bool {
+			probedAt = append(probedAt, checks)
+			return false
+		},
+	}
+	if err := a.watchPresencePath(ctx, p, "unused"); !errors.Is(err, errPresenceSourceRemoved) {
+		t.Fatalf("removed source survived probe backoff: %v", err)
+	}
+	if !slices.Equal(probedAt, []int{2, 4, 7, 12, 21, 38, 69}) {
+		t.Fatalf("unexpected bounded probe schedule: %v", probedAt)
 	}
 }
 
