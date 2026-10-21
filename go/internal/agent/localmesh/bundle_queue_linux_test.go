@@ -5,6 +5,7 @@ package localmesh
 import (
 	"crypto/ecdsa"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -193,6 +194,30 @@ func TestPendingBundleDropsAndWriteErrorsReleaseToken(t *testing.T) {
 				t.Fatal("released bundle cannot be requested again")
 			}
 		})
+	}
+}
+
+func TestPeerControlKeepsRequestedCertificateBytesIndependent(t *testing.T) {
+	data := []byte("public certificate chunk")
+	hash := certificateHash(data)
+	messages := []ControlMessage{
+		{Kind: "certificate", Certificate: &CertificateMessage{Request: &CertificateRequest{Hash: hash}}},
+		{Kind: "certificate", Certificate: &CertificateMessage{Chunk: &CertificateChunk{Hash: hash, Total: len(data), Data: data}}},
+	}
+	link := &bundleCaptureLink{teardownTestLink: &teardownTestLink{done: make(chan struct{})}}
+	p := &nodePeer{link: link}
+	p.pendingBundles.Store(hash, struct{}{})
+	n := &Node{} // Public content-addressed chunks do not require current trust.
+	for _, message := range messages {
+		if err := n.writePeerControl(p, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(link.written, messages) {
+		t.Fatal("certificate request or chunk changed at the bundle export guard")
+	}
+	if _, pending := p.pendingBundles.Load(hash); !pending {
+		t.Fatal("public certificate traffic removed an unrelated bundle token")
 	}
 }
 
