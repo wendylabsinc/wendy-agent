@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	quic "github.com/quic-go/quic-go"
 	"io"
@@ -183,4 +184,53 @@ func TestLANUDPRecoversLossAndKeepsSharedTransport(t *testing.T) {
 		t.Fatal("loss fixture dropped no UDP packets")
 	}
 	t.Logf("real UDP sends=%d dropped=%d", lossy.sent.Load(), lossy.dropped.Load())
+}
+
+func TestLANUDPListenerRejectsTrustedNonDevicePrincipals(t *testing.T) {
+	a, b := testCredentials(t)
+	server, err := lanServerTLS(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, principal := range []string{
+		"spiffe://wendy.sh/tenant/" + testTenantUUID + "/operator/auth0|lan-review-operator",
+		"spiffe://wendy.sh/tenant/" + testTenantUUID + "/service/user-lan-review",
+		"spiffe://wendy.sh/tenant/" + testTenantUUID + "/service/lan-review",
+	} {
+		t.Run(principal, func(t *testing.T) {
+			certificate, key := testIssue(t, principal)
+			identity, err := tls.X509KeyPair([]byte(certificate+testPKI().chainPEM), []byte(key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var chain []*x509.Certificate
+			for _, raw := range identity.Certificate {
+				cert, err := x509.ParseCertificate(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				chain = append(chain, cert)
+			}
+			// Establish this is a current client certificate from the same
+			// trusted issuer; rejection must be about its non-device principal.
+			roots := x509.NewCertPool()
+			roots.AddCert(testPKI().certificate)
+			if _, err := chain[0].Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+				t.Fatal(err)
+			}
+			client, err := a.PeerTLS(b.Device)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.Certificates = []tls.Certificate{identity}
+			if result := rootQUICRoundtrip(client, server); result.err == nil {
+				t.Fatal("trusted non-device certificate authenticated on UDP listener")
+			}
+			for _, resumed := range []bool{false, true} {
+				if err := server.VerifyConnection(tls.ConnectionState{DidResume: resumed, PeerCertificates: chain}); err == nil {
+					t.Fatalf("non-device principal accepted with resumed=%v", resumed)
+				}
+			}
+		})
+	}
 }

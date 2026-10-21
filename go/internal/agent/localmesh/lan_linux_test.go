@@ -30,6 +30,7 @@ type lanProcessConfig struct {
 	Identity    TCPIdentity
 	Dir         string
 	Dual        bool
+	Concurrent  int
 	DisableFile string
 }
 
@@ -100,6 +101,10 @@ func TestLANPeerProcess(t *testing.T) {
 	if lanIdentityDevice(t, cfg.Identity) == lanDevice(t, 460) {
 		ip = net.IPv4(10, 201, 0, 2)
 	}
+	payload := "authenticated LAN mesh"
+	if cfg.Concurrent > 0 {
+		payload = strings.Repeat(payload, 4096)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	meshDone := make(chan error, 1)
@@ -163,16 +168,18 @@ func TestLANPeerProcess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		seen := make(chan struct{}, 1)
+		seen := make(chan struct{}, max(1, cfg.Concurrent))
 		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, "authenticated LAN mesh")
+			if _, err := fmt.Fprint(w, payload); err != nil {
+				return
+			}
 			select {
 			case seen <- struct{}{}:
 			default:
 			}
 		})}
 		go server.Serve(listener)
-		requests := 1
+		requests := max(1, cfg.Concurrent)
 		if cfg.Dual {
 			requests = 2
 		}
@@ -196,31 +203,49 @@ func TestLANPeerProcess(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 		}
 	} else {
-		request := func() {
-			t.Helper()
+		request := func() error {
 			deadline := time.Now().Add(15 * time.Second)
 			for time.Now().Before(deadline) {
-				client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
+				timeout := time.Second
+				if cfg.Concurrent > 0 {
+					timeout = 3 * time.Second
+				}
+				client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: timeout}
 				response, err := client.Get("http://" + net.JoinHostPort(lanDevice(t, 460).MeshAddress().String(), "18080") + "/")
 				if err == nil {
 					body, readErr := io.ReadAll(response.Body)
 					response.Body.Close()
-					if readErr == nil && response.StatusCode == 200 && string(body) == "authenticated LAN mesh" {
-						return
+					if readErr == nil && response.StatusCode == 200 && string(body) == payload {
+						return nil
 					}
 				}
 				time.Sleep(150 * time.Millisecond)
 			}
-			t.Fatal("LAN mDNS/QUIC link did not route HTTP")
+			return errors.New("LAN mDNS/QUIC link did not route HTTP")
 		}
 		waitCost(EthernetLinkCost)
-		request()
+		if cfg.Concurrent > 0 {
+			results := make(chan error, cfg.Concurrent)
+			for range cfg.Concurrent {
+				go func() { results <- request() }()
+			}
+			for range cfg.Concurrent {
+				if err := <-results; err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitCost(EthernetLinkCost) // Routing and authenticated link survive the loss burst.
+		} else if err := request(); err != nil {
+			t.Fatal(err)
+		}
 		if cfg.Dual {
 			if err := os.WriteFile(cfg.DisableFile, []byte("off"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			waitCost(WiFiLinkCost)
-			request()
+			if err := request(); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := os.WriteFile(cfg.DisableFile+".client-done", []byte("done"), 0600); err != nil {
 			t.Fatal(err)
@@ -240,7 +265,15 @@ func TestLANEthernetPreferenceAndWiFiFailover(t *testing.T) {
 	testLANPairNamespaces(t, true)
 }
 
+func TestLANConcurrentRoutedFlowsUnderUDPLoss(t *testing.T) {
+	testLANPairNamespacesWithLoss(t, false, true)
+}
+
 func testLANPairNamespaces(t *testing.T, dual bool) {
+	testLANPairNamespacesWithLoss(t, dual, false)
+}
+
+func testLANPairNamespacesWithLoss(t *testing.T, dual, loss bool) {
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("requires disposable privileged container")
 	}
@@ -278,9 +311,27 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 			t.Fatalf("block simulator TCP: %v %s", err, out)
 		}
 	}
+	if loss {
+		for _, name := range names {
+			// Deterministic underlay loss applies to real QUIC, carrier
+			// DATAGRAMs and Babel traffic; TCP43023 remains rejected.
+			out, err := exec.Command("ip", "netns", "exec", name, "tc", "qdisc", "add", "dev", "wllan0", "root", "netem", "delay", "2ms", "limit", "1000").CombinedOutput()
+			if err != nil {
+				t.Fatalf("configure underlay delay: %v %s", err, out)
+			}
+			out, err = exec.Command("ip", "netns", "exec", name, "iptables", "-I", "INPUT", "-p", "udp", "--sport", strconv.Itoa(LANPort), "--dport", strconv.Itoa(LANPort), "-m", "statistic", "--mode", "nth", "--every", "31", "--packet", "0", "-m", "comment", "--comment", "wendy-lan-udp-loss-test", "-j", "DROP").CombinedOutput()
+			if err != nil {
+				t.Fatalf("configure deterministic UDP loss: %v %s", err, out)
+			}
+		}
+	}
 	dir := t.TempDir()
 	disableFile := filepath.Join(dir, "ethernet-disabled")
 	configs := map[meshid.Device]string{}
+	concurrent := 0
+	if loss {
+		concurrent = 4
+	}
 	testCredentialsWithPEM(t, func(asset meshid.Device, cert, chain, key string) {
 		configDir := filepath.Join(dir, fmt.Sprint(asset))
 		if err := os.MkdirAll(configDir, 0700); err != nil {
@@ -289,7 +340,7 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 		if err := os.WriteFile(filepath.Join(configDir, tcpConfigName), []byte("{\"ethernet\":true}"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		processData, _ := json.Marshal(lanProcessConfig{Identity: TCPIdentity{Name: "lan-test", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir, Dual: dual, DisableFile: disableFile})
+		processData, _ := json.Marshal(lanProcessConfig{Identity: TCPIdentity{Name: "lan-test", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}, Dir: configDir, Dual: dual, DisableFile: disableFile, Concurrent: concurrent})
 		path := filepath.Join(dir, fmt.Sprintf("%s.json", asset.UUID()))
 		if err := os.WriteFile(path, processData, 0600); err != nil {
 			t.Fatal(err)
@@ -318,6 +369,27 @@ func testLANPairNamespaces(t *testing.T, dual bool) {
 	}
 	if !strings.Contains(string(out), "PASS") {
 		t.Fatal(string(out))
+	}
+	if loss {
+		for _, name := range names {
+			stats, err := exec.Command("ip", "netns", "exec", name, "iptables", "-L", "INPUT", "-v", "-n", "-x").CombinedOutput()
+			if err != nil {
+				t.Fatalf("inspect loss counters: %v %s", err, stats)
+			}
+			dropped := 0
+			for _, line := range strings.Split(string(stats), "\n") {
+				if strings.Contains(line, "wendy-lan-udp-loss-test") {
+					fields := strings.Fields(line)
+					if len(fields) > 0 {
+						dropped, _ = strconv.Atoi(fields[0])
+					}
+				}
+			}
+			if dropped == 0 {
+				t.Fatalf("loss fixture dropped no physical packets: %s", stats)
+			}
+			t.Logf("%s underlay: %s", name, stats)
+		}
 	}
 }
 
