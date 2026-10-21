@@ -157,10 +157,10 @@ For Raspberry Pi 5, 4, or 3:
 
 <YouTubeVideo id="MjJ-LgXN0Pg" title="Getting started with DGX Spark" />
 
-Use any Linux machine, such as Ubuntu 22.04 or later on ARM64 or x86-64. The video uses an NVIDIA DGX Spark. Run this on that machine:
+Use any Linux machine, such as Ubuntu 22.04 or later on ARM64 or x86-64. The video uses an NVIDIA DGX Spark. Run this on that machine to install the agent with network access, so your development machine can reach it:
 
 ```bash
-curl -fsSL https://install.wendy.dev/agent.sh | bash
+curl -fsSL https://install.wendy.dev/agent.sh | bash -s -- --network-access network
 ```
 
 Keep it on the same network as your development machine, and confirm that `wendy discover` lists it. [Full guide](/docs/installation/linux)

@@ -45,8 +45,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/networkaccess"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
+	"github.com/wendylabsinc/wendy/go/internal/agent/robotarm"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
@@ -147,6 +149,12 @@ func main() {
 	if envPath := os.Getenv("WENDY_CONFIG_PATH"); envPath != "" {
 		configPath = envPath
 	}
+	accessPolicy, err := networkaccess.Load(configPath)
+	if err != nil {
+		logger.Fatal("Invalid network access configuration", zap.Error(err))
+	}
+	logger.Info("Agent network access", zap.Bool("allowed", accessPolicy.AllowsNetwork))
+	configpartition.ApplyDiscoveryAccess(logger, accessPolicy)
 
 	configpartition.Apply(logger, configPath)
 
@@ -380,7 +388,9 @@ func main() {
 	}
 
 	go timesyncMgr.RunDirect(ctx)
-	go timesyncMgr.RunMulticast(ctx)
+	if accessPolicy.AllowsNetwork {
+		go timesyncMgr.RunMulticast(ctx)
+	}
 
 	startROS2BatteryMonitor(ctx, logger, configPath, discoveryPool)
 
@@ -433,6 +443,7 @@ func main() {
 		}
 		return certPEM, chainPEM, keyPEM
 	}
+	robotArmSvc := services.NewRobotArmService(robotarm.NewStore("/var/lib/wendy/robot-arm-bindings.json"), robotarm.Discover)
 	sensorStore := mcusource.NewPairingStore("/var/lib/wendy/sensor-pairings.json")
 	if err := sensorStore.Load(); err != nil {
 		logger.Warn("loading sensor pairing store failed", zap.Error(err))
@@ -523,9 +534,10 @@ func main() {
 			registrySrv = nil
 		}
 
-		registryAddr := "0.0.0.0:5000"
-		if addr := os.Getenv("WENDY_REGISTRY_ADDR"); addr != "" {
-			registryAddr = addr
+		registryAddr, err := accessPolicy.RegistryAddress(os.Getenv("WENDY_REGISTRY_ADDR"))
+		if err != nil {
+			logger.Error("Invalid registry address", zap.Error(err))
+			return
 		}
 
 		srv, err := registry.Start(ctx, containerdAddr, registryAddr, logger, tlsConfig)
@@ -641,6 +653,9 @@ func main() {
 	// ProvisioningInfo() is called inside the goroutine to avoid re-entering the
 	// provisioning mutex when called from the OnProvisioned callback.
 	startTunnelBroker := func() {
+		if !accessPolicy.AllowsNetwork {
+			return
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -757,6 +772,7 @@ func main() {
 		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		agentpbv2.RegisterWendySensorPairingServiceServer(srv, sensorSvc)
 		agentpbv2.RegisterWendyCalibratedFrameServiceServer(srv, calibratedFrameSvc)
+		agentpbv2.RegisterWendyRobotArmServiceServer(srv, robotArmSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
@@ -853,7 +869,7 @@ func main() {
 		}
 		mtlsPort := strconv.Itoa(portNum + 1)
 
-		lis, err := net.Listen("tcp", "[::]:"+mtlsPort)
+		lis, err := listenForAccess(accessPolicy, mtlsPort)
 		if err != nil {
 			logger.Error("Failed to listen on mTLS port", zap.String("port", mtlsPort), zap.Error(err))
 			return
@@ -873,6 +889,9 @@ func main() {
 
 	// Only called after provisioning so the cert is available.
 	startBLEPeripheral := func(certPEM, chainPEM, keyPEM string) {
+		if !accessPolicy.AllowsNetwork {
+			return
+		}
 		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, logger, certNotBeforeFloor(certPEM))
 		if err != nil {
 			logger.Error("Failed to build BLE TLS config", zap.Error(err))
@@ -909,6 +928,10 @@ func main() {
 	}()
 	meshDialer = services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
 	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
+	// Not scoped by accessPolicy: the nat REDIRECT rewrites container traffic
+	// to the bridge address, which a loopback listener never receives. The
+	// proxy only relays connections whose original destination is a mesh VIP,
+	// so a direct connection from another host is closed without effect.
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
 	}
@@ -988,7 +1011,7 @@ func main() {
 		)
 		registerAllServices(agentServer)
 
-		agentLis, err := net.Listen("tcp", "[::]:"+agentPort)
+		agentLis, err := listenForAccess(accessPolicy, agentPort)
 		if err != nil {
 			logger.Fatal("Failed to listen on agent port", zap.String("port", agentPort), zap.Error(err))
 		}
@@ -1011,7 +1034,9 @@ func main() {
 
 	// Keep the USB gadget interface reachable at the well-known link-local
 	// address the CLI dials directly (no mDNS/DHCP needed over USB-C).
-	go usbgadget.EnsureWellKnownAddress(ctx, 30*time.Second, logger)
+	if accessPolicy.AllowsNetwork {
+		go usbgadget.EnsureWellKnownAddress(ctx, 30*time.Second, logger)
+	}
 
 	// Local control socket: the agent's full gRPC over a unix socket with NO
 	// mTLS. Access is gated solely by the admin entitlement (oci.applyAdmin
@@ -1240,30 +1265,40 @@ func main() {
 
 	<-ctx.Done()
 	logger.Info("Termination requested, shutting down")
+	// Never disarmed: returning from main ends the process, and it also covers
+	// the deferred cleanup that runs after shutdown.run.
+	armShutdownWatchdog(logger, shutdownDeadline, os.Exit)
 
-	cancel()
-	_ = meshProxy.Close()
+	shutdown := &agentShutdown{
+		logger: logger,
+		hostShuttingDown: func(ctx context.Context) bool {
+			return hostShuttingDown(ctx, systemctlOutput)
+		},
+		cancel: func() {
+			cancel()
+			_ = meshProxy.Close()
+		},
+		shutdownHTTP: otelHTTPReceiver.Shutdown,
+		background:   &wg,
+	}
+	if ctrdClient != nil {
+		shutdown.stopApps = func(ctx context.Context) (int, error) {
+			return ctrdClient.StopTasksForHostShutdown(ctx, agentcontainerd.HostShutdownGrace)
+		}
+	}
 	if agentServer != nil {
-		agentServer.GracefulStop()
+		shutdown.servers = append(shutdown.servers, namedGRPCServer{"agent", agentServer})
 	}
 	if localSocketServer != nil {
-		localSocketServer.GracefulStop()
+		shutdown.servers = append(shutdown.servers, namedGRPCServer{"local socket", localSocketServer})
 	}
-	otelServer.GracefulStop()
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := otelHTTPReceiver.Shutdown(shutdownCtx); err != nil {
-		logger.Error("OTEL HTTP server shutdown error", zap.Error(err))
-	}
-
+	shutdown.servers = append(shutdown.servers, namedGRPCServer{"OTEL", otelServer})
 	mtlsMu.Lock()
 	if mtlsServer != nil {
-		mtlsServer.GracefulStop()
+		shutdown.servers = append(shutdown.servers, namedGRPCServer{"mTLS", mtlsServer})
 	}
 	mtlsMu.Unlock()
-
-	wg.Wait()
+	shutdown.run()
 
 	logger.Info("wendy-agent stopped")
 }

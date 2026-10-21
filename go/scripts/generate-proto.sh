@@ -107,6 +107,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/timesync_service.proto"
     "wendy/agent/services/v2/build_service.proto"
     "wendy/agent/services/v2/calibrated_frame_service.proto"
+    "wendy/agent/services/v2/robot_arm_service.proto"
     "wendy/agent/services/v2/sensor_pairing_service.proto"
     "wendy/agent/services/v2/unitree_service.proto"
     "wendy/agent/services/v2/unitree_robot_service.proto"

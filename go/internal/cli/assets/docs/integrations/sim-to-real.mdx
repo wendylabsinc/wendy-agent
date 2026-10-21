@@ -5,6 +5,8 @@ description: Test apps on Unitree and ROSMASTER R2 VMs, then check their support
 
 Start with a [Unitree Go2 or G1 simulator template](/docs/installation/unitree-simulators). ROS 2 and the simulated robot run inside the WendyOS VM. You deploy your app with `wendy run`, then select a physical target when you are ready to test on hardware.
 
+The [SO-101 follower simulator](/docs/installation/so101-simulator) has no ROS 2 interface, so this workflow does not apply to it.
+
 This walkthrough uses the Go2 sensor dashboard and browser teleoperation examples. They use the native interfaces shared by the simulated and physical Go2. The [G1 path](#using-the-g1-template) uses the same deployment workflow with G1-specific messages and control behavior.
 
 ## 1. Read the simulated robot's sensors

@@ -106,10 +106,10 @@ The tab manages simulators without dropping to `wendy vm`:
 | Key | Does |
 | --- | --- |
 | `c` | Create one at the latest release, naming it `sim`, `sim-2`, … |
-| `s` | Power off the highlighted VM |
-| `r` | Delete it, once it is stopped |
-| `d` | Save the highlighted simulator as the default device |
-| `x` | Clear the saved default device |
+| `s` | Start the highlighted VM and, the first time, build its robot |
+| `x` | Power off the highlighted VM |
+| `r` | Delete it and its disk, once it is stopped (asks first) |
+| `d` | Save the highlighted simulator as the default device; press it again to clear the default |
 
 On Windows, `c` in `wendy discover` displays the foreground VM commands and
 keeps discovery open. Run those commands in a separate terminal.
@@ -118,9 +118,10 @@ The default uses the VM's name, so it still works when its forwarded port change
 Saving a default does not start the VM. Your next device command starts it when
 needed. The `✦` marker identifies the saved default when you reopen the picker.
 
-`wendy discover` shows the same tab with the same keys; there `enter`
-copies the VM's address instead of selecting it. For a specific name, version
-or disk size, use `wendy vm create`.
+`wendy discover` shows the same tab with the same keys. There `enter` copies
+the VM's address instead of selecting it, and `s` returns to the tab once the
+VM is up, rather than deploying to it. For a specific name, version or disk
+size, use `wendy vm create`.
 
 To skip the picker entirely, name the simulator directly:
 
@@ -134,6 +135,10 @@ manual equivalent, useful when you want several VMs or need to debug one.
 ## Simulate a Unitree robot
 
 The `go2` and `g1` profiles add a virtual robot with MuJoCo, ROS 2, and a browser sandbox. Follow [Unitree simulator setup](/docs/installation/unitree-simulators), then [deploy a ROS 2 app from simulation to hardware](/docs/integrations/sim-to-real). Their virtual sensors do not provide access to physical peripherals.
+
+## Simulate an SO-101 arm
+
+The `so101` profile adds a virtual six-joint LeRobot SO-101 arm with MuJoCo and a browser viewer. It has no ROS 2 or DDS interface. Follow [SO-101 follower simulator](/docs/installation/so101-simulator).
 
 ## Create and start a VM
 
@@ -331,8 +336,11 @@ before connecting to the replacement. It clears only the VM's own pin, never
 the shared `127.0.0.1` pin that other loopback addresses use. That pin is
 cleared by `wendy device unpin 127.0.0.1`.
 
-The agent's port is often already in use on a development machine. Move the
-host side of the forward:
+The agent's port is often already in use on a development machine. `wendy vm
+start` and `--device vm:<name>` then move the host side of the forward to the
+next free port on their own, and the VM keeps that port for later starts. To
+choose it yourself, pass `--port`; a port given that way that is in use is an
+error rather than a hint to move:
 
 ```sh
 wendy vm start dev --port 50151
@@ -389,7 +397,9 @@ wendy vm rm dev        # delete a VM and its disk
 ```
 
 `wendy vm create` prompts for a name and a profile: Generic WendyOS, Unitree Go2,
-or Unitree G1. Supply the name or `--profile generic|go2|g1` to skip that prompt.
+Unitree G1, LeRobot SO-101, Yahboom ROSMASTER R2, or Wendy Lite (WASM or native).
+Supply the name or `--profile generic|go2|g1|so101|rosmaster-r2|wendy-lite|wendy-lite-native`
+to skip that prompt.
 For scripts, pass the name explicitly; the profile defaults to `generic` without
 an interactive terminal, with `--json`, or with `--yes`.
 
@@ -397,9 +407,10 @@ The VM name is optional for `start`, `stop`, `logs`, and `rm` in an interactive
 terminal. Leave it out to choose a VM from a list; scripts should continue to
 pass the name explicitly.
 
-`vm stop` waits up to two minutes for the guest to shut down and flush its
-filesystems. If QMP is unavailable or the guest does not finish, it reports an
-error without killing the VM. Shut down inside an older guest without QMP, or
+`vm stop` waits up to five minutes for the guest to stop its apps, shut down and
+flush its filesystems, which covers any ordinary shutdown. If QMP is unavailable
+or the guest is still shutting down after that, it reports an error without
+killing the VM. Shut down inside an older guest without QMP, or
 use `wendy vm stop dev --force` only when an immediate power cut is intended.
 
 A backgrounded VM outlives the command that started it, so closing the terminal
