@@ -4,6 +4,7 @@ package localmesh
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -39,10 +40,25 @@ func TestPendingIdentityRepairDoesNotFloodSlowLink(t *testing.T) {
 	if _, err := cache.Put(self.Certificate.Certificate, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	directory, err := NewDirectory(self.Device.Tenant(), 10, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n := &Node{cache: cache, bundleHints: newBundleHintCache()}
 	p := &nodePeer{device: peer.Device, link: link, control: make(chan ControlMessage, 4)}
+	p.sync = newLeafSynchronizer(directory, cache)
+	defer p.sync.Close()
+	request := func() []ControlMessage {
+		replies, changed, err := p.sync.Receive(ControlMessage{Kind: "identity-request", Principal: self.Device.Principal()}, time.Now())
+		if err != nil || len(changed) != 0 || len(replies) != 1 || replies[0].Kind != "bundle" {
+			t.Fatalf("leaf identity reply: replies=%v changed=%v err=%v", replies, changed, err)
+		}
+		return replies
+	}
 	bundle := ControlMessage{Kind: "bundle", Bundle: self.Certificate.Certificate}
-	n.queue(p, []ControlMessage{bundle})
+	if !n.queueReplies(p, request()) {
+		t.Fatal("initial requested bundle refused")
+	}
 	writing := <-p.control
 	done := make(chan error, 1)
 	go func() { done <- n.writePeerControl(p, writing) }()
@@ -54,6 +70,9 @@ func TestPendingIdentityRepairDoesNotFloodSlowLink(t *testing.T) {
 		t.Fatal("trusted bundle writer stalled")
 	}
 	for i := 0; i < 100; i++ {
+		if !n.queueReplies(p, request()) {
+			t.Fatal("duplicate identity requests filled the requested reply reserve")
+		}
 		n.queue(p, []ControlMessage{bundle})
 	}
 	if len(p.control) != 0 {
@@ -76,8 +95,7 @@ func TestPendingIdentityRepairDoesNotFloodSlowLink(t *testing.T) {
 		t.Fatal("completed write was not recorded")
 	}
 	// A later request can represent a leaf reboot and must repair it again.
-	n.queue(p, []ControlMessage{bundle})
-	if len(p.control) != 1 {
+	if !n.queueReplies(p, request()) || len(p.control) != 1 {
 		t.Fatal("completed bundle suppressed a later cache-repair request")
 	}
 }
@@ -205,11 +223,15 @@ func TestPeerControlKeepsRequestedCertificateBytesIndependent(t *testing.T) {
 		{Kind: "certificate", Certificate: &CertificateMessage{Chunk: &CertificateChunk{Hash: hash, Total: len(data), Data: data}}},
 	}
 	link := &bundleCaptureLink{teardownTestLink: &teardownTestLink{done: make(chan struct{})}}
-	p := &nodePeer{link: link}
+	p := &nodePeer{link: link, control: make(chan ControlMessage, 4)}
 	p.pendingBundles.Store(hash, struct{}{})
 	n := &Node{} // Public content-addressed chunks do not require current trust.
-	for _, message := range messages {
-		if err := n.writePeerControl(p, message); err != nil {
+	messages = append(messages, messages...)
+	if !n.queueReplies(p, messages) || len(p.control) != len(messages) {
+		t.Fatal("requested certificate traffic was coalesced as identity bundles")
+	}
+	for range messages {
+		if err := n.writePeerControl(p, <-p.control); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,6 +240,81 @@ func TestPeerControlKeepsRequestedCertificateBytesIndependent(t *testing.T) {
 	}
 	if _, pending := p.pendingBundles.Load(hash); !pending {
 		t.Fatal("public certificate traffic removed an unrelated bundle token")
+	}
+}
+
+func TestRequestedBundlesShareTokensAcrossControlAndReserve(t *testing.T) {
+	self, peer := testCredentials(t)
+	n := &Node{}
+	p := &nodePeer{control: make(chan ControlMessage, 1)}
+	first := ControlMessage{Kind: "bundle", Bundle: self.Certificate.Certificate}
+	second := ControlMessage{Kind: "bundle", Bundle: peer.Certificate.Certificate}
+	n.queue(p, []ControlMessage{first})
+	if !n.queueReplies(p, []ControlMessage{first, second, second}) || len(p.control) != 1 || len(p.replies) != 1 {
+		t.Fatal("requested bundles duplicated a queued frame or reserve entry")
+	}
+	if _, pending := p.pendingBundles.Load(Fingerprint(second.Bundle)); !pending {
+		t.Fatal("reserved bundle does not own its token")
+	}
+	if err := n.writePeerControl(p, <-p.control); err != nil {
+		t.Fatal(err)
+	}
+	n.queue(p, []ControlMessage{second}) // Flush the reserved frame first.
+	if len(p.control) != 1 || len(p.replies) != 0 || p.replyBytes != 0 {
+		t.Fatal("reserved bundle did not drain with correct byte accounting")
+	}
+	if !n.queueReplies(p, []ControlMessage{second}) || len(p.replies) != 0 {
+		t.Fatal("requested bundle duplicated a frame flushed from the reserve")
+	}
+	if err := n.writePeerControl(p, <-p.control); err != nil {
+		t.Fatal(err)
+	}
+	if !n.queueReplies(p, []ControlMessage{second}) || len(p.control) != 1 {
+		t.Fatal("completed or dropped requested repair could not be retried")
+	}
+}
+
+func TestRejectedReplyBatchDoesNotOwnBundleTokens(t *testing.T) {
+	self, _ := testCredentials(t)
+	bundle := ControlMessage{Kind: "bundle", Bundle: self.Certificate.Certificate}
+	for _, failure := range []string{"frame limit", "byte limit", "invalid JSON"} {
+		t.Run(failure, func(t *testing.T) {
+			n := &Node{}
+			p := &nodePeer{control: make(chan ControlMessage, 1)}
+			p.control <- ControlMessage{Kind: "identity-request", Principal: "blocked"}
+			var batch []ControlMessage
+			switch failure {
+			case "frame limit":
+				for range maxDirectoryReplyFrames - 1 {
+					if !n.queueReplies(p, []ControlMessage{{Kind: "identity-request"}}) {
+						t.Fatal("fixture reserve filled too early")
+					}
+				}
+				batch = []ControlMessage{bundle, {Kind: "identity-request"}}
+			case "byte limit":
+				// Serialized byte overload must reject the entire batch even
+				// when its frame count remains below the limit.
+				batch = []ControlMessage{bundle, {Kind: "certificate", Certificate: &CertificateMessage{Chunk: &CertificateChunk{Data: make([]byte, maxDirectoryReplyBytes)}}}}
+			case "invalid JSON":
+				batch = []ControlMessage{bundle, {Kind: "manifest", Manifest: &SignedManifest{Body: json.RawMessage("{")}}}
+			}
+			beforeFrames, beforeBytes := len(p.replies), p.replyBytes
+			if n.queueReplies(p, batch) {
+				t.Fatal("invalid or oversized batch admitted")
+			}
+			if len(p.replies) != beforeFrames || p.replyBytes != beforeBytes {
+				t.Fatal("rejected batch changed the retained reply reserve")
+			}
+			if _, pending := p.pendingBundles.Load(Fingerprint(bundle.Bundle)); pending {
+				t.Fatal("rejected batch left a bundle admission token")
+			}
+			if !n.queueReplies(p, []ControlMessage{bundle}) {
+				t.Fatal("rejected batch suppressed a later valid bundle repair")
+			}
+			if _, pending := p.pendingBundles.Load(Fingerprint(bundle.Bundle)); !pending {
+				t.Fatal("accepted retry did not own its bundle token")
+			}
+		})
 	}
 }
 
