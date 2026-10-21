@@ -1,6 +1,7 @@
 package meshcatalog
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"time"
@@ -49,6 +50,11 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 	if err := m.validate(); err != nil {
 		return nil, nil, err
 	}
+	if m.Gossip.Type != netgossip.Service {
+		return nil, nil, errors.New("gossip session type mismatch")
+	}
+	var descriptor *localmesh.CertificateMessage
+	var hintKey string
 	if m.Gossip.Op == "want" {
 		payload := s.gossip.Lookup(m.Gossip.ID(), now)
 		if len(payload) > 0 {
@@ -57,14 +63,36 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 			if json.Unmarshal(payload, &w) != nil || json.Unmarshal(w.Body, &r) != nil {
 				return nil, nil, errors.New("invalid cached service artifact")
 			}
-			if chain, _, ok := s.cache.Get(r.Key.Device, now); !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
+			chain, _, ok := s.cache.Get(r.Key.Device, now)
+			if !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
 				return []Message{{Kind: "gossip", Gossip: netgossip.Unavailable(*m.Gossip)}}, nil, nil
+			}
+			descriptor = localmesh.DescribeCertificates(r.Key.Device, chain)
+			if descriptor == nil {
+				return nil, nil, errors.New("invalid current service chain")
+			}
+			encoded, _ := json.Marshal(descriptor.Chain)
+			digest := sha256.Sum256(encoded)
+			hintKey = string(digest[:])
+			if s.sent[hintKey].After(now) {
+				descriptor = nil
 			}
 		}
 	}
 	reply, data, err := s.gossip.Receive(*m.Gossip, now)
 	var replies []Message
 	if reply != nil {
+		if reply.Op == "data" && descriptor != nil {
+			// HAVE stays one frame. The current exact chain travels only with
+			// requested DATA, before a receiver may need to defer verification.
+			// Refresh after the existing certificate-fetch lease so a timed-out
+			// exchange can recover even for a longer-lived gateway record.
+			if len(s.sent) >= 1024 {
+				s.sent = map[string]time.Time{}
+			}
+			s.sent[hintKey] = now.Add(localmesh.MaxLease)
+			replies = append(replies, Message{Kind: "certificate", Certificate: descriptor})
+		}
 		replies = append(replies, Message{Kind: "gossip", Gossip: reply})
 	}
 	if err == nil && m.Gossip.Op == "want" && len(slots) > 0 {

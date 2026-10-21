@@ -64,3 +64,42 @@ func TestGossipReplySchedulerSurvivesSaturatedSlowControlQueue(t *testing.T) {
 		t.Fatal("saturated scheduler skipped bytes or failed to complete")
 	}
 }
+
+func TestGossipDescriptorDataPairsFitExistingReplyReserve(t *testing.T) {
+	n := &Node{}
+	p := &nodePeer{control: make(chan ControlMessage, 2)}
+	for range cap(p.control) {
+		p.control <- ControlMessage{Kind: "identity-request", Principal: "already queued"}
+	}
+	// Bulk scheduling has used its allowance and must preserve all eight
+	// response slots. Four independently valid WANT responses need two each.
+	for range maxDirectoryReplyFrames - 8 {
+		p.replies = append(p.replies, ControlMessage{Kind: "identity-request", Principal: "already queued"})
+	}
+	if directoryReplySlots(p) != 0 {
+		t.Fatal("fixture left bulk scheduling slots")
+	}
+	for range 4 {
+		f := newGossipManifestRenewal(t, false)
+		have := f.sender.Record(f.wire, f.now)
+		want, _, err := f.receiver.Receive(have[0], f.now)
+		if err != nil || len(want) != 1 {
+			t.Fatal(want, err)
+		}
+		replies, _, err := f.sender.Receive(want[0], f.now, directoryReplySlots(p))
+		if err != nil || len(replies) != 2 || replies[0].Certificate == nil || replies[1].Gossip == nil || replies[1].Gossip.Op != "data" {
+			t.Fatal("zero slots advanced extra DATA or lost descriptor", replies, err)
+		}
+		if !n.queueReplies(p, replies) {
+			t.Fatal("ordinary descriptor/DATA responses overflowed reserved queue")
+		}
+	}
+	if len(p.replies) != maxDirectoryReplyFrames || directoryReplySlots(p) != 0 {
+		t.Fatal("response reserve was miscounted")
+	}
+	for i := maxDirectoryReplyFrames - 8; i < len(p.replies); i += 2 {
+		if p.replies[i].Certificate == nil || p.replies[i+1].Gossip == nil {
+			t.Fatal("admitted descriptor/DATA order changed")
+		}
+	}
+}

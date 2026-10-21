@@ -556,6 +556,22 @@ unverified certificate-wait bodies release their claim without a shared receipt.
 hints expire after two minutes. No cache is seeded from durable generation
 receipts when the actual body is absent after restart.
 
+Offers, delayed WANTs and authoritative manifest loaders require the exact
+currently admitted signed record and its current trusted chain. Requested DATA
+is preceded by that exact chain's descriptor, at most once per chain during the
+certificate fetch lease; a changed chain refreshes the hint immediately. HAVE
+still occupies one queue slot. Already queued summaries may receive UNAVAILABLE
+after renewal, and already queued DATA must pass ordinary current identity,
+signature and signed-lease validation at the receiver before it grants authority.
+
+A known manifest digest with cached verified bytes may repair a missing trusted
+identity without another body download. This uses the existing bounded pending
+identity exchange and preserves its original lease and replay floor. A currently
+trusted replacement key never lends authority to an obsolete signature. If the
+body was evicted and its authoritative loader cannot validate current trust,
+repair waits for a later publication or lease cycle; no directory scan or extra
+artifact metadata is retained for this case.
+
 First delivery adds a request round trip per relay hop; larger bodies also drain
 through the bounded chunk scheduler. Presence/route-proof replies use the
 existing high-priority directory queue; service replies use their bounded reply

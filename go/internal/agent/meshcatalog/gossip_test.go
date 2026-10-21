@@ -132,9 +132,15 @@ func TestServiceSnapshotBarrierWaitsForSharedVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(data) != 2 || data[0].Certificate == nil || data[1].Gossip == nil {
+		t.Fatal("missing descriptor before DATA", data)
+	}
 	identity, changed, err := a.Receive(data[0], f.now)
 	if err != nil || len(changed) != 0 || len(identity) != 1 {
 		t.Fatal(identity, changed, err)
+	}
+	if out, changed, err := a.Receive(data[1], f.now); err != nil || len(out) != 0 || len(changed) != 0 {
+		t.Fatal("DATA bypassed pending identity", out, changed, err)
 	}
 	if !b.PendingAnnouncements(f.now) {
 		t.Fatal("snapshot complete before signature verification")
@@ -294,11 +300,11 @@ func TestServiceGossipRecoversEvictedPayloadAndRejectsReplacement(t *testing.T) 
 		t.Fatal(request, err)
 	}
 	replies, _, err := source.Receive(Message{Kind: "gossip", Gossip: request}, f.now)
-	if err != nil || len(replies) != 1 || replies[0].Gossip.Op != "data" {
+	if err != nil || len(replies) != 2 || replies[0].Certificate == nil || replies[1].Gossip == nil || replies[1].Gossip.Op != "data" {
 		t.Fatal("evicted body was not recovered from its service key", replies, err)
 	}
 	body, _ := json.Marshal(w)
-	if !bytes.Equal(replies[0].Gossip.Data, body) {
+	if !bytes.Equal(replies[1].Gossip.Data, body) {
 		t.Fatal("recovery changed the signed envelope")
 	}
 	if _, err := catalog.Publish(testSpec(), f.now); err != nil {

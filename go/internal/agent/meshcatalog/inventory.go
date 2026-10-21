@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 )
 
 const inventoryChunkEntries = 128
@@ -170,6 +171,6 @@ func (i *receivedInventory) receive(m inventoryMessage) error {
 // It changes only bundle transmission; Catalog.Accept still checks current trust.
 func (s *Synchronizer) useCurrentInventory(i receivedInventory) {
 	for fp := range i.fingerprints {
-		s.sent[fp] = true
+		s.sent[fp] = time.Time{}
 	}
 }

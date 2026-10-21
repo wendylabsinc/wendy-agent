@@ -192,7 +192,7 @@ func (r *Runtime) sendRecord(p *catalogPeer, w SignedRecord) bool {
 	}
 	old, had := p.syncer.sentRecords[rec.Key]
 	oldSent := p.syncer.sent
-	sent := make(map[string]bool, len(oldSent))
+	sent := make(map[string]time.Time, len(oldSent))
 	for k, v := range oldSent {
 		sent[k] = v
 	}

@@ -1,6 +1,7 @@
 package localmesh
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -150,8 +151,10 @@ type Synchronizer struct {
 	cache     *IdentityCache
 	// leafBundles selects the negotiated Lite bundle role; routers use descriptors.
 	leafBundles bool
-	sent        map[string]bool
-	pending     map[string]SignedManifest
+	// Legacy leaf-fingerprint keys mean known bundles. Gossip keys are full
+	// descriptor digests with freshness bounded by the certificate fetch lease.
+	sent    map[string]time.Time
+	pending map[string]SignedManifest
 	// Warm-cache retries are bound to the exact advertised chain and deadline.
 	pendingRenewals map[string]pendingManifestRenewal
 	certificates    *CertificateExchange
@@ -162,7 +165,7 @@ type Synchronizer struct {
 }
 
 func NewSynchronizer(d *Directory, c *IdentityCache, pools ...*netgossip.Pool) *Synchronizer {
-	s := &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingManifestRenewal{}, certificates: NewCertificateExchange(c, d.tenant)}
+	s := &Synchronizer{directory: d, cache: c, sent: map[string]time.Time{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingManifestRenewal{}, certificates: NewCertificateExchange(c, d.tenant)}
 	if len(pools) > 0 && pools[0] != nil {
 		s.gossip = pools[0].NewSession(netgossip.Manifest)
 	}
@@ -175,7 +178,7 @@ func NewSynchronizer(d *Directory, c *IdentityCache, pools ...*netgossip.Pool) *
 func (s *Synchronizer) SeedKnownBundles(fingerprints []string) {
 	for _, fp := range fingerprints {
 		if len(fp) == 64 {
-			s.sent[fp] = true
+			s.sent[fp] = time.Time{}
 		}
 	}
 }
@@ -199,7 +202,8 @@ func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int)
 		return nil, true
 	}
 	fp := Fingerprint(chain)
-	bundleNeeded := !s.sent[fp]
+	_, known := s.sent[fp]
+	bundleNeeded := !known
 	needed := 1
 	if bundleNeeded {
 		needed++
@@ -210,9 +214,9 @@ func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int)
 	var out []ControlMessage
 	if bundleNeeded {
 		if len(s.sent) >= 1024 {
-			s.sent = map[string]bool{}
+			s.sent = map[string]time.Time{}
 		}
-		s.sent[fp] = true
+		s.sent[fp] = time.Time{}
 		out = append(out, s.identityMessage(w.Principal, chain))
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
@@ -287,8 +291,7 @@ func (s *Synchronizer) receive(m ControlMessage, now time.Time) (replies []Contr
 		}
 		if c := m.Certificate.Chain; c != nil {
 			if pending, ok := s.pendingRenewals[c.Principal]; ok && !sameCertificateDescription(pending.chain, *c) {
-				delete(s.pending, c.Principal)
-				delete(s.pendingRenewals, c.Principal)
+				s.dropPendingManifest(c.Principal)
 			}
 		}
 		replies, completed, err := s.certificates.Receive(*m.Certificate, now)
@@ -307,7 +310,11 @@ func (s *Synchronizer) receive(m ControlMessage, now time.Time) (replies []Contr
 		// to an unrelated whole-bundle response for the same principal.
 		if w, ok := s.pending[principal]; ok && s.pendingRenewals[principal].chain.Principal == "" {
 			delete(s.pending, principal)
-			return s.receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
+			out, changed, err := s.receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
+			if err != nil {
+				s.discardManifest(w)
+			}
+			return out, changed, err
 		}
 	case "manifest":
 		if m.Manifest == nil {
@@ -335,10 +342,17 @@ func (s *Synchronizer) receive(m ControlMessage, now time.Time) (replies []Contr
 			// a receiver restart. The request repairs its identity cache, and
 			// the periodic reconciliation repeats any manifest we cannot hold.
 			if _, exists := s.pending[m.Manifest.Principal]; exists || len(s.pending) < 128 {
-				if old, exists := s.pending[m.Manifest.Principal]; exists && s.gossip != nil {
+				if old, exists := s.pending[m.Manifest.Principal]; exists && !sameManifestWire(old, *m.Manifest) {
 					s.discardManifest(old)
 				}
 				s.pending[m.Manifest.Principal] = cloneSignedManifest(*m.Manifest)
+			} else {
+				s.discardManifest(*m.Manifest)
+			}
+			if s.gossip != nil {
+				if _, _, active := s.certificates.PendingChain(m.Manifest.Principal, now); active {
+					return nil, nil, nil
+				}
 			}
 			return []ControlMessage{{Kind: "identity-request", Principal: m.Manifest.Principal}}, nil, nil
 		}
@@ -369,7 +383,7 @@ func (s *Synchronizer) certificateResult(messages []*CertificateMessage, complet
 			delete(s.pendingRenewals, principal)
 			chain, _, valid := s.cache.Get(principal, now)
 			if !pending.fetchUntil.After(now) || !pending.expires.After(now) || !valid || !matchesCertificateDescription(chain, pending.chain) {
-				delete(s.pending, principal)
+				s.dropPendingManifest(principal)
 				continue
 			}
 		}
@@ -378,9 +392,14 @@ func (s *Synchronizer) certificateResult(messages []*CertificateMessage, complet
 			retry = append(retry, w)
 		}
 	}
-	for _, w := range retry {
+	for i, w := range retry {
 		out, admitted, err := s.receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
 		if err != nil {
+			// These candidates are detached already; Close cannot find them
+			// through pending. Release every unprocessed pooled claim too.
+			for _, remaining := range retry[i:] {
+				s.discardManifest(remaining)
+			}
 			return nil, nil, err
 		}
 		replies = append(replies, out...)
@@ -396,8 +415,7 @@ func (s *Synchronizer) ContinueCertificates(now time.Time, slots ...int) ([]Cont
 		for principal, w := range s.pending {
 			var m Manifest
 			if json.Unmarshal(w.Body, &m) != nil || !time.UnixMilli(m.Expires).After(now) {
-				s.discardManifest(w)
-				delete(s.pending, principal)
+				s.dropPendingManifest(principal)
 			}
 		}
 	}
@@ -440,11 +458,15 @@ func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time, life
 		return false
 	}
 	if _, exists := s.pending[w.Principal]; !exists && len(s.pending) >= 128 {
+		s.discardManifest(w)
 		return true // bounded loss; periodic reconciliation can retry later
 	}
 	if old, exists := s.pendingRenewals[w.Principal]; exists {
 		pending.expires = minTime(pending.expires, old.expires)
 		pending.fetchUntil = minTime(pending.fetchUntil, old.fetchUntil)
+	}
+	if old, exists := s.pending[w.Principal]; exists && !sameManifestWire(old, w) {
+		s.discardManifest(old)
 	}
 	s.pending[w.Principal] = cloneSignedManifest(w)
 	s.pendingRenewals[w.Principal] = pending
@@ -455,15 +477,29 @@ func (s *Synchronizer) prunePendingRenewals(now time.Time) {
 	for principal, pending := range s.pendingRenewals {
 		active, _, ok := s.certificates.PendingChain(principal, now)
 		if !pending.fetchUntil.After(now) || !pending.expires.After(now) || !ok || !sameCertificateDescription(pending.chain, active) {
-			delete(s.pending, principal)
-			delete(s.pendingRenewals, principal)
+			s.dropPendingManifest(principal)
 		}
 	}
 }
 
 func (s *Synchronizer) Close() {
+	for principal := range s.pending {
+		s.dropPendingManifest(principal)
+	}
 	s.certificates.Close()
 	if s.gossip != nil {
 		s.gossip.Close()
 	}
+}
+
+func sameManifestWire(a, b SignedManifest) bool {
+	return a.Principal == b.Principal && bytes.Equal(a.Body, b.Body) && bytes.Equal(a.Signature, b.Signature)
+}
+
+func (s *Synchronizer) dropPendingManifest(principal string) {
+	if w, ok := s.pending[principal]; ok {
+		s.discardManifest(w)
+	}
+	delete(s.pending, principal)
+	delete(s.pendingRenewals, principal)
 }

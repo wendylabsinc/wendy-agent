@@ -132,7 +132,9 @@ type Synchronizer struct {
 	gossip  *netgossip.Session
 	catalog *Catalog
 	cache   *localmesh.IdentityCache
-	sent    map[string]bool
+	// Legacy leaf-fingerprint keys mean known bundles. Gossip keys are full
+	// descriptor digests with freshness bounded by the certificate fetch lease.
+	sent map[string]time.Time
 	// One authenticated neighbour control stream delivers records in order. Remember the
 	// exact signed body last queued for each service so the periodic repair
 	// pass sends only records that a dropped Broadcast never queued.
@@ -157,7 +159,7 @@ type sentRecordStamp struct {
 }
 
 func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache, pools ...*netgossip.Pool) *Synchronizer {
-	s := &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
+	s := &Synchronizer{catalog: c, cache: cache, sent: map[string]time.Time{},
 		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]pendingServiceRecord{}, certificates: localmesh.NewCertificateExchange(cache, c.device.Tenant())}
 	if len(pools) > 0 && pools[0] != nil {
 		s.gossip = pools[0].NewSession(netgossip.Service)
@@ -187,11 +189,11 @@ func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
 		return nil
 	}
 	var out []Message
-	if !s.sent[w.Fingerprint] {
+	if _, known := s.sent[w.Fingerprint]; !known {
 		if len(s.sent) >= 1024 {
-			s.sent = map[string]bool{}
+			s.sent = map[string]time.Time{}
 		}
-		s.sent[w.Fingerprint] = true
+		s.sent[w.Fingerprint] = time.Time{}
 		// Use this exact verified chain. A second principal lookup could race
 		// renewal and describe a different certificate than the record names.
 		out = append(out, Message{Kind: "certificate", Certificate: localmesh.DescribeCertificates(record.Key.Device, chain)})
@@ -368,6 +370,11 @@ func (s *Synchronizer) receive(m Message, now time.Time) (replies []Message, cha
 			first := len(s.pending[record.Key.Device]) == 0
 			s.pending[record.Key.Device] = append(s.pending[record.Key.Device], pending)
 			if first && renewal == nil {
+				if s.gossip != nil {
+					if _, _, active := s.certificates.PendingChain(record.Key.Device, now); active {
+						return nil, nil, nil
+					}
+				}
 				return []Message{{Kind: "identity-request", Principal: record.Key.Device}}, nil, nil
 			}
 			return nil, nil, nil
@@ -478,7 +485,9 @@ func (s *Synchronizer) prunePending(now time.Time) {
 		for _, entry := range records {
 			var record Record
 			if json.Unmarshal(entry.wire.Body, &record) != nil || !time.UnixMilli(record.Expires).After(now) {
-				if s.gossip!=nil { s.discardService(entry.wire) }
+				if s.gossip != nil {
+					s.discardService(entry.wire)
+				}
 				continue
 			}
 			if entry.renewal != nil {
@@ -510,7 +519,7 @@ func (s *Synchronizer) noteReceived(w SignedRecord) {
 		s.sentRecords[r.Key] = stamp
 	}
 	if len(s.sent) >= 1024 {
-		s.sent = make(map[string]bool)
+		s.sent = make(map[string]time.Time)
 	}
-	s.sent[w.Fingerprint] = true
+	s.sent[w.Fingerprint] = time.Time{}
 }

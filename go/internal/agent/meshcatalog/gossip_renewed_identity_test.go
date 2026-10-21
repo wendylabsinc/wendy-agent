@@ -97,3 +97,89 @@ func TestServiceGossipRenewalRejectsPreviousCertificateOffersAndCachedBodies(t *
 		t.Fatal("gossip renewed a signed lease or lost its generation floor")
 	}
 }
+
+func TestServiceGossipDescriptorRefreshUsesCertificateFetchLease(t *testing.T) {
+	f := newFixture(t)
+	catalog, cache := f.newCatalog(t, p533, "default", nil, nil)
+	w, err := catalog.PublishGatewayOffer(f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := NewSynchronizer(catalog, cache, netgossip.NewPool())
+	defer sender.Close()
+	have := sender.Record(w, f.now)
+	if len(have) != 1 {
+		t.Fatal("HAVE needs exactly one slot")
+	}
+	requester := netgossip.NewPool().NewSession(netgossip.Service)
+	defer requester.Close()
+	want, _, err := requester.Receive(*have[0].Gossip, f.now)
+	if err != nil || want == nil {
+		t.Fatal(want, err)
+	}
+	for i, offset := range []time.Duration{0, time.Second, localmesh.MaxLease + time.Second} {
+		want.Request++
+		out, _, err := sender.Receive(Message{Kind: "gossip", Gossip: want}, f.now.Add(offset), 0)
+		need := 2
+		if i == 1 {
+			need = 1
+		}
+		if err != nil || len(out) != need || out[len(out)-1].Gossip == nil || out[len(out)-1].Gossip.Op != "data" {
+			t.Fatal("bad descriptor refresh or extra bulk progress", offset, out, err)
+		}
+		if need == 2 && out[0].Certificate == nil {
+			t.Fatal("timed-out fetch cannot restart from requested DATA")
+		}
+	}
+}
+
+func TestServiceGossipUnavailableDoesNotConsumeDescriptorHint(t *testing.T) {
+	f := newFixture(t)
+	catalog, cache := f.newCatalog(t, p533, "default", nil, nil)
+	w, err := catalog.PublishGatewayOffer(f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := netgossip.NewPool()
+	sender := NewSynchronizer(catalog, cache, pool)
+	defer sender.Close()
+	have := sender.Record(w, f.now)
+	requester := netgossip.NewPool().NewSession(netgossip.Service)
+	defer requester.Close()
+	want, _, err := requester.Receive(*have[0].Gossip, f.now)
+	if err != nil || want == nil {
+		t.Fatal(want, err)
+	}
+	// Occupy every shared outbound transfer with a partially sent body. A
+	// failed WANT must leave the descriptor available for the later retry.
+	var blockers []*netgossip.Session
+	for i := range 16 {
+		blocker := pool.NewSession(netgossip.Service)
+		blockers = append(blockers, blocker)
+		defer blocker.Close()
+		body := make([]byte, 32<<10)
+		body[0] = byte(i)
+		hint := blocker.Offer(body, f.now.Add(time.Minute), f.now)
+		peer := netgossip.NewPool().NewSession(netgossip.Service)
+		request, _, err := peer.Receive(*hint, f.now)
+		if err != nil || request == nil {
+			t.Fatal(request, err)
+		}
+		if first, _, err := blocker.Receive(*request, f.now); err != nil || first == nil || first.Op != "data" {
+			t.Fatal(first, err)
+		}
+		peer.Close()
+	}
+	out, _, err := sender.Receive(Message{Kind: "gossip", Gossip: want}, f.now, 0)
+	if err != nil || len(out) != 1 || out[0].Gossip.Op != "unavailable" || len(sender.sent) != 0 {
+		t.Fatal("unavailable WANT consumed current descriptor hint", out, err)
+	}
+	for _, blocker := range blockers {
+		blocker.Close()
+	}
+	want.Request++
+	out, _, err = sender.Receive(Message{Kind: "gossip", Gossip: want}, f.now, 0)
+	if err != nil || len(out) != 2 || out[0].Certificate == nil || out[1].Gossip.Op != "data" {
+		t.Fatal("retry lost descriptor or body progress", out, err)
+	}
+}

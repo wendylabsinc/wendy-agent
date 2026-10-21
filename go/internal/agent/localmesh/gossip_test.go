@@ -237,11 +237,11 @@ func TestManifestGossipRecoversEvictedPayloadAndRechecksTrust(t *testing.T) {
 		t.Fatal(request, err)
 	}
 	replies, _, err := source.Receive(ControlMessage{Kind: "gossip", Gossip: request}, now)
-	if err != nil || len(replies) != 1 || replies[0].Gossip.Op != "data" {
+	if err != nil || len(replies) != 2 || replies[0].Certificate == nil || replies[1].Gossip == nil || replies[1].Gossip.Op != "data" {
 		t.Fatal("evicted body was not recovered from its directory key", replies, err)
 	}
 	body, _ := json.Marshal(w)
-	if !bytes.Equal(replies[0].Gossip.Data, body) {
+	if !bytes.Equal(replies[1].Gossip.Data, body) {
 		t.Fatal("recovery changed the signed envelope")
 	}
 	d.cache.verify = func([][]byte, time.Time) (Identity, error) { return Identity{}, errors.New("trust removed") }
