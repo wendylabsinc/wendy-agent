@@ -57,8 +57,10 @@ verification.
 ## Configuration and pairing contract
 
 Set `SO101_CONFIG` to a JSON file shaped like [examples/binding.json](examples/binding.json).
-Paths are resolved against the process working directory; use absolute paths for
-externally saved bindings and calibration files. Environment overrides JSON.
+Relative paths resolve against the process working directory, which `run.sh`
+(and therefore a Wendy deployment) sets to this app directory, not the caller's
+shell directory; use absolute paths for externally saved bindings and calibration
+files. Environment overrides JSON.
 Unknown JSON keys and invalid settings fail startup. A missing port is valid and
 keeps the API running. Config is loaded at startup; restart the app to change a binding.
 
@@ -93,7 +95,8 @@ A future pairing integration can pass `SO101_PORT` plus `SO101_BINDING`, or save
 the JSON config and supply `SO101_CONFIG`. The app returns binding metadata
 verbatim as operator-supplied information. Native Linux additionally reads USB
 vendor/product/serial metadata from sysfs when accessible; native macOS attempts
-the same via I/O Registry. Missing metadata stays `source: unavailable`.
+the same via I/O Registry. Both report `vendor_id`/`product_id` as four-digit
+lowercase hex strings (e.g. `1a86`). Missing metadata stays `source: unavailable`.
 `identity_verified` and `robot_identity_proven` remain false: USB adapter identity,
 motor model and a configured joint list do not prove arm identity. This example
 does not start itself through `device pair` or modify CLI/Agent behavior.
@@ -276,8 +279,6 @@ operation. Linux PTYs exercise actual B1000000 termios settings. No test opens a
 physical USB device. See [VALIDATION.md](VALIDATION.md) for evidence and remaining
 host/hardware/deployment gaps for this change.
 
-Protocol design was audited against the actively used `demos/wendy-arms`
-MotorProbe/RobotStatus/RobotProfile sources without modifying them. The existing
-SO101 and SO101TeleopMulti sources supplied Linux entitlement precedents; their
-torque/goal writes are intentionally absent here, including the leader's
-startup torque-off operation.
+The register layout, sign bit and model numbers follow the LeRobot Feetech table
+linked above. The torque, goal and configuration writes that SO-101 control apps
+perform, including a leader arm's startup torque-off, are intentionally absent.
