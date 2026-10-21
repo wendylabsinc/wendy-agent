@@ -370,6 +370,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 	lastProbe := time.Now()
 	recovery := radioRecovery{}
 	coldRecovery := coldNDPRecovery{}
+	setupRecovery := ndpSetupRecovery{}
 	warnedWarmRecovery := false
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -452,6 +453,13 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			recovery.observe(now, anyHealthy)
 			if sessionRecovery.rearmAfterStableAuthentication(now, active) {
 				logger.Info("NAN private-interface recovery rearmed after stable authenticated connectivity")
+			}
+			if setupRecovery.ready(now, anyHealthy, recovery.authenticated) {
+				allowed := sessionRecovery.canReset(false)
+				logger.Warn("NAN initial data-path setup repeatedly failed", zap.Int("failed_owned_attempts", setupRecovery.failures), zap.Bool("private_reset_allowed", allowed))
+				if allowed {
+					return fmt.Errorf("NAN initial NDP setup failed: %w", errSoftNANRecovery)
+				}
 			}
 			if recovery.expired(now) {
 				if sessionRecovery.canReset(false) {
@@ -628,6 +636,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 				}
 				if l := active[key]; l != nil {
 					recovery.setupFailed(l, v)
+					setupRecovery.setupFailed(l, v, time.Now())
 					l.peer.Lease.Release()
 				}
 				emit(p)

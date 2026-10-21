@@ -69,10 +69,14 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	// An incumbent-ready duplicate is rejected at Node's authenticated
 	// Ready boundary after its real hello. No kernel setup is needed.
 	node := &Node{Credentials: b, ctx: ctx, events: make(chan nodeEvent)}
+	admitted := make(chan meshid.Device, 1)
 	go func() {
 		for {
 			select {
 			case event := <-node.events:
+				if event.add != nil {
+					admitted <- event.add.device
+				}
 				event.result <- nil
 			case <-ctx.Done():
 				return
@@ -118,8 +122,16 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenControl(ctx, duplicate, a.Device, b.Device); err != nil {
-		t.Fatalf("duplicate did not reach authenticated hello: %v", err)
+	_, helloErr := OpenControl(ctx, duplicate, a.Device, b.Device)
+	// Ready can close the losing connection before the client consumes the
+	// server hello. The server's add event proves TLS and its hello succeeded.
+	select {
+	case peer := <-admitted:
+		if peer != a.Device {
+			t.Fatalf("duplicate admitted wrong peer: %v", peer)
+		}
+	case <-ctx.Done():
+		t.Fatalf("duplicate did not reach authenticated admission: %v", helloErr)
 	}
 	select {
 	case <-duplicate.Context().Done():

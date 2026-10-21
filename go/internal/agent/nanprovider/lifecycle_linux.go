@@ -79,7 +79,7 @@ func (r *radioRecovery) connected() {
 // the existing warm recovery budget. A normal established-path teardown, or a
 // rejected replacement with a reused ID, is not another failed setup attempt.
 func (r *radioRecovery) setupFailed(link *radioLink, event map[string]string) {
-	if link != nil && link.peer.NDI == "" && strings.TrimSuffix(event["failure"], ",") == "1" {
+	if failedPendingNDP(link, event) {
 		r.connected()
 	}
 }
