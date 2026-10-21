@@ -436,7 +436,8 @@ func splitCertificateChainPEM(chain []byte) (string, string, *x509.Certificate, 
 // rotated back to the Cloud API resource. The DPoP key cannot change here:
 // pki-core requires it to remain the CSR key as well. With lite set it issues
 // the session's P-256 Lite leaf instead of the primary: same token and DPoP
-// key, a fresh P-256 CSR key.
+// key, a fresh P-256 CSR key. Callers hold the auth-refresh lock throughout;
+// each rotated handle is saved before further validation or issuance.
 func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite bool) error {
 	if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() == "" {
 		return fmt.Errorf("stored OAuth session has no authoritative tenant certificate")
@@ -487,10 +488,11 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 	if identityToken.RefreshToken == "" {
 		return fmt.Errorf("wendy-auth did not rotate the refresh token for pki-core enrollment")
 	}
-	// The old handle has already been consumed. Retain the rotated one even if
-	// a later validation or issuance step fails; refreshCerts persists this
-	// mutation so the user's login is not stranded.
-	auth.RefreshToken = identityToken.RefreshToken
+	// The old handle is consumed. Checkpoint its successor before any more
+	// network work so interruption cannot leave only the spent handle on disk.
+	if err := persistRotatedOAuthToken(auth, identityToken.RefreshToken); err != nil {
+		return err
+	}
 	tokenVerifier, err := loadOIDCTokenVerifier(ctx, meta)
 	if err != nil {
 		return err
@@ -542,7 +544,9 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 		return fmt.Errorf("restoring Cloud API token after certificate refresh: %w", err)
 	}
 	if cloudToken.RefreshToken != "" {
-		auth.RefreshToken = cloudToken.RefreshToken
+		if err := persistRotatedOAuthToken(auth, cloudToken.RefreshToken); err != nil {
+			return err
+		}
 	}
 	cloudClaims, err := verifyAccessToken(tokenVerifier, cloudToken.AccessToken, auth.OAuthResource, thumbprint)
 	if err != nil {
@@ -562,6 +566,16 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 		auth.Certificates = []config.CertificateInfo{certInfo}
 	}
 	clitimesync.CacheProof(ctx)
+	return nil
+}
+
+// The caller holds the auth-refresh lock. A failed checkpoint is fatal even
+// when an older certificate is usable: this handle has already rotated.
+func persistRotatedOAuthToken(auth *config.AuthConfig, token string) error {
+	auth.RefreshToken = token
+	if err := persistOAuthSession(auth); err != nil {
+		return certificatePersistenceError{err}
+	}
 	return nil
 }
 

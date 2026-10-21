@@ -54,8 +54,17 @@ func reissueTestLeaf(t *testing.T, key crypto.Signer, tenant, subject string, fr
 
 // Real discovery, Auth rotation, signed tokens, CSR issuance and disk writes.
 // All credential endpoints are loopback fixtures; counters pin the spend limit.
-func reissueTestSession(t *testing.T, status int, tenant string, from, until time.Time) (*config.AuthConfig, *atomic.Int32, *atomic.Int32) {
+type reissueTestOptions struct {
+	beforeRequest func(*http.Request)
+	cloudSubject  string
+}
+
+func reissueTestSession(t *testing.T, status int, tenant string, from, until time.Time, options ...reissueTestOptions) (*config.AuthConfig, *atomic.Int32, *atomic.Int32) {
 	t.Helper()
+	var opts reissueTestOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	resetAutomaticCertReissue(t)
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	t.Setenv(renewEndpointEnv, "")
@@ -72,6 +81,9 @@ func reissueTestSession(t *testing.T, status int, tenant string, from, until tim
 	tokens, issues := new(atomic.Int32), new(atomic.Int32)
 	var issuer string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if opts.beforeRequest != nil {
+			opts.beforeRequest(r)
+		}
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			_ = json.NewEncoder(w).Encode(oidcProviderMetadata{Issuer: issuer, AuthorizationEndpoint: issuer + "/authorize", TokenEndpoint: issuer + "/token", JWKSURI: issuer + "/jwks"})
@@ -89,6 +101,9 @@ func reissueTestSession(t *testing.T, status int, tenant string, from, until tim
 			}
 			claims := map[string]any{"iss": issuer, "aud": r.Form.Get("resource"), "sub": testOperatorSubject,
 				"exp": time.Now().Add(time.Hour).Unix(), "cnf": map[string]string{"jkt": thumbprint}}
+			if r.Form.Get("resource") == "https://cloud.example/api" && opts.cloudSubject != "" {
+				claims["sub"] = opts.cloudSubject
+			}
 			_ = json.NewEncoder(w).Encode(oidcTokenResponse{AccessToken: testES256Token(t, authority, "authority", claims), RefreshToken: fmt.Sprintf("refresh-%d", n+1), ExpiresIn: 3600, TokenType: "DPoP"})
 		case "/v1/identity/certificate":
 			issues.Add(1)
@@ -365,3 +380,94 @@ func TestExplicitCertificateRefreshAcceptsShortPolicyLifetime(t *testing.T) {
 		t.Fatalf("explicit refresh counts=%d/%d", tokens.Load(), issues.Load())
 	}
 }
+
+func TestOIDCCertificateRefreshCheckpointsEveryRotation(t *testing.T) {
+	for _, cloudSubject := range []string{"", "different-operator"} {
+		t.Run("cloud subject "+cloudSubject, func(t *testing.T) {
+			checkpoints := 0
+			opts := reissueTestOptions{cloudSubject: cloudSubject, beforeRequest: func(r *http.Request) {
+				if r.URL.Path != "/jwks" && r.URL.Path != "/v1/identity/certificate" {
+					return
+				}
+				cfg, err := config.Load()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if cfg.Auth[0].RefreshToken != "refresh-2" {
+					t.Errorf("continued to %s before saving first rotation", r.URL.Path)
+				}
+				requireDefaultCloudAuthRefreshLock(t)
+				checkpoints++
+			}}
+			auth, tokens, issues := reissueTestSession(t, 200, testOperatorTenant, time.Now(), time.Now().Add(10*time.Minute), opts)
+			held := auth.Certificates[0].PemCertificate
+			unlock, err := acquireAuthRefreshLock(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Call the issuer directly so no final caller save can hide a missing
+			// checkpoint. A rejected Cloud token must still retain its successor.
+			err = refreshOIDCCertificate(context.Background(), auth, false)
+			unlock()
+			if (err != nil) != (cloudSubject != "") {
+				t.Fatalf("issuance result=%v", err)
+			}
+			cfg, loadErr := config.Load()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if cfg.Auth[0].RefreshToken != "refresh-3" {
+				t.Fatal("second rotation was not saved before return/validation")
+			}
+			if cfg.Auth[0].Certificates[0].PemCertificate != held {
+				t.Fatal("rotation checkpoint published uncommitted certificate custody")
+			}
+			if checkpoints != 2 || tokens.Load() != 2 || issues.Load() != 1 {
+				t.Fatalf("checkpoint/token/issue counts=%d/%d/%d", checkpoints, tokens.Load(), issues.Load())
+			}
+		})
+	}
+}
+
+func TestOIDCCertificateRefreshStopsAtFailedRotationCheckpoint(t *testing.T) {
+	for _, resource := range []string{"https://pki.example/identity", "https://cloud.example/api"} {
+		t.Run(resource, func(t *testing.T) {
+			opts := reissueTestOptions{beforeRequest: func(r *http.Request) {
+				if r.URL.Path != "/token" {
+					return
+				}
+				_ = r.ParseForm()
+				if r.Form.Get("resource") == resource {
+					// Losing the stored session makes the next durable checkpoint fail.
+					if err := config.Save(&config.Config{}); err != nil {
+						t.Error(err)
+					}
+				}
+			}}
+			auth, tokens, issues := reissueTestSession(t, 200, testOperatorTenant, time.Now(), time.Now().Add(10*time.Minute), opts)
+			held := auth.Certificates[0].PemCertificate
+			unlock, err := acquireAuthRefreshLock(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = refreshOIDCCertificate(context.Background(), auth, false)
+			unlock()
+			var persistence certificatePersistenceError
+			if !errors.As(err, &persistence) {
+				t.Fatalf("checkpoint failure was not fatal: %v", err)
+			}
+			wantTokens, wantIssues := int32(1), int32(0)
+			if resource == "https://cloud.example/api" {
+				wantTokens, wantIssues = 2, 1
+			}
+			if tokens.Load() != wantTokens || issues.Load() != wantIssues {
+				t.Fatalf("continued past failed checkpoint: token/issue=%d/%d", tokens.Load(), issues.Load())
+			}
+			if auth.Certificates[0].PemCertificate != held {
+				t.Fatal("accepted certificate after failed checkpoint")
+			}
+		})
+	}
+}
+
