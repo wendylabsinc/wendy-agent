@@ -56,6 +56,8 @@ func reissueCurrentCertificate(ctx context.Context, auth *config.AuthConfig) err
 	err = refreshDefaultCloudCertificateFn(reissueCtx, auth)
 	// Auth may have rotated the handle before issuance or validation failed.
 	// A persistence failure must remain fatal even if the held leaf is valid.
+	// SECURITY: persistOAuthSession uses config.Save's existing platform
+	// secret store and atomic 0600 config replacement under the auth lock.
 	if saveErr := persistOAuthSession(auth); saveErr != nil {
 		err = certificatePersistenceError{errors.Join(err, saveErr)}
 	}

@@ -136,6 +136,10 @@ func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause er
 	}
 	// An OIDC sign-in supplies issuance authority independently of the old
 	// leaf. This path also works in scripts; diagnostics stay on stderr.
+	// SECURITY: Silent recovery, including scripts, is authorized by the
+	// scoped AAA exception recorded in organization docs/aaa.md (2026-10-21).
+	// PKI owns certificate issuance and its authority-event audit (AAA
+	// sections 5.2 and 12); optional CLI telemetry adds no issuance authority.
 	cfg, loadErr := config.Load()
 	if loadErr != nil {
 		return nil, errors.Join(cause, loadErr)
