@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -175,4 +176,100 @@ func selectionDevice(number int) meshid.Device {
 	tenant, _ := meshid.ParseTenant(testTenantUUID)
 	device, _ := meshid.ParseDevice(tenant, fmt.Sprintf("00000000-0000-4000-8000-%012x", number))
 	return device
+}
+
+func TestPeerSelectionBoundsUntrustedCandidatesAndExpiresOnInsert(t *testing.T) {
+	now := time.Now()
+	live, failed := selectionDevice(1), selectionDevice(2)
+	p := NewPeerSelection(func() NodeSnapshot {
+		return NodeSnapshot{Links: []PeerLink{{Device: live, Cost: 512}}}
+	})
+	p.now = func() time.Time { return now }
+	p.Connected(live, RadioNAN)
+	p.Seen(failed, RadioNAN)
+	p.Failed(failed, RadioNAN)
+	for number := 3; number <= 3*maxRadioCandidates; number++ {
+		p.Seen(selectionDevice(number), RadioNAN)
+		if len(p.seen) > maxRadioCandidates {
+			t.Fatalf("untrusted principal flood retained %d candidates", len(p.seen))
+		}
+	}
+	if len(p.seen) != maxRadioCandidates {
+		t.Fatalf("cache did not retain its bounded working set: %d", len(p.seen))
+	}
+	if _, ok := p.seen[radioCandidateKey{selectionDevice(3), RadioNAN}]; ok {
+		t.Fatal("deterministic oldest-principal eviction retained the oldest unprotected hint")
+	}
+	if _, ok := p.seen[radioCandidateKey{live, RadioNAN}]; !ok {
+		t.Fatal("candidate flood evicted a live authenticated peer")
+	}
+	key := radioCandidateKey{failed, RadioNAN}
+	until := p.seen[key].failedUntil
+	if until != now.Add(30*time.Second) {
+		t.Fatal("candidate flood discarded a pending retry cooldown")
+	}
+	p.Seen(failed, RadioNAN)
+	if p.seen[key].failedUntil != until {
+		t.Fatal("repeated discovery reset the retry cooldown")
+	}
+	// No AllowRadio call is needed to reclaim stale discovery entries.
+	now = now.Add(61 * time.Second)
+	p.Seen(selectionDevice(9999), RadioNAN)
+	if len(p.seen) != 2 {
+		t.Fatalf("expired candidates survived insertion: %d", len(p.seen))
+	}
+	if _, ok := p.seen[radioCandidateKey{live, RadioNAN}]; !ok {
+		t.Fatal("expiry discarded the live authenticated peer's record")
+	}
+}
+
+func TestPeerSelectionBoundsEveryCandidateInsertion(t *testing.T) {
+	for _, method := range []string{"seen", "failed", "connected"} {
+		t.Run(method, func(t *testing.T) {
+			p := NewPeerSelection(nil)
+			now := time.Now()
+			p.now = func() time.Time { return now }
+			for number := 1; number <= 2*maxRadioCandidates; number++ {
+				device := selectionDevice(number)
+				switch method {
+				case "seen":
+					p.Seen(device, RadioNAN)
+				case "failed":
+					p.Failed(device, RadioNAN)
+				case "connected":
+					p.Connected(device, RadioNAN)
+				}
+				if len(p.seen) > maxRadioCandidates {
+					t.Fatalf("%s retained %d entries", method, len(p.seen))
+				}
+			}
+			now = now.Add(61 * time.Second)
+			p.Seen(selectionDevice(9999), RadioBLE)
+			if len(p.seen) != 1 {
+				t.Fatalf("%s entries were not reclaimed on expiry: %d", method, len(p.seen))
+			}
+		})
+	}
+}
+
+func TestPeerSelectionConcurrentCandidateFlood(t *testing.T) {
+	p := NewPeerSelection(func() NodeSnapshot { return NodeSnapshot{} })
+	var workers sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for number := 1; number <= maxRadioCandidates; number++ {
+				device := selectionDevice(worker*maxRadioCandidates + number)
+				p.Seen(device, RadioNAN)
+				p.Failed(device, RadioNAN)
+				p.Connected(device, RadioNAN)
+				p.AllowRadio(device, RadioNAN)
+			}
+		}()
+	}
+	workers.Wait()
+	if len(p.seen) > maxRadioCandidates {
+		t.Fatalf("concurrent advertisements retained %d entries", len(p.seen))
+	}
 }

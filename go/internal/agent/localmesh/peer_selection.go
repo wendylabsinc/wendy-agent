@@ -45,16 +45,57 @@ func NewPeerSelection(snapshot func() NodeSnapshot) *PeerSelection {
 	return &PeerSelection{snapshot: snapshot, seen: make(map[radioCandidateKey]radioCandidate), now: time.Now}
 }
 
-func (p *PeerSelection) Seen(asset meshid.Device, medium RadioMedium) {
+// Discovery can contain arbitrarily many unauthenticated NAN principals. This
+// cache is only a scheduling hint; it must stay bounded even if radio selection
+// never reaches the branch that considers redundant links.
+const maxRadioCandidates = 256
+
+func (p *PeerSelection) rememberCandidate(asset meshid.Device, medium RadioMedium, update func(*radioCandidate, time.Time)) {
 	if p == nil || asset == (meshid.Device{}) || (medium != RadioNAN && medium != RadioBLE) {
 		return
 	}
+	// Fetch the authenticated snapshot outside the hint lock. Cache eviction
+	// never changes that connection state or discards a live peer's record.
+	connected := make(map[meshid.Device]bool)
+	if p.snapshot != nil {
+		for _, link := range p.snapshot().Links {
+			connected[link.Device] = true
+		}
+	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	for key, hint := range p.seen {
+		if !connected[key.asset] && now.Sub(hint.seen) > 60*time.Second && !now.Before(hint.failedUntil) {
+			delete(p.seen, key)
+		}
+	}
 	key := radioCandidateKey{asset, medium}
+	if _, exists := p.seen[key]; !exists && len(p.seen) >= maxRadioCandidates {
+		var oldest radioCandidateKey
+		var oldestTime time.Time
+		found := false
+		for candidate, hint := range p.seen {
+			if connected[candidate.asset] || now.Before(hint.failedUntil) {
+				continue
+			}
+			before := candidate.asset.Principal() < oldest.asset.Principal() || (candidate.asset == oldest.asset && candidate.medium < oldest.medium)
+			if !found || hint.seen.Before(oldestTime) || (hint.seen.Equal(oldestTime) && before) {
+				oldest, oldestTime, found = candidate, hint.seen, true
+			}
+		}
+		if !found {
+			return // retain live peers and outstanding retry cooldowns
+		}
+		delete(p.seen, oldest)
+	}
 	hint := p.seen[key]
-	hint.seen = p.now()
+	update(&hint, now)
 	p.seen[key] = hint
-	p.mu.Unlock()
+}
+
+func (p *PeerSelection) Seen(asset meshid.Device, medium RadioMedium) {
+	p.rememberCandidate(asset, medium, func(hint *radioCandidate, now time.Time) { hint.seen = now })
 }
 
 // Failed marks a discovery hint temporarily unavailable after a failed radio
@@ -62,28 +103,14 @@ func (p *PeerSelection) Seen(asset meshid.Device, medium RadioMedium) {
 // still retry it; the cooldown only stops a dead candidate from suppressing a
 // useful second radio path to an already authenticated peer.
 func (p *PeerSelection) Failed(asset meshid.Device, medium RadioMedium) {
-	if p == nil || asset == (meshid.Device{}) || (medium != RadioNAN && medium != RadioBLE) {
-		return
-	}
-	p.mu.Lock()
-	key := radioCandidateKey{asset, medium}
-	hint := p.seen[key]
-	hint.failedUntil = p.now().Add(30 * time.Second)
-	p.seen[key] = hint
-	p.mu.Unlock()
+	p.rememberCandidate(asset, medium, func(hint *radioCandidate, now time.Time) { hint.failedUntil = now.Add(30 * time.Second) })
 }
 
 func (p *PeerSelection) Connected(asset meshid.Device, medium RadioMedium) {
-	if p == nil || asset == (meshid.Device{}) || (medium != RadioNAN && medium != RadioBLE) {
-		return
-	}
-	p.mu.Lock()
-	key := radioCandidateKey{asset, medium}
-	hint := p.seen[key]
-	hint.seen = p.now()
-	hint.failedUntil = time.Time{}
-	p.seen[key] = hint
-	p.mu.Unlock()
+	p.rememberCandidate(asset, medium, func(hint *radioCandidate, now time.Time) {
+		hint.seen = now
+		hint.failedUntil = time.Time{}
+	})
 }
 
 func (p *PeerSelection) HasLAN(asset meshid.Device) bool {
@@ -218,7 +245,7 @@ func (p *PeerSelection) AllowRadioReason(asset meshid.Device, medium RadioMedium
 	defer p.mu.Unlock()
 	now := p.now()
 	for key, hint := range p.seen {
-		if now.Sub(hint.seen) > 60*time.Second {
+		if now.Sub(hint.seen) > 60*time.Second && !now.Before(hint.failedUntil) {
 			delete(p.seen, key)
 			continue
 		}

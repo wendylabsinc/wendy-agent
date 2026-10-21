@@ -93,7 +93,7 @@ func (i lanInterface) key() string {
 // discovery listener without restarting the mesh agent.
 func RunLAN(ctx context.Context, cfg LANConfig) error {
 	if cfg.Credentials == nil || cfg.Node == nil {
-		return errors.New("LAN mesh requires credentials and node")
+		return errors.New("LAN carrier requires credentials and node")
 	}
 	return runLANWithScan(ctx, cfg, func() ([]lanInterface, error) {
 		return scanLANInterfaces(cfg.Ethernet, cfg.InfrastructureWiFi)
@@ -154,7 +154,7 @@ func runLANWithScan(ctx context.Context, cfg LANConfig, scan func() ([]lanInterf
 				defer close(done)
 				// A failed bind or mDNS join can recover on the next scan.
 				if err := runLANInterface(workerCtx, cfg, iface, claims); err != nil && workerCtx.Err() == nil && cfg.Logger != nil {
-					cfg.Logger.Warn("LAN mesh interface stopped", zap.String("interface", iface.iface.Name), zap.Error(err))
+					cfg.Logger.Warn("LAN carrier interface stopped", zap.String("interface", iface.iface.Name), zap.Error(err))
 				}
 			}()
 		}
@@ -292,7 +292,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 		<-mdnsDone
 	}()
 	if cfg.Logger != nil {
-		cfg.Logger.Info("LAN mesh interface ready", zap.String("interface", selected.iface.Name), zap.String("address", listener.Addr().String()), zap.Uint16("cost", selected.cost))
+		cfg.Logger.Info("LAN carrier interface ready", zap.String("interface", selected.iface.Name), zap.String("address", listener.Addr().String()), zap.Uint16("cost", selected.cost))
 	}
 	var wg sync.WaitGroup
 	acceptDone := make(chan struct{})
@@ -358,7 +358,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 				continue
 			}
 			if cfg.Logger != nil {
-				cfg.Logger.Debug("LAN mesh peer discovered", zap.String("device", asset.Principal()), zap.String("interface", selected.iface.Name), zap.String("address", ip.String()))
+				cfg.Logger.Debug("LAN peer discovered", zap.String("device", asset.Principal()), zap.String("interface", selected.iface.Name), zap.String("address", ip.String()))
 			}
 			wg.Add(1)
 			go func() {
@@ -372,7 +372,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 				conn, err := dialer.DialContext(ctx, "tcp4", net.JoinHostPort(ip.String(), strconv.Itoa(LANPort)))
 				if err != nil {
 					if cfg.Logger != nil {
-						cfg.Logger.Debug("LAN mesh peer dial failed", zap.String("device", asset.Principal()), zap.Error(err))
+						cfg.Logger.Debug("LAN peer dial failed", zap.String("device", asset.Principal()), zap.Error(err))
 					}
 					return
 				}
@@ -381,7 +381,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 				defer stop()
 				if writeTCPPreface(conn, cfg.Credentials.Device) == nil {
 					if err := attachLAN(ctx, cfg, selected, asset, conn, false); err != nil && ctx.Err() == nil && cfg.Logger != nil {
-						cfg.Logger.Debug("LAN mesh peer link ended", zap.String("device", asset.Principal()), zap.Error(err))
+						cfg.Logger.Debug("LAN peer link ended", zap.String("device", asset.Principal()), zap.Error(err))
 					}
 				}
 			}()

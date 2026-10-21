@@ -17,8 +17,8 @@ func newDeviceLocalMeshCmd() *cobra.Command {
 	configure.Flags().Bool("share-uplink", false, "Offer an independent uplink to the net")
 	configure.Flags().Bool("nan", false, "Enable Wi-Fi Aware NAN as a net carrier")
 	configure.Flags().Bool("ble", false, "Enable BLE L2CAP as a net carrier")
-	configure.Flags().Bool("ethernet", false, "Discover local mesh peers over Ethernet")
-	configure.Flags().Bool("infrastructure-wifi", false, "Discover local mesh peers over infrastructure Wi-Fi")
+	configure.Flags().Bool("ethernet", false, "Discover local net peers over Ethernet")
+	configure.Flags().Bool("infrastructure-wifi", false, "Discover local net peers over infrastructure Wi-Fi")
 	configure.RunE = func(cmd *cobra.Command, _ []string) error {
 		req, err := localMeshRequest(cmd)
 		if err != nil {
