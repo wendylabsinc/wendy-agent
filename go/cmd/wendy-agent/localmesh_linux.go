@@ -38,7 +38,7 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 		// The active runner has drained providers, sharing, catalog and Babel
 		// before this reports disabled. Keep saved carrier choices for re-enable.
 		sharing.carriers.begin("", nil)
-		state := services.LocalMeshRuntimeStatus{Available: true, State: "disabled", Detail: "Local mesh participation is disabled."}
+		state := services.LocalMeshRuntimeStatus{Available: true, State: "disabled", Detail: "Wendy Net participation is disabled."}
 		if err != nil {
 			state.State, state.Detail = "failed", err.Error()
 		}
@@ -76,7 +76,9 @@ func runEnabledMeshCarriers(ctx context.Context, configDir string, id localmesh.
 			names = append(names, "LAN")
 		}
 	}
-	if err != nil {
+	if len(names) == 0 {
+		// A present document without enabled carriers still needs a status
+		// slot: identity or strict config validation can fail below.
 		names = []string{"Mesh"}
 	}
 	epoch := sharing.carriers.begin(string(initial), names)

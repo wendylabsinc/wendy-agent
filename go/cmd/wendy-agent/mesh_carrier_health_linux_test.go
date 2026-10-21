@@ -66,3 +66,25 @@ func TestParticipationOverridesEnabledCarriersBeforeIdentityOrNetwork(t *testing
 		t.Fatalf("saved choices changed: %s %v", saved, err)
 	}
 }
+
+func TestCarrierStartupFailureWithoutEnabledCarrierNames(t *testing.T) {
+	for _, raw := range []string{`{}`, `null`, `{"unrecognizedCarrier":true}`} {
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "local-mesh.json"), []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			sharing := &meshSharingManager{}
+			// Exercise the status initialization before invalid credentials stop
+			// startup, without touching host routing or network interfaces.
+			err := runEnabledMeshCarriers(context.Background(), dir, localmesh.TCPIdentity{}, zap.NewNop(), nil, nil, sharing, nil)
+			if err == nil {
+				t.Fatal("invalid startup accepted")
+			}
+			state := sharing.Status()
+			if !state.Available || state.State != "failed" || !strings.Contains(state.Detail, "Mesh: failed") {
+				t.Fatalf("startup failure hidden without named carriers: %+v", state)
+			}
+		})
+	}
+}
