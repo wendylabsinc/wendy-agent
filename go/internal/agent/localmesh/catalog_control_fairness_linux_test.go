@@ -70,7 +70,9 @@ func TestCatalogueFairnessPreservesQueuedRenewalGuardsAcrossBlockedWrite(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := Manifest{Version: 1, Device: old.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	manifest := routeManifest(old.Device, now)
+	manifest.Revision = 1
+	manifest.Expires = now.Add(time.Minute).UnixMilli()
 	obsolete, err := SignManifest(manifest, old.Certificate.Certificate, old.Signer, now)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +80,7 @@ func TestCatalogueFairnessPreservesQueuedRenewalGuardsAcrossBlockedWrite(t *test
 	if _, err := directory.Accept(obsolete, now); err != nil {
 		t.Fatal(err)
 	}
+	assertWarmRouteAuthorities(t, directory, now, obsolete)
 	link := &heldManifestControlLink{entered: make(chan struct{}), release: make(chan struct{}), written: make(chan ControlMessage, 32)}
 	p := &nodePeer{link: link, control: make(chan ControlMessage, 16), catalog: make(chan ControlMessage, 4)}
 	p.control <- ControlMessage{Kind: "identity-request", Principal: "barrier"}
@@ -109,6 +112,7 @@ func TestCatalogueFairnessPreservesQueuedRenewalGuardsAcrossBlockedWrite(t *test
 	if _, err := cache.Put(current.Certificate.Certificate, now); err != nil {
 		t.Fatal(err)
 	}
+	assertWarmRouteAuthorities(t, directory, now)
 	admitted, err := SignManifest(manifest, current.Certificate.Certificate, current.Signer, now)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +120,7 @@ func TestCatalogueFairnessPreservesQueuedRenewalGuardsAcrossBlockedWrite(t *test
 	if changed, err := directory.Accept(admitted, now); err != nil || !changed {
 		t.Fatal("current signature was not admitted", changed, err)
 	}
+	assertWarmRouteAuthorities(t, directory, now, admitted)
 	p.control <- ControlMessage{Kind: "manifest", Manifest: &admitted}
 	for i := range 8 {
 		p.control <- ControlMessage{Kind: "identity-request", Principal: fmt.Sprintf("urgent-%d", i)}
