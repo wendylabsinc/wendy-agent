@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/networkaccess"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
@@ -421,6 +422,23 @@ func UpdateAvahiForUnprovisioning(logger *zap.Logger, plaintextPort int) {
 	updateAvahiService(logger, defaultAvahiServiceDir, plaintextPort, false, 0, 0, func() bool {
 		return restartAvahiDaemon(logger, nil)
 	})
+}
+
+// ApplyDiscoveryAccess hides or restores Wendy's avahi advertisements to match
+// the saved network access choice. Best-effort like the other discovery
+// updates: local mode binds only loopback anyway, so a read-only or
+// locked-down /etc is logged rather than stopping the agent.
+func ApplyDiscoveryAccess(logger *zap.Logger, policy networkaccess.Policy) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
+	changed, err := policy.UpdateAdvertisements(defaultAvahiServiceDir)
+	if err != nil {
+		logger.Warn("Could not apply discovery access choice", zap.Error(err))
+	}
+	if changed {
+		restartAvahiDaemon(logger, nil)
+	}
 }
 
 // defaultAvahiServiceDir is the directory scanned for avahi service files on

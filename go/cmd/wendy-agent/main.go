@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -153,13 +152,7 @@ func main() {
 		logger.Fatal("Invalid network access configuration", zap.Error(err))
 	}
 	logger.Info("Agent network access", zap.Bool("allowed", accessPolicy.AllowsNetwork))
-	if changed, err := accessPolicy.UpdateAdvertisements("/etc/avahi/services"); err != nil {
-		logger.Fatal("Could not apply discovery access choice", zap.Error(err))
-	} else if changed {
-		if err := exec.Command("systemctl", "try-restart", "avahi-daemon").Run(); err != nil {
-			logger.Warn("Could not reload discovery advertisements", zap.Error(err))
-		}
-	}
+	configpartition.ApplyDiscoveryAccess(logger, accessPolicy)
 
 	configpartition.Apply(logger, configPath)
 
@@ -854,7 +847,7 @@ func main() {
 		}
 		mtlsPort := strconv.Itoa(portNum + 1)
 
-		lis, err := net.Listen("tcp", accessPolicy.Address(mtlsPort))
+		lis, err := listenForAccess(accessPolicy, mtlsPort)
 		if err != nil {
 			logger.Error("Failed to listen on mTLS port", zap.String("port", mtlsPort), zap.Error(err))
 			return
@@ -913,7 +906,11 @@ func main() {
 	}()
 	meshDialer = services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
 	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
-	if err := meshProxy.Start(accessPolicy.Address(strconv.Itoa(mesh.ProxyPort))); err != nil {
+	// Not scoped by accessPolicy: the nat REDIRECT rewrites container traffic
+	// to the bridge address, which a loopback listener never receives. The
+	// proxy only relays connections whose original destination is a mesh VIP,
+	// so a direct connection from another host is closed without effect.
+	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
 	}
 
@@ -991,7 +988,7 @@ func main() {
 		)
 		registerAllServices(agentServer)
 
-		agentLis, err := net.Listen("tcp", accessPolicy.Address(agentPort))
+		agentLis, err := listenForAccess(accessPolicy, agentPort)
 		if err != nil {
 			logger.Fatal("Failed to listen on agent port", zap.String("port", agentPort), zap.Error(err))
 		}
