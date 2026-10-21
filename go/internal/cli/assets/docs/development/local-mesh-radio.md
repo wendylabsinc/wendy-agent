@@ -1,11 +1,28 @@
-# Wendy Lite leaves over BLE
+# Connect Wendy Lite to Wendy Net over Bluetooth
 
-The optional BLE leaf provider connects Linux routers to enrolled Wendy Lite
-endpoints without requiring those endpoints to join a Wi-Fi access point.
-It is separate from the existing router-to-router BLE provider. TCP leaves and
-other net carriers remain available.
+Connect an enrolled Wendy Lite board to a nearby WendyOS device without joining
+a Wi-Fi access point. The WendyOS device carries the board's Wendy Net traffic
+onward. The Lite board is an endpoint: it does not relay traffic for other devices.
 
-Add `leafBLEPeers` and `leafTimeURL` to the router's existing `local-mesh.json`:
+This is an advanced setup that requires compatible Lite firmware and explicit
+peer configuration. For ordinary WendyOS-to-WendyOS Bluetooth links, use
+[Wendy Net over Bluetooth](/docs/hardware/bluetooth#wendy-net-over-bluetooth).
+
+## Before you start
+
+- Enroll both devices in the same Wendy Cloud organization.
+- Use a WendyOS device with Bluetooth and full Wendy Net support.
+- Ask your firmware administrator for the board's enrolled device UUID,
+  Bluetooth address, address type, and signed-time service URL.
+- The Lite firmware must enable Bluetooth networking, trust the time service,
+  and be configured with the WendyOS device's enrolled UUID.
+
+Automatic Lite peer discovery and rotating Bluetooth addresses are not supported.
+
+## Configure the WendyOS device
+
+Merge the following fields into its existing
+`/etc/wendy-agent/local-mesh.json`, preserving the other settings:
 
 ```json
 {
@@ -15,45 +32,42 @@ Add `leafBLEPeers` and `leafTimeURL` to the router's existing `local-mesh.json`:
     "addressType": "public",
     "psm": 129
   }],
-  "leafTimeURL": "https://your-enrolled-timestamp-authority.example/timestamp"
+  "leafTimeURL": "https://your-time-service.example/timestamp"
 }
 ```
 
-Replace the example values with the leaf's enrolled UUID, Bluetooth address and
-signed-time authority URL. The router uses its system HTTPS trust store for the
-authority. Preserve existing carriers and peers. Linux needs Bluetooth hardware
-and permission to open LE L2CAP sockets.
+Replace all example values. `device` is the Lite board's enrolled UUID, not its
+hardware ID. Use a different UUID for each board. Keep the file and its directory
+owned by the agent's system user and unwritable by other users. Restart
+`wendyos-agent.service` after editing.
 
-The ESP32 build must select `WENDY_MESH_BLE`, reserve at least two NimBLE CoC
-channels, and use the same PSM. Its `WENDY_MESH_ROUTER_DEVICE` pins the router's
-enrolled UUID. The default net PSM is 129; WendyCom management uses 128.
-Bluetooth addresses locate peers; they do not authorize identities.
+## Check the connection
 
-The Linux router dials the ESP32's L2CAP listener but remains the TLS server.
-Before TLS it relays one bounded RFC 3161 timestamp request to `leafTimeURL`.
-The endpoint verifies the authority's signature, its random nonce and its
-persisted clock floor itself. TLS then authenticates both device principals
-with `wendy-local-mesh-leaf/3`. Existing signed-route, replay and packet-source
-checks apply unchanged. No caller-supplied URL, credentials or unsigned clock
-value is accepted by the timestamp relay.
+```sh
+wendy device wendy-net status --device <wendyos-device>
+wendy device wendy-net topology --device <wendyos-device>
+```
 
-At most eight explicitly configured leaves are dialed, with one retry worker
-per identity. Carrier readiness means the workers are running. Inspect node
-links to check that a peer actually authenticated. Automatic discovery and
-rotating Bluetooth addresses are not supported. The leaf retains its existing
-125-second cold-boot replay quarantine and five-minute fresh-time limit.
+Check for an authenticated link to the Lite board. A running Bluetooth provider
+alone does not mean the board connected. On a cold boot, allow at least two
+minutes for the board's replay protection before expecting normal traffic.
+If it does not connect, check the configured identities, Bluetooth address,
+firmware, and access to the signed-time service.
 
-This is a BLE carrier for Wendy Net, not the Bluetooth SIG Mesh protocol.
-Wendy Lite also supports a separate direct ESP-NOW link between two ESP32-S3
-endpoints. Linux does not transmit ESP-NOW frames in this implementation.
-Lite still advertises only its own IPv6 /128 and does not forward packets for
-other endpoints.
+Lite connections share the adapter's capacity with other Wendy Net Bluetooth
+links. Bluetooth is intended for low-bandwidth traffic; use Ethernet or Wi-Fi
+where available.
 
-Validation covers timestamp framing and bounds, refusal of redirects and
-non-HTTPS URLs, cancellation, configuration validation and existing TLS and
-signed-leaf checks. The ARM64 agent builds. On 2026-10-18, an ESP32-S3 DevKit
-with 8 MB PSRAM authenticated over BLE to a Linux ARM64 router with no Wi-Fi
-credentials on the leaf. The router verified the leaf's signed route leases,
-and the leaf activated its IPv6 interface after the replay barrier. The operator
-confirmed the BLE link worked. ESP-NOW between physical boards and sustained
-radio throughput remain untested.
+## Advanced configuration reference
+
+| Field | Meaning |
+| --- | --- |
+| `leafBLEPeers` | Up to eight explicitly configured Lite boards; physical Bluetooth connection limits still apply. |
+| `addressType` | `public` (default) or `random`. Each address/type pair must be unique. |
+| `psm` | Bluetooth service port, 128–255; defaults to 129. Keep 128 free if WendyCom management uses it. The firmware must use the same value. |
+| `leafTimeURL` | Required HTTPS signed-time URL when Lite peers are configured. Credentials, query strings and fragments are not accepted. |
+
+For custom firmware, enable `WENDY_MESH_BLE`, reserve at least two NimBLE
+connection-oriented channels, and set `WENDY_MESH_ROUTER_DEVICE` to the WendyOS
+device UUID. These are firmware settings, not Wendy CLI options. A Bluetooth
+address locates a board; enrollment authenticates it.

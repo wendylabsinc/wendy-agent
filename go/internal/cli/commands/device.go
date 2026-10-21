@@ -860,8 +860,8 @@ func newDeviceEnrollCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "enroll",
 		Annotations: map[string]string{"wendy.local-enrollment": "true"},
-		Short:       "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:        "Enrolls the selected device using your stored auth session. WendyOS uses agent gRPC provisioning; Wendy Lite requires USB for Class C enrollment and reboots to obtain its certificate from pki-core. Run 'wendy auth login' first.",
+		Short:       "Enroll this device in Wendy Cloud",
+		Long:        "Add the selected device to your organization using your saved sign-in. Run 'wendy cloud login' first. For Wendy Lite, connect over USB and keep it connected while the board reboots and completes enrollment.",
 		Hidden:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -888,7 +888,7 @@ func newDeviceEnrollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
 	cmd.Flags().StringVar(&acmeDirectoryURL, "acme-directory-url", "", "ACME directory URL override for custom PKI deployments (OIDC accounts only)")
 	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID override for legacy enrollment; OIDC enrollment uses the session's tenant")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use; limits the organization picker to this endpoint")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud API endpoint of the saved sign-in to use")
 	cmd.Flags().StringVar(&liteOptions.brokerHost, "broker-host", "", "WendyCom broker TLS hostname (defaults to the Lite relay for the selected Cloud session)")
 	cmd.Flags().Uint32Var(&liteOptions.brokerPort, "broker-port", 5055, "WendyCom broker TLS port for Wendy Lite")
 	cmd.Flags().StringVar(&liteOptions.csrURL, "csr-url", "", "CSR enrollment base URL override for Wendy Lite on self-hosted PKI")

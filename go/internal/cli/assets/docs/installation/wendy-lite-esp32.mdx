@@ -169,6 +169,13 @@ Wendy:
 5. Uploads the native application firmware, reboots the ESP32, and reconnects.
 6. Streams the ESP-IDF console output back to your terminal.
 
+## Optional: manage the board through Wendy Cloud
+
+For remote access, connect the board over USB, configure its Wi-Fi, and
+[enroll it in Wendy Cloud](/docs/advanced/cli/lite-enrollment). The enrollment
+guide walks through sign-in, board selection, and checking that it comes online.
+You can keep developing locally without Cloud enrollment.
+
 ## Optional WASM Apps
 
 Wendy Lite can also run Swift and other WebAssembly guests on firmware variants with WASM support. This path is useful when application portability is more important than direct access to the complete ESP-IDF API. See the [Wendy Lite reference](/docs/advanced/wendy-lite) for the WASM SDK, host API, and deployment details.
