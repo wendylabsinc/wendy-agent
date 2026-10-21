@@ -152,7 +152,7 @@ func TestReportFailure_StepsLeaveTheMessage(t *testing.T) {
 	if got.Message != wantMessage {
 		t.Errorf("message = %q, want %q", got.Message, wantMessage)
 	}
-	if !reflect.DeepEqual(got.NextSteps, []string{}) {
+	if !reflect.DeepEqual(got.NextSteps, []string{"Confirm it with 'wendy device get-default'."}) {
 		t.Errorf("next_steps = %q", got.NextSteps)
 	}
 }
@@ -168,7 +168,7 @@ func TestReportFailure_EnvelopeTextIsPlain(t *testing.T) {
 	}
 	reportFailure(&out, tlsErr, nil, []string{"--json"})
 	if strings.Contains(out.String(), "Retry with --device <host>.") || strings.Contains(out.String(), "u003c") {
-		t.Errorf("advice was HTML-escaped or lost: %s", out.String())
+		t.Errorf("unapproved advice reached output: %s", out.String())
 	}
 	got := decodeEnvelope(t, out.String())
 	if got.Message != "The device rejected the secure connection. Its clock or certificates may need attention." || len(got.NextSteps) != 2 {
@@ -206,7 +206,7 @@ func (e inlineAdviceError) NextSteps() []string { return e.steps }
 
 // Advice that sits in the message must reach next_steps, and leave the
 // message, whatever its layout.
-func TestReportFailure_AdviceInTheMessageBecomesNextSteps(t *testing.T) {
+func TestReportFailure_UnapprovedAdviceNeverReachesTheEnvelope(t *testing.T) {
 	var out strings.Builder
 	reportFailure(&out, commands.UnknownSubcommandError([]string{"device", "inf"}), nil, []string{"--json", "device", "inf"})
 	got := decodeEnvelope(t, out.String())

@@ -477,7 +477,7 @@ func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) 
 			if !ok {
 				return nil
 			}
-			cliLogln("%s", usermessage.Sprintf("watch error: %v", watchErr))
+			cliLogln("%s", usermessage.Sprintf("Watch stopped: %v", watchErr))
 		case <-timer.C:
 			if pending {
 				pending = false

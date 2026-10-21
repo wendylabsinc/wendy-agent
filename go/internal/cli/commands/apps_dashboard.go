@@ -273,6 +273,7 @@ func appsDashPollFlash(err error) string {
 }
 
 func userFacingGRPCError(err error) string {
+	usermessage.Debug(err)
 	return usermessage.Explain(err, ExecutionErrorClass(err)).Text()
 }
 
@@ -513,7 +514,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case appsDashActionResultMsg:
 		if msg.err != nil {
-			m.flash = usermessage.Sprintf("Error: %s", msg.err)
+			m.flash = usermessage.Sprintf("%s", msg.err)
 		} else {
 			m.flash = msg.text
 		}

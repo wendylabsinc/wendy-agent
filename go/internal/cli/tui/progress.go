@@ -140,7 +140,7 @@ func (m ProgressModel) View() string {
 			}
 			return fmt.Sprintf("%s (failed)\n%s%s%s\n", m.title, details, m.progress.ViewAs(percent), byteInfo)
 		}
-		return usermessage.Sprintf("Error: %v\n", m.err)
+		return usermessage.Sprintf("%v\n", m.err)
 	}
 
 	if m.done {

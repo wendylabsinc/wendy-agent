@@ -264,7 +264,7 @@ func newCacheListCmd() *cobra.Command {
 
 				for _, item := range selected {
 					if err := os.RemoveAll(item.Value); err != nil {
-						usermessage.Fprintf(os.Stderr, "error: removing %s: %v\n", item.Label, err)
+						usermessage.Fprintf(os.Stderr, "Could not remove %s: %v\n", item.Label, err)
 					} else {
 						fmt.Printf("Deleted %s\n", item.Label)
 					}

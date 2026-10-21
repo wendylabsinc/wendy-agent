@@ -99,7 +99,7 @@ func (m SpinnerModel) View() string {
 	}
 	if m.done {
 		if m.err != nil {
-			return usermessage.Sprintf("Error: %v\n", m.err)
+			return usermessage.Sprintf("%v\n", m.err)
 		}
 		return ""
 	}

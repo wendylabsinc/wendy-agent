@@ -759,7 +759,7 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.startingApp = ""
 		if msg.err != nil {
-			m.actionStatus = usermessage.Sprintf("Error starting %s: %s", msg.app, userFacingGRPCError(msg.err))
+			m.actionStatus = usermessage.Sprintf("Could not start %s: %s", msg.app, userFacingGRPCError(msg.err))
 		} else {
 			m.actionStatus = "Started " + msg.app
 		}
@@ -770,7 +770,7 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pruningCache = false
 		if msg.err != nil {
-			m.actionStatus = "Error clearing cache: " + userFacingGRPCError(msg.err)
+			m.actionStatus = "Could not clear the cache. " + userFacingGRPCError(msg.err)
 		} else {
 			m.actionStatus = msg.text
 		}
@@ -839,7 +839,7 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stoppingApp = ""
 		if msg.err != nil {
-			m.actionStatus = usermessage.Sprintf("Error stopping %s: %s", msg.app, userFacingGRPCError(msg.err))
+			m.actionStatus = usermessage.Sprintf("Could not stop %s: %s", msg.app, userFacingGRPCError(msg.err))
 		} else {
 			m.actionStatus = fmt.Sprintf("Stopped %s", msg.app)
 		}

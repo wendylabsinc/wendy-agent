@@ -978,7 +978,7 @@ func (m discoverModel) View() string {
 	sb.WriteString("\n")
 
 	if m.err != nil {
-		sb.WriteString(m.viewLine(usermessage.Sprintf("Error: %v", m.err)) + "\n")
+		sb.WriteString(m.viewLine(usermessage.Sprintf("%v", m.err)) + "\n")
 	}
 
 	if !m.collection.IsEmpty() {

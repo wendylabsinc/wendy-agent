@@ -95,25 +95,8 @@ func newErrorEnvelope(err error, class string, outcome errorOutcome, executed *c
 // minus the approved recovery steps, which it returns separately.
 // Arbitrary diagnostic strings and attached steps are never display text.
 func plainErrorReport(err error) (string, []string) {
-	f := formatErrorParts(err)
-	text := f.text
-	for _, step := range f.steps {
-		text = withoutStep(text, step)
-	}
-	return strings.TrimSpace(ansi.Strip(text)), cleanSteps(f.steps)
-}
-
-// withoutStep removes the first occurrence of step from text, together with
-// what separates it from the text before it: the standard indented line
-// ("\n  step"), a plain line ("\nstep"), or a sentence in the same line
-// (" step"), tried in that order.
-func withoutStep(text, step string) string {
-	for _, sep := range []string{"\n  ", "\n", " "} {
-		if strings.Contains(text, sep+step) {
-			return strings.Replace(text, sep+step, "", 1)
-		}
-	}
-	return text
+	r := usermessage.Explain(err, commands.ExecutionErrorClass(err))
+	return r.Message, cleanSteps(r.Steps)
 }
 
 // cleanSteps strips styling, drops blank and repeated steps, and never

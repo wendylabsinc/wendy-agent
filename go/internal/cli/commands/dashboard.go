@@ -423,7 +423,7 @@ func padVisible(s string, width int) string {
 
 func (m dashboardModel) View() string {
 	if m.err != nil {
-		return usermessage.Sprintf("Error: %v\n", m.err)
+		return usermessage.Sprintf("%v\n", m.err)
 	}
 
 	w := m.width
