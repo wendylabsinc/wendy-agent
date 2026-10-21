@@ -62,19 +62,23 @@ jobs:
     # Each task appends one line to $RUNNER_TEMP/janitor-findings.txt for the
     # run summary and the #feed-janitor report.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
+      # Before checkout, and the runner first: the alarm and the #feed-janitor
+      # report read a missing runner or free space as "the Mac never picked up
+      # the job", so a failed checkout must not leave them empty.
       - name: Record free space before
         id: before
         run: |
           set -euo pipefail
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
           : > "$RUNNER_TEMP/janitor-findings.txt"
           df -h "$GITHUB_WORKSPACE"
           free_gib=$(($(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
           echo "free_gib=$free_gib" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        id: checkout
 
       - name: Remove leaked per-run builders
         id: builders
