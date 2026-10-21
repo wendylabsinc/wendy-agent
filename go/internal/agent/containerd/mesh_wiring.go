@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -551,11 +552,10 @@ func (c *Client) releaseMeshIngress(containerName string) {
 // teardownMeshEgress removes the host iptables rules (ACCEPT + REDIRECT)
 // installed by applyMeshEgress and releases the container's DNS-listener
 // reference. It is a complete no-op for apps without the mesh entitlement.
-// The iptables removals are skipped if ip is empty (the container's IP could
-// not be recovered — see stopOne for how it is normally recovered from
-// c.serviceIPs), but the DNS release still runs: it is keyed by
-// containerName via the held map, not by IP, so a lost IP must not strand a
-// listener refcount. The netns route needs no explicit cleanup: it is
+// The iptables removals are skipped when ip is empty. Lifecycle callers use
+// retireMeshNetwork to prove ownership before reaching this function. The
+// DNS release is keyed by containerName, so an already-released IP cannot
+// strand a listener reference. The netns route needs no explicit cleanup: it is
 // destroyed automatically when the network namespace is torn down with the
 // container.
 //
@@ -563,41 +563,36 @@ func (c *Client) releaseMeshIngress(containerName string) {
 // release consumes the held-map entry on first call, so running stopOne and
 // then deleteOne for the same container releases exactly once.
 //
-// Errors are logged but not returned — mirroring CNIDel's best-effort
-// contract, so a host-side iptables failure never blocks a container stop.
-func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, containerName, appID, ip string) {
+// Failure keeps the CNI proof and allocation owned so the caller can retry
+// before releasing an address that may still have security-sensitive rules.
+func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, containerName, appID, ip string) error {
 	c.releaseMeshIngress(containerName)
 	ent, found := findMeshEntitlement(entitlements)
 	if !found {
-		return
+		return nil
 	}
-	_ = os.Remove(networkSandboxResultPath(containerName))
+	var errs []error
 	if ip != "" {
 		cidr, err := normalizeCIDR(ent.ServiceCIDR)
 		if err != nil {
-			c.logger.Warn("wendy net egress teardown: invalid serviceCIDR in entitlement, skipping rule removal",
-				zap.String("app_id", appID), zap.Error(err))
-		} else {
-			if err := hostnetwork.RemoveMeshRule(ip, cidr); err != nil {
-				c.logger.Warn("wendy net egress teardown: RemoveMeshRule failed (non-fatal)",
-					zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
-			}
-			if err := hostnetwork.RemoveMeshRedirect(ip, cidr, mesh.ProxyPort); err != nil {
-				c.logger.Warn("wendy net egress teardown: RemoveMeshRedirect failed (non-fatal)",
-					zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
-			}
+			return err
 		}
+		errs = append(errs, removeMeshEgressRule(ip, cidr), removeMeshEgressRedirect(ip, cidr, mesh.ProxyPort))
 		for _, pm := range ent.Ports {
-			if err := hostnetwork.RemoveIngressPortForward(pm.Host, ip, pm.Container); err != nil {
-				c.logger.Warn("wendy net egress teardown: RemoveIngressPortForward failed (non-fatal)",
-					zap.String("app_id", appID), zap.String("ip", ip),
-					zap.Uint16("host_port", pm.Host), zap.Uint16("container_port", pm.Container), zap.Error(err))
-			}
+			errs = append(errs, removeMeshIngressPortForward(pm.Host, ip, pm.Container))
 		}
 	}
-	// Pairs with ensureMeshDNS in applyMeshEgress: releases exactly the
-	// refcount this container acquired, or nothing if it never acquired one
-	// (held-map guard — see releaseMeshDNS for the sibling-imbalance and
-	// double-teardown rationale).
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("retiring net rules for %q: %w", containerName, err)
+	}
+	if err := os.Remove(networkSandboxResultPath(containerName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	c.releaseMeshDNS(containerName, appID)
+	return nil
 }
+
+var (
+	removeMeshEgressRule     = hostnetwork.RemoveMeshRule
+	removeMeshEgressRedirect = hostnetwork.RemoveMeshRedirect
+)

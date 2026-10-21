@@ -1657,6 +1657,7 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 
 		oldHadSystemAPI := false
 		oldHadData := false
+		retiredMesh := false
 		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
 			oldEntitlements := parseEntitlementsFromAnnotations(oldLabels)
 			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
@@ -1669,8 +1670,16 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 				}
 			}
 			if reusedNetworkSandbox == nil {
+				if _, meshApp := findMeshEntitlement(oldEntitlements); meshApp {
+					if err := c.retireMeshNetwork(containerName, oldLabels, c.serviceIPs[appID][serviceName]); err != nil {
+						return fmt.Errorf("retiring previous app network: %w", err)
+					}
+					retiredMesh = true
+				}
 				c.purgePersistedNetworkSandbox(ctx, existing, oldLabels, oldSpec)
 			}
+		} else {
+			return fmt.Errorf("reading previous container network ownership: %w", labelErr)
 		}
 		if reusedNetworkSandbox == nil {
 			// Identity mismatch, unhealthy namespace, legacy container, or a
@@ -1686,6 +1695,11 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 		// for it to exit. A surviving process keeps devices/ports the new
 		// container needs (WDY-1818: /dev/video0 held for hours after replace).
 		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
+			if retiredMesh {
+				if err := c.CNIDel(ctx, appID, containerName, fmt.Sprintf("/proc/%d/ns/net", task.Pid())); err != nil {
+					return err
+				}
+			}
 			if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
 				c.logger.Error("Failed to delete old task during replace; forcing runtime delete",
 					zap.String("container_name", containerName),
@@ -1693,6 +1707,14 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 				c.forceDeleteTask(ctx, containerName)
 			}
 		} else {
+			if retiredMesh && !errdefs.IsNotFound(taskErr) {
+				return fmt.Errorf("checking previous task before IPAM release: %w", taskErr)
+			}
+			if retiredMesh {
+				if err := c.CNIDel(ctx, appID, containerName, networkSandboxPath(containerName)); err != nil {
+					return err
+				}
+			}
 			// Task may be orphaned (shim crashed). Force-delete via the task
 			// service directly so the runtime clears the old task ID.
 			c.forceDeleteTask(ctx, containerName)
@@ -2343,6 +2365,12 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			}
 		}
 	} else {
+		c.mu.Lock()
+		previousIP := c.serviceIPs[appID][serviceName]
+		c.mu.Unlock()
+		if err := c.retireMeshNetwork(appName, containerLabels, previousIP); err != nil {
+			return nil, fmt.Errorf("retiring previous app network before start: %w", err)
+		}
 		// Host/shared namespaces are never eligible, even if stale process
 		// memory claims a sandbox exists for this name.
 		c.destroyNetworkSandbox(ctx, appName)
@@ -2602,11 +2630,15 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			keepNetns := false
 			defer func() {
 				if !networkReady {
+					if err := c.teardownMeshEgress(entitlements, appName, appID, ip); err != nil {
+						c.logger.Error("App network rollback deferred; allocation remains pinned", zap.String("container_id", appName), zap.Error(err))
+						cleanupNetns()
+						return
+					}
 					_ = c.CNIDel(context.WithoutCancel(ctx), appID, appName, netnsPath)
 					if needsGatewayDNS(isolation, entitlements) {
 						c.releaseMeshDNS(appName, appID)
 					}
-					c.teardownMeshEgress(entitlements, appName, appID, ip)
 					cleanupNetns()
 				} else if !keepNetns {
 					cleanupNetns()
@@ -4155,7 +4187,17 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	// Explicit stop is a lifecycle boundary: unlike crash-monitor restart or a
 	// compatible redeploy, it must release the retained namespace and all CNI,
 	// DNS, and mesh state even when the task has already exited.
-	labels, _ := container.Labels(ctx)
+	labels, labelErr := container.Labels(ctx)
+	if labelErr != nil {
+		return labelErr
+	}
+	owner, service := labels[labelKeyAppID], labels[labelKeyServiceName]
+	c.mu.Lock()
+	previousIP := c.serviceIPs[owner][service]
+	c.mu.Unlock()
+	if err := c.retireMeshNetwork(containerID, labels, previousIP); err != nil {
+		return fmt.Errorf("retiring stopped app network: %w", err)
+	}
 	spec, _ := container.Spec(ctx)
 	desiredNetworkIdentity, _ := networkIdentityFromLabels(labels)
 	releasedSandbox := c.destroyNetworkSandbox(ctx, containerID)
@@ -4173,7 +4215,12 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	task, err := container.Task(ctx, nil)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return clearSandboxErr // No task running.
+			if _, meshApp := findMeshEntitlement(parseEntitlementsFromAnnotations(labels)); meshApp && !releasedSandbox {
+				if err := c.CNIDel(ctx, owner, containerID, networkSandboxPath(containerID)); err != nil {
+					return errors.Join(clearSandboxErr, err)
+				}
+			}
+			return clearSandboxErr // No task running; exact rules were retired above.
 		}
 		return errors.Join(clearSandboxErr, fmt.Errorf("getting task for %q: %w", containerID, err))
 	}
@@ -4222,25 +4269,6 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 			if needsGatewayDNS(isolation, entitlements) {
 				c.releaseMeshDNS(containerID, appID)
 			}
-
-			// Mesh egress teardown: remove the host iptables rule installed by
-			// applyMeshEgress at start (StartContainer). teardownMeshEgress is a
-			// no-op for apps without the network/mesh entitlement (including
-			// bridge-mode apps). The netns route itself needs no cleanup — it
-			// is destroyed with the namespace when the task exits below.
-			//
-			// The container's IP is recovered from c.serviceIPs (populated by
-			// recordServiceIP after CNI ADD, keyed by appID/serviceName — empty
-			// for single-service bridge apps, which is fine: teardownMeshEgress
-			// no-ops for them regardless of ip), not from the CNI host-local
-			// IPAM on-disk state — that state lives under cniStateDir/<appID>
-			// keyed by allocated IP, not by containerID, so recovering "this
-			// container's IP" from it would require an extra reverse-index the
-			// plugin does not provide as a stable public format.
-			c.mu.Lock()
-			ip := c.serviceIPs[appID][svcName]
-			c.mu.Unlock()
-			c.teardownMeshEgress(entitlements, containerID, appID, ip)
 		}
 	}
 
@@ -4498,12 +4526,22 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	// Delete may be called without StopContainer first. Release an owned
 	// reusable sandbox even when there is no live task left to provide a procfs
 	// namespace path.
-	persistedLabels, _ := ctr.Labels(ctx)
+	persistedLabels, labelErr := ctr.Labels(ctx)
+	if labelErr != nil {
+		return "", labelErr
+	}
+	owner, service := persistedLabels[labelKeyAppID], persistedLabels[labelKeyServiceName]
+	if err := c.retireMeshNetwork(ctr.ID(), persistedLabels, c.serviceIPs[owner][service]); err != nil {
+		return "", fmt.Errorf("retiring deleted app network: %w", err)
+	}
 	persistedSpec, _ := ctr.Spec(ctx)
 	releasedSandbox := c.destroyNetworkSandbox(ctx, ctr.ID())
 	if !releasedSandbox {
 		releasedSandbox = c.purgePersistedNetworkSandbox(ctx, ctr, persistedLabels, persistedSpec)
 	}
+	// Security-rule retirement above is independent of releasedSandbox: a
+	// mesh app's persisted CNI result is recovery proof, not a retained
+	// namespace that has already performed complete egress teardown.
 	// Mesh/bridge teardown for delete-without-stop: `wendy device apps remove`
 	// on a RUNNING meshed or bridge-mode app goes DeleteContainer → deleteOne
 	// without ever passing through stopOne, which would otherwise leak the
@@ -4536,8 +4574,6 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 		if needsGatewayDNS(isolation, entitlements) {
 			c.releaseMeshDNS(ctr.ID(), appID)
 		}
-		ip := c.serviceIPs[appID][svcName]
-		c.teardownMeshEgress(entitlements, ctr.ID(), appID, ip)
 	}
 
 	if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
@@ -4563,6 +4599,12 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 			c.logger.Warn("Failed to delete task during container delete",
 				zap.String("container_id", ctr.ID()),
 				zap.Error(termErr))
+		}
+	} else if !errdefs.IsNotFound(taskErr) {
+		return "", fmt.Errorf("checking task before IPAM release: %w", taskErr)
+	} else if _, meshApp := findMeshEntitlement(entitlements); meshApp && !releasedSandbox {
+		if err := c.CNIDel(ctx, appID, ctr.ID(), networkSandboxPath(ctr.ID())); err != nil {
+			return "", err
 		}
 	}
 	if wantImg {
