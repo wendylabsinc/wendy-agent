@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"golang.org/x/sys/unix"
 )
 
@@ -61,11 +63,24 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	selected := lanInterface{iface: net.Interface{Name: "not-a-real-lan"}, ip: net.IPv4(127, 0, 0, 1), net: &net.IPNet{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)}, cost: EthernetLinkCost}
-	claims := &lanClaims{active: make(map[lanClaim]bool)}
+	claims := lanTestClaims(b)
 	done := make(chan error, 1)
 	ready := make(chan CarrierStatus, 1)
+	// An incumbent-ready duplicate is rejected at Node's authenticated
+	// Ready boundary after its real hello. No kernel setup is needed.
+	node := &Node{Credentials: b, ctx: ctx, events: make(chan nodeEvent)}
 	go func() {
-		done <- serveLANInterface(ctx, LANConfig{Credentials: b, Node: &Node{Credentials: b, ctx: ctx}, Status: func(status CarrierStatus) { ready <- status }}, selected, claims, socket, mdnsConn, nil)
+		for {
+			select {
+			case event := <-node.events:
+				event.result <- nil
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		done <- serveLANInterface(ctx, LANConfig{Credentials: b, Node: node, Status: func(status CarrierStatus) { ready <- status }}, selected, claims, socket, mdnsConn, nil)
 	}()
 	select {
 	case status := <-ready:
@@ -90,9 +105,11 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	defer clientTransport.Close()
 	// An already claimed identity/cost must be rejected after real mTLS,
 	// without closing the endpoint used by the following independent attempts.
-	if !claims.claim(a.Device, EthernetLinkCost) {
-		t.Fatal("initial claim failed")
+	incumbent := claims.policy.ReserveGroup("incumbent", a.Device, false, strconv.Itoa(int(EthernetLinkCost)))
+	if incumbent == nil || !incumbent.Ready(a.Device, func() { t.Error("incumbent closed") }) {
+		t.Fatal("initial ready lease failed")
 	}
+	defer incumbent.Release()
 	config, err := a.PeerTLS(b.Device)
 	if err != nil {
 		t.Fatal(err)
@@ -101,11 +118,15 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenControl(ctx, duplicate, a.Device, b.Device); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("duplicate not promptly rejected: %v", err)
+	if _, err := OpenControl(ctx, duplicate, a.Device, b.Device); err != nil {
+		t.Fatalf("duplicate did not reach authenticated hello: %v", err)
 	}
-	duplicate.CloseWithError(0, "duplicate done")
-	claims.release(a.Device, EthernetLinkCost)
+	select {
+	case <-duplicate.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("ready duplicate not promptly rejected")
+	}
+	incumbent.Release()
 	for trial := 0; trial < 2; trial++ {
 		config, err := a.PeerTLS(b.Device)
 		if err != nil {
@@ -121,9 +142,7 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 		conn.CloseWithError(0, "rejected peer finished")
 		deadline := time.Now().Add(time.Second)
 		for {
-			claims.mu.Lock()
-			count := len(claims.active)
-			claims.mu.Unlock()
+			count := claims.policy.Counts().Total
 			if count == 0 {
 				break
 			}
@@ -135,7 +154,7 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	}
 }
 
-func TestLANUDPRejectsCrossedInitiator(t *testing.T) {
+func TestLANUDPAllowsSoleReverseInitiator(t *testing.T) {
 	a, b := testCredentials(t)
 	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -150,10 +169,11 @@ func TestLANUDPRejectsCrossedInitiator(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	selected := lanInterface{iface: net.Interface{Name: "not-a-real-lan"}, ip: net.IPv4(127, 0, 0, 1), net: &net.IPNet{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)}, cost: EthernetLinkCost}
-	claims := &lanClaims{active: make(map[lanClaim]bool)}
+	claims := lanTestClaims(a)
 	done := make(chan error, 1)
+	node := &Node{Credentials: a, ctx: ctx, events: make(chan nodeEvent)}
 	go func() {
-		done <- serveLANInterface(ctx, LANConfig{Credentials: a, Node: &Node{Credentials: a, ctx: ctx}}, selected, claims, socket, mdnsConn, nil)
+		done <- serveLANInterface(ctx, LANConfig{Credentials: a, Node: node}, selected, claims, socket, mdnsConn, nil)
 	}()
 	defer func() {
 		cancel()
@@ -170,12 +190,77 @@ func TestLANUDPRejectsCrossedInitiator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.CloseWithError(0, "crossed attempt done")
-	if _, err := OpenControl(ctx, conn, b.Device, a.Device); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("higher identity initiated inbound link: %v", err)
+	if _, err := OpenControl(ctx, conn, b.Device, a.Device); err != nil {
+		t.Fatalf("sole higher-identity initiator rejected before node admission: %v", err)
 	}
-	claims.mu.Lock()
-	defer claims.mu.Unlock()
-	if len(claims.active) != 0 {
-		t.Fatal("crossed initiator consumed active claim")
+	select {
+	case event := <-node.events:
+		if event.add == nil || event.add.device != b.Device {
+			t.Fatalf("wrong authenticated peer: %+v", event)
+		}
+		// Stop at the kernel admission seam after proving native TLS/hello.
+		event.result <- errors.New("test stops at node admission")
+	case <-ctx.Done():
+		t.Fatal("reverse connection never reached authenticated node admission")
+	}
+	select {
+	case <-conn.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("node refusal did not close peer")
+	}
+}
+
+func lanTestClaims(c *Credentials) *lanClaims {
+	return &lanClaims{policy: NewConnectionPolicy(c.Device, true, ConnectionLimits{LANMaxOutgoing, LANMaxOutgoingAttempts, LANMaxConnections})}
+}
+
+func TestLANUDPAdmissionSharesPendingBudgetAcrossInterfacesAndDirections(t *testing.T) {
+	self, peer := testCredentials(t)
+	claims := lanTestClaims(self)
+	outgoing := claims.policy.ReserveGroup("outgoing", peer.Device, true, strconv.Itoa(int(EthernetLinkCost)))
+	if outgoing == nil {
+		t.Fatal("outgoing reservation failed")
+	}
+	defer outgoing.Release()
+	selected := lanInterface{net: &net.IPNet{IP: net.IPv4(192, 0, 2, 0), Mask: net.CIDRMask(24, 32)}, cost: EthernetLinkCost}
+	ethernet := lanIncomingContext(selected, claims)
+	selected.cost = WiFiLinkCost
+	wifi := lanIncomingContext(selected, claims)
+	info := &quic.ClientInfo{RemoteAddr: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: LANPort}}
+	var cancels []context.CancelFunc
+	defer func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	}()
+	for i := 0; i < LANMaxConnections-1; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
+		gate := ethernet
+		if i%2 != 0 {
+			gate = wifi
+		}
+		accepted, err := gate(ctx, info)
+		if err != nil {
+			t.Fatalf("pending admission%d: %v", i, err)
+		}
+		lease, _ := accepted.Value(connectionLeaseKey{}).(*ConnectionLease)
+		if lease == nil || lease.peer != (meshid.Device{}) {
+			t.Fatal("pre-TLS admission has no lease or invented peer identity")
+		}
+	}
+	if got := claims.policy.Counts(); got.Total != LANMaxConnections || got.Outgoing != 1 || got.Ready != 0 {
+		t.Fatalf("shared pending count: %+v", got)
+	}
+	for _, gate := range []func(context.Context, *quic.ClientInfo) (context.Context, error){ethernet, wifi} {
+		if _, err := gate(context.Background(), info); err == nil {
+			t.Fatal("second interface bypassed shared pending cap")
+		}
+	}
+	outgoing.Release()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := wifi(ctx, info); err != nil {
+		t.Fatalf("released outgoing capacity unavailable to incoming: %v", err)
 	}
 }
