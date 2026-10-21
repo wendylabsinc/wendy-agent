@@ -295,6 +295,9 @@ func TestManagerClaimsAfterUnansweredDiscover(t *testing.T) {
 	if cams[0].Link != "eth0" {
 		t.Fatalf("link = %q", cams[0].Link)
 	}
+	if !cams[0].DHCPServed {
+		t.Fatal("served client lacks persistent evidence for startup cleanup")
+	}
 }
 
 // The guard that matters most: another DHCP server on the link means we never
@@ -362,9 +365,13 @@ func TestManagerWithdrawsWhenAnotherServerAnswersAfterClaim(t *testing.T) {
 		t.Fatalf("removed %v, want the claimed address", got)
 	}
 
-	// Later camera traffic must not resurrect the disqualified link while the
-	// same cable remains connected.
-	h.feed("eth0", &Packet{Type: Discover, XID: 2})
+	// Later LAN traffic must neither resurrect the disqualified link nor
+	// create camera records while the same cable remains connected.
+	h.feed("eth0", &Packet{Type: Discover, XID: 2,
+		CHAddr: net.HardwareAddr{0, 1, 2, 3, 4, 5}, Hostname: "MacBook-Pro"})
+	if got := h.reg.List(); len(got) != 0 {
+		t.Fatalf("registered a client after disqualification: %+v", got)
+	}
 	h.advance(time.Hour)
 	h.mgr.scanOnce(ctx)
 	if got := h.servedLinks(); len(got) != 1 {
@@ -978,6 +985,9 @@ func TestNoteClientRequiresStartedServer(t *testing.T) {
 	h := newManagerHarness(t, nil)
 	// claim installs this bookkeeping before address setup and server startup.
 	h.mgr.claimed["eth0"] = SegmentFor(0)
+	if !h.mgr.guard.RestoreClaim("eth0") {
+		t.Fatal("could not set up the claim")
+	}
 	h.mgr.noteClient("eth0", &Packet{Type: Discover, CHAddr: net.HardwareAddr{0, 1, 2, 3, 4, 5}})
 	if got := h.reg.List(); len(got) != 0 {
 		t.Fatalf("client registered before server startup: %+v", got)

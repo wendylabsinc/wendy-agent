@@ -118,7 +118,8 @@ func (r *Registry) Load() error {
 // PruneUnconfirmedDHCP removes legacy, addressless DHCP observations after both
 // state files have loaded successfully. A served lease always has an address;
 // ONVIF discovery and manually supplied connection details also leave evidence.
-// Preserve every ambiguous entry and every stored login, even an empty login.
+// Preserve all connection details and every stored login, even an empty login.
+// Old addressless observations carry no record of whether their link was served.
 // A nil credential lookup means protection is unavailable, so nothing is removed.
 func (r *Registry) PruneUnconfirmedDHCP(hasCredentials func(string) bool) error {
 	if hasCredentials == nil {
