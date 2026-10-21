@@ -136,6 +136,10 @@ manual equivalent, useful when you want several VMs or need to debug one.
 
 The `go2` and `g1` profiles add a virtual robot with MuJoCo, ROS 2, and a browser sandbox. Follow [Unitree simulator setup](/docs/installation/unitree-simulators), then [deploy a ROS 2 app from simulation to hardware](/docs/integrations/sim-to-real). Their virtual sensors do not provide access to physical peripherals.
 
+## Simulate an SO-101 arm
+
+The `so101` profile adds a virtual six-joint LeRobot SO-101 arm with MuJoCo and a browser viewer. It has no ROS 2 or DDS interface. Follow [SO-101 follower simulator](/docs/installation/so101-simulator).
+
 ## Create and start a VM
 
 <Steps>
@@ -393,7 +397,9 @@ wendy vm rm dev        # delete a VM and its disk
 ```
 
 `wendy vm create` prompts for a name and a profile: Generic WendyOS, Unitree Go2,
-or Unitree G1. Supply the name or `--profile generic|go2|g1` to skip that prompt.
+Unitree G1, LeRobot SO-101, Yahboom ROSMASTER R2, or Wendy Lite (WASM or native).
+Supply the name or `--profile generic|go2|g1|so101|rosmaster-r2|wendy-lite|wendy-lite-native`
+to skip that prompt.
 For scripts, pass the name explicitly; the profile defaults to `generic` without
 an interactive terminal, with `--json`, or with `--yes`.
 
