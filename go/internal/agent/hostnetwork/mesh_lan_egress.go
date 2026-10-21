@@ -23,24 +23,82 @@ var lanInterfaceName = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
 const lanRuleMarker = "wendy-lan-service-v1"
 const LANChainName = "WENDY-LAN"
 const lanReplyGuardMarker = "wendy-lan-reply-guard-v1"
+const lanForwardChain = "WENDY-LAN-FORWARD"
+const lanForwardMarker = "wendy-lan-forward-v1"
 
 var lanChainMu sync.Mutex
 var lanGuardMu sync.Mutex
 
-// InitLANServiceChain owns a separate scoped chain, never the broad CNI chain.
-// Hosts with a localmesh forwarding fallback also place their own tracked jump
-// immediately before that fallback; ordinary forwarding uses this stable hook.
+// InitLANServiceChain puts scoped app policy before foreign forwarding rules.
+// Explicit Internet grants run first so LAN reply guards cannot shadow them.
 func InitLANServiceChain() error {
 	lanChainMu.Lock()
 	defer lanChainMu.Unlock()
-	if out, err := lanIPTables("-t", "filter", "-N", LANChainName); err != nil && !strings.Contains(string(out), "already exists") {
-		return fmt.Errorf("create LAN chain: %w (%s)", err, out)
+	for _, chain := range []string{LANChainName, BridgeInternetChain, lanForwardChain} {
+		if out, err := lanIPTables("-t", "filter", "-N", chain); err != nil && !strings.Contains(string(out), "already exists") {
+			return fmt.Errorf("create LAN policy chain %s: %w (%s)", chain, err, out)
+		}
 	}
-	return lanEnsureRule("filter", "FORWARD", "-A", []string{"-m", "comment", "--comment", lanRuleMarker, "-j", LANChainName})
+	for _, chain := range []string{BridgeInternetChain, LANChainName} {
+		if err := lanEnsureRule("filter", lanForwardChain, "-A", []string{"-j", chain}); err != nil {
+			return err
+		}
+	}
+	return ensureLANForwardHook()
 }
 
-func (a LANServiceAccess) validate() error {
-	for _, value := range []string{a.AppIP, a.Gateway, a.Destination} {
+// A staging hook keeps the same scoped policy active while an inherited hook
+// is promoted ahead of foreign ACCEPTs. Failed operations retain that hook;
+// retry removes duplicates only after the canonical hook is first again.
+func ensureLANForwardHook() error {
+	args := func(marker string) []string {
+		return []string{"-m", "comment", "--comment", marker, "-j", lanForwardChain}
+	}
+	canonical, staging := args(lanForwardMarker), args(lanForwardMarker+"-staging")
+	out, err := lanIPTables("-t", "filter", "-S", "FORWARD")
+	if err != nil {
+		return fmt.Errorf("inspect LAN forwarding hook: %w (%s)", err, out)
+	}
+	first := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "-A FORWARD ") {
+			first = strings.ReplaceAll(line, `"`, "")
+			break
+		}
+	}
+	removeAll := func(rule []string) error {
+		for {
+			exists, err := lanRuleExists("filter", "FORWARD", rule)
+			if err != nil || !exists {
+				return err
+			}
+			if err := lanRemoveRule("filter", "FORWARD", rule); err != nil {
+				return err
+			}
+		}
+	}
+	if first != "-A FORWARD "+strings.Join(canonical, " ") {
+		if first != "-A FORWARD "+strings.Join(staging, " ") {
+			if err := lanRunIPTables(append([]string{"-t", "filter", "-I", "FORWARD", "1"}, staging...)...); err != nil {
+				return err
+			}
+		}
+		if err := removeAll(canonical); err != nil {
+			return err
+		}
+		if err := lanRunIPTables(append([]string{"-t", "filter", "-I", "FORWARD", "1"}, canonical...)...); err != nil {
+			return err
+		}
+	}
+	if err := removeAll(staging); err != nil {
+		return err
+	}
+	// Replace the old append-only hook only after the early dispatcher exists.
+	return lanRemoveRule("filter", "FORWARD", []string{"-m", "comment", "--comment", lanRuleMarker, "-j", LANChainName})
+}
+
+func (a LANServiceAccess) validateEndpoints() error {
+	for _, value := range []string{a.AppIP, a.Destination} {
 		ip := net.ParseIP(value)
 		if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() {
 			return fmt.Errorf("invalid LAN access IPv4 address %q", value)
@@ -50,8 +108,25 @@ func (a LANServiceAccess) validate() error {
 	if destination[0] == 10 && (destination[1] == 88 || destination[1] == 99) {
 		return errors.New("LAN destination overlaps Wendy Net range")
 	}
-	if a.NetNS == "" || !strings.HasPrefix(a.NetNS, "/") || !lanInterfaceName.MatchString(a.Interface) ||
-		(a.Protocol != "tcp" && a.Protocol != "udp") || a.Port == 0 {
+	return nil
+}
+
+func (a LANServiceAccess) validateRoute() error {
+	if err := a.validateEndpoints(); err != nil {
+		return err
+	}
+	gateway := net.ParseIP(a.Gateway)
+	if gateway == nil || gateway.To4() == nil || !gateway.IsGlobalUnicast() || a.NetNS == "" || !strings.HasPrefix(a.NetNS, "/") {
+		return errors.New("invalid scoped LAN route")
+	}
+	return nil
+}
+
+func (a LANServiceAccess) validate() error {
+	if err := a.validateRoute(); err != nil {
+		return err
+	}
+	if !lanInterfaceName.MatchString(a.Interface) || (a.Protocol != "tcp" && a.Protocol != "udp") || a.Port == 0 {
 		return errors.New("invalid scoped LAN service access")
 	}
 	return nil
@@ -127,6 +202,14 @@ func (a LANServiceAccess) base() []string {
 		"-m", "comment", "--comment", lanRuleMarker}
 }
 
+// The app's /32 route reaches the host even after its physical egress changes.
+// Deny the whole destination independently of that route; only the narrower
+// interface/port grants above this rule may accept traffic.
+func (a LANServiceAccess) destinationGuard() []string {
+	return []string{"-i", a.AppBridge, "-s", a.AppIP + "/32", "-d", a.Destination + "/32",
+		"-m", "comment", "--comment", lanRuleMarker, "-j", "DROP"}
+}
+
 func (a LANServiceAccess) portRule(target string) []string {
 	return append(append([]string(nil), a.base()...), "-p", a.Protocol, "--dport", fmt.Sprint(a.Port), "-j", target)
 }
@@ -146,7 +229,9 @@ func (a LANServiceAccess) reverseRule(target string) []string {
 	return append(args, "-j", target)
 }
 func (a LANServiceAccess) replyGuard() []string {
-	return []string{"-d", a.AppIP + "/32", "-i", a.Interface, "-m", "comment", "--comment", lanReplyGuardMarker, "-j", "DROP"}
+	// One retained guard per app attachment also covers alternate ingress.
+	// Same-bridge siblings bypass it; exact replies precede it, and OUTPUT is separate.
+	return []string{"!", "-i", a.AppBridge, "-o", a.AppBridge, "-d", a.AppIP + "/32", "-m", "comment", "--comment", lanReplyGuardMarker, "-j", "DROP"}
 }
 
 // EnsureLANServiceAccess installs a destination DROP before the exact ACCEPT,
@@ -178,7 +263,7 @@ func EnsureLANServiceAccess(a LANServiceAccess) error {
 	if err := lanEnsureRule("filter", LANChainName, "-I", a.replyGuard()); err != nil {
 		return err
 	}
-	if err := lanEnsureRule("filter", LANChainName, "-I", append(a.base(), "-j", "DROP")); err != nil {
+	if err := lanEnsureRule("filter", LANChainName, "-I", a.destinationGuard()); err != nil {
 		return err
 	}
 	if err := lanEnsureRule("filter", LANChainName, "-I", a.portRule("ACCEPT")); err != nil {
@@ -250,7 +335,7 @@ func WithdrawLANDestination(a LANServiceAccess) error {
 }
 
 func WithdrawLANRoute(a LANServiceAccess) error {
-	if err := a.validate(); err != nil {
+	if err := a.validateRoute(); err != nil {
 		return err
 	}
 	out, err := lanIPRoute(a.NetNS, "del", a.Destination+"/32", "via", a.Gateway)
@@ -261,10 +346,74 @@ func WithdrawLANRoute(a LANServiceAccess) error {
 }
 
 func WithdrawLANDrop(a LANServiceAccess) error {
+	lanGuardMu.Lock()
+	defer lanGuardMu.Unlock()
 	if err := a.validate(); err != nil {
 		return err
 	}
-	return lanRemoveRule("filter", LANChainName, append(a.base(), "-j", "DROP"))
+	// The destination guard is shared across ports and physical interfaces.
+	// A projector may retire one interface while another still owns a grant.
+	// Use the actual owned permits as the reference count, including after a
+	// partially failed withdrawal. An inspection failure retains the guard.
+	out, err := lanIPTables("-t", "filter", "-S", LANChainName)
+	if err != nil {
+		return fmt.Errorf("inspect sibling LAN grants: %w (%s)", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		values := map[string]string{}
+		for i := 0; i+1 < len(fields); i++ {
+			values[fields[i]] = strings.Trim(fields[i+1], `"`)
+		}
+		if values["-A"] == LANChainName && values["--comment"] == lanRuleMarker && values["-j"] == "ACCEPT" &&
+			values["-i"] == a.AppBridge && values["-s"] == a.AppIP+"/32" && values["-d"] == a.Destination+"/32" {
+			return nil
+		}
+	}
+	return lanRemoveRule("filter", LANChainName, a.destinationGuard())
+}
+
+// Upgrade retained legacy guards before withdrawing any allows: an inherited
+// app can still have a live /32 while the host has already changed its route.
+// This needs no surviving namespace/PID; the owned rule retains the app scope.
+func protectInheritedLANDestinations() error {
+	out, err := lanIPTables("-t", "filter", "-S", LANChainName)
+	if err != nil {
+		return fmt.Errorf("inspect inherited LAN protection: %w (%s)", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		values := map[string]string{}
+		for i := 0; i+1 < len(fields); i++ {
+			values[fields[i]] = strings.Trim(fields[i+1], `"`)
+		}
+		if values["-A"] != LANChainName || values["--comment"] != lanRuleMarker ||
+			(values["-j"] != "DROP" && values["-j"] != "ACCEPT") || values["--sport"] != "" || values["-o"] == "" || values["-i"] == "" {
+			continue
+		}
+		if !strings.HasSuffix(values["-s"], "/32") || !strings.HasSuffix(values["-d"], "/32") {
+			return errors.New("malformed inherited LAN source or destination")
+		}
+		a := LANServiceAccess{AppBridge: values["-i"], AppIP: strings.TrimSuffix(values["-s"], "/32"),
+			Destination: strings.TrimSuffix(values["-d"], "/32"), Interface: values["-o"]}
+		if err := a.validateEndpoints(); err != nil {
+			return err
+		}
+		if !lanInterfaceName.MatchString(a.AppBridge) || !lanInterfaceName.MatchString(a.Interface) || a.AppBridge == a.Interface {
+			return errors.New("invalid inherited LAN bridge")
+		}
+		if err := lanEnsureRule("filter", LANChainName, "-I", a.destinationGuard()); err != nil {
+			return err
+		}
+		if err := lanEnsureRule("filter", LANChainName, "-I", a.replyGuard()); err != nil {
+			return err
+		}
+		// The app-wide guard is active before retiring the old per-uplink one.
+		if err := lanRemoveRule("filter", LANChainName, []string{"-d", a.AppIP + "/32", "-i", a.Interface, "-m", "comment", "--comment", lanReplyGuardMarker, "-j", "DROP"}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RevokeOrphanLANServiceAllows runs before inherited app tasks are resumed.
@@ -275,6 +424,9 @@ func RevokeOrphanLANServiceAllows() error {
 	lanGuardMu.Lock()
 	defer lanGuardMu.Unlock()
 	if err := InitLANServiceChain(); err != nil {
+		return err
+	}
+	if err := protectInheritedLANDestinations(); err != nil {
 		return err
 	}
 	for _, item := range []struct{ table, chain, target string }{
@@ -370,7 +522,9 @@ func RevokeOrphanLANAppRoutes(netns, appIP, gateway string) error {
 				destination := strings.TrimSuffix(values["-d"], "/32")
 				a := LANServiceAccess{NetNS: netns, AppIP: appIP, Gateway: gateway,
 					Destination: destination, Interface: values["-o"], Protocol: "tcp", Port: 1}
-				if err := a.validate(); err != nil {
+				// New guards have no output interface; legacy guards and
+				// permits may retain one. Route withdrawal needs only scope.
+				if err := a.validateRoute(); err != nil {
 					return err
 				}
 				routes[destination] = a

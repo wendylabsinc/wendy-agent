@@ -25,9 +25,12 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 	lanHostRoute = func(string) ([]byte, error) { return []byte("192.168.41.22 dev eth7 src 192.168.41.1\n"), nil }
 	rules := make(map[string][]string)
 	var routeCommands []string
-	failReverseDelete := false
+	failReverseDelete, failRouteDelete, failHookDelete := false, false, false
 	lanIPRoute = func(_ string, args ...string) ([]byte, error) {
 		routeCommands = append(routeCommands, strings.Join(args, " "))
+		if failRouteDelete && args[0] == "del" {
+			return nil, fmt.Errorf("simulated route deletion failure")
+		}
 		return nil, nil
 	}
 	absent := exec.Command("sh", "-c", "exit 1").Run()
@@ -63,6 +66,9 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 		case "-A":
 			rules[chainKey] = append(rules[chainKey], rule)
 		case "-D":
+			if failHookDelete && rule == "-m comment --comment "+lanForwardMarker+" -j "+lanForwardChain {
+				return nil, fmt.Errorf("simulated canonical-hook deletion failure")
+			}
 			if failReverseDelete && strings.Contains(rule, "--sport 8080") && strings.HasSuffix(rule, "-j ACCEPT") {
 				return nil, fmt.Errorf("simulated reverse-rule deletion failure")
 			}
@@ -87,6 +93,58 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 	if len(routeCommands) != 1 || routeCommands[0] != "replace 192.168.41.22/32 via 10.42.2.1" {
 		t.Fatalf("route is not exact /32: %v", routeCommands)
 	}
+	// A second interface/port shares the destination deny and app reply
+	// guard. Retiring either owner must preserve the other's positive grant.
+	sibling := a
+	sibling.Interface, sibling.Port = "eth8", 8081
+	lanHostRoute = func(string) ([]byte, error) { return []byte("192.168.41.22 dev eth8\n"), nil }
+	if err := EnsureLANServiceAccess(sibling); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithdrawLANServiceAccess(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithdrawLANDrop(a); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rules["filter/"+LANChainName], strings.Join(a.destinationGuard(), " ")) {
+		t.Fatal("retiring one interface removed the sibling destination guard")
+	}
+	lanHostRoute = func(string) ([]byte, error) { return []byte("192.168.41.22 dev eth7\n"), nil }
+	if err := EnsureLANServiceAccess(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithdrawLANServiceAccess(sibling); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithdrawLANDrop(sibling); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rules["filter/"+LANChainName], strings.Join(a.destinationGuard(), " ")) {
+		t.Fatal("retiring sibling removed the live destination guard")
+	}
+	// A preexisting foreign ACCEPT must not move scoped policy behind it.
+	// If promotion fails, its staging hook remains active and retry normalizes
+	// both hooks without duplicating them or touching the foreign rule.
+	forwardKey := "filter/FORWARD"
+	foreign := "-m comment --comment foreign-allow -j ACCEPT"
+	rules[forwardKey] = append([]string{foreign}, rules[forwardKey]...)
+	failHookDelete = true
+	if err := InitLANServiceChain(); err == nil {
+		t.Fatal("hook deletion failure was hidden")
+	}
+	if !strings.Contains(rules[forwardKey][0], lanForwardMarker+"-staging") {
+		t.Fatal("failed promotion lost early protection")
+	}
+	failHookDelete = false
+	for range 2 {
+		if err := InitLANServiceChain(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(rules[forwardKey]) != 2 || !strings.Contains(rules[forwardKey][0], "--comment "+lanForwardMarker+" -j") || rules[forwardKey][1] != foreign {
+		t.Fatalf("hook retry lost ordering/foreign policy or accumulated hooks: %v", rules[forwardKey])
+	}
 	if err := RevokeOrphanLANServiceAllows(); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +154,17 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 	if got := rules["nat/POSTROUTING"]; len(got) != 0 {
 		t.Fatalf("restart retained NAT grants: %v", got)
 	}
+	// Reclaim both the new interface-independent deny and an inherited old
+	// interface-specific deny. A failed route delete must retain both shapes.
+	rules["filter/"+LANChainName] = append(rules["filter/"+LANChainName], strings.Join(append(a.base(), "-j", "DROP"), " "))
+	failRouteDelete = true
+	if err := RevokeOrphanLANAppRoutes(a.NetNS, a.AppIP, a.Gateway); err == nil {
+		t.Fatal("route cleanup failure was hidden")
+	}
+	if len(rules["filter/"+LANChainName]) != 3 {
+		t.Fatal("route failure removed an inherited guard")
+	}
+	failRouteDelete = false
 	if err := RevokeOrphanLANAppRoutes(a.NetNS, a.AppIP, a.Gateway); err != nil {
 		t.Fatal(err)
 	}

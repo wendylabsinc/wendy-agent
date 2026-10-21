@@ -32,6 +32,8 @@ func forwardingFixture(t *testing.T, initial string) *bool {
 		}
 		key := args[1] + "/" + args[3] + "/" + strings.Join(args[offset:], " ")
 		switch verb {
+		case "-S":
+			return nil, nil
 		case "-N":
 			return nil, nil
 		case "-C":
