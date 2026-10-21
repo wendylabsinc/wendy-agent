@@ -728,19 +728,21 @@ func main() {
 	// app and replace its source tree while buildctl is reading it.
 	buildContextLocks := services.NewBuildContextLockSet()
 
+	// Share the read-modify-write lock across listener creation and replacement.
+	// Local mesh administration is authorized against this device's own
+	// tenant, so the identity is re-read per call: enrollment can replace
+	// it while the agent runs.
+	localMeshAdmin := services.NewLocalMeshAdminService(logger, configPath, func() (meshid.Tenant, meshid.Device) {
+		return deviceIdentity(provisioningSvc)
+	})
+	localMeshAdmin.SetRuntimeStatusSource(meshSharing.Status)
+
 	registerAllServices := func(srv *grpc.Server) {
 		// Each authenticated listener is created with the device's current tenant.
 		// The app RPC independently requires a same-tenant device principal and
 		// refuses admission when this agent has no enrolled tenant.
 		meshSvc := services.NewMeshService(logger, configPath, deviceScope(provisioningSvc))
 		meshSvc.SetIngressAuthorizer(meshIngress)
-		// Local mesh administration is authorized against this device's own
-		// tenant, so the identity is re-read per call: enrollment can replace
-		// it while the agent runs.
-		localMeshAdmin := services.NewLocalMeshAdminService(logger, configPath, func() (meshid.Tenant, meshid.Device) {
-			return deviceIdentity(provisioningSvc)
-		})
-		localMeshAdmin.SetRuntimeStatusSource(meshSharing.Status)
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
 			ConfigPath:   configPath,
 			Chunks:       buildChunkSource,

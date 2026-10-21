@@ -29,7 +29,7 @@ func (*meshCatalogManager) StartMeshApp(string, string, string, string, []appcon
 func (*meshCatalogManager) StopMeshApp(string) {}
 func (*meshCatalogManager) SetGatewayOffer(enabled bool) error {
 	if enabled {
-		return errors.New("mesh catalog is unavailable on this platform")
+		return errors.New("net catalog is unavailable on this platform")
 	}
 	return nil
 }

@@ -48,7 +48,7 @@ func (a LANServiceAccess) validate() error {
 	}
 	destination := net.ParseIP(a.Destination).To4()
 	if destination[0] == 10 && (destination[1] == 88 || destination[1] == 99) {
-		return errors.New("LAN destination overlaps Wendy mesh range")
+		return errors.New("LAN destination overlaps Wendy Net range")
 	}
 	if a.NetNS == "" || !strings.HasPrefix(a.NetNS, "/") || !lanInterfaceName.MatchString(a.Interface) ||
 		(a.Protocol != "tcp" && a.Protocol != "udp") || a.Port == 0 {
@@ -452,7 +452,7 @@ func ReconcileLANReplyGuards(inventory func() ([]string, error)) error {
 	for _, cidr := range cidrs {
 		ip, network, err := net.ParseCIDR(cidr)
 		if err != nil || ip.To4() == nil {
-			return errors.New("invalid live mesh app subnet inventory")
+			return errors.New("invalid live net app subnet inventory")
 		}
 		networks = append(networks, network)
 	}
