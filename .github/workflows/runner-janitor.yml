@@ -1,4 +1,4 @@
-name: Runner Janitor
+name: Janitor
 
 # Nightly housekeeping for CI machines that keep their disk between jobs
 # (WDY-3837). Where each CI machine gets cleaned:
@@ -237,7 +237,7 @@ jobs:
             echo "JANITOR_FINDINGS"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "## Runner janitor on $RUNNER_NAME"
+            echo "## Janitor on $RUNNER_NAME"
             if [[ "$DRY_RUN" == true ]]; then echo "_Dry run: nothing is deleted._"; fi
             echo
             echo "Free: ${FREE_BEFORE:-?} → ${FREE_AFTER:-?} GiB"
@@ -283,7 +283,7 @@ jobs:
           else
             status="did not finish ($RESULT)"
           fi
-          text=":rotating_light: *Runner janitor $status* on \`${RUNNER:-wendy-macos-26}\`. Free disk: ${FREE:-unknown} GiB. <$RUN_URL|View run>"
+          text=":rotating_light: *Janitor $status* on \`${RUNNER:-wendy-macos-26}\`. Free disk: ${FREE:-unknown} GiB. <$RUN_URL|View run>"
           jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}' \
             > "$RUNNER_TEMP/alarm-payload.json"
           echo "payload=$RUNNER_TEMP/alarm-payload.json" >> "$GITHUB_OUTPUT"
@@ -335,7 +335,7 @@ jobs:
             failure) icon=":x:" ;;
             *) icon=":warning:" ;;
           esac
-          title="$icon *Runner Janitor* · \`$RUNNER\`"
+          title="$icon *Janitor* · \`$RUNNER\`"
           if [[ "$DRY_RUN" == true ]]; then title+=" · dry run"; fi
           if [[ "$RESULT" != success ]]; then title+=" · $RESULT"; fi
           text="$title"
