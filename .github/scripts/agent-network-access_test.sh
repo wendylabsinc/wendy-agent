@@ -75,6 +75,7 @@ check "persist local before service install" local "$(cat "$TEST_DIR/config/netw
 check "legacy registry is also local" \
   "$(printf '[Service]\nEnvironment=LISTEN_ADDRESS=127.0.0.1:5000')" \
   "$(cat "$TEST_DIR/systemd/wendyos-dev-registry.service.d/network-access.conf")"
+check "fresh install leaves the restart to the package" false "$NETWORK_ACCESS_CHANGED"
 
 NETWORK_ACCESS=network
 configure_network_access "$TEST_DIR/config" "$TEST_DIR/systemd"
@@ -82,6 +83,23 @@ check "change persisted choice" network "$(cat "$TEST_DIR/config/network-access"
 check "legacy registry opt-in" \
   "$(printf '[Service]\nEnvironment=LISTEN_ADDRESS=0.0.0.0:5000')" \
   "$(cat "$TEST_DIR/systemd/wendyos-dev-registry.service.d/network-access.conf")"
+check "changed choice restarts the agent" true "$NETWORK_ACCESS_CHANGED"
+
+NETWORK_ACCESS_CHANGED=false
+NETWORK_ACCESS=""
+configure_network_access "$TEST_DIR/config" "$TEST_DIR/systemd"
+check "update keeping the saved choice does not restart" false "$NETWORK_ACCESS_CHANGED"
+
+agent_already_installed() { return 0; }
+NETWORK_ACCESS=""
+configure_network_access "$TEST_DIR/legacy-config" "$TEST_DIR/systemd"
+check "legacy update saves network access" network "$(cat "$TEST_DIR/legacy-config/network-access")"
+check "legacy update keeps the running policy" false "$NETWORK_ACCESS_CHANGED"
+NETWORK_ACCESS=local
+rm "$TEST_DIR/legacy-config/network-access"
+configure_network_access "$TEST_DIR/legacy-config" "$TEST_DIR/systemd"
+check "legacy revocation restarts the agent" true "$NETWORK_ACCESS_CHANGED"
+agent_already_installed() { return 1; }
 
 # Exercise /dev/tty rather than stdin, which carries the script in curl | bash.
 cat > "$TEST_DIR/prompt.sh" <<'EOF'

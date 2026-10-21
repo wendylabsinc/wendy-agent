@@ -21,6 +21,7 @@ HOMEBREW_CASK="wendy-agent"
 HOMEBREW_CASK_QUALIFIED="wendylabsinc/tap/wendy-agent"
 YES=false
 NETWORK_ACCESS=""
+NETWORK_ACCESS_CHANGED=false
 
 usage() {
   cat <<EOF
@@ -315,7 +316,18 @@ choose_network_access() {
 configure_network_access() {
   local config_dir="${1:-/etc/wendy-agent}"
   local systemd_dir="${2:-/etc/systemd/system}"
+  # The policy the installed agent applies now: agents without a saved choice
+  # keep network access. Empty for a fresh install, which packages start anyway.
+  local previous=""
+  if [[ -f "${config_dir}/network-access" ]]; then
+    previous="$(cat "${config_dir}/network-access")"
+  elif agent_already_installed; then
+    previous=network
+  fi
   choose_network_access "${config_dir}/network-access"
+  if [[ -n "$previous" && "$previous" != "$NETWORK_ACCESS" ]]; then
+    NETWORK_ACCESS_CHANGED=true
+  fi
   $SUDO mkdir -p "$config_dir"
   local choice_tmp
   choice_tmp="$($SUDO mktemp "${config_dir}/.network-access.XXXXXX")"
@@ -845,12 +857,16 @@ fi
 
 stage_enrollment
 
-# Packages may replace the Avahi file, so apply the saved access choice again.
-# Service restarts also apply a changed choice to an already-installed agent.
-if [[ -d /run/systemd/system ]] && command -v systemctl &>/dev/null; then
-  $SUDO systemctl daemon-reload
-  $SUDO systemctl try-restart wendy-agent
+# Package installs and upgrades restart the agent, which applies the saved
+# choice. A changed choice must also reach an agent whose package was already
+# current; restart only then, so routine updates don't interrupt it twice.
+if [[ "$NETWORK_ACCESS_CHANGED" == true && -d /run/systemd/system ]] \
+  && command -v systemctl &>/dev/null; then
+  $SUDO systemctl daemon-reload || true
+  if ! $SUDO systemctl try-restart wendy-agent; then
+    echo "Warning: could not restart wendy-agent; restart it to apply network access ${NETWORK_ACCESS}." >&2
+  fi
   if systemctl is-active --quiet wendyos-dev-registry; then
-    $SUDO systemctl restart wendyos-dev-registry
+    $SUDO systemctl restart wendyos-dev-registry || true
   fi
 fi
