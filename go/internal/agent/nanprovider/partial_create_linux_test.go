@@ -99,19 +99,23 @@ func TestProviderRemovesNDIAfterPartialCreateFailure(t *testing.T) {
 		if cancelAfterCreate {
 			name = "parent cancels after interface creation"
 		}
-		t.Run(name, func(t *testing.T) { checkPartialCreateCleanup(t, cancelAfterCreate, "", false) })
+		t.Run(name, func(t *testing.T) { checkPartialCreateCleanup(t, cancelAfterCreate, "", false, false) })
 	}
 }
 
 func TestProviderPreservesExternalNANAfterPrivateNDIReclaim(t *testing.T) {
-	checkPartialCreateCleanup(t, false, "1", true)
+	checkPartialCreateCleanup(t, false, "1", true, false)
 }
 
 func TestProviderPreservesInactiveExternalNAN(t *testing.T) {
-	checkPartialCreateCleanup(t, false, "0", false)
+	checkPartialCreateCleanup(t, false, "0", false, false)
 }
 
-func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool, externalState string, reclaimedNDI bool) {
+func TestProviderRelinquishesOwnedClusterWhenAppNDIExists(t *testing.T) {
+	checkPartialCreateCleanup(t, false, "1", false, true)
+}
+
+func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool, externalState string, reclaimedNDI, appSession bool) {
 	t.Helper()
 	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
 		t.Skip("disposable privileged container only")
@@ -162,6 +166,19 @@ func checkPartialCreateCleanup(t *testing.T, cancelAfterCreate bool, externalSta
 			_ = os.Remove(path)
 		}
 	})
+	if appSession {
+		// A prior provider owned this exact management socket, but a running
+		// application now depends on its shared cluster. Startup must drop the
+		// marker and avoid both abandoned-session reset and deferred stop.
+		appNDI := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "wa123456abcdef"}}
+		if err := netlink.LinkAdd(appNDI); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = netlink.LinkDel(appNDI) })
+		if err := markSessionOwner(id, beforeSocket); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if reclaimedNDI {
 		link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: ndiName}}
 		if err := netlink.LinkAdd(link); err != nil {

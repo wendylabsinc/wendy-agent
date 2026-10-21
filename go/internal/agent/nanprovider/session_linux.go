@@ -39,8 +39,10 @@ const NANLinkCost uint16 = 512
 
 // Provider owns one Wi-Fi Aware session and its NDI. The caller owns and runs
 // the shared localmesh Node. Recreate this provider when enrolled identity or
-// trust material changes. Run returns on radio failure so the caller can retry
-// after a bounded backoff; it drains owned NDPs before removing the NDI.
+// trust material changes. Run retries stalled data paths within a bounded
+// recovery budget. An error after a recovery attempt waits for cancellation
+// instead of letting a caller restart that budget. It drains owned NDPs before
+// removing the NDI; the caller may retry initial setup and radio failures.
 type Provider struct {
 	Credentials *localmesh.Credentials
 	Node        LinkNode
@@ -171,7 +173,7 @@ func (p Provider) Run(parent context.Context) error {
 	// explicit, separate operation. External nan0 is never restarted here.
 	recovery := nanRecovery{ownsSession: plan.own}
 	for {
-		err := p.runNDIEpoch(ctx, id, logger, recovery.canReset())
+		err := p.runNDIEpoch(ctx, id, logger, recovery)
 		if err != nil && ctx.Err() == nil && p.Status != nil {
 			p.Status(localmesh.CarrierStatus{Err: err})
 		}
@@ -211,8 +213,11 @@ type nanRecovery struct {
 	ownsSession, ndiReset, sessionReset bool
 }
 
-func (r nanRecovery) canReset() bool {
-	return !r.ndiReset || (r.ownsSession && !r.sessionReset)
+// canReset distinguishes the private NDI retry from the stronger evidence
+// required to restart management. Once the NDI retry is spent, warm failures
+// must leave the current epoch running so later peers can still recover it.
+func (r nanRecovery) canReset(noRX bool) bool {
+	return !r.ndiReset || (r.ownsSession && noRX && !r.sessionReset)
 }
 
 func (r nanRecovery) attempted() bool { return r.ndiReset || r.sessionReset }
@@ -279,7 +284,7 @@ func hasAppNANNDI() bool {
 	return false
 }
 
-func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *zap.Logger, allowSoftReset bool) error {
+func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *zap.Logger, recovery nanRecovery) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	// The exclusive reservation and initial reclaim have established that this
@@ -311,7 +316,7 @@ func (p Provider) runNDIEpoch(parent context.Context, id meshid.Device, logger *
 	peers := make(chan radioPeer, 8)
 	health := make(chan radioHealth, 32)
 	radioDone := make(chan error, 1)
-	go func() { radioDone <- runRadio(ctx, id, peers, health, p.Selection, allowSoftReset, logger, p.Status) }()
+	go func() { radioDone <- runRadio(ctx, id, peers, health, p.Selection, recovery, logger, p.Status) }()
 	// runRadio drains NDPs before returning. Do not remove the NDI until then.
 	defer func() { cancel(); <-radioDone }()
 	type worker struct {

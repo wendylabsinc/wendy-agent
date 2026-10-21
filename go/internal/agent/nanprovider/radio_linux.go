@@ -216,7 +216,7 @@ func disconnectedPeer(v map[string]string, local string, active map[string]*radi
 
 // runRadio runs all NDP responses on a persistent local control socket so it
 // meets the firmware deadline. Discovery claims remain untrusted until QUIC TLS.
-func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPeer, health <-chan radioHealth, selection *localmesh.PeerSelection, allowSoftReset bool, logger *zap.Logger, status func(localmesh.CarrierStatus)) error {
+func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPeer, health <-chan radioHealth, selection *localmesh.PeerSelection, sessionRecovery nanRecovery, logger *zap.Logger, status func(localmesh.CarrierStatus)) error {
 	control, err := openRadio()
 	if err != nil {
 		return err
@@ -341,7 +341,7 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 			now := time.Now()
 			recovery.observe(now, anyHealthy)
 			if recovery.expired(now) {
-				if allowSoftReset {
+				if sessionRecovery.canReset(false) {
 					return fmt.Errorf("NAN data recovery: repeated replacement NDPs without authenticated traffic: %w", errSoftNANRecovery)
 				}
 				if !warnedWarmRecovery {
@@ -353,8 +353,8 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 				coldRecovery.observe(now, traffic)
 			}
 			if coldRecovery.ready(now, anyHealthy) {
-				logger.Warn("NAN connected repeatedly without an authenticated data path", zap.Int("paths_since_last_receive", coldRecovery.paths), zap.Bool("received_traffic", coldRecovery.hadRX), zap.Bool("soft_reset_allowed", allowSoftReset))
-				if allowSoftReset {
+				logger.Warn("NAN connected repeatedly without an authenticated data path", zap.Int("paths_since_last_receive", coldRecovery.paths), zap.Bool("received_traffic", coldRecovery.hadRX), zap.Bool("soft_reset_allowed", sessionRecovery.canReset(!coldRecovery.hadRX)))
+				if sessionRecovery.canReset(!coldRecovery.hadRX) {
 					if !coldRecovery.hadRX {
 						return fmt.Errorf("%w: %w", errSoftNANRecovery, errNoRXNANRecovery)
 					}
