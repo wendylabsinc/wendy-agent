@@ -7,6 +7,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Review 4339052719: the error boundary must never rewrite executable tokens.
@@ -58,5 +61,29 @@ func TestFormattingNeverWritesDebugOutput(t *testing.T) {
 	}
 	if len(output) != 0 {
 		t.Fatalf("rendering wrote diagnostics: %s", output)
+	}
+}
+
+func TestMappedSentencesContinueAfterColon(t *testing.T) {
+	for _, tc := range []struct {
+		prefix string
+		cause  error
+		want   string
+	}{
+		{"stopping app typo: ", status.Error(codes.NotFound, "private lookup"), "Stopping app typo: the requested item was not found."},
+		{"registering deployment with Cloud: ", status.Error(codes.Unavailable, "private outage"), "Registering deployment with Cloud: Wendy Cloud is unavailable. Please try again later."},
+		{"listing Wi-Fi networks: ", status.Error(codes.Unimplemented, "Wi-Fi configuration is currently not supported by Wendy Agent for Mac."), "Listing Wi-Fi networks: Wi-Fi configuration is not supported by Wendy Agent for Mac."},
+		{"request failed. ", status.Error(codes.NotFound, "private lookup"), "Request failed. The requested item was not found."},
+		{"request failed:\n  ", status.Error(codes.NotFound, "private lookup"), "Request failed:\n  The requested item was not found."},
+	} {
+		for _, got := range []string{Text(fmt.Errorf("%s%w", tc.prefix, tc.cause)), Sprintf(tc.prefix+"%v", tc.cause)} {
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		}
+	}
+	// A local diagnostic beginning with a proper name retains its spelling.
+	if got := Sprintf("build failed: %v", errors.New("Docker could not start")); got != "Build failed: Docker could not start." {
+		t.Errorf("authored name changed: %q", got)
 	}
 }

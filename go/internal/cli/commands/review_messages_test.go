@@ -115,7 +115,7 @@ func TestReviewStoppingMissingAppNamesTheApp(t *testing.T) {
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("lost agent status: %v", err)
 	}
-	if got := userFacingGRPCError(err); got != "Stopping app typo: The requested item was not found." {
+	if got := userFacingGRPCError(err); got != "Stopping app typo: the requested item was not found." {
 		t.Errorf("wrong missing-app message: %q", got)
 	}
 }

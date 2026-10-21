@@ -55,15 +55,15 @@ func TestExplainKnownFailures(t *testing.T) {
 			err  error
 			want string
 		}{
-			{status.Error(tc.code, tc.raw), tc.want},
-			{fmt.Errorf("listing resources: %w\n  Retry later.", status.Error(tc.code, tc.raw)), "Listing resources: " + tc.want + "\n  Retry later."},
+			{status.Error(tc.code, tc.raw+"; private server diagnostic"), tc.want},
+			{fmt.Errorf("listing resources: %w\n  Retry later.", status.Error(tc.code, tc.raw+"; private server diagnostic")), "Listing resources: " + strings.ToLower(tc.want[:1]) + tc.want[1:] + "\n  Retry later."},
 		} {
 			r := Explain(input.err, "")
 			if r.Message != input.want {
 				t.Errorf("%s: %q, want %q", tc.code, r.Message, input.want)
 			}
 			assertSentences(t, r.Text())
-			for _, raw := range []string{tc.raw, "rpc error:"} {
+			for _, raw := range []string{"private server diagnostic", "rpc error:"} {
 				if strings.Contains(r.Text(), raw) {
 					t.Errorf("leaked %q in %q", raw, r.Text())
 				}
@@ -125,7 +125,7 @@ func TestTunnelRefusalUsesApprovedReason(t *testing.T) {
 func TestInlineMessagesMapErrorArguments(t *testing.T) {
 	t.Setenv("WENDY_TLS_DEBUG", "")
 	got := Sprintf("could not connect: %v\n", status.Error(codes.Unavailable, "device is offline"))
-	if got != "Could not connect: Device is offline. Make sure it's on and connected, then try again.\n" {
+	if got != "Could not connect: device is offline. Make sure it's on and connected, then try again.\n" {
 		t.Errorf("message = %q", got)
 	}
 	assertSentences(t, got)
@@ -220,8 +220,8 @@ func TestPathErrorsNameTheirSubject(t *testing.T) {
 	} {
 		err := fmt.Errorf("loading project: %w", &os.PathError{Op: "open", Path: "/project/wendy.json", Err: tc.cause})
 		got := Explain(err, "config_invalid").Message
-		if got != "Loading project: "+tc.want {
-			t.Errorf("got %q, want %q", got, "Loading project: "+tc.want)
+		if got != "Loading project: "+strings.ToLower(tc.want[:1])+tc.want[1:] {
+			t.Errorf("got %q, want %q", got, "Loading project: "+strings.ToLower(tc.want[:1])+tc.want[1:])
 		}
 		assertSentences(t, got)
 	}
@@ -248,7 +248,7 @@ func TestCLIFlagErrorsRetainTheirSubject(t *testing.T) {
 	}{
 		{[]string{"--device"}, "Parsing arguments: flag needs an argument: --device."},
 		{[]string{"--no-such-flag"}, "Parsing arguments: unknown flag: --no-such-flag."},
-		{[]string{"--count", "wrong"}, `Parsing arguments: invalid argument "wrong" for "--count" flag: The command or its arguments are not valid. Check the command and try again.`},
+		{[]string{"--count", "wrong"}, `Parsing arguments: invalid argument "wrong" for "--count" flag: the command or its arguments are not valid. Check the command and try again.`},
 	} {
 		flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
 		flags.SetOutput(io.Discard)

@@ -89,7 +89,7 @@ func TestReportFailure_JSONEnvelope(t *testing.T) {
 	want := errorBody{
 		Code:      "auth_required",
 		Exit:      3,
-		Message:   "Listing cloud devices: Sign in again to continue.",
+		Message:   "Listing cloud devices: sign in again to continue.",
 		NextSteps: []string{"Run 'wendy auth login', then try again."},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -110,7 +110,7 @@ func TestReportFailure_TextModeUsesApprovedSentences(t *testing.T) {
 		exit    int
 		message string
 	}{
-		{fmt.Errorf("listing cloud devices: %w", config.ErrNotLoggedIn), 3, "Listing cloud devices: Sign in again to continue."},
+		{fmt.Errorf("listing cloud devices: %w", config.ErrNotLoggedIn), 3, "Listing cloud devices: sign in again to continue."},
 		{errors.Join(errors.New("local: build failed\nstep 3/7 exited 1"), errors.New("worker: build failed")), 1, "Local: build failed\nstep 3/7 exited 1\nworker: build failed."},
 		{fmt.Errorf("connecting: %w", diagnosticTestError{}), 1, "Connecting: plain programmatic error."},
 	} {
@@ -149,7 +149,7 @@ func TestReportFailure_StepsLeaveTheMessage(t *testing.T) {
 	}
 	reportFailure(&out, err, nil, []string{"--json"})
 	got := decodeEnvelope(t, out.String())
-	wantMessage := "Default device \"127.0.0.1:1\" is set but could not be reached: Could not connect to device at 127.0.0.1:1. Make sure it's on and connected, then try again."
+	wantMessage := "Default device \"127.0.0.1:1\" is set but could not be reached: could not connect to device at 127.0.0.1:1. Make sure it's on and connected, then try again."
 	if got.Message != wantMessage {
 		t.Errorf("message = %q, want %q", got.Message, wantMessage)
 	}
@@ -172,7 +172,7 @@ func TestReportFailure_EnvelopeTextIsPlain(t *testing.T) {
 		t.Errorf("unapproved advice reached output: %s", out.String())
 	}
 	got := decodeEnvelope(t, out.String())
-	if got.Message != "Querying device version: The device rejected the secure connection. Its clock or certificates may need attention." || !reflect.DeepEqual(got.NextSteps, []string{"Retry with --device <host>."}) {
+	if got.Message != "Querying device version: the device rejected the secure connection. Its clock or certificates may need attention." || !reflect.DeepEqual(got.NextSteps, []string{"Retry with --device <host>."}) {
 		t.Errorf("envelope = %+v", got)
 	}
 

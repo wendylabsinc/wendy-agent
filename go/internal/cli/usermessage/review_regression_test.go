@@ -63,7 +63,7 @@ func TestForeignReplacementHandlesRepeatedAndOverlappingCauses(t *testing.T) {
 	adjacent := fmt.Errorf("operation: %w; %w", Foreign(errors.New("first body")), Foreign(errors.New("second body")))
 	for _, err := range []error{repeated, overlap, adjacent} {
 		got := Text(err)
-		if strings.Contains(got, "private") || strings.Contains(got, "extended") || strings.Contains(got, "rpc error") || strings.Contains(got, "body") || strings.Count(got, Generic) != 2 {
+		if strings.Contains(got, "private") || strings.Contains(got, "extended") || strings.Contains(got, "rpc error") || strings.Contains(got, "body") || strings.Count(strings.ToLower(got), strings.ToLower(Generic)) != 2 {
 			t.Errorf("incomplete foreign replacement: %q", got)
 		}
 	}

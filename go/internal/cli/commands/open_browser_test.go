@@ -83,7 +83,7 @@ func TestOpenBrowserCmd_ValidURL_Fallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got := stderr.String(); got != "Could not open browser: Something went wrong. Try again.\n" {
+	if got := stderr.String(); got != "Could not open browser: something went wrong. Try again.\n" {
 		t.Errorf("stderr = %q, want fallback warning", got)
 	}
 	if got := stdout.String(); got != "https://example.com\n" {

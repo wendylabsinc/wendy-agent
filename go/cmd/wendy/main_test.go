@@ -530,7 +530,7 @@ func TestFormatError_LocalPKICoreUnavailable(t *testing.T) {
 	err := fmt.Errorf("creating enrollment token from pki-core services.orb.local:50051: %w", status.Error(codes.Unavailable, "connection refused"))
 
 	got := formatError(err).Error()
-	want := "Creating enrollment token from pki-core services.orb.local:50051: The local certificate service is unavailable. Check that it is running and try again."
+	want := "Creating enrollment token from pki-core services.orb.local:50051: the local certificate service is unavailable. Check that it is running and try again."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -551,7 +551,7 @@ func TestFormatError_CloudUnavailableHidesRawDetails(t *testing.T) {
 			err := fmt.Errorf("%s%w", prefix, status.Error(codes.Unavailable, detail))
 			want := "Wendy Cloud is unavailable. Please try again later."
 			if strings.Contains(prefix, "pki-core") {
-				want = "The local certificate service is unavailable. Check that it is running and try again."
+				want = "the local certificate service is unavailable. Check that it is running and try again."
 			}
 			want = strings.ToUpper(prefix[:1]) + prefix[1:] + want
 			if got := formatError(err).Error(); got != want {
@@ -565,7 +565,7 @@ func TestFormatError_UnimplementedPreservesContextualDescription(t *testing.T) {
 	err := fmt.Errorf("listing audio devices: %w", status.Error(codes.Unimplemented, "Audio device management is currently not supported by Wendy Agent for Mac."))
 
 	got := formatError(err).Error()
-	want := "Listing audio devices: Audio device management is not supported by Wendy Agent for Mac."
+	want := "Listing audio devices: audio device management is not supported by Wendy Agent for Mac."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -578,7 +578,7 @@ func TestFormatError_UnimplementedKeepsUpdateHintForUnknownMethod(t *testing.T) 
 	err := fmt.Errorf("listing volumes: %w", status.Error(codes.Unimplemented, "unknown method ListVolumes for service agent.ContainerService"))
 
 	got := formatError(err).Error()
-	want := "Listing volumes: Not supported by this agent version. Try updating the agent."
+	want := "Listing volumes: not supported by this agent version. Try updating the agent."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -588,7 +588,7 @@ func TestFormatError_UnimplementedKeepsUpdateHintForGeneratedStub(t *testing.T) 
 	err := fmt.Errorf("listing volumes: %w", status.Error(codes.Unimplemented, "method ListVolumes not implemented"))
 
 	got := formatError(err).Error()
-	want := "Listing volumes: Not supported by this agent version. Try updating the agent."
+	want := "Listing volumes: not supported by this agent version. Try updating the agent."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}
@@ -734,7 +734,7 @@ func TestIsSetupCommand(t *testing.T) {
 func TestFormatError_CloudTunnelVerdictIsMapped(t *testing.T) {
 	inner := `connection error: desc = "transport: authentication handshake failed: cloud tunnel closed by broker: rpc error: code = PermissionDenied desc = user is not a current member of this organization"`
 	got := formatError(fmt.Errorf("getting agent version: %w", status.Error(codes.Unavailable, inner))).Error()
-	if got != "Getting agent version: You don't have permission to do this. Check your access and try again." {
+	if got != "Getting agent version: you don't have permission to do this. Check your access and try again." {
 		t.Fatalf("message = %q", got)
 	}
 }
@@ -769,7 +769,7 @@ var refusedDial = status.Error(codes.Unavailable,
 func TestFormatError_PreservesAuthoredWrappingAndSuffixes(t *testing.T) {
 	err := fmt.Errorf("connecting to saved device: %w\n  Retry by IP.", refusedDial)
 	got := formatError(err).Error()
-	if got != "Connecting to saved device: Could not connect to device. Make sure it's on and connected, then try again.\n  Retry by IP." {
+	if got != "Connecting to saved device: could not connect to device. Make sure it's on and connected, then try again.\n  Retry by IP." {
 		t.Fatalf("message = %q", got)
 	}
 	err = fmt.Errorf("registering deployment with Cloud: %w; use --skip-cloud-registration for an offline deployment", status.Error(codes.Unavailable, "deployment registry is restarting"))
@@ -784,7 +784,7 @@ func TestFormatErrorParts_ReportsItsOwnSteps(t *testing.T) {
 	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
 		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
 	f := formatErrorParts(err)
-	wantText := "Querying device version: The device rejected the secure connection. Its clock or certificates may need attention.\n" +
+	wantText := "Querying device version: the device rejected the secure connection. Its clock or certificates may need attention.\n" +
 		"  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n" +
 		"  For full connection details, rerun with WENDY_TLS_DEBUG=1."
 	if f.text != wantText {

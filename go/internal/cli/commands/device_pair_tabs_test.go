@@ -562,7 +562,7 @@ func TestSensorPairDeviceDiscoveryErrorsAreNotReplacedByLocalScan(t *testing.T) 
 		{status.Error(codes.Unavailable, "tunnel closed"), "Device is not reachable"},
 		{status.Error(codes.PermissionDenied, "org mismatch"), "Not authorized"},
 		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"), "The device did not finish scanning its network in time"},
-		{status.Error(codes.Internal, "sensor source discovery failed on this device"), "The device could not scan its network: Something went wrong. Try again."},
+		{status.Error(codes.Internal, "sensor source discovery failed on this device"), "The device could not scan its network: something went wrong. Try again."},
 	} {
 		client := &pairTestClient{}
 		h := pairTestHandler(client)

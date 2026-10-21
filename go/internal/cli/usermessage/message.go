@@ -27,8 +27,9 @@ const NotFound = "This device no longer exists or you don't have access to it."
 
 // Report keeps recovery steps separate for the existing JSON error envelope.
 type Report struct {
-	Message string
-	Steps   []string
+	Message     string
+	Steps       []string
+	mappedStart bool
 }
 
 func (r Report) Text() string {
@@ -39,15 +40,19 @@ func (r Report) Text() string {
 	return text
 }
 
-func report(message string, steps ...string) Report { return Report{message, steps} }
+func report(message string, steps ...string) Report { return Report{Message: message, Steps: steps} }
 
 // Explain replaces foreign failures inside CLI-authored message chains. Recovery
 // steps remain separate from the message, for both terminal and JSON output.
 func Explain(err error, category string) Report {
+	return explain(err, category, err)
+}
+
+func explain(err error, category string, scope error) Report {
 	if err == nil {
 		return Report{}
 	}
-	result := explainNode(err, category, err)
+	result := explainNode(err, category, scope)
 	result.Message = sentence(result.Message)
 	return result
 }
@@ -57,10 +62,12 @@ func explainNode(err error, category string, scope error) Report {
 		return Report{}
 	}
 	if err == config.ErrNotLoggedIn {
-		return report("Sign in again to continue.", "Run 'wendy auth login', then try again.")
+		return Report{Message: "Sign in again to continue.", Steps: []string{"Run 'wendy auth login', then try again."}, mappedStart: true}
 	}
 	if foreignNode(err) {
-		return mapForeign(err, category, scope)
+		result := mapForeign(err, category, scope)
+		result.mappedStart = true
+		return result
 	}
 	text := err.Error()
 	var ownSteps []string
@@ -85,7 +92,10 @@ func explainNode(err error, category string, scope error) Report {
 			continue
 		}
 		child := explainNode(cause, category, scope)
-		replacements = append(replacements, messageReplacement{raw, child.Message})
+		replacements = append(replacements, messageReplacement{raw, child.Message, child.mappedStart})
+		if strings.HasPrefix(text, raw) && child.mappedStart {
+			result.mappedStart = true
+		}
 		if len(ownSteps) == 0 {
 			for _, step := range child.Steps {
 				result.Steps = appendUnique(result.Steps, step)
@@ -96,7 +106,10 @@ func explainNode(err error, category string, scope error) Report {
 	return result
 }
 
-type messageReplacement struct{ raw, message string }
+type messageReplacement struct {
+	raw, message string
+	mappedStart  bool
+}
 
 // Match the original text once, choosing the longest match at each position.
 // Repeated or overlapping causes cannot leave raw fragments behind, and mapped
@@ -125,7 +138,11 @@ func replaceMessages(text string, replacements []messageReplacement) string {
 		}
 		out.WriteString(context)
 		replacement := replacements[selected]
-		out.WriteString(replacement.message)
+		message := replacement.message
+		if replacement.mappedStart && strings.HasSuffix(strings.TrimRight(out.String(), " \t"), ":") {
+			message = sentenceContinuation(message)
+		}
+		out.WriteString(message)
 		text = text[position+len(replacement.raw):]
 		capitalizeNext = false
 		if strings.HasSuffix(replacement.message, ".") && strings.HasPrefix(text, "; ") {
@@ -135,6 +152,19 @@ func replaceMessages(text string, replacements []messageReplacement) string {
 		}
 	}
 	return out.String()
+}
+
+// Only mapped prose is adjusted here; authored names and executable tokens stay
+// untouched. Wendy and Wi-Fi are the proper names that begin mapped messages.
+func sentenceContinuation(message string) string {
+	if strings.HasPrefix(message, "Wendy ") || strings.HasPrefix(message, "Wi-Fi ") {
+		return message
+	}
+	runes := []rune(message)
+	if len(runes) > 0 {
+		runes[0] = unicode.ToLower(runes[0])
+	}
+	return string(runes)
 }
 
 func causes(err error) []error {
@@ -468,16 +498,21 @@ func Debug(err error) {
 func Sprintf(format string, args ...any) string {
 	safe := append([]any(nil), args...)
 	var steps []string
+	var replacements []messageReplacement
 	for i, arg := range safe {
 		if err, ok := arg.(error); ok {
-			r := Explain(err, "")
+			scope := fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
+			r := explain(err, "", scope)
 			safe[i] = r.Message
+			if r.mappedStart && r.Message != "" {
+				replacements = append(replacements, messageReplacement{r.Message, r.Message, true})
+			}
 			for _, step := range r.Steps {
 				steps = appendUnique(steps, step)
 			}
 		}
 	}
-	message := sentence(fmt.Sprintf(format, safe...))
+	message := sentence(replaceMessages(fmt.Sprintf(format, safe...), replacements))
 	if len(steps) == 0 {
 		return message
 	}

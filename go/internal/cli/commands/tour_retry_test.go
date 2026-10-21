@@ -40,7 +40,7 @@ func TestTourStepRetriesUntilReady(t *testing.T) {
 	if err != nil || prompts != 2 || attempts != 3 {
 		t.Fatalf("error=%v prompts=%d attempts=%d", err, prompts, attempts)
 	}
-	if !strings.Contains(out.String(), "Starting the simulator needs attention: Connection timed out.") {
+	if !strings.Contains(out.String(), "Starting the simulator needs attention: connection timed out.") {
 		t.Fatalf("missing explanation: %s", out.String())
 	}
 }
