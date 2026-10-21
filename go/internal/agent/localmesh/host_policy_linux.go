@@ -192,10 +192,10 @@ func (p *HostPolicy) restoreResolver() error {
 		}
 		var saved resolverJournal
 		if err = json.Unmarshal(data, &saved); err != nil {
-			return fmt.Errorf("invalid mesh resolver journal: %w", err)
+			return fmt.Errorf("invalid net resolver journal: %w", err)
 		}
 		if saved.Version != 1 || saved.Previous == "" || saved.Previous == f.stub {
-			return errors.New("invalid mesh resolver ownership journal")
+			return errors.New("invalid net resolver ownership journal")
 		}
 		p.previousResolver = saved.Previous
 	}

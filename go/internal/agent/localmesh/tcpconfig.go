@@ -73,7 +73,7 @@ func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
 	}
 	if cfg.Listen == "" {
 		if (!cfg.NAN && !cfg.BLE && !cfg.Ethernet && !cfg.InfrastructureWiFi) || len(cfg.Peers) != 0 {
-			return nil, errors.New("listen is required for configured TCP peers; enable a carrier for discovery-only mesh")
+			return nil, errors.New("listen is required for configured TCP peers; enable a carrier for discovery-only networking")
 		}
 	} else if err := validateTCPAddress(cfg.Listen, true); err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
