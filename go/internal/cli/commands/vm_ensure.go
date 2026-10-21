@@ -12,6 +12,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
@@ -369,12 +370,13 @@ func simulatorStartOutcome(name string, err error) simulatorFlash {
 	case errors.Is(err, ErrUserCancelled), errors.Is(err, tui.ErrCancelled), errors.Is(err, context.Canceled):
 		return simulatorFlash{msg: fmt.Sprintf("Start of %s cancelled.", name)}
 	}
-	cliLogln("Could not start %s: %v", name, err)
-	msg, rest, multiline := strings.Cut(err.Error(), "\n")
+	message := usermessage.Text(fmt.Errorf("could not start %s: %w", name, err))
+	cliLogln("%s", message)
+	msg, rest, multiline := strings.Cut(message, "\n")
 	if multiline && strings.TrimSpace(rest) != "" {
 		msg += " (full output is printed when you quit)"
 	}
-	return simulatorFlash{msg: fmt.Sprintf("Could not start %s: %s", name, msg), isErr: true}
+	return simulatorFlash{msg: msg, isErr: true}
 }
 
 // awaitSimulator waits under a spinner for the guest agent to answer. Shared by

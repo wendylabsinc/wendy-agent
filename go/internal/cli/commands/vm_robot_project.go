@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -228,6 +229,12 @@ type sceneProjectHTTPError struct {
 
 func (e *sceneProjectHTTPError) Error() string {
 	return fmt.Sprintf("project HTTP %d: %s", e.Code, e.Message)
+}
+
+// Preserve the typed response for conflict handling, but mark its description
+// as foreign so the human display boundary replaces it in place.
+func (e *sceneProjectHTTPError) Unwrap() error {
+	return usermessage.Foreign(errors.New(e.Message))
 }
 
 var sceneHTTPClient = &http.Client{Timeout: 180 * time.Second, CheckRedirect: robotHTTPClient.CheckRedirect, Transport: &http.Transport{Proxy: nil}}
@@ -449,7 +456,7 @@ func watchScene(ctx context.Context, cmd *cobra.Command, folder string, link sce
 	fmt.Fprintf(cmd.OutOrStdout(), "Watching %s for vm:%s; successful edits reset and pause physics.\n", folder, link.VM)
 	report := func(err error) {
 		if err.Error() != lastError {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			fmt.Fprintln(cmd.ErrOrStderr(), usermessage.Text(err))
 			lastError = err.Error()
 		}
 	}

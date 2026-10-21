@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 )
 
@@ -143,6 +144,9 @@ func TestSceneRequestReportsServerErrorText(t *testing.T) {
 	var rejected *sceneProjectHTTPError
 	if !errors.As(err, &rejected) || rejected.Code != http.StatusBadRequest || rejected.Message != reason {
 		t.Fatalf("rejection did not carry the server's reason: %v", err)
+	}
+	if got := usermessage.Text(err); got != "Project HTTP 400: something went wrong. Try again." {
+		t.Errorf("unsafe rejection display: %q", got)
 	}
 }
 
