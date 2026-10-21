@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
@@ -13,7 +14,7 @@ func (s *Synchronizer) offerService(w SignedRecord, now time.Time) []Message {
 	if json.Unmarshal(w.Body, &record) != nil {
 		return nil
 	}
-	if _, _, ok := s.cache.Get(record.Key.Device, now); !ok {
+	if chain, _, ok := s.cache.Get(record.Key.Device, now); !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
 		return nil
 	}
 	data, err := json.Marshal(w)
@@ -56,7 +57,7 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 			if json.Unmarshal(payload, &w) != nil || json.Unmarshal(w.Body, &r) != nil {
 				return nil, nil, errors.New("invalid cached service artifact")
 			}
-			if _, _, ok := s.cache.Get(r.Key.Device, now); !ok {
+			if chain, _, ok := s.cache.Get(r.Key.Device, now); !ok || localmesh.Fingerprint(chain) != w.Fingerprint {
 				return []Message{{Kind: "gossip", Gossip: netgossip.Unavailable(*m.Gossip)}}, nil, nil
 			}
 		}
@@ -92,6 +93,11 @@ func (c *Catalog) servicePayload(key Key, now time.Time) []byte {
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
 	if !ok || !time.UnixMilli(e.record.Expires).After(now) {
+		return nil
+	}
+	// A principal can now name a renewed certificate. Its current eligibility
+	// must not restore an artifact signed by the previously cached leaf.
+	if chain, _, ok := c.cache.Get(e.record.Key.Device, now); !ok || localmesh.Fingerprint(chain) != e.wire.Fingerprint {
 		return nil
 	}
 	data, _ := json.Marshal(e.wire)

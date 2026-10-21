@@ -259,8 +259,8 @@ func Unavailable(request Message) *Message {
 }
 
 // Resolve runs only after the adapter's existing identity/signature/scope and
-// version checks finish. Discarded stale/expired bodies get a short receipt;
-// invalid bodies must instead fail their supplying session.
+// version checks finish. Authenticated stale bodies get a short receipt;
+// unverified expired bodies use Discard, and invalid bodies fail their session.
 func (s *Session) Resolve(data []byte, expires, now time.Time, accepted bool) {
 	id := Identify(s.kind, data)
 	s.pool.mu.Lock()

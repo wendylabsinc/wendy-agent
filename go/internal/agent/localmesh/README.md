@@ -622,8 +622,9 @@ limit work on malformed or non-responsive peers. No request creates a routed
 socket. These freshness requests occur on readiness recovery, not on each normal
 service renewal. An origin without a live route remains unprojected.
 
-The neighbour ALPN selects the complete router-hop v1 contract, so connected
-routers must be updated together. There is no fallback to full-record push.
+Each neighbour ALPN selects its complete role-specific contract described
+above, so connected routers must be updated together. There is no fallback to
+full-record push.
 Origin-signed route proofs retain their existing signature contract. Certificate
 inventories and origin freshness challenges remain separate from HAVE/WANT.
 
