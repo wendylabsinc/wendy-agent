@@ -96,10 +96,12 @@ func TestWarmSameLeafRenewedIssuerRecoversEffectiveLifetime(t *testing.T) {
 	if _, changed, err := receiver.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, f.now); err != nil || len(changed) != 0 {
 		t.Fatalf("same-leaf renewed issuer closed warm link before chain completed: %v", err)
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 	changed, err := driveWarmCertificateFetch(f.source(t, f.renewed), receiver, requests, f.now)
 	if err != nil || len(changed) != 1 || len(d.Snapshot(f.now)) != 1 {
 		t.Fatal("verified renewed issuer did not recover original leaf signature", err)
 	}
+	assertWarmRouteAuthorities(t, d, f.now, w)
 }
 
 func TestWarmSameLeafIssuerDoesNotDeferInvalidSignature(t *testing.T) {
@@ -108,7 +110,9 @@ func TestWarmSameLeafIssuerDoesNotDeferInvalidSignature(t *testing.T) {
 	if _, _, err := receiver.Receive(warmDescriptor(f.renewed), f.now); err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{Version: 1, Device: f.old.Device.UUID(), Revision: 2, Issued: f.now.UnixMilli(), Expires: f.now.Add(10 * time.Second).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(f.renewed.Device, f.now)
+	m.Revision = 2
+	m.Expires = f.now.Add(10 * time.Second).UnixMilli()
 	w, err := SignManifest(m, f.renewed.Certificate.Certificate, f.renewed.Signer, f.now)
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +124,7 @@ func TestWarmSameLeafIssuerDoesNotDeferInvalidSignature(t *testing.T) {
 	if len(receiver.pendingRenewals) != 0 || len(d.Snapshot(f.now)) != 0 {
 		t.Fatal("invalid same-leaf signature gained pending authority")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 }
 
 func TestWarmSameLeafRenewedIssuerStillEnforcesVerifiedLifetime(t *testing.T) {
@@ -139,6 +144,7 @@ func TestWarmSameLeafRenewedIssuerStillEnforcesVerifiedLifetime(t *testing.T) {
 	if len(receiver.pending) != 0 || len(receiver.pendingRenewals) != 0 || len(d.Snapshot(f.now)) != 0 {
 		t.Fatal("overlong same-leaf renewed chain gained authority")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 }
 
 func TestWarmSameLeafLifetimeWaitStillRejectsCorruptedSignature(t *testing.T) {
@@ -161,4 +167,5 @@ func TestWarmSameLeafLifetimeWaitStillRejectsCorruptedSignature(t *testing.T) {
 	if len(receiver.pending) != 0 || len(receiver.pendingRenewals) != 0 || len(d.Snapshot(f.now)) != 0 {
 		t.Fatal("corrupt same-leaf wire gained authority")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 }

@@ -42,10 +42,12 @@ func TestWarmRenewalRecoversWhenManifestOutlivesPreviousLeaf(t *testing.T) {
 			if len(directory.Snapshot(f.now)) != 0 {
 				t.Fatal("pending renewal gained authority")
 			}
+			assertWarmRouteAuthorities(t, directory, f.now)
 			changed, err := driveWarmCertificateFetch(sender, receiver, requests, f.now)
 			if err != nil || len(changed) != 1 || len(directory.Snapshot(f.now)) != 1 {
 				t.Fatalf("new valid chain did not recover renewed presence: changed=%d err=%v", len(changed), err)
 			}
+			assertWarmRouteAuthorities(t, directory, f.now, wire)
 		})
 	}
 }
@@ -70,6 +72,7 @@ func TestWarmRenewalRejectsManifestOutlivingVerifiedReplacement(t *testing.T) {
 			if len(directory.Snapshot(f.now)) != 0 || len(receiver.pending) != 0 || len(receiver.pendingRenewals) != 0 {
 				t.Fatal("overlong verified replacement gained authority or remained pending")
 			}
+			assertWarmRouteAuthorities(t, directory, f.now)
 		})
 	}
 }
@@ -98,6 +101,7 @@ func TestWarmLifetimeMismatchRequiresExactActiveDifferentLeaf(t *testing.T) {
 			if len(directory.Snapshot(f.now)) != 0 || len(receiver.pendingRenewals) != 0 {
 				t.Fatal("out-of-scope lifetime mismatch gained pending authority")
 			}
+			assertWarmRouteAuthorities(t, directory, f.now)
 		})
 	}
 }
@@ -107,7 +111,7 @@ func TestWarmRenewalRetainsOriginalMonotonicFetchBoundWithEarlierSignedExpiry(t 
 	// Keep the real monotonic clock component; Truncate/UnixMilli deliberately
 	// do not carry it, as is true of the manifest's signed absolute expiry.
 	f.now = time.Now()
-	receiver, _, _ := f.receiver(t)
+	receiver, directory, _ := f.receiver(t)
 	if _, _, err := receiver.Receive(warmDescriptor(f.renewed), f.now); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +119,9 @@ func TestWarmRenewalRetainsOriginalMonotonicFetchBoundWithEarlierSignedExpiry(t 
 	if !ok || original == original.Round(0) {
 		t.Fatal("fixture did not retain a monotonic fetch allowance")
 	}
-	m := Manifest{Version: 1, Device: f.old.Device.UUID(), Revision: 2, Issued: f.now.UnixMilli(), Expires: f.now.Add(30 * time.Second).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(f.renewed.Device, f.now)
+	m.Revision = 2
+	m.Expires = f.now.Add(30 * time.Second).UnixMilli()
 	w, err := SignManifest(m, f.renewed.Certificate.Certificate, f.renewed.Signer, f.now)
 	if err != nil {
 		t.Fatal(err)
@@ -141,4 +147,5 @@ func TestWarmRenewalRetainsOriginalMonotonicFetchBoundWithEarlierSignedExpiry(t 
 	if pending := receiver.pendingRenewals[w.Principal]; pending.fetchUntil != original || !pending.expires.Equal(first.expires) {
 		t.Fatal("repeated hints renewed a retained payload's original bounds")
 	}
+	assertWarmRouteAuthorities(t, directory, at)
 }
