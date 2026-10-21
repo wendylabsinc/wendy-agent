@@ -388,7 +388,7 @@ func main() {
 	if resetStatus, err := provisioningSvcV2.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{}); err == nil {
 		recoverCompletedResetMesh(ctx, resetStatus.GetNotProvisioned().GetUnenrollmentCompletion(), 5*time.Second,
 			cleanupResetMesh, provisioningSvc.SetResetCleanupError, func(err error) {
-				logger.Error("Reset mesh cleanup incomplete; completion and enrollment remain unavailable", zap.Error(err))
+				logger.Error("Reset net cleanup incomplete; completion and enrollment remain unavailable", zap.Error(err))
 			})
 	}
 	defer cancel()
@@ -1397,7 +1397,7 @@ func main() {
 		stopErr := localMeshLife.Stop(stopCtx)
 		stopCancel()
 		localMeshMu.Lock()
-		localMeshSnapshot, localMeshCredentials, localMeshAppClient = nil, nil, nil
+		localMeshSnapshot, localMeshAppClient = nil, nil
 		localMeshMu.Unlock()
 		meshDialer.UpdateIdentity("", "", "")
 		meshRoster.UpdateIdentity("", "", "", "")
@@ -1411,7 +1411,7 @@ func main() {
 		if stopErr != nil {
 			// Do not reclaim kernel objects while an undrained worker may still
 			// use them. Reset stays unconfirmed; the scheduled restart retries.
-			return fmt.Errorf("waiting for mesh shutdown: %w", stopErr)
+			return fmt.Errorf("waiting for net shutdown: %w", stopErr)
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()

@@ -339,7 +339,7 @@ func validateStaleKernelOwnershipWith(listLinks func() ([]netlink.Link, error), 
 			continue
 		}
 		if link.Attrs().Alias != interfaceOwner || (name == InterfaceName && link.Type() != "dummy") || (name != InterfaceName && (!ownedPeerInterfaceName(name) || link.Type() != "tuntap")) {
-			return fmt.Errorf("interface %q is not owned by local-mesh", name)
+			return fmt.Errorf("interface %q is not owned by wendy-net", name)
 		}
 		ownedLinks = true
 	}
@@ -352,7 +352,7 @@ func validateStaleKernelOwnershipWith(listLinks func() ([]netlink.Link, error), 
 			continue
 		}
 		if !ownedKernelRule(rule) {
-			return errors.New("local-mesh policy rule ownership conflict during reset cleanup")
+			return errors.New("wendy-net policy rule ownership conflict during reset cleanup")
 		}
 	}
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
@@ -368,7 +368,7 @@ func validateStaleKernelOwnershipWith(listLinks func() ([]netlink.Link, error), 
 		}
 		for _, route := range routes {
 			if route.Protocol != routeProtocol {
-				return errors.New("local-mesh route table holds a foreign route during reset cleanup")
+				return errors.New("wendy-net route table holds a foreign route during reset cleanup")
 			}
 		}
 	}

@@ -49,26 +49,21 @@ then retains a tombstone and deletion audit. A failed revocation does not delete
 the active asset. Replayed deletion preserves the original actor/time/evidence.
 This operation alone is not proof that the device erased its local credentials.
 
-### Agent guarded-reset capability and completion receipt
+### Device reset
 
-`ProvisionedResponse.cloud_unenrollment_supported` is `true` on Agents that
-implement Cloud-owned guarded reset and protected recovery; absent/`false` on
-older Agents means the CLI must not attempt guarded erasure. It does not promise
-that the system clock is correct. Before new authorization, the Agent checks
-operator-certificate validity and revocation-evidence freshness against the system
-clock, without a separate time-server query or clock-floor write.
+Deleting a Cloud asset revokes its Cloud access; it does not erase credentials
+from an offline device. Use [`wendy device unenroll`](/docs/advanced/clients/wendy-cli/commands/device/unenroll)
+to coordinate Cloud removal and a local reset. The
+[unenrollment guide](/docs/device/unenrollment) explains recovery and supported devices.
 
-After durable local credential erasure, the Agent's `IsProvisioned` response
-contains `NotProvisionedResponse.unenrollment_completion`: public device-signed
-evidence for the **prior** principal's operation. It is absent if no guarded
-completion exists. This is an Agent field, not a Cloud `GetAsset` response.
-
-The receipt is not proof of current device identity or reachability. Consumers
-must anchor the historical certificate to configured roots, verify the exact
-principal/fingerprint/asset/tombstone and issuer-signed revocation evidence, and
-never treat plaintext transport or mDNS as identity proof. Embedded roots alone
-are not authority. A completion receipt does not replace current authorized
-Cloud lookup when reconciling retained deletion evidence.
+For API integrations, the agent advertises `cloud_authenticated_reset_supported`
+when it supports Cloud-authorized reset. The older
+`cloud_unenrollment_supported` flag is not sufficient. After erasure, the agent
+may return `NotProvisionedResponse.unenrollment_completion`, a signed receipt for
+the prior enrollment. It is historical completion evidence, not the identity of
+the device currently answering. See the repository's
+[reset protocol reference](https://github.com/wendylabsinc/WendyOS/blob/main/go/docs/v2-device-unenrollment.md)
+for validation requirements.
 
 ### v2 reported hardware facts
 
