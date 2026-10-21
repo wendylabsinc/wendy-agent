@@ -131,14 +131,14 @@ ALPN `wendy-local-mesh-ble/2-catalog-1-cert-1` and their independent hello versi
 Upgrade each connected Wendy Net network together. This changes the internal
 Wendy Net wire contract, not public gRPC messages or application-session ALPNs.
 
-Manifest projection and synchronization require the exact currently admitted
-wire signature to verify under the principal's current cached certificate. A
-same-principal key renewal cannot lend trust to a signature made with the old
-key. Same-key renewal can retain a valid signature, subject to the current
-chain lifetime and the original signed lease. Re-signing an identical body with
-a new key can replace an invalid old signature without renewing its lease or
-replay receipt. Queued exports use that exact wire and its matching current
-certificate chain together. Unchanged leaves reuse only the signature verdict;
+Manifest projection, route authorization and synchronization require the exact
+currently admitted wire signature to verify under the principal's current cached
+certificate. A same-principal key renewal cannot lend trust to a signature made
+with the old key. Same-key renewal can retain a valid signature, subject to the
+current chain lifetime and the original signed lease. Re-signing an identical
+body with a new key can replace an invalid old signature without renewing its
+lease or replay receipt. Queued exports use that exact wire and its matching
+current certificate chain together. Unchanged leaves reuse only the signature verdict;
 current chain trust and expiry are still checked on every read.
 A warm receiver may still hold a previous key while fetching an explicitly
 advertised replacement chain. Only that active same-neighbour exchange can

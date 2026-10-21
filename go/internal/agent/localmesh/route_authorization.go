@@ -32,9 +32,10 @@ func (m Manifest) validateRoute(device meshid.Device) error {
 }
 
 // RouteAuthorizations returns a detached snapshot for route admission. It checks
-// current trust and requires a live version-2 lease. Conflicting address claims
-// by different principals authorize neither origin. A signed origin proves
-// address ownership, not the honesty or reachability of its relays.
+// current trust and the exact record's signature against the current key, and
+// requires a live version-2 lease. Conflicting address claims by different
+// principals authorize neither origin. A signed origin proves address ownership,
+// not the honesty or reachability of its relays.
 func (d *Directory) RouteAuthorizations(now time.Time) map[RouteOrigin]bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -48,6 +49,8 @@ func (d *Directory) RouteAuthorizations(now time.Time) map[RouteOrigin]bool {
 		if e.expired || m.Withdraw || m.Version != ManifestVersionRoute || m.Route == nil {
 			continue
 		}
+		// A renewed principal cannot lend its new key's authority to an old
+		// signature, including when collecting conflicting address claims.
 		if _, ok := d.currentEntryChain(principal, e, now); !ok {
 			continue
 		}

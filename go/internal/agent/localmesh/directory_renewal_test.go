@@ -224,20 +224,29 @@ func TestDirectoryRenewalResignRecoveryPreservesReplayAndLease(t *testing.T) {
 				t.Fatal("renewal extended signed expiry")
 			}
 			// A higher revision recovers normally; current-key replays remain stale.
+			// Continue after the observed expiry: the route stage remembers its
+			// wall high-water mark and must not rewind time for this recovery.
+			recoveryAt := now.Add(62 * time.Second)
 			m.Revision++
-			m.Issued = now.Add(2 * time.Second).UnixMilli()
-			m.Expires = now.Add(90 * time.Second).UnixMilli()
-			next, err := SignManifest(m, renewed.Certificate.Certificate, renewed.Signer, now.Add(2*time.Second))
+			m.Issued = recoveryAt.UnixMilli()
+			m.Expires = recoveryAt.Add(90 * time.Second).UnixMilli()
+			next, err := SignManifest(m, renewed.Certificate.Certificate, renewed.Signer, recoveryAt)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if changed, err := d.Accept(next, now.Add(2*time.Second)); err != nil || !changed {
+			if changed, err := d.Accept(next, recoveryAt); err != nil || !changed {
 				t.Fatal(changed, err)
 			}
-			if _, err = d.Accept(resigned, now.Add(3*time.Second)); !errors.Is(err, ErrStaleManifest) {
+			stale := m
+			stale.Revision--
+			staleWire, err := SignManifest(stale, renewed.Certificate.Certificate, renewed.Signer, recoveryAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = d.Accept(staleWire, recoveryAt.Add(time.Second)); !errors.Is(err, ErrStaleManifest) {
 				t.Fatalf("current-key old revision bypassed floor: %v", err)
 			}
-			if _, ok := d.CurrentRecordChain(admitted, now.Add(3*time.Second)); ok {
+			if _, ok := d.CurrentRecordChain(admitted, recoveryAt.Add(time.Second)); ok {
 				t.Fatal("superseded queued wire exported")
 			}
 			if d.history[wire.Principal].Revision != 8 || saves != 2 {

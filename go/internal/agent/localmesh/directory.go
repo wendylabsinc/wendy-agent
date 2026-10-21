@@ -323,7 +323,11 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 		}
 	}
 	d.history = next
-	d.entries[device.Principal()] = directoryEntry{manifest: m, wire: w, hash: hash, signature: binding, retainUntil: receipt.Until, activeUntil: now.Add(time.UnixMilli(m.Expires).Sub(d.wallHighWater))}
+	d.entries[device.Principal()] = directoryEntry{
+		manifest: m, wire: w, hash: hash, signature: binding,
+		retainUntil: receipt.Until,
+		activeUntil: now.Add(time.UnixMilli(m.Expires).Sub(d.wallHighWater)),
+	}
 	return true, nil
 }
 
