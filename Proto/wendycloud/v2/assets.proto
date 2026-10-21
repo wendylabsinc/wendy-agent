@@ -26,6 +26,13 @@ service AssetService {
     option (wendy.signed_request) = true;
   }
   // Signed; payload_type "wendycloud.v2.DeleteAssetRequest".
+  // For a PKI-bound device, SignedRequest.pki_management_request carries the
+  // operator's management-request+jws (op revoke_principal) for exactly
+  // spiffe://wendy.sh/tenant/<organization_id>/device/<device_id>, signed by
+  // the same operator leaf as this request. Cloud relays revocation before
+  // retaining deletion evidence; device:delete suffices (no global cert-revoke).
+  // Assets without a device binding do not require the management request.
+  // See docs/contract-ledger.md for rollout and compatibility requirements.
   rpc DeleteAsset(SignedRequest) returns (DeleteAssetResponse) {
     option (wendy.signed_request) = true;
   }
@@ -92,6 +99,28 @@ message Asset {
   // (WDY-2902).
   optional string pki_device_name = 35;
 
+  // Hardware facts the device reports about itself (WDY-3544), beside the
+  // older columns above (device_type = board model, architecture, cpu_cores,
+  // ram_mb, storage_gb, os_type, os_version). Absent means the device never
+  // reported it. Descriptive only: they authorize nothing.
+  // First /proc/device-tree/compatible entry naming the SoC, e.g. "nvidia,tegra264".
+  optional string soc_compatible = 36;
+  optional string serial_number = 37;
+  // uname -r.
+  optional string kernel_version = 38;
+  // NVIDIA L4T release, e.g. "38.2.0". Absent on non-NVIDIA boards.
+  optional string l4t_version = 39;
+  // Vendor-specific GPU architecture, e.g. "sm_110".
+  optional string gpu_arch = 40;
+
+  // Name of the site the device belongs to, e.g. "Plant 3" (WDY-3581). A
+  // cloud with WDY-3590 always fills it; absent only from an older cloud.
+  // Descriptive grouping only: authorizes nothing.
+  // 41-44 are claimed by open PRs #101/#102.
+  optional string site = 45;
+  // ID of that site (SiteService, WDY-3590); absent only from an older cloud.
+  optional string site_id = 46;
+
   google.protobuf.Timestamp created_at = 21;
   google.protobuf.Timestamp updated_at = 22;
 }
@@ -131,6 +160,11 @@ message CreateAssetRequest {
 
 message GetAssetRequest {
   string id = 1;
+  // Optional exact tenant/PKI selector; both required when id is empty.
+  // Authorized tombstones return NOT_FOUND with a typed DeletedAsset detail.
+  // Plain NOT_FOUND is never deletion proof.
+  optional string organization_id = 2;
+  optional string device_id = 3;
 }
 
 message UpdateAssetRequest {
@@ -160,14 +194,46 @@ message UpdateAssetRequest {
 
   // See Asset.pki_device_name.
   optional string pki_device_name = 23;
+
+  // Site NAME, see Asset.site. Absent leaves it unchanged; empty string moves
+  // the device to the organization's oldest site (a device always has one);
+  // anything else names a site of the organization, INVALID_ARGUMENT if none
+  // has that name (WDY-3581, WDY-3590).
+  optional string site = 24;
+  // Set true to apply tags as given, even when empty (clears all tags).
+  // False keeps the older rule: a non-empty tags replaces them, an empty one
+  // leaves them unchanged. Same convention as
+  // SetOrgPublicRoutingRequest.update_port_denylist (WDY-3581).
+  bool update_tags = 25;
 }
 
 message DeleteAssetRequest {
   string id = 1;
+  // Optional compare-and-delete guard for device unenrollment.
+  optional string expected_device_id = 2;
+  // Opt-in: request purpose-bound Cloud reset authorization for this installed
+  // leaf after committed deletion. Requires current device:delete, exact device
+  // guard and the operator's exact-body signature; absent keeps deletion-only.
+  optional string reset_certificate_sha256 = 3;
+}
+
+message DeletedAsset {
+  string id = 1;
+  string organization_id = 2;
+  string device_id = 3;
+  google.protobuf.Timestamp deleted_at = 4;
 }
 
 message DeleteAssetResponse {
   bool success = 1;
+  // Opt-in compact ML-DSA-65 JWS, typ asset-reset-authorization+jws, aud
+  // wendy-agent/unprovision. Bound to committed DeletedAsset bytes and the
+  // exact operator-signed request (including installed-leaf hash). Not a bearer
+  // credential; Agent must independently verify Cloud key trust, operator proof,
+  // installed identity, revocation and fresh time before erasure. Empty means
+  // no reset authority, even if success=true. Current-authorized replay can
+  // obtain fresh proof; it never rewrites the first tombstone actor/time.
+  bytes reset_authorization = 2;
 }
 
 message ListAssetsRequest {
@@ -176,7 +242,7 @@ message ListAssetsRequest {
   // Offset/limit based pagination (offset = starting row, limit = page size)
   optional int32 offset = 3;
   optional int32 limit = 4;
-  optional string filter = 5;  // Filter by name, details, asset_type, device_type, or tags
+  optional string filter = 5;  // Filter by name, details, asset_type, device_type, serial_number, site name, or tags
   optional bool online_only = 6;  // If true, only return assets with active broker presence
   // Server-side ordering (applied across all matching assets, before pagination).
   optional string order_by = 7;   // "id" | "name" | "status" | "type"; defaults to "id"

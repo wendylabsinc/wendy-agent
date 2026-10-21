@@ -23,15 +23,17 @@ Identify message types, domain, RMW, QoS, frames, timestamp clock and sensor rat
 Topic discovery alone does not prove messages decode or samples are fresh.
 
 For an app that joins the robot's system graph, retain `frameworks.ros2` and set
-`discoveryScope: "host"`, an explicit `domainId` matching the robot, and the
-host-network entitlement. Do not remove the framework block to bypass isolation.
+`scope: "peripherals"` (robot on its own cable or bridged on the device) or
+`scope: "network"` (robot reached over the device's regular network), an
+explicit `domainId` matching the robot, and the host-network entitlement. Do not
+remove the framework block to bypass isolation.
 Bundle custom message packages such as pinned Unitree interfaces in the image.
 Inspect an existing template before writing the Dockerfile and message adapters.
 
 ```json
 {
   "frameworks": {
-    "ros2": { "distro": "humble", "rmw": "rmw_cyclonedds_cpp", "domainId": 0, "discoveryScope": "host" }
+    "ros2": { "distro": "humble", "rmw": "rmw_cyclonedds_cpp", "domainId": 0, "scope": "peripherals" }
   },
   "entitlements": [{ "type": "network", "mode": "host" }]
 }
@@ -60,7 +62,10 @@ and the robot's supported velocity range. Go2 examples use 0.55 m/s forward
 because requests below 0.5 m/s are ignored on the tested hardware; do not reduce
 this blindly and then infer that control is working.
 
-Run motion in the simulator first when available. Before a physical motion test,
+Run motion in the simulator first when available. Without a connected robot, use
+an existing robot-profile simulator, and ask before creating one, as the
+[wendy](../wendy/SKILL.md) skill's *No device available* section describes.
+Before a physical motion test,
 establish the intended robot, bounded action, stop mechanism and operator
 authorization. Existing authorization for that exact test is sufficient. A
 deployment request alone does not authorize an autonomous roaming session.

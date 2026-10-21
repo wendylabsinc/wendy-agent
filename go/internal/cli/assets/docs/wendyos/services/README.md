@@ -2,6 +2,10 @@
 
 WendyOS is a Yocto-based Linux distribution managed entirely by systemd. This document covers what runs on a WendyOS device, the startup order, and how services depend on one another.
 
+For the Agent's Cloud-owned UUID unenrollment, guarded local erasure and restart
+recovery, see [Cloud-owned unenrollment](/docs/device/unenrollment). This requires
+compatible Cloud and Agent builds; it is not an assertion of deployed acceptance.
+
 ## Service inventory
 
 | Service | Unit file | Purpose |
@@ -105,14 +109,17 @@ systemctl status var-lib-containerd.mount home.mount
 `WENDY_DATA_INGEST_URL` is the cloud DataIngestService endpoint sealed episodes are
 uploaded to (`ingest.data.wendy.sh` for the dev data platform). It is required for
 uploads: the enrolled cloud host does not serve this service, so there is no
-fallback. Without it the agent logs once at startup that uploads are disabled and
+fallback. Without it the agent logs once at Info level that uploads are disabled and
 sealed episodes stay queued in the local store, bounded by its quota. The device
 authenticates with the certificate it enrolled with, presented in the TLS
 handshake; no request header carries identity.
 
-`WENDY_TELEMETRY_URL` optionally redirects OpenTelemetry exports to another
-collector, so device telemetry can be landed in the data platform's store.
-Unset, telemetry goes to the enrolled cloud host as before.
+`WENDY_TELEMETRY_URL` enables OpenTelemetry exports to an explicitly configured
+OTLP gRPC collector that accepts the enrolled device's mTLS identity. Cloud's
+enrollment and relay endpoints no longer provide OTLP ingestion. Without this
+setting, the agent logs once at Info level that exports are disabled. Telemetry
+remains available locally within the buffer's retention limits. Set a collector
+host, host:port, or HTTPS URL without a path, then restart the agent.
 
 `WENDY_DATA_DIR` sets the root directory for the device-local Episode store.
 The production default is `/var/lib/wendy-agent/data/episodes`. Set it in the
@@ -126,3 +133,11 @@ The agent creates the directory on startup. Unprivileged developer agents that
 cannot create the production default fall back to their platform user
 configuration directory. WendyOS services should set an explicit path on the
 persistent `/data` partition when the root filesystem is small.
+
+## Agent shutdown
+
+The agent handles `SIGINT` and `SIGTERM` before starting background workers,
+so termination during startup also requests resource cleanup. Its shutdown
+log entry is `Termination requested, shutting down`; it replaces
+`Received signal, shutting down` and no longer includes a signal-name field.
+Use the current entry when filtering logs or configuring alerts.

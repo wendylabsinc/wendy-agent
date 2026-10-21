@@ -23,6 +23,7 @@ const (
 	errCodeCancelled         errorCode = "CANCELLED"
 	errCodeUnsupported       errorCode = "UNSUPPORTED"
 	errCodeInternal          errorCode = "INTERNAL"
+	errCodeDenied            errorCode = "DENIED" // refused by the user's binding policy (wendy cloud mcp)
 )
 
 // rewriteCLIHints is pluginmode.RewriteCLIHints; a variable so tests can pose

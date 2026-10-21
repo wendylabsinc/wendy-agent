@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pathlib
 import re
@@ -539,6 +540,92 @@ class ReconciliationTests(unittest.TestCase):
             fields = shape["properties"]
             self.assertNotIn("accepted", fields)
             self.assertNotIn("state", fields)
+
+    def reconciliation_messages(self, payloads):
+        create = unittest.mock.Mock(side_effect=[types.SimpleNamespace(
+            stop_reason="end_turn", content=[types.SimpleNamespace(type="text", text=json.dumps(payload))]
+        ) for payload in payloads])
+        module = types.SimpleNamespace(Anthropic=lambda: types.SimpleNamespace(
+            messages=types.SimpleNamespace(create=create)))
+        return module, create
+
+    def multi_prior(self):
+        prior = self.prior()
+        prior["decisions"] = [dict(prior["decisions"][0], id=character * 64)
+                              for character in "fedc"]
+        return prior
+
+    def test_changed_with_four_predecessors_requires_valid_bounded_repair(self):
+        invalid = {"matches": [{"current_index": 0, "prior_ids": [c * 64 for c in "fedc"],
+                                "relationship": "changed", "reason": "Merged contracts changed."}]}
+        valid = copy.deepcopy(invalid)
+        valid["matches"][0].update(relationship="ambiguous", reason="Multiple plausible identities.")
+        module, create = self.reconciliation_messages([invalid, valid])
+        with patch.dict(sys.modules, {"anthropic": module}):
+            reconciled = api_review.reconcile_decisions([decision()], self.multi_prior(), "test-model")
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(reconciled[0]["relationship"], "ambiguous")
+        self.assertEqual(reconciled[0]["prior_ids"], invalid["matches"][0]["prior_ids"])
+        first, repaired = [json.loads(call.kwargs["messages"][0]["content"]) for call in create.call_args_list]
+        self.assertEqual({key: value for key, value in repaired.items() if key != "response_repair"}, first)
+        self.assertIn("prior_count=4", repaired["response_repair"]["validation_error"])
+        self.assertEqual(json.loads(repaired["response_repair"]["previous_response"]), invalid)
+        self.assertNotIn("accepted", json.dumps(first).lower())
+
+    def test_reconciliation_repair_cannot_rewrite_valid_matches(self):
+        first = {"matches": [
+            {"current_index": 0, "prior_ids": ["f" * 64], "relationship": "unchanged", "reason": ""},
+            {"current_index": 1, "prior_ids": ["e" * 64, "d" * 64], "relationship": "changed", "reason": "Changed"},
+        ]}
+        second = copy.deepcopy(first)
+        second["matches"][1]["relationship"] = "ambiguous"
+        for alter_valid in (False, True):
+            repaired = copy.deepcopy(second)
+            if alter_valid:
+                repaired["matches"][0].update(relationship="changed", reason="Rewritten")
+            module, create = self.reconciliation_messages([first, repaired])
+            with self.subTest(alter_valid=alter_valid), patch.dict(sys.modules, {"anthropic": module}):
+                if alter_valid:
+                    with self.assertRaisesRegex(api_review.ReviewError, "already-valid match"):
+                        api_review.reconcile_decisions([decision(), decision(title="Other")], self.multi_prior(), "test-model")
+                else:
+                    rows = api_review.reconcile_decisions([decision(), decision(title="Other")], self.multi_prior(), "test-model")
+                    self.assertEqual(rows[0]["relationship"], "unchanged")
+                    self.assertEqual(rows[1]["relationship"], "ambiguous")
+            self.assertEqual(create.call_count, 2)
+
+    def test_invalid_reconciliation_repair_is_bounded_and_does_not_guess(self):
+        for bad in (
+            {"matches": []},
+            {"matches": [{"current_index": 0, "prior_ids": ["0" * 64], "relationship": "unchanged", "reason": ""}]},
+            {"matches": [{"current_index": 0, "prior_ids": ["f" * 64, "e" * 64], "relationship": "changed", "reason": "Changed"}]},
+        ):
+            module, create = self.reconciliation_messages([bad, bad])
+            with self.subTest(bad=bad), patch.dict(sys.modules, {"anthropic": module}):
+                with self.assertRaisesRegex(api_review.ReviewError, "after one repair"):
+                    api_review.reconcile_decisions([decision()], self.multi_prior(), "test-model")
+            self.assertEqual(create.call_count, 2)
+
+    def test_repaired_invalid_match_cannot_gain_unchanged_acceptance(self):
+        bad = {"matches": [{"current_index": 0, "prior_ids": ["f" * 64, "e" * 64],
+                            "relationship": "changed", "reason": "Changed"}]}
+        elevated = {"matches": [{"current_index": 0, "prior_ids": ["f" * 64],
+                                 "relationship": "unchanged", "reason": ""}]}
+        for original in (bad, {"matches": []}, None):
+            module, create = self.reconciliation_messages([original, elevated])
+            with self.subTest(original=original), patch.dict(sys.modules, {"anthropic": module}):
+                with self.assertRaisesRegex(api_review.ReviewError, "cannot carry acceptance"):
+                    api_review.reconcile_decisions([decision()], self.multi_prior(), "test-model")
+            self.assertEqual(create.call_count, 2)
+
+    def test_truncated_reconciliation_is_not_repaired(self):
+        module, create = self.reconciliation_messages([])
+        create.side_effect = None
+        create.return_value = types.SimpleNamespace(stop_reason="max_tokens", content=[])
+        with patch.dict(sys.modules, {"anthropic": module}):
+            with self.assertRaisesRegex(api_review.ReviewError, "did not complete"):
+                api_review.reconcile_decisions([decision()], self.prior(), "test-model")
+        self.assertEqual(create.call_count, 1)
 
     def test_provider_schema_uses_supported_constraints_only(self):
         schema = api_review.reconciliation_schema(11, ["f" * 64])

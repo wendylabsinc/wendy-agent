@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest
 
 from worker import StreamBytes
@@ -154,6 +155,125 @@ class WebMLateJoinTests(unittest.TestCase):
                 self.assertEqual((frame[1].width, frame[1].height), (96, 64))
             finally:
                 decoder.stop()
+
+
+class DetectorFailureTests(unittest.TestCase):
+    def run_with_detector(self, detector, frame_count=None, wait=30):
+        """Runs worker.run over one camera that always has a frame ready and
+        returns what it emitted and how long run took."""
+        import json
+        import types
+        from unittest import mock
+        from worker import run
+
+        emitted = []
+        finished = threading.Event()
+        taken = []
+
+        class FakeDecoder:
+            def __init__(self, source_id, generation, encoding, initialization=b""):
+                self.source_id, self.generation, self.encoding = source_id, generation, encoding
+                self.stream = types.SimpleNamespace(stopped=False, feed=lambda payload: True)
+
+            def take(self, now, interval):
+                if frame_count is not None and len(taken) >= frame_count:
+                    return None
+                taken.append(1)
+                return len(taken)
+
+            def stop(self):
+                self.stream.stopped = True
+
+        class Input:
+            lines = [json.dumps({"source_id": "camera", "generation": 1, "encoding": "h264",
+                                 "payload": "eA=="}).encode() + b"\n"]
+
+            def readline(self, limit):
+                if self.lines:
+                    return self.lines.pop(0)
+                finished.wait(wait)
+                return b""
+
+        def emit(result):
+            emitted.append(result)
+
+        started = time.monotonic()
+        with mock.patch("worker.Decoder", FakeDecoder), \
+                mock.patch("worker.emit", emit), \
+                mock.patch("worker.sys.stdin", types.SimpleNamespace(buffer=Input())):
+            run({"rate": 1000}, detector)
+        finished.set()
+        return emitted, time.monotonic() - started
+
+    def test_failing_frame_reports_source_error_and_next_frame_is_scored(self):
+        def detector(frame):
+            if frame == 1:
+                raise ValueError("bad frame")
+            return []
+
+        emitted, _ = self.run_with_detector(detector, frame_count=2, wait=1)
+        self.assertEqual(emitted, [
+            {"type": "source_error", "source_id": "camera", "generation": 1,
+             "error": "inference: ValueError: bad frame"},
+            {"type": "prediction", "source_id": "camera", "generation": 1, "detections": []},
+        ])
+
+    def test_detector_that_always_fails_ends_the_worker_with_an_error(self):
+        def detector(frame):
+            raise ValueError("broken")
+
+        emitted, elapsed = self.run_with_detector(detector)
+        self.assertLess(elapsed, 10)
+        self.assertEqual([item["type"] for item in emitted], ["source_error"] * 9 + ["error"])
+        self.assertEqual(emitted[-1], {"type": "error", "error": "inference: ValueError: broken"})
+
+    def test_mostly_failing_detector_ends_the_worker(self):
+        # Nine failures, one success, then failures: a straight count of
+        # consecutive failures would reset at the success and never trip.
+        def detector(frame):
+            if frame == 10:
+                return []
+            raise ValueError("broken")
+
+        emitted, elapsed = self.run_with_detector(detector)
+        self.assertLess(elapsed, 10)
+        self.assertEqual([item["type"] for item in emitted],
+                         ["source_error"] * 9 + ["prediction", "error"])
+
+    def test_occasional_failures_keep_the_worker_running(self):
+        # One frame in four fails, over 40 frames: 10 failures in all, but
+        # never 10 within any 20 frames.
+        def detector(frame):
+            if frame % 4 == 0:
+                raise ValueError("flaky")
+            return []
+
+        # The loop sleeps 20 ms per pass, so 40 frames need ~0.8 s before
+        # stdin closes.
+        emitted, _ = self.run_with_detector(detector, frame_count=40, wait=5)
+        types_seen = [item["type"] for item in emitted]
+        self.assertNotIn("error", types_seen)
+        self.assertEqual(types_seen.count("source_error"), 10)
+        self.assertEqual(types_seen.count("prediction"), 30)
+
+    def test_detection_error_never_raises(self):
+        from worker import detection_error
+
+        class Unprintable(Exception):
+            def __str__(self):
+                raise RuntimeError("no")
+
+        self.assertEqual(detection_error(Unprintable()), "inference: Unprintable")
+        message = detection_error(ValueError("\udc80" * 400))
+        self.assertLessEqual(len(message.encode()), 512)
+        self.assertTrue(message.startswith("inference: ValueError: "))
+
+    def test_detection_error_is_cut_to_512_utf8_bytes(self):
+        from worker import detection_error
+        message = detection_error(RuntimeError("é" * 600))
+        self.assertLessEqual(len(message.encode()), 512)
+        self.assertTrue(message.startswith("inference: RuntimeError: é"))
+        self.assertEqual(detection_error(KeyError()), "inference: KeyError")
 
 
 if __name__ == "__main__":

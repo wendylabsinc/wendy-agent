@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
@@ -240,9 +242,16 @@ func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) 
 // owned exclusively by runLANStream's goroutine, so it carries no locks.
 type lanDeviceState struct {
 	dev models.LANDevice
+	// advertised: the cables the latest sighting names (the cached record until
+	// one arrives). One counts once heard this session, or while cached and not
+	// found silent here; asked: those asked this session.
+	advertised, heard, cached, asked, silent []string
 	// fromCache: this identity entered the session as a LANCached row, so it
 	// is the only kind that can go LANOffline.
 	fromCache bool
+	// sighted records a current mDNS identity, rather than a cached address
+	// that still answers an agent version probe after enrollment changes its ID.
+	sighted bool
 	// confirmed: a live confirmation (mDNS sighting or probe success) has
 	// been emitted for this identity.
 	confirmed bool
@@ -269,6 +278,18 @@ type lanDeviceState struct {
 	offline        bool
 	retryScheduled bool
 }
+
+// cableAnswer is whether one advertised cable answered as its device.
+type cableAnswer struct {
+	key, addr string
+	answered  bool
+}
+
+// onLinkFn and cableAnswersFn are seams for tests.
+var (
+	onLinkFn       = OnLink
+	cableAnswersFn = CableAnswers
+)
 
 // lanProbeResult is one prober outcome handed back to the engine loop.
 type lanProbeResult struct {
@@ -301,6 +322,7 @@ type lanStream struct {
 
 	emissions chan MDNSService
 	results   chan lanProbeResult
+	cables    chan cableAnswer
 	retries   chan string
 	sem       chan struct{}
 	wg        sync.WaitGroup
@@ -326,6 +348,7 @@ func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, 
 		states:    make(map[string]*lanDeviceState),
 		emissions: make(chan MDNSService),
 		results:   make(chan lanProbeResult),
+		cables:    make(chan cableAnswer),
 		retries:   make(chan string, 1),
 		sem:       make(chan struct{}, probeWorkers),
 		batch:     batch,
@@ -373,6 +396,8 @@ func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, 
 			s.handleSighting(svc)
 		case res := <-s.results:
 			s.handleProbeResult(res)
+		case a := <-s.cables:
+			s.handleCableAnswer(a)
 		case <-grace.C:
 			s.handleGrace()
 		case key := <-s.retries:
@@ -464,7 +489,7 @@ func (s *lanStream) emitCached() {
 			s.dirty = true
 			continue
 		}
-		st := &lanDeviceState{dev: entry.Device(), fromCache: true, persisted: entry.LastSeen}
+		st := &lanDeviceState{dev: entry.Device(), advertised: entry.WiredAddresses, cached: entry.WiredAddresses, fromCache: true, persisted: entry.LastSeen}
 		s.states[key] = st
 		s.emit(LANEvent{Kind: LANCached, Device: st.dev})
 		if s.opts.Prober != nil {
@@ -550,18 +575,23 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 	s.annotate(&dev)
 	now := time.Now()
 
+	s.retireCachedHostAliases(key, dev)
 	superseded := s.supersedeHostDerived(key, dev)
+	advertised := dev.WiredAddresses
 
 	st, known := s.states[key]
 	if !known {
-		st = &lanDeviceState{dev: dev, confirmed: true}
+		st = &lanDeviceState{dev: dev, advertised: advertised, heard: unionAddresses(nil, dev.IPAddress), confirmed: true, sighted: true}
+		st.dev.WiredAddresses = st.cables()
 		s.states[key] = st
 		s.persist(st, now)
 		s.emit(LANEvent{Kind: LANFound, Device: st.dev, Supersedes: superseded})
 		s.scheduleProbe(key, st)
+		s.askCables(key, st)
 		return
 	}
 
+	st.sighted = true
 	prevAddrs := st.dev.Addresses
 	updated := applySighting(st.dev, dev)
 	if !st.probeFailed {
@@ -582,7 +612,11 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 	// otherwise they retain the earlier event without the reachable sibling.
 	updated.Addresses = unionAddresses([]string{updated.IPAddress}, prevAddrs...)
 	updated.Addresses = unionAddresses(updated.Addresses, dev.IPAddress)
-	changed = changed || !slices.Equal(prevAddrs, updated.Addresses)
+	st.advertised = advertised
+	st.heard = unionAddresses(st.heard, dev.IPAddress)
+	updated.WiredAddresses = st.cables()
+	changed = changed || !slices.Equal(prevAddrs, updated.Addresses) ||
+		!slices.Equal(st.dev.WiredAddresses, updated.WiredAddresses)
 	st.dev = updated
 	if targetMoved {
 		// Nothing has verified this address yet, so the row must stop claiming
@@ -626,6 +660,91 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 		// keeps that recovery event-driven on every platform.
 		s.scheduleProbe(key, st)
 	}
+	s.askCables(key, st)
+}
+
+// cables returns the advertised cables known to be the device's own.
+func (st *lanDeviceState) cables() []string {
+	var out []string
+	for _, a := range st.advertised {
+		if slices.Contains(st.heard, a) || (slices.Contains(st.cached, a) && !slices.Contains(st.silent, a)) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// askCables asks each advertised cable on this host's links, once a session
+// and all at once, whether it is this device's; see CableAnswers. Off-link
+// addresses cannot be asked, and the CLI never puts them first anyway.
+func (s *lanStream) askCables(key string, st *lanDeviceState) {
+	host := st.dev.Hostname
+	if host == "" {
+		return
+	}
+	for _, a := range st.advertised {
+		if slices.Contains(st.heard, a) || slices.Contains(st.asked, a) || !onLinkFn(a) {
+			continue
+		}
+		st.asked = append(st.asked, a)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			answered := cableAnswersFn(s.ctx, a, host)
+			select {
+			case s.cables <- cableAnswer{key: key, addr: a, answered: answered}:
+			case <-s.ctx.Done():
+			}
+		}()
+	}
+}
+
+// handleCableAnswer records whether a cable answered as the device's own. An
+// ask the session cut short proves nothing.
+func (s *lanStream) handleCableAnswer(a cableAnswer) {
+	st, known := s.states[a.key]
+	if !known || s.ctx.Err() != nil {
+		return
+	}
+	if a.answered {
+		st.heard = unionAddresses(st.heard, a.addr)
+	} else {
+		st.silent = unionAddresses(st.silent, a.addr)
+	}
+	wired := st.cables()
+	if slices.Equal(wired, st.dev.WiredAddresses) {
+		return
+	}
+	st.dev.WiredAddresses = wired
+	s.persist(st, time.Now())
+	s.emit(LANEvent{Kind: LANUpdated, Device: st.dev, Probed: st.probeConfirmed, ProbeFailed: st.reportedFailure})
+}
+
+// retireCachedHostAliases removes old UUID inventory rows when the same hostname
+// now advertises another UUID, such as the first-boot to certificate-ID migration.
+// An agent version probe confirms an address, not the cached advertised ID, so it
+// cannot keep that old ID alive indefinitely. Distinct IDs actually sighted this
+// session remain distinct. This changes discovery inventory only; certificate
+// verification and saved connection pins remain responsible for authentication.
+func (s *lanStream) retireCachedHostAliases(key string, dev models.LANDevice) {
+	host := dev.HostKey()
+	if st := s.states[key]; st != nil && st.sighted {
+		return // Cache entries are loaded once; repeated announcements need no rescan.
+	}
+	if host == "" || !canonicalDiscoveryUUID(dev.ID) {
+		return
+	}
+	for oldKey, st := range s.states {
+		if oldKey != key && st.fromCache && !st.sighted &&
+			st.dev.HostKey() == host && canonicalDiscoveryUUID(st.dev.ID) {
+			s.retract(oldKey)
+		}
+	}
+}
+
+func canonicalDiscoveryUUID(id string) bool {
+	parsed, err := uuid.Parse(id)
+	return err == nil && parsed != uuid.Nil && parsed.String() == id
 }
 
 // supersedeHostDerived retires an already-known identity that the sighting
@@ -747,6 +866,8 @@ func (s *lanStream) handleProbeResult(res lanProbeResult) {
 		st.confirmed = true
 	}
 	s.emitConfirmation(LANEvent{Kind: kind, Device: st.dev, Probed: true}, st)
+	// A device confirmed from the cache may never be sighted this session.
+	s.askCables(res.key, st)
 }
 
 // handleGrace runs once, offlineGrace after session start: every cached row

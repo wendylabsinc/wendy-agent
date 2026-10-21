@@ -53,7 +53,7 @@ func (s *mcpServer) registerROS2Tools(srv *server.MCPServer) {
 			opts = append(opts, mcpgo.WithInteger("count", mcpgo.Min(1), mcpgo.Max(20), mcpgo.DefaultNumber(3), mcpgo.Description("Maximum samples or rate reports")))
 		}
 		opts = append(opts, readOnly()...)
-		opts = append(opts, localOnly()...)
+		opts = append(opts, openWorld()...)
 		srv.AddTool(mcpgo.NewTool(tool.name, opts...), tool.handler)
 	}
 }
@@ -377,7 +377,7 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 			case parent.Err() != nil:
 				env["stop_reason"] = "cancelled"
 				err = parent.Err()
-			case ctx.Err() == context.DeadlineExceeded || status.Code(recvErr) == codes.DeadlineExceeded:
+			case ros2StreamReachedTimeLimit(ctx, recvErr):
 				// The peer can report the propagated RPC deadline before the
 				// local context timer fires. Both end the observation window.
 				env["stop_reason"] = "time_limit"
@@ -409,6 +409,18 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 		env["error_code"], env["message"] = failure["error_code"], failure["message"]
 	}
 	return ros2Result(env, opts.maxBytes), nil
+}
+
+func ros2StreamReachedTimeLimit(ctx context.Context, err error) bool {
+	if ctx.Err() == context.DeadlineExceeded || status.Code(err) == codes.DeadlineExceeded {
+		return true
+	}
+	// MonitorHz can return EOF when the device's propagated deadline fires.
+	// If the local timer callback is still waiting to run, the absolute
+	// deadline still ends our observation window. Preserve genuine early EOF
+	// and unrelated RPC errors instead of treating every close as a timeout.
+	deadline, ok := ctx.Deadline()
+	return err == io.EOF && ok && !time.Now().Before(deadline)
 }
 
 func ros2ValidHz(msg *agentpbv2.ROS2HzSample) bool {

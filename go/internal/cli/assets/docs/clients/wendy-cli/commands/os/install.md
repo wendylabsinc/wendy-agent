@@ -181,13 +181,22 @@ Provisioning works as it does on Thor: the bundle ships no config image, so wend
 wendy install --device-type arduino-uno-q
 ```
 
-The UNO Q is flashed over EDL like the Dragonwing boards, with the same chip-id check, factory reset and provisioning. To enter EDL, unplug the board, short its two EDL pins with a jumper, and plug in the USB-C cable ([Arduino's guide](https://docs.arduino.cc/software/app-lab/configure/flash/) shows the pins); the short can come off once the board is detected. After success, unplug the board, remove the short and plug it back in.
+The UNO Q is flashed over EDL, short for Emergency Download Mode, like the Dragonwing boards, with the same chip-id check, factory reset and provisioning.
+
+Find the small **10-pin header labelled `JCTL`** near the USB-C socket. The **EDL pins are the pair at the end of JCTL farthest from USB-C**, circled in orange in [Arduino's pin-location photo](https://raw.githubusercontent.com/arduino/docs-content/main/content/software/app-lab/assets/flashing/flashing-pins.png).
+
+1. Unplug the board.
+2. Connect those two pins together using a jumper cap or a female-to-female jumper wire. This is what "shorting the pins" means.
+3. Keep them connected while plugging the USB-C cable into your computer. Wendy detects the board in EDL mode and continues.
+4. After flashing succeeds, unplug the board, remove the jumper and reconnect it to boot WendyOS.
+
+You can remove the jumper once the board is detected in EDL mode. It stays in EDL until restarted without the pins connected. See [Arduino's flashing guide](https://docs.arduino.cc/software/app-lab/configure/flash/) for the illustrated instructions.
 
 The UNO Q keeps its boot firmware on the same eMMC, so the flash also rewrites it (with Arduino's own ABL and U-Boot) and replaces the Debian image, which Arduino's flasher restores.
 
 ## Linux Desktop / Headless Mac path
 
-Choosing **Linux Desktop** or **Headless Mac** (or `--device-type linux-desktop` / `--device-type headless-mac`) does not write a drive. The command prints the `agent.sh` one-liner from the [Linux installation guide](/docs/installation/linux) (the script auto-detects the target platform). When `--pre-enroll` is supplied and a valid auth session exists, a 1-hour enrollment token is embedded in the command; the agent self-enrolls on first startup without a separate `wendy device enroll` step. Run `wendy discover` afterwards to find the device.
+Choosing **Linux Desktop** or **Headless Mac** (or `--device-type linux-desktop` / `--device-type headless-mac`) does not write a drive. The command prints the `agent.sh` one-liner from the [Linux installation guide](/docs/installation/linux) (the script auto-detects the target platform). For Linux it passes `--network-access network`; on a Mac, choose **Allow Other Devices** when Wendy Agent first opens. When `--pre-enroll` is supplied and a valid auth session exists, a 1-hour enrollment token is embedded in the command; the agent self-enrolls on first startup without a separate `wendy device enroll` step. Run `wendy discover` afterwards to find the device.
 
 ### Privileges
 
@@ -251,7 +260,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--storage` | auto | Storage variant: `nvme`/`sd` for raw imaging; AGX Orin recovery requires `nvme` or `emmc` non-interactively |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 
-> **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](../../../../cloud/).
+> **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](https://cloud.wendy.dev/login).
 ## Agent-driven installation
 
 `wendy install plan` and `wendy install verify` also work under the `wendy os install`

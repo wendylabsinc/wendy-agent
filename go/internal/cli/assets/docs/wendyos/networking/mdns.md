@@ -34,6 +34,12 @@ Provisioning updates the port and may add `tls`, `assetid`, and `orgid`. Some
 service templates also contain an optional `fqdn` record. The agent preserves
 these records when it updates the hostname-derived TXT values.
 
+The agent also keeps a `wired` record listing the routable IPv4 addresses of
+its connected Ethernet ports, other than the address it takes on a camera port.
+It updates the record once a new list has held for two checks 10 seconds apart,
+or for about a minute when the new list drops an advertised address, and
+restarts Avahi only when the record changes.
+
 ## Boot-time mDNS Identity Update
 
 On every boot, `wendyos-identity.service` runs `update-mdns-uuid.sh` from
@@ -60,6 +66,14 @@ The `displayname` field converts the hyphen-separated device name to Title Case 
 If UUID or device-name files are not yet present, the script retries for up to
 10 seconds to handle ordering races. After updating the file it calls
 `avahi-daemon --reload` if the daemon is already running.
+
+Enrollment also updates identity before the next boot: when loading
+pre-provisioned credentials or completing live re-enrollment, the agent writes
+the certificate's device UUID to `/etc/wendyos/device-uuid` and the service's
+`id=` TXT record before restarting Avahi. A legacy asset certificate carries
+no device UUID and leaves these records unchanged. See
+[Pre-provisioning](../config-partition.md#pre-provisioning-provisioningjson)
+for hostname preservation.
 
 `wendy device rename` persists the operator-selected hostname in
 `/etc/wendy-agent/hostname` and updates the Avahi records at rename time; it
@@ -169,9 +183,10 @@ type MDNSService struct {
 
 | Key | Value | Example |
 |---|---|---|
-| `id` | Device UUID (from `/etc/wendyos/device-uuid`) | `550e8400-e29b-41d4-a716-446655440000` |
+| `id` | Device UUID (from `/etc/wendyos/device-uuid`; once enrolled, the UUID in the device certificate) | `550e8400-e29b-41d4-a716-446655440000` |
 | `name` | Slug device name (from `/etc/wendyos/device-name`) | `my-device` |
 | `displayname` | Title-cased device name | `My Device` |
 | `fqdn` | Optional reverse-DNS name derived from the hostname when present in the service template | `sh.wendy.my-device` |
 | `wendyosdevice` | Device UUID (preferred over `id` when present) | `769dc651-4eb2-49f3-b9f6-3e473f15694a` |
 | `tls` | `"true"` when the device is provisioned and requires mTLS (port 50052) | `true` |
+| `wired` | Comma-separated IPv4 addresses of the device's connected Ethernet ports (at most 8); absent when none. Used only to choose a route, never to trust a device | `192.168.2.50` |

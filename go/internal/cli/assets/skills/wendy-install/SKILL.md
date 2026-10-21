@@ -63,22 +63,42 @@ When working from source, use the checkout's documented build command and record
 
 ### Wendy CLI
 
-Re-run the installer to upgrade in-place:
+Check for a newer release without changing the installation:
 
-macOS and Linux:
 ```bash
-curl -fsSL https://install.wendy.dev/cli.sh | bash
+wendy update --check --json
 ```
 
-Windows:
-```powershell
-winget upgrade WendyLabs.Wendy --source winget
+When the user has authorized updating, run:
+
+```bash
+wendy update --yes
 ```
 
-After updating, verify the version meets the minimum requirement:
+This detects the installation method and preserves the nightly channel. Homebrew
+and recognized WinGet, APT, and RPM installations can update automatically;
+Arch/AUR and manual installations return their specific instructions. Without a
+terminal, APT/RPM elevation must already be authorized; the updater uses sudo
+without a password prompt. Follow those instructions
+within the user's update authorization. Do not replace a package-owned executable
+with a generic installer or silently add a second copy.
+
+For an older CLI without `update`, identify its package manager first. Stable
+Homebrew uses `brew update && brew upgrade wendylabsinc/tap/wendy`; nightly uses
+`wendylabsinc/tap/wendy-nightly`. WinGet uses
+`winget upgrade --id WendyLabs.Wendy --exact --source winget`. APT, RPM, and AUR
+installations should use their existing package source, while a manually
+downloaded package may need a newer package file.
+
+After updating, check the actual CLI on PATH and verify the required capabilities:
 ```bash
 wendy --version
+wendy update --check
 ```
+
+A successful package-manager exit does not prove PATH selects the new binary.
+Resolve shadowed copies before claiming success. The updater's verified result
+does not update a running MCP process; restart it next.
 
 ### Wendy MCP
 
@@ -103,9 +123,8 @@ same skills. Do not send end-users to the internal `claude-skills` collection.
 
 For first-time ChatGPT users, explain Wendy in one sentence and return to
 [wendy-onboarding](../wendy-onboarding/SKILL.md) after verifying installation.
-Use `wendy mcp setup chatgpt` for the local desktop connection; it requires no
-Cloud account or configured target. Hosted inspection and app control use the
-existing registered plugin and do not require installing this CLI. A request
+ChatGPT uses the hosted Wendy plugin, which needs a signed-in `wendy cloud mcp`
+session on the user's computer; see `wendy-mcp-setup`. A request
 to get started with a local workflow includes ordinary CLI and MCP setup;
 plugin installation alone does not.
 

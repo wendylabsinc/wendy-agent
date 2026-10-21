@@ -69,8 +69,11 @@ type Profile struct {
 	Expires        string `json:"expires"`
 }
 type Session struct {
-	Settings                              *Settings
-	Store                                 CredentialStore
+	Settings *Settings
+	Store    CredentialStore
+	// RequireHostedMCPPolicy is set by the hosted gateway, never from saved
+	// credentials. Its verified user tokens must permit both MCP channels.
+	RequireHostedMCPPolicy                bool
 	mu                                    sync.Mutex
 	Client                                HTTPDoer
 	meta                                  metadata
@@ -134,7 +137,7 @@ func (s *Session) discover(ctx context.Context, issuer string) (metadata, error)
 	}
 	return m, nil
 }
-func (s *Session) Begin(ctx context.Context, email, redirect string) (string, error) {
+func (s *Session) Begin(ctx context.Context, email, issuer, redirect string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.settings().Validate(); err != nil {
@@ -144,8 +147,15 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 	if e != nil || u.User != nil || u.Path != "/auth/callback" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && u.Host == "localhost:5173")) {
 		return "", errors.New("Invalid browser callback")
 	}
-	issuer := s.settings().AuthBase + "/realms/system"
-	if email != "" {
+	// Like `wendy auth login`: with no pinned realm the browser starts at the
+	// realm-less universal page and the realm arrives as the callback issuer.
+	// The system realm is never a login target. A caller-pinned issuer is held
+	// to the same rules as one from the email lookup.
+	if issuer != "" && !s.orgIssuer(issuer) {
+		return "", errors.New("Sign-in did not identify a valid organization realm")
+	}
+	pinned := issuer != ""
+	if issuer == "" && email != "" {
 		body, _ := json.Marshal(map[string]string{"email": email})
 		b, r, e := s.request(ctx, "POST", s.settings().AuthBase+"/api/login/realm", string(body), map[string]string{"Content-Type": "application/json"})
 		if e != nil {
@@ -156,18 +166,29 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 		}
 		var out struct {
 			LoginURL string `json:"loginURL"`
+			Realm    string `json:"realm"`
+			State    string `json:"state"`
 		}
 		if e = json.Unmarshal(b, &out); e != nil {
 			return "", e
 		}
-		issuer, e = s.issuerFromRealmLoginURL(out.LoginURL)
-		if e != nil {
-			return "", e
+		if out.Realm != "" {
+			out.LoginURL = "/realms/" + out.Realm
+		}
+		if out.State != "unknown" && out.LoginURL != "" {
+			if issuer, e = s.issuerFromRealmLoginURL(out.LoginURL); e != nil {
+				return "", e
+			}
+		}
+		if issuer != "" && !s.orgIssuer(issuer) {
+			issuer = ""
 		}
 	}
-	m, e := s.discover(ctx, issuer)
-	if e != nil {
-		return "", e
+	m := metadata{Authorize: s.settings().AuthBase + "/authorize"}
+	if issuer != "" {
+		if m, e = s.discover(ctx, issuer); e != nil {
+			return "", e
+		}
 	}
 	private, e := certs.GenerateMLDSAKeyPair()
 	if e != nil {
@@ -189,6 +210,11 @@ func (s *Session) Begin(ctx context.Context, email, redirect string) (string, er
 	s.certificate = config.CertificateInfo{}
 	challenge := sha256.Sum256([]byte(s.verifier))
 	q := url.Values{"response_type": {"code"}, "client_id": {s.settings().ClientID}, "redirect_uri": {redirect}, "scope": {"openid email profile groups"}, "resource": {s.settings().IdentityResource}, "state": {s.state}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}}
+	// A caller-pinned realm keeps the hint; a looked-up one, like `wendy auth
+	// login`, does not need it.
+	if email != "" && (issuer == "" || pinned) {
+		q.Set("login_hint", email)
+	}
 	return m.Authorize + "?" + strings.ReplaceAll(q.Encode(), "+", "%20"), nil
 }
 func (s *Session) exchange(ctx context.Context, form url.Values) (token, error) {
@@ -236,8 +262,11 @@ func (s *Session) Complete(ctx context.Context, code, state, issuer string) (Pro
 		return Profile{}, errors.New("Login expired; start sign-in again")
 	}
 	s.state = "" // Consume before network access, including failed code exchanges.
-	if issuer != s.meta.Issuer {
+	if s.meta.Issuer != "" && issuer != s.meta.Issuer {
 		return Profile{}, errors.New("Authentication issuer changed; start sign-in again")
+	}
+	if s.meta.Issuer == "" && !s.orgIssuer(issuer) {
+		return Profile{}, errors.New("Sign-in did not identify a valid organization realm; start sign-in again")
 	}
 	if code == "" {
 		return Profile{}, errors.New("No authorization code received")
@@ -400,6 +429,13 @@ func (s *Session) verifyAccess(ctx context.Context, raw, audience string) (map[s
 	cnf, _ := claims["cnf"].(map[string]any)
 	if cnf["jkt"] != thumb {
 		return nil, errors.New("Access token belongs to a different operator key")
+	}
+	if s.RequireHostedMCPPolicy {
+		allowMCP, _ := claims["allow_mcp"].(bool)
+		allowHostedMCP, _ := claims["allow_hosted_mcp"].(bool)
+		if !allowMCP || !allowHostedMCP {
+			return nil, errors.New("Wendy Cloud organization does not allow hosted MCP access")
+		}
 	}
 	return claims, nil
 }

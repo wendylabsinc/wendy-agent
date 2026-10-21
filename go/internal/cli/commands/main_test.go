@@ -2,10 +2,14 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // TestMain sandboxes HOME/USERPROFILE to a throwaway directory for the whole
@@ -18,7 +22,8 @@ import (
 // It also lets postStart openURL hooks reach browserOpen, which tests swap for
 // a recorder: `go test` has no interactive terminal, so the production gate
 // (defaultPostStartBrowserAllowed, tested directly) would otherwise suppress
-// every hook those tests observe.
+// every hook those tests observe. It sets WENDY_CLOUD_INSECURE for the fake
+// plaintext clouds (see below).
 func TestMain(m *testing.M) {
 	// UI initialization starts LAN discovery immediately, even if its returned
 	// tea.Cmd is never run. Default to a closed, empty stream so UI tests cannot
@@ -32,6 +37,17 @@ func TestMain(m *testing.M) {
 	}
 
 	postStartBrowserAllowed = func() bool { return true }
+	// A test that reaches the Linux QEMU or the EIM install offer without its
+	// own stub fails here instead of running sudo or Homebrew on the host.
+	installLinuxPackagesFn = func(context.Context, []string) error { return errors.New("test ran a Linux package manager") }
+	installEIMFn = func(context.Context) error { return errors.New("test ran Homebrew to install EIM") }
+	// Connection helpers also launch an eager provisioning browse outside
+	// the model stream. Use an empty default fixture so that browse cannot
+	// outlive a test and probe real devices through another test's dial seam.
+	// Tests for provisioning advertisements replace it with explicit rows.
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return nil, nil
+	}
 	// A developer who exported WENDY_DEVICE (as the docs suggest) must not
 	// have it copied into deviceFlag by every test that executes the root
 	// command, and leak from there into later tests.
@@ -39,6 +55,10 @@ func TestMain(m *testing.M) {
 	// A shell inside a plugin-launched Claude/Codex session exports
 	// WENDY_PLUGIN, which switches the CLI into plugin-managed behavior.
 	os.Unsetenv("WENDY_PLUGIN")
+	// The fake clouds these tests start are plaintext gRPC servers, so the
+	// package opts in to plaintext the same way a developer would against a
+	// local dev cloud. The TLS default itself is pinned in clouddefaults.
+	os.Setenv(clouddefaults.CloudInsecureEnv, "true")
 	if tmp, err := os.MkdirTemp("", "wendy-commands-test-home-"); err == nil {
 		os.Setenv("HOME", tmp)
 		os.Setenv("USERPROFILE", tmp) // Windows: os.UserHomeDir consults this

@@ -12,9 +12,11 @@ managed Go2 simulator. There is no simulator-specific drive backend.
 
 From an example directory, run `wendy run --device Woof --build-type docker` for
 hardware or `wendy run --device vm:<name> --build-type docker` for a simulator.
-Use a CLI built from this checkout. The manifest requests host discovery for
-hardware; managed VM deployment converts it to isolated guest loopback discovery
-without changing the source manifest. Raw Docker defaults to subnet discovery.
+Use a CLI built from this checkout. The manifest requests scope `peripherals`:
+on hardware the app reaches a robot attached to the device, either over its own
+cable (a Go2 EDU) or through a bridge on the device (a Go2 Air), and nothing on
+the device's uplink network. Managed VM deployment converts it to isolated guest
+loopback discovery without changing the source manifest. Raw Docker defaults to subnet discovery.
 For an isolated simulator container, override both discovery variables or use
 its explicit loopback CycloneDDS configuration.
 

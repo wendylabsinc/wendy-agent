@@ -99,7 +99,8 @@ Passing any entitlement flag suppresses the interactive entitlement prompts enti
 | `--ros2-domain-id <n>` | ROS 2 domain ID, `0`–`232`. Default: derived as a stable hash of the app ID. |
 | `--ros2-rmw <impl>` | ROS 2 middleware: `cyclonedds` (default), `fastrtps`, `connextdds`, or `gurumdds`. |
 | `--ros2-distro <name>` | ROS 2 distribution, e.g. `humble` (default) or `jazzy`. Lowercase letters and digits, starting with a letter. |
-| `--ros2-discovery-scope <scope>` | `app` (default, isolated to this app's containers) or `host` (discoverable across the device's host network). |
+| `--ros2-scope <scope>` | Who can see the app's topics: `app` (only this app), `device` (default, every app on the device), `peripherals` (the device and hardware attached to it, such as a robot), or `network` (the device's networks). |
+| `--ros2-discovery-scope <scope>` | Deprecated, use `--ros2-scope`. `app` writes scope `device`, `host` writes scope `network`. |
 
 See [Frameworks](#frameworks) below.
 
@@ -125,7 +126,7 @@ wendy init \
   --language swift \
   --framework ros2 \
   --ros2-rmw cyclonedds \
-  --ros2-discovery-scope host \
+  --ros2-scope peripherals \
   --assistant skip
 ```
 
@@ -136,7 +137,7 @@ This writes:
   "frameworks": {
     "ros2": {
       "rmw": "cyclonedds",
-      "discoveryScope": "host"
+      "scope": "peripherals"
     }
   }
 }
@@ -144,7 +145,7 @@ This writes:
 
 Values are validated against the same rules `wendy.json` itself enforces, so a typo fails immediately at `init` rather than surfacing later from `wendy run` or `wendy device ros2`.
 
-**Interactively.** On a `wendyos` target, when no entitlement flags and no framework flags were passed, the wizard asks whether the app uses ROS 2 and then walks through middleware, discovery scope, and domain ID. The distro is left at its default; edit `frameworks.ros2.distro` in `wendy.json` to change it.
+**Interactively.** On a `wendyos` target, when no entitlement flags and no framework flags were passed, the wizard asks whether the app uses ROS 2 and then walks through middleware, scope, and domain ID (not asked for scope `app`, which uses the app's own domain). The distro is left at its default; edit `frameworks.ros2.distro` in `wendy.json` to change it.
 
 **By hand.** Add the `frameworks` key to `wendy.json` yourself at any point; `wendy run` picks it up on the next deploy.
 
@@ -255,14 +256,14 @@ wendy init \
   --template mac-llm \
   --assistant skip
 
-# ROS 2 app on a shared host DDS domain
+# ROS 2 app that talks to a robot attached to the device
 wendy init \
-  --app-id go2-network-bridge \
+  --app-id go2-robot-app \
   --target wendyos \
   --language swift \
   --framework ros2 \
   --ros2-rmw cyclonedds \
-  --ros2-discovery-scope host \
+  --ros2-scope peripherals \
   --assistant skip
 
 # Start Claude in the new project with the Wendy skills installed

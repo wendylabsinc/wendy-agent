@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -273,6 +274,20 @@ func TestDiscoverModel_DKeySetsDefaultAndMarksSelectedDevice(t *testing.T) {
 	}
 	if !strings.Contains(um.table.View(), "✦") {
 		t.Fatalf("expected selected default device to show marker, got %q", um.table.View())
+	}
+
+	// 'd' toggles: on the default row it clears the default, as on the
+	// Simulator and Cloud tabs. There is no separate 'x' any more.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um = updated.(discoverModel)
+	if got := defaultKey(t); got != "" {
+		t.Fatalf("second d left default %q, want it cleared", got)
+	}
+	if um.flashMessage != "Default device cleared." || strings.Contains(um.table.View(), "✦") {
+		t.Fatalf("second d: flash=%q table=%q", um.flashMessage, um.table.View())
+	}
+	if view := um.View(); !strings.Contains(view, "d toggle default") || strings.Contains(view, "x unset default") {
+		t.Fatalf("hint does not describe the toggle: %q", view)
 	}
 }
 
@@ -905,5 +920,33 @@ func TestDiscoverCmdHasNoAllFlag(t *testing.T) {
 	cmd := newDiscoverCmd()
 	if flag := cmd.Flags().Lookup("all"); flag != nil {
 		t.Fatal("discover should no longer define an --all flag")
+	}
+}
+
+// The first event for a row may come from the cache; a later live one carries
+// the device's current cable record.
+func TestMergePickerItemRefreshesTheCableRecord(t *testing.T) {
+	cached := models.LANDevice{ID: "pi", Hostname: "pi.local", IPAddress: "192.168.2.216"}
+	existing := lanPickerItem(cached, false, tui.ProbeOK)
+	live := cached
+	live.WiredAddresses = []string{"192.168.2.50"}
+
+	mergePickerItem(&existing, lanPickerItem(live, false, tui.ProbeOK))
+
+	if got := existing.Value.(*pickerEntry).mergedDevice.LAN.WiredAddresses; !slices.Equal(got, []string{"192.168.2.50"}) {
+		t.Errorf("WiredAddresses = %v after a live event, want [192.168.2.50]", got)
+	}
+}
+
+// Rows merge by hostname, so a second device using the same name must not lend
+// this row its cable.
+func TestMergePickerItemTakesNoCableFromAnotherDevice(t *testing.T) {
+	existing := lanPickerItem(models.LANDevice{ID: "pi-a", Hostname: "pi.local", IPAddress: "192.168.2.216"}, false, tui.ProbeOK)
+	other := models.LANDevice{ID: "pi-b", Hostname: "pi.local", IPAddress: "10.0.0.50", WiredAddresses: []string{"10.0.0.50"}}
+
+	mergePickerItem(&existing, lanPickerItem(other, false, tui.ProbeOK))
+
+	if got := existing.Value.(*pickerEntry).mergedDevice.LAN.WiredAddresses; got != nil {
+		t.Errorf("WiredAddresses = %v from another device, want nil", got)
 	}
 }

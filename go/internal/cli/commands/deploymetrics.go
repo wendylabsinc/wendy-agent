@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ import (
 // Every property is a bounded number or enum: never a path, host, image name
 // or error text.
 type deployMetrics struct {
+	ctx       context.Context
 	now       func() time.Time // clock seam; nil means time.Now
 	began     time.Time
 	started   bool // the agent acknowledged that the container started
@@ -81,6 +83,10 @@ func (m *deployMetrics) markStarted() {
 		return
 	}
 	m.started, m.startedAt = true, m.clock()
+	if !m.internal {
+		analytics.TrackStage(m.ctx, "app_started", m.command, "completed", "", map[string]string{"deploy_transport": m.transport, "deploy_target_platform": platformLabel(m.targetPlatform)})
+		analytics.TrackMilestoneOnce("first_deploy_success")
+	}
 }
 
 // fellBack records that the chunk-diff attempt failed with err after taking
@@ -105,6 +111,7 @@ func (m *deployMetrics) properties(err error) map[string]string {
 	success := err == nil || m.started
 	p := map[string]string{
 		"command_name":     m.command,
+		"attempt_id":       analytics.AttemptID(m.ctx),
 		"command_root":     strings.TrimPrefix(m.command, "wendy "),
 		"duration_ms":      durationMS(end.Sub(m.began)),
 		"success":          strconv.FormatBool(success),
