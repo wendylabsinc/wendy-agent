@@ -3,6 +3,7 @@ package localmesh
 import (
 	"encoding/binary"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -55,82 +56,245 @@ func validIP(p []byte) bool {
 	return false
 }
 
+const (
+	ipPendingLimit     = 32
+	ipPendingByteLimit = ipPendingLimit * TunnelMTU
+	ipAssemblyLifetime = 10 * time.Second
+	ipRetirementWindow = 1024 // Fixed bookkeeping, independent of peer ID churn.
+)
+
 type partialIP struct {
 	data          []byte
 	first, second bool
 	expires       time.Time
+	order         uint64
 }
 
-// IPAssembler is single-caller and bounded to 32 pending packets for one link.
-// At most two fixed-position fragments are accepted, avoiding overlaps and
-// arbitrary-offset attacks. Loss is ordinary IP packet loss, not a stream stall.
-type IPAssembler struct{ pending map[uint32]partialIP }
+// IPAssemblyStats counts hop-local carrier IP work, not app messages or wire
+// delivery. Bytes counts received carrier payload bytes, including its header.
+// PendingBytes reserves each incomplete packet's full declared size.
+type IPAssemblyStats struct {
+	Fragments, Bytes                                 uint64
+	WholePackets, ReassembledPackets                 uint64
+	Duplicates, RetiredFragments                     uint64
+	ExpiredPackets, EvictedPackets, DiscardedPackets uint64
+	InvalidFragments, ConflictingFragments           uint64
+	PendingPackets, PendingBytes, PeakPendingBytes   int
+	PacketLimit, ByteLimit                           int
+	LifetimeMS                                       uint64
+}
+
+// IPAssembler has one receive owner. Snapshot alone may run concurrently; it
+// reads a consistent published copy, never the mutable pending map. Do not copy
+// an assembler after first use. At most two fixed-position pieces are accepted.
+// Missing pieces are ordinary packet loss; capacity must not stall fresh IP.
+type IPAssembler struct {
+	pending    map[uint32]partialIP
+	bytes      int
+	order      uint64
+	retirement ipRetirement
+	stats      IPAssemblyStats
+	snapshotMu sync.Mutex
+	published  IPAssemblyStats
+}
+
+// ipRetirement uses serial uint32 ordering, including wrap, to reject retired
+// IDs without an unbounded tombstone map. IDs outside the window cannot reopen
+// discarded state. Existing pending entries are checked before this window so
+// later whole packets cannot invalidate a still-live delayed second piece.
+type ipRetirement struct {
+	initialized bool
+	newest      uint32
+	bits        [ipRetirementWindow / 64]uint64
+}
+
+func (r *ipRetirement) admit(id uint32) bool {
+	if !r.initialized {
+		r.initialized, r.newest = true, id
+	} else if delta := id - r.newest; delta != 0 && delta < 1<<31 {
+		if delta >= ipRetirementWindow {
+			clear(r.bits[:])
+		} else {
+			for step := uint32(1); step <= delta; step++ {
+				slot := (r.newest + step) % ipRetirementWindow
+				r.bits[slot/64] &^= uint64(1) << (slot % 64)
+			}
+		}
+		r.newest = id
+	}
+	if r.newest-id >= ipRetirementWindow {
+		return false
+	}
+	slot := id % ipRetirementWindow
+	return r.bits[slot/64]&(uint64(1)<<(slot%64)) == 0
+}
+
+func (r *ipRetirement) retire(id uint32) {
+	if r.initialized && r.newest-id < ipRetirementWindow {
+		slot := id % ipRetirementWindow
+		r.bits[slot/64] |= uint64(1) << (slot % 64)
+	}
+}
+
+func (a *IPAssembler) publish() {
+	s := a.stats
+	s.PendingPackets, s.PendingBytes = len(a.pending), a.bytes
+	s.PacketLimit, s.ByteLimit = ipPendingLimit, ipPendingByteLimit
+	s.LifetimeMS = uint64(ipAssemblyLifetime / time.Millisecond)
+	a.snapshotMu.Lock()
+	a.published = s
+	a.snapshotMu.Unlock()
+}
+
+// Snapshot is safe during Receive, Expire and owner shutdown. The returned
+// value is independent of future updates and contains no packet data or IDs.
+func (a *IPAssembler) Snapshot() IPAssemblyStats {
+	a.snapshotMu.Lock()
+	s := a.published
+	a.snapshotMu.Unlock()
+	// Supply limits even before the receive owner has published its first event.
+	s.PacketLimit, s.ByteLimit = ipPendingLimit, ipPendingByteLimit
+	s.LifetimeMS = uint64(ipAssemblyLifetime / time.Millisecond)
+	return s
+}
+
+func (a *IPAssembler) remove(id uint32) {
+	p := a.pending[id]
+	a.bytes -= len(p.data)
+	delete(a.pending, id)
+	a.retirement.retire(id)
+}
+
+// Expire releases buffers at their absolute admission deadline. A duplicate
+// never extends that deadline, including on a slow BLE stream.
+func (a *IPAssembler) Expire(now time.Time) {
+	changed := false
+	for id, p := range a.pending {
+		if !p.expires.After(now) {
+			a.remove(id)
+			a.stats.ExpiredPackets++
+			changed = true
+		}
+	}
+	if changed {
+		a.publish()
+	}
+}
+
+func (a *IPAssembler) nextExpiry() time.Time {
+	var next time.Time
+	for _, p := range a.pending {
+		if next.IsZero() || p.expires.Before(next) {
+			next = p.expires
+		}
+	}
+	return next
+}
+
+func (a *IPAssembler) discard() {
+	for id := range a.pending {
+		a.remove(id)
+		a.stats.DiscardedPackets++
+	}
+	a.publish()
+}
 
 func (a *IPAssembler) Receive(d []byte, now time.Time) ([]byte, error) {
+	defer a.publish()
+	a.Expire(now)
+	a.stats.Fragments++
+	a.stats.Bytes += uint64(len(d))
+	invalid := func(message string) ([]byte, error) {
+		a.stats.InvalidFragments++
+		return nil, errors.New(message)
+	}
 	if len(d) <= fragmentHeader || len(d) > DatagramLimit || d[0] != PacketIP {
-		return nil, errors.New("invalid IP datagram")
+		return invalid("invalid IP datagram")
 	}
 	id := binary.BigEndian.Uint32(d[1:5])
 	total := int(binary.BigEndian.Uint16(d[5:7]))
 	offset := int(binary.BigEndian.Uint16(d[7:9]))
 	const chunk = DatagramLimit - fragmentHeader
 	if total < 20 || total > TunnelMTU || (offset != 0 && offset != chunk) || offset >= total || len(d)-fragmentHeader != min(chunk, total-offset) {
-		return nil, errors.New("invalid IP fragment")
+		return invalid("invalid IP fragment")
 	}
+	p, exists := a.pending[id]
+	conflict := func(message string) ([]byte, error) {
+		a.remove(id)
+		a.stats.ConflictingFragments++
+		return nil, errors.New(message)
+	}
+	if exists && len(p.data) != total {
+		return conflict("conflicting IP fragment length")
+	}
+	// Validate whole packets before copying. Fragmented packets cannot be fully
+	// validated until both halves arrive; their declared allocation is bounded.
 	if total <= chunk {
-		p := append([]byte(nil), d[9:]...)
-		if !validIP(p) {
-			return nil, errors.New("invalid reassembled IP")
+		if !validIP(d[fragmentHeader:]) {
+			return invalid("invalid reassembled IP")
 		}
-		return p, nil
-	}
-	if a.pending == nil {
-		a.pending = map[uint32]partialIP{}
-	}
-	for key, p := range a.pending {
-		if !p.expires.After(now) {
-			delete(a.pending, key)
-		}
-	}
-	p, ok := a.pending[id]
-	if !ok {
-		if len(a.pending) >= 32 {
+		if !a.retirement.admit(id) {
+			a.stats.RetiredFragments++
 			return nil, nil
-		} // bounded congestion loss
-		// A BLE peer can take several seconds to deliver the second half of
-		// an IP packet under contention. The 32-packet cap bounds memory.
-		p = partialIP{data: make([]byte, total), expires: now.Add(10 * time.Second)}
+		}
+		a.retirement.retire(id)
+		a.stats.WholePackets++
+		return append([]byte(nil), d[fragmentHeader:]...), nil
 	}
-	if len(p.data) != total {
-		delete(a.pending, id)
-		return nil, errors.New("conflicting IP fragment length")
+	if !exists {
+		if !a.retirement.admit(id) {
+			a.stats.RetiredFragments++
+			return nil, nil
+		}
+		if len(a.pending) >= ipPendingLimit || a.bytes+total > ipPendingByteLimit {
+			// Keep the newest complete traffic moving after loss. Admission order is
+			// deterministic even if every timestamp is equal; duplicates do not touch it.
+			var oldest uint32
+			var order uint64
+			for key, other := range a.pending {
+				if order == 0 || other.order < order {
+					oldest, order = key, other.order
+				}
+			}
+			a.remove(oldest)
+			a.stats.EvictedPackets++
+		}
+		if a.pending == nil {
+			a.pending = make(map[uint32]partialIP)
+		}
+		a.order++
+		p = partialIP{data: make([]byte, total), expires: now.Add(ipAssemblyLifetime), order: a.order}
+		a.bytes += total
+		a.stats.PeakPendingBytes = max(a.stats.PeakPendingBytes, a.bytes)
 	}
 	seen := p.first
 	if offset != 0 {
 		seen = p.second
 	}
 	if seen {
-		for i, b := range d[9:] {
+		for i, b := range d[fragmentHeader:] {
 			if p.data[offset+i] != b {
-				delete(a.pending, id)
-				return nil, errors.New("conflicting duplicate IP fragment")
+				return conflict("conflicting duplicate IP fragment")
 			}
 		}
+		a.stats.Duplicates++
 		return nil, nil
 	}
-	copy(p.data[offset:], d[9:])
+	copy(p.data[offset:], d[fragmentHeader:])
 	if offset == 0 {
 		p.first = true
 	} else {
 		p.second = true
 	}
+	// Store first so completion and errors share exact accounting.
+	a.pending[id] = p
 	if p.first && p.second {
-		delete(a.pending, id)
+		a.remove(id)
 		if !validIP(p.data) {
-			return nil, errors.New("invalid reassembled IP")
+			return invalid("invalid reassembled IP")
 		}
+		a.stats.ReassembledPackets++
 		return p.data, nil
 	}
-	a.pending[id] = p
 	return nil, nil
 }

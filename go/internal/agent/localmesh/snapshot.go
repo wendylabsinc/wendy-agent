@@ -19,6 +19,9 @@ type NodeSnapshot struct {
 type PeerLink struct {
 	Device meshid.Device
 	Cost   uint16
+	// Reassembly is a consistent, current hop-local receive snapshot.
+	Reassembly *IPAssemblyStats
+	assembler  *IPAssembler
 	// SendQueue is populated for a BLE byte-stream link when Snapshot is read.
 	SendQueue *IPQueueStats
 	queue     ipQueueSnapshotter

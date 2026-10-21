@@ -26,6 +26,7 @@ import (
 )
 
 type nodePeer struct {
+	assembler  IPAssembler
 	id         babel.LinkID
 	device     meshid.Device
 	cost       uint16
@@ -167,6 +168,10 @@ func (n *Node) Snapshot() NodeSnapshot {
 	out := *v
 	out.Links = append([]PeerLink(nil), v.Links...)
 	for i := range out.Links {
+		if a := out.Links[i].assembler; a != nil {
+			stats := a.Snapshot()
+			out.Links[i].Reassembly = &stats
+		}
 		if q := out.Links[i].queue; q != nil {
 			stats := q.snapshot()
 			out.Links[i].SendQueue = &stats
@@ -189,7 +194,7 @@ func (n *Node) refresh() {
 	devices := n.directory.Snapshot(time.Now())
 	links := make([]PeerLink, 0, len(n.peers))
 	for _, p := range n.peers {
-		link := PeerLink{Device: p.device, Cost: p.cost}
+		link := PeerLink{Device: p.device, Cost: p.cost, assembler: &p.assembler}
 		if stream, ok := p.link.(*streamNodeLink); ok {
 			link.queue = stream.ipPackets
 		}
@@ -626,9 +631,10 @@ func (n *Node) readTUN(ctx context.Context, p *nodePeer) error {
 }
 
 func (n *Node) readLink(ctx context.Context, p *nodePeer) error {
-	var assembler IPAssembler
+	assembler := &p.assembler
+	defer assembler.discard()
 	for {
-		d, err := p.link.ReceiveDatagram(ctx)
+		d, err := assembler.receiveDatagram(ctx, p.link.ReceiveDatagram)
 		if err != nil {
 			return err
 		}
