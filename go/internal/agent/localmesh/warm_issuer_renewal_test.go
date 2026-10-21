@@ -68,18 +68,23 @@ func sameLeafIssuerRenewalFixture(t *testing.T, renewedLifetime time.Duration) w
 	if string(old.Certificate.Certificate[0]) != string(renewed.Certificate.Certificate[0]) || sameChain(old.Certificate.Certificate, renewed.Certificate.Certificate) {
 		t.Fatal("fixture did not keep exact leaf while changing chain")
 	}
-	oldID, err := renewed.Verify(old.Certificate.Certificate, now)
+	// Use an independent peer whose configured trust contains only the root.
+	// If the renewed intermediate is itself configured as a trust anchor,
+	// selected-path verification can legitimately use it for the old leaf too,
+	// even before the peer has fetched the advertised replacement issuer.
+	verify := root.issue(t, now, nil, now.Add(2*time.Hour)).Verify
+	oldID, err := verify(old.Certificate.Certificate, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newID, err := renewed.Verify(renewed.Certificate.Certificate, now)
+	newID, err := verify(renewed.Certificate.Certificate, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !oldID.NotAfter.Equal(now.Add(30*time.Second)) || !newID.NotAfter.Equal(now.Add(renewedLifetime)) {
 		t.Fatal("fixture did not isolate effective issuer lifetime", oldID.NotAfter, newID.NotAfter)
 	}
-	return warmRenewalFixture{now: now, old: old, renewed: renewed, verify: renewed.Verify}
+	return warmRenewalFixture{now: now, old: old, renewed: renewed, verify: verify}
 }
 
 func TestWarmSameLeafRenewedIssuerRecoversEffectiveLifetime(t *testing.T) {
