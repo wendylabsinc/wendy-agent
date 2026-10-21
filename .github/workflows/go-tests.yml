@@ -82,6 +82,8 @@ jobs:
         run: go test -gcflags=all=-c=1 ./... -race -vet=off -count=1 -timeout 300s
 
       - name: Check camera discovery on a shared LAN
+        # Privileged kernel fixtures run only for repository-owned branches.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         working-directory: go
         run: |
           go test -c -o "$RUNNER_TEMP/ipcam.test" ./internal/agent/ipcam
