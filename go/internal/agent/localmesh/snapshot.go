@@ -19,6 +19,9 @@ type NodeSnapshot struct {
 type PeerLink struct {
 	Device meshid.Device
 	Cost   uint16
+	// CarrierIP reports router QUIC enqueue/capability diagnostics.
+	CarrierIP *CarrierIPStats
+	carrier   *carrierIPSender
 	// Reassembly is a consistent, current hop-local receive snapshot.
 	Reassembly *IPAssemblyStats
 	assembler  *IPAssembler

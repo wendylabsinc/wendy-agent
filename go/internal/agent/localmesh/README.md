@@ -59,6 +59,37 @@ apply independently.
 
 ## Control and payload flow
 
+Router QUIC uses ALPN `wendy-net-router/2` and hello version 2. Its authenticated
+hello keeps the tunnel MTU at 1320 and baseline datagram limit at 1100, and
+independently advertises an IP carrier receive limit of 1100 or 1329. A complete
+tunnel packet can use one nine-byte-header carrier datagram when the peer and
+current validated QUIC path support it. Otherwise the original 1091-byte fixed
+fragment positions apply. QUIC starts at a 1200-byte UDP payload and may probe
+up to a 1400-byte ceiling; application QUIC and tunnel/container MTUs are
+unchanged. BLE and leaf stream protocols retain their separate version and
+framing, and do not advertise the router capability.
+
+Nonblocking datagram admission drops on queue pressure without withdrawing a
+healthy routing link. A synchronous whole-frame size refusal may fall back
+before any piece was admitted; a partially admitted fixed-form packet never
+restarts. Missing pieces remain ordinary IP loss. Accepted enqueue is not a
+wire or delivery receipt.
+
+For bounded operator diagnostics, setting `WENDY_NET_CARRIER_DIAGNOSTICS=1` in
+the agent environment before startup emits a `wendy net carrier stats=` JSON
+journal row at most once per active router-QUIC link every five seconds. The
+version-1 row identifies the authenticated self/peer and link ID and includes
+`tx` configured packet/IP body, negotiated peer IP body and current QUIC body
+capacity plus enqueue/drop counters, and
+`rx` reassembly counters and bounds. `CurrentDatagramKnown` distinguishes an
+unavailable capacity query from a measured value. `Fragments`/`Bytes` in `tx`
+count accepted IP datagram bodies including their carrier header, not wire
+bytes; `WholePackets` includes already-small packets. `FragmentedPackets`
+counts attempts whose first fixed fragment was accepted, including partial
+loss. `QueueDrops`/`SizeDrops` include IP and Babel refusals; `WholeFallbacks`
+counts size-refused whole attempts that try the fixed form. Counters reset on
+link replacement. Diagnostics are off by default and add no wire traffic.
+
 Each authenticated QUIC neighbour link has one bounded reliable control stream
 and independent Babel/IP datagrams. TLS byte-stream adapters multiplex those
 frame types through one bounded priority writer, with separate bounded IP

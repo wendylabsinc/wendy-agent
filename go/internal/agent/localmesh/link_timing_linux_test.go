@@ -16,7 +16,7 @@ func TestFramedStreamUsesCarrierAppropriateBabelTiming(t *testing.T) {
 	if link.HelloInterval != babel.DefaultHelloInterval {
 		t.Fatal("stream kept an aggressively short Hello interval")
 	}
-	p.link = quicNodeLink{}
+	p.link = &quicNodeLink{}
 	if got := babelLinkForPeer(p, local, remote).HelloInterval; got != 0 {
 		t.Fatal("datagram link did not inherit node timing", got)
 	}

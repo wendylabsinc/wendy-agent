@@ -90,7 +90,7 @@ func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Devic
 		return err
 	}
 	defer conn.SetDeadline(time.Time{})
-	if err := WriteControl(conn, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: 1, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
+	if err := WriteControl(conn, ControlMessage{Kind: "hello", Hello: &LinkHello{Version: StreamProtocolVersion, Device: self.UUID(), Peer: peer.UUID(), MTU: TunnelMTU, Datagram: DatagramLimit}}); err != nil {
 		return err
 	}
 	m, err := ReadControl(conn)
@@ -101,7 +101,7 @@ func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Devic
 		return errors.New("missing wendy net stream hello")
 	}
 	h := m.Hello
-	if h.Version != 1 || h.Device != peer.UUID() || h.Peer != self.UUID() || h.MTU != TunnelMTU || h.Datagram != DatagramLimit {
+	if !validStreamHelloVersion(h, self, peer, StreamProtocolVersion) {
 		return errors.New("invalid wendy net stream hello")
 	}
 	return nil

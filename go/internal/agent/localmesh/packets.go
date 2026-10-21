@@ -8,7 +8,10 @@ import (
 )
 
 const (
-	LinkALPN = "wendy-local-mesh/1-cert-1"
+	// Router QUIC negotiates the explicit whole-IP receive capability. Stream
+	// and leaf roles retain their own independent protocol versions/framing.
+	LinkALPN            = "wendy-net-router/2"
+	LinkProtocolVersion = 2
 	// Leave room for an IPv6 outer header around a minimum-size IPv6 packet.
 	// Carrier fragmentation remains at most two bounded datagrams per packet.
 	TunnelMTU          = 1320
@@ -89,6 +92,7 @@ type IPAssemblyStats struct {
 // an assembler after first use. At most two fixed-position pieces are accepted.
 // Missing pieces are ordinary packet loss; capacity must not stall fresh IP.
 type IPAssembler struct {
+	wholeIP    bool // Set before the owner starts, only after router capability validation.
 	pending    map[uint32]partialIP
 	bytes      int
 	order      uint64
@@ -208,14 +212,19 @@ func (a *IPAssembler) Receive(d []byte, now time.Time) ([]byte, error) {
 		a.stats.InvalidFragments++
 		return nil, errors.New(message)
 	}
-	if len(d) <= fragmentHeader || len(d) > DatagramLimit || d[0] != PacketIP {
+	limit := DatagramLimit
+	if a.wholeIP {
+		limit = WholeIPDatagramLimit
+	}
+	if len(d) <= fragmentHeader || len(d) > limit || d[0] != PacketIP {
 		return invalid("invalid IP datagram")
 	}
 	id := binary.BigEndian.Uint32(d[1:5])
 	total := int(binary.BigEndian.Uint16(d[5:7]))
 	offset := int(binary.BigEndian.Uint16(d[7:9]))
 	const chunk = DatagramLimit - fragmentHeader
-	if total < 20 || total > TunnelMTU || (offset != 0 && offset != chunk) || offset >= total || len(d)-fragmentHeader != min(chunk, total-offset) {
+	whole := a.wholeIP && offset == 0 && len(d)-fragmentHeader == total
+	if total < 20 || total > TunnelMTU || (!whole && ((offset != 0 && offset != chunk) || offset >= total || len(d)-fragmentHeader != min(chunk, total-offset))) {
 		return invalid("invalid IP fragment")
 	}
 	p, exists := a.pending[id]
@@ -224,12 +233,12 @@ func (a *IPAssembler) Receive(d []byte, now time.Time) ([]byte, error) {
 		a.stats.ConflictingFragments++
 		return nil, errors.New(message)
 	}
-	if exists && len(p.data) != total {
+	if exists && (len(p.data) != total || whole) {
 		return conflict("conflicting IP fragment length")
 	}
 	// Validate whole packets before copying. Fragmented packets cannot be fully
 	// validated until both halves arrive; their declared allocation is bounded.
-	if total <= chunk {
+	if total <= chunk || whole {
 		if !validIP(d[fragmentHeader:]) {
 			return invalid("invalid reassembled IP")
 		}

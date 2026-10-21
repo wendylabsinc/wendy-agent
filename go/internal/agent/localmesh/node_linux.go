@@ -47,17 +47,21 @@ type nodeLink interface {
 }
 
 type quicNodeLink struct {
-	conn   *quic.Conn
-	stream *quic.Stream
+	conn      *quic.Conn
+	stream    *quic.Stream
+	sendIP    *carrierIPSender
+	receiveIP int
 }
 
-func (l quicNodeLink) Close() error                   { return l.conn.CloseWithError(0, "wendy net link ended") }
-func (l quicNodeLink) SendDatagram(data []byte) error { return l.conn.SendDatagram(data) }
-func (l quicNodeLink) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+func (l *quicNodeLink) Close() error                          { return l.conn.CloseWithError(0, "wendy net link ended") }
+func (l *quicNodeLink) SendDatagram(data []byte) error        { return l.sendIP.sendDatagram(data) }
+func (l *quicNodeLink) SendIP(id uint32, packet []byte) error { return l.sendIP.sendIP(id, packet) }
+func (l *quicNodeLink) ipReceiveLimit() int                   { return l.receiveIP }
+func (l *quicNodeLink) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return l.conn.ReceiveDatagram(ctx)
 }
-func (l quicNodeLink) WriteControl(m ControlMessage) error  { return WriteControl(l.stream, m) }
-func (l quicNodeLink) ReadControl() (ControlMessage, error) { return ReadControl(l.stream) }
+func (l *quicNodeLink) WriteControl(m ControlMessage) error  { return WriteControl(l.stream, m) }
+func (l *quicNodeLink) ReadControl() (ControlMessage, error) { return ReadControl(l.stream) }
 
 type nodeEvent struct {
 	add     *nodePeer
@@ -91,6 +95,7 @@ type Node struct {
 	gate            sync.RWMutex
 	paused, stopped bool
 	forwardRoutes   []babel.Route
+	diagnostics     carrierDiagnostics
 }
 
 func NewNode(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16) (*Node, error) {
@@ -123,7 +128,8 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	}
 	ctx, cancel := context.WithCancel(parent)
 	n := &Node{Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
-		advertisement: Manifest{Version: 1, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort}}
+		advertisement: Manifest{Version: 1, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort},
+		diagnostics:   carrierDiagnostics{enabled: os.Getenv("WENDY_NET_CARRIER_DIAGNOSTICS") == "1"}}
 	ok := false
 	defer func() {
 		if !ok {
@@ -172,6 +178,10 @@ func (n *Node) Snapshot() NodeSnapshot {
 			stats := a.Snapshot()
 			out.Links[i].Reassembly = &stats
 		}
+		if carrier := out.Links[i].carrier; carrier != nil {
+			stats := carrier.snapshot()
+			out.Links[i].CarrierIP = &stats
+		}
 		if q := out.Links[i].queue; q != nil {
 			stats := q.snapshot()
 			out.Links[i].SendQueue = &stats
@@ -191,10 +201,17 @@ func (n *Node) HasCheaperLink(device meshid.Device, cost uint16) bool {
 }
 
 func (n *Node) refresh() {
-	devices := n.directory.Snapshot(time.Now())
+	now := time.Now()
+	if n.diagnostics.enabled {
+		n.diagnostics.emit(now, n.Credentials.Device, n.peers, logCarrierDiagnostic)
+	}
+	devices := n.directory.Snapshot(now)
 	links := make([]PeerLink, 0, len(n.peers))
 	for _, p := range n.peers {
 		link := PeerLink{Device: p.device, Cost: p.cost, assembler: &p.assembler}
+		if carrier, ok := p.link.(*quicNodeLink); ok {
+			link.carrier = carrier.sendIP
+		}
 		if stream, ok := p.link.(*streamNodeLink); ok {
 			link.queue = stream.ipPackets
 		}
@@ -475,11 +492,11 @@ func (n *Node) AttachWithCost(ctx context.Context, peer meshid.Device, conn *qui
 	if err := n.verifyPeerCertificates(peer, conn.ConnectionState().TLS.PeerCertificates); err != nil {
 		return err
 	}
-	stream, err := OpenControl(ctx, conn, n.Credentials.Device, peer)
+	stream, maxIP, err := openRouterControl(ctx, conn, n.Credentials.Device, peer, WholeIPDatagramLimit)
 	if err != nil {
 		return err
 	}
-	return n.attachLink(ctx, peer, cost, quicNodeLink{conn, stream})
+	return n.attachLink(ctx, peer, cost, &quicNodeLink{conn: conn, stream: stream, sendIP: &carrierIPSender{sender: conn, negotiated: maxIP}, receiveIP: WholeIPDatagramLimit})
 }
 
 // AttachStream admits a mutually authenticated TLS 1.3 byte stream. The
@@ -632,13 +649,20 @@ func (n *Node) readTUN(ctx context.Context, p *nodePeer) error {
 
 func (n *Node) readLink(ctx context.Context, p *nodePeer) error {
 	assembler := &p.assembler
+	if carrier, ok := p.link.(interface{ ipReceiveLimit() int }); ok {
+		assembler.wholeIP = carrier.ipReceiveLimit() == WholeIPDatagramLimit
+	}
 	defer assembler.discard()
 	for {
 		d, err := assembler.receiveDatagram(ctx, p.link.ReceiveDatagram)
 		if err != nil {
 			return err
 		}
-		if len(d) == 0 || len(d) > DatagramLimit {
+		limit := DatagramLimit
+		if len(d) > 0 && d[0] == PacketIP && assembler.wholeIP {
+			limit = WholeIPDatagramLimit
+		}
+		if len(d) == 0 || len(d) > limit {
 			return errors.New("invalid wendy net datagram")
 		}
 		switch d[0] {
