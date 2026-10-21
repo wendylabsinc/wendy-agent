@@ -130,9 +130,10 @@ identity caches still persist verified full chains with their own 1,024-entry,
 8 MiB and 24-hour bounds. Restart can reuse those chains; unverified fragments
 are never persisted.
 
-Certificate exchange changes the control protocol. Its ALPN adds `-cert-1`
-to the existing carrier protocol version; peers must be updated together.
-TLS handshake certificates and their verification remain unchanged.
+Certificate exchange is part of each role's advertised control protocol.
+Peers must agree on the exact role-specific ALPN and hello version above;
+they must be updated together. TLS handshake certificates and their
+verification remain unchanged.
 
 Changed records are pushed immediately; duplicate revisions do not renew their
 expiry. Reconciliation sends live records periodically to repair reconnects. A repair
@@ -146,8 +147,9 @@ Hello and four-second Update intervals. Durable revisions and bounded replay
 receipts prevent restart from resurrecting superseded announcements.
 
 The payload path is IPv6 through peer TUNs and the selected Babel next hop. A
-1320-byte logical packet is fragmented into bounded carrier datagrams and
-reassembled at the neighbour. Raw IPv4 is rejected. A scoped policy table and
+1320-byte logical packet uses the negotiated whole form when current capacity
+permits, or bounded fixed-position fragments reassembled at the neighbour.
+Raw IPv4 is rejected. A scoped policy table and
 unreachable guard prevent missing routes from falling through to the ordinary
 uplink. Interfaces disable automatic address generation and router
 advertisements. Startup checks all reserved links, rules and routes for

@@ -189,5 +189,6 @@ require (
 
 replace github.com/wendylabsinc/WendyOS/go/babel => ./go/babel
 
-// Wendy fork exposes bounded TLS-flight, initial RTT and initial send-window configuration.
+// Wendy fork exposes bounded TLS-flight, RTT/window/packet-size configuration,
+// nonblocking DATAGRAM admission and conservative current DATAGRAM capacity.
 replace github.com/quic-go/quic-go => github.com/wendylabsinc/quic-go v0.0.0-20261021071220-8632456e04a5
