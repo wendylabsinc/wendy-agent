@@ -202,7 +202,8 @@ Without `--usb-arms`, existing `--list`, `--name` and `--sensors` retain their
 SensorLink meaning. USB operations cannot be combined with SensorLink flags.
 Older Agents return an explicit update/unsupported message; there is no fallback
 to discovery on the CLI's machine.
-`--arm-name` accepts at most 128 UTF-8 bytes. Binding requires a currently
+`--arm-name` accepts at most 128 UTF-8 bytes. Binding a saved arm again without
+`--arm-name` keeps its name; a new binding defaults to `SO-101`. Binding requires a currently
 connected, unambiguous endpoint; metadata discovery alone cannot authorize it.
 
 The Linux Agent stores bindings in `/var/lib/wendy/robot-arm-bindings.json`.

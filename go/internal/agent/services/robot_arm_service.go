@@ -65,7 +65,11 @@ func (s *RobotArmService) BindRobotArm(ctx context.Context, req *pb.BindRobotArm
 		if d.IdentityKind == "usb_location" && !req.AllowLocationBinding {
 			return nil, status.Error(codes.FailedPrecondition, "no USB serial ID; explicitly acknowledge a location binding that follows the USB port")
 		}
-		d.Configured, d.Model, d.Name, d.Verified = true, "so101", strings.TrimSpace(req.Name), false
+		// An unnamed bind keeps a saved name rather than resetting it.
+		if name := strings.TrimSpace(req.Name); name != "" || !d.Configured {
+			d.Name = name
+		}
+		d.Configured, d.Model, d.Verified = true, "so101", false
 		if d.Name == "" {
 			d.Name = "SO-101"
 		}

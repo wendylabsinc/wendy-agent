@@ -85,6 +85,9 @@ struct RobotArmTests {
         let bound = try await service.bind(request)
         #expect(bound.configured && !bound.verified)
         #expect(bound.name == "Follower")
+        var unnamed = request
+        unnamed.name = ""
+        #expect(try await service.bind(unnamed).name == "Follower")
         let permissions =
             try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions]
             as? NSNumber

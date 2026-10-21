@@ -142,10 +142,12 @@ actor RobotArmService: Wendy_Agent_Services_V2_WendyRobotArmService.ServiceProto
                     "No USB serial ID; explicitly acknowledge a location binding that follows the USB port"
             )
         }
+        // An unnamed bind keeps a saved name rather than resetting it.
+        let name = request.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty || !d.configured { d.name = name }
         d.configured = true
         d.model = "so101"
         d.verified = false
-        d.name = request.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if d.name.isEmpty { d.name = "SO-101" }
         do { try save(try saved().filter { $0.id != d.id } + [d]) } catch {
             throw RPCError(

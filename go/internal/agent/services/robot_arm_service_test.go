@@ -58,6 +58,16 @@ func TestRobotArmTargetInventoryAndBindingLifecycle(t *testing.T) {
 	if !bound.Device.Configured || bound.Device.Verified || bound.Device.Model != "so101" {
 		t.Fatalf("invalid bind: %v", bound)
 	}
+	// Binding again without a name keeps the saved one; a new name renames.
+	if bound, err = client.BindRobotArm(ctx, &pb.BindRobotArmRequest{Id: d.Id, Model: "so101"}); err != nil || bound.Device.Name != "Follower" {
+		t.Fatalf("unnamed rebind renamed the arm: %v %v", bound, err)
+	}
+	if bound, err = client.BindRobotArm(ctx, &pb.BindRobotArmRequest{Id: d.Id, Model: "so101", Name: "Leader"}); err != nil || bound.Device.Name != "Leader" {
+		t.Fatalf("rename: %v %v", bound, err)
+	}
+	if bound, err = client.BindRobotArm(ctx, &pb.BindRobotArmRequest{Id: d.Id, Model: "so101", Name: "Follower"}); err != nil || bound.Device.Name != "Follower" {
+		t.Fatalf("rename back: %v %v", bound, err)
+	}
 	// Change only the endpoint node; saved serial identity stays associated.
 	renamed := proto.Clone(d).(*pb.RobotArm)
 	renamed.DevicePath = "/target/dev/ttyACM9"
