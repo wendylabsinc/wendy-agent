@@ -63,9 +63,18 @@ func TestLANUDPRejectedPeerRetainsWorkerSocket(t *testing.T) {
 	selected := lanInterface{iface: net.Interface{Name: "not-a-real-lan"}, ip: net.IPv4(127, 0, 0, 1), net: &net.IPNet{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)}, cost: EthernetLinkCost}
 	claims := &lanClaims{active: make(map[lanClaim]bool)}
 	done := make(chan error, 1)
+	ready := make(chan CarrierStatus, 1)
 	go func() {
-		done <- serveLANInterface(ctx, LANConfig{Credentials: b, Node: &Node{Credentials: b, ctx: ctx}}, selected, claims, socket, mdnsConn, nil)
+		done <- serveLANInterface(ctx, LANConfig{Credentials: b, Node: &Node{Credentials: b, ctx: ctx}, Status: func(status CarrierStatus) { ready <- status }}, selected, claims, socket, mdnsConn, nil)
 	}()
+	select {
+	case status := <-ready:
+		if !status.Ready || status.Err != nil {
+			t.Fatalf("native UDP setup readiness: %+v", status)
+		}
+	case <-ctx.Done():
+		t.Fatal("native UDP setup did not report readiness")
+	}
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {

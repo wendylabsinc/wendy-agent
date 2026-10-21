@@ -3,6 +3,7 @@
 package localmesh
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -46,5 +47,42 @@ func TestLANHealthPartialBindFailureRetryAndInterfaceRemoval(t *testing.T) {
 	ethernet(CarrierStatus{Ready: true})
 	if status.Ready || status.Err != nil || !strings.Contains(status.Detail, "waiting") {
 		t.Fatalf("unplugged interfaces ready: %+v", status)
+	}
+}
+
+func TestLANHealthDoesNotReportReadyBeforeQUICSetup(t *testing.T) {
+	_, credentials := testCredentials(t)
+	for _, scenario := range []string{"missing-credentials", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer socket.Close()
+			mdnsConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mdnsConn.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ready := false
+			cfg := LANConfig{Credentials: credentials, Status: func(status CarrierStatus) { ready = ready || status.Ready }}
+			if scenario == "missing-credentials" {
+				cfg.Credentials = nil
+			} else {
+				cancel()
+			}
+			err = serveLANInterface(ctx, cfg, lanInterface{}, &lanClaims{}, socket, mdnsConn, nil)
+			if scenario == "missing-credentials" && err == nil {
+				t.Fatal("TLS setup failure hidden")
+			}
+			if scenario == "canceled" && err != nil {
+				t.Fatalf("cancellation reported failure: %v", err)
+			}
+			if ready {
+				t.Fatal("failed or canceled QUIC setup reported ready")
+			}
+		})
 	}
 }
