@@ -11,7 +11,7 @@
       "interface": {
         "displayName": "Wendy",
         "shortDescription": "Build apps for robots and edge",
-        "longDescription": "Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation. Get help with device setup, app templates, hardware permissions, ROS 2, deployment, and debugging. The bundled workflows guide you through testing in simulation and checking results on hardware. This skills-only plugin provides instructions. Executing commands or accessing a device requires separately available tools and an authorized connection.",
+        "longDescription": "Guidance on building and deploying apps to robots and edge devices using WendyOS, including NVIDIA Jetson, Raspberry Pi, Qualcomm Dragonwing, and MuJoCo simulation. Get help with device setup, app templates, hardware permissions, ROS 2, deployment, and debugging. Use Wendy Data to configure sensor and application recording campaigns, inspect episodes, and capture model results. The bundled workflows guide you through testing in simulation and checking results on hardware. This skills-only plugin provides instructions. Executing commands or accessing a device requires separately available tools and an authorized connection.",
         "developerName": "Wendy Labs Inc",
         "category": "Productivity",
         "websiteURL": "https://wendy.dev",

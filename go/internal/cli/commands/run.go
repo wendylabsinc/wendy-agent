@@ -16,7 +16,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,6 +31,8 @@ import (
 	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
@@ -351,8 +356,12 @@ func progressModelUserCancelled(model tea.Model) bool {
 	return ok && pm.Err() == context.Canceled
 }
 
-func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.WendyContainerService_CreateContainerWithProgressClient) error {
-	prog := tui.NewProgressProgram(tui.NewProgress("Pulling image on device...").WithoutErrorView())
+func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.WendyContainerService_CreateContainerWithProgressClient, hints bool) error {
+	bar := tui.NewProgress("Pulling image on device...").WithoutErrorView()
+	if !hints {
+		bar = bar.WithoutHints()
+	}
+	prog := tui.NewProgressProgram(bar)
 
 	var (
 		createErr error
@@ -476,7 +485,7 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 		}
 		return fmt.Errorf("creating container: %w", err)
 	}
-	if err := createContainerWithProgressTUI(cancel, stream); err != nil {
+	if err := createContainerWithProgressTUI(cancel, stream, !progressHintsOff(ctx)); err != nil {
 		if isUnimplementedRPCError(err) {
 			return fallbackCreateContainerWithoutProgress(ctx, svc, req)
 		}
@@ -563,6 +572,16 @@ type runOptions struct {
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
 	// chunkingOff skips chunk-diff entirely (registry push only).
 	chunking string
+	// waitReady (--wait-ready) makes the run succeed only once the started app
+	// passes its readiness probe or, without a host-reachable probe, stays
+	// running for waitReadyStabilityWindow. readinessTimeout
+	// (--readiness-timeout) overrides the probe deadline for every readiness
+	// wait the run performs. Both mirror PR #1882's flags; see run_wait_ready.go.
+	waitReady        bool
+	readinessTimeout time.Duration
+	// hostReadinessConfirmed tells a hook runner that --wait-ready's gate has
+	// already confirmed readiness, so it must not probe again (hookRunnerOptions).
+	hostReadinessConfirmed bool
 	// onDeployStarted, when non-nil, is called when the agent acknowledges
 	// that the deployed container started. runWithAgent sets it so its
 	// deploy_completed event describes the deploy rather than the log session
@@ -601,7 +620,7 @@ func validateChunkingMode(mode string) error {
 	case "", chunkingAuto, chunkingForce, chunkingOff:
 		return nil
 	default:
-		return commandErrorf(errConfigInvalid, "invalid --chunking value %q: must be auto, force, or off", mode)
+		return markUsage(commandErrorf(errConfigInvalid, "invalid --chunking value %q: must be auto, force, or off", mode))
 	}
 }
 
@@ -618,34 +637,40 @@ func newRunCmd() *cobra.Command {
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
 		Args:  optionalRunDeviceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWithInterruptContext(cmd.Context(), func(runCtx context.Context) error {
-				if err := validateEnvFlag(opts.env); err != nil {
-					return err
-				}
-				if cmd.Flags().Changed("hil") && watch {
-					return commandErrorf(errConfigInvalid, "HIL cannot be combined with --watch")
-				}
-				if cmd.Flags().Changed("build-host") && strings.TrimSpace(opts.buildHost) == "" {
-					if strings.TrimSpace(opts.builder) != "" {
-						return errBuilderWithBuildHost
-					}
-					host, err := selectRunBuildHost(runCtx, opts.yes)
-					if err != nil {
+			return runReportingWaitReadyFailure(cmd.Context(), opts, func(ctx context.Context) error {
+				return runWithInterruptContext(ctx, func(runCtx context.Context) error {
+					if err := validateEnvFlag(opts.env); err != nil {
 						return err
 					}
-					opts.buildHost = host
-				}
-				if cmd.Flags().Changed("hil") {
-					return runHILCommand(runCtx, opts, strings.TrimSpace(hilDevice))
-				}
-				if watch {
-					// In watch mode, hide build output unless a build fails (unless
-					// --verbose); watchCommand enforces non-interactive behavior.
-					opts.quietBuild = !verbose
-					return watchCommand(runCtx, opts, time.Duration(debounceMS)*time.Millisecond)
-				}
-				opts.detachedOutput = true
-				return runCommand(runCtx, opts)
+					if err := validateWaitReadyFlags(opts, watch, cmd.Flags().Changed("hil")); err != nil {
+						return err
+					}
+					defer waitReadyJSONStdoutGuard(opts)()
+					if cmd.Flags().Changed("hil") && watch {
+						return markUsage(commandErrorf(errConfigInvalid, "HIL cannot be combined with --watch"))
+					}
+					if cmd.Flags().Changed("build-host") && strings.TrimSpace(opts.buildHost) == "" {
+						if strings.TrimSpace(opts.builder) != "" {
+							return errBuilderWithBuildHost
+						}
+						host, err := selectRunBuildHost(runCtx, opts.yes)
+						if err != nil {
+							return err
+						}
+						opts.buildHost = host
+					}
+					if cmd.Flags().Changed("hil") {
+						return runHILCommand(runCtx, opts, strings.TrimSpace(hilDevice))
+					}
+					if watch {
+						// In watch mode, hide build output unless a build fails (unless
+						// --verbose); watchCommand enforces non-interactive behavior.
+						opts.quietBuild = !verbose
+						return watchCommand(runCtx, opts, time.Duration(debounceMS)*time.Millisecond)
+					}
+					opts.detachedOutput = true
+					return runCommand(runCtx, opts)
+				})
 			})
 		},
 	}
@@ -662,7 +687,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.skipCloudRegistration, "skip-cloud-registration", false, "Deploy without registering apps in Cloud (offline use)")
-	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
+	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs or opening the app URL; waits for readiness only with --wait-ready")
+	addReadinessFlags(cmd, &opts)
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
@@ -690,39 +716,76 @@ func newRunCmd() *cobra.Command {
 // Ctrl-C during a build; its docker/OrbStack/Apple Container subprocess kept a
 // live parent context, so parallel services and fallback builders each surfaced
 // another cancellation of their own.
+//
+// SIGTERM is watched too, because it must never end a run with exit 0: a
+// supervisor (CI timeout, systemd, `docker stop`, an agent harness) that stops
+// `wendy run` has to be able to tell that from a run that finished.
 func runWithInterruptContext(parent context.Context, run func(context.Context) error) error {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 	return runWithInterruptChannel(parent, sigCh, run)
 }
 
+// runWithInterruptChannel runs run under a context cancelled by the first
+// signal on sigCh, then classifies the result by which signals arrived:
+// SIGTERM → an errTerminated error (never nil), SIGINT → ErrUserCancelled for
+// any failure it caused (exit 0, as before), otherwise run's own error.
+//
+// The signals are recorded here rather than read back from the context's
+// cause: main's signal.NotifyContext cancels the parent on the same signal, and
+// when that wins the race the child's cause is the parent's, so a
+// cause-based check misclassified some Ctrl-Cs as failures.
 func runWithInterruptChannel(parent context.Context, sigCh <-chan os.Signal, run func(context.Context) error) error {
 	ctx, cancel := context.WithCancelCause(parent)
+	notes := &runInterruptNotes{}
+	ctx = context.WithValue(ctx, runInterruptNotesKey{}, notes)
+	var interrupted, terminated atomic.Bool
+	record := func(sig os.Signal) {
+		if sig == syscall.SIGTERM {
+			terminated.Store(true)
+			cancel(errTerminated)
+			return
+		}
+		interrupted.Store(true)
+		cancel(ErrUserCancelled)
+	}
 	done := make(chan struct{})
 	handlerDone := make(chan struct{})
 	go func() {
 		defer close(handlerDone)
-		select {
-		case <-sigCh:
-			cancel(ErrUserCancelled)
-		case <-done:
+		for {
+			select {
+			case sig := <-sigCh:
+				record(sig)
+			case <-done:
+				return
+			}
 		}
 	}()
 
 	err := run(ctx)
-	// If the operation returned from the subprocess's copy of SIGINT before
-	// the goroutine above was scheduled, consume the already-buffered signal
-	// here so cancellation is still classified consistently.
-	select {
-	case <-sigCh:
-		cancel(ErrUserCancelled)
-	default:
-	}
 	close(done)
 	<-handlerDone
+	// Consume signals the handler had not read yet — including one that raced
+	// run's own return — so the classification below does not depend on which
+	// goroutine read the signal first. A microsecond window remains: main's
+	// signal.NotifyContext can take delivery and cancel the parent, and run
+	// return, before the signal reaches sigCh; the run is then classified by
+	// its own error alone.
+	for drained := false; !drained; {
+		select {
+		case sig := <-sigCh:
+			record(sig)
+		default:
+			drained = true
+		}
+	}
 	cancel(nil)
-	if errors.Is(context.Cause(ctx), ErrUserCancelled) && err != nil {
+	if terminated.Load() {
+		return notes.terminatedError()
+	}
+	if interrupted.Load() && err != nil {
 		return ErrUserCancelled
 	}
 	return err
@@ -922,9 +985,15 @@ func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 	return commandErrorf(errConfigInvalid, `--debug requires debugpy in the image: add "debugpy" to requirements.txt, or run without --debug`)
 }
 
-func runCommand(ctx context.Context, opts runOptions) error {
+func runCommand(ctx context.Context, opts runOptions) (retErr error) {
+	if !opts.managedRobot {
+		var finish func(error)
+		ctx, finish = startActivationOperation(ctx, "run", "wendy run")
+		defer func() { finish(retErr) }()
+	}
 	ctx = withDevicePickerPurpose(ctx, mainDevicePicker)
 	mark := phaseTimer()
+	activationStep(ctx, "project", nil)
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
@@ -940,7 +1009,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 	ctx = withStagefileBackend(ctx, opts.stagefileBackend)
 	if opts.maxConcurrency < 0 {
-		return commandErrorf(errConfigInvalid, "--max-concurrency must be >= 0 (0 = default limit of 4)")
+		return markUsage(commandErrorf(errConfigInvalid, "--max-concurrency must be >= 0 (0 = default limit of 4)"))
 	}
 	if err := validateChunkingMode(opts.chunking); err != nil {
 		return err
@@ -950,8 +1019,11 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return classifyCommandError(errConfigInvalid, err)
 	}
 	opts.buildHost = buildHost
+	if err := rejectWaitReadyBuildHost(opts); err != nil {
+		return err
+	}
 	if useLLB && opts.buildHost != "" {
-		return commandErrorf(errConfigInvalid, "--stagefile-backend=llb cannot yet be combined with --build-host: remote build agents currently accept Dockerfile definitions")
+		return markUsage(commandErrorf(errConfigInvalid, "--stagefile-backend=llb cannot yet be combined with --build-host: remote build agents currently accept Dockerfile definitions"))
 	}
 
 	// A comma-separated --device names a fleet. Split it HERE, before anything
@@ -983,7 +1055,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// --build-type is compatible.
 	if opts.dockerfile != "" {
 		if opts.buildType != "" && normalizeBuildType(opts.buildType) != "docker" {
-			return commandErrorf(errConfigInvalid, "--dockerfile cannot be used with --build-type=%s", opts.buildType)
+			return markUsage(commandErrorf(errConfigInvalid, "--dockerfile cannot be used with --build-type=%s", opts.buildType))
 		}
 		if err := validateDockerfileName(opts.dockerfile); err != nil {
 			return commandErrorf(errConfigInvalid, "--dockerfile: %w", err)
@@ -1006,10 +1078,27 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return classifyCommandError(errConfigInvalid, err)
 	}
 	if projectType == "compose" {
+		activationStep(ctx, "connect", map[string]string{"project_recognized": "true"})
 		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
 			return err
 		}
+		if opts.waitReady {
+			return errWaitReadyUnsupported("Compose projects")
+		}
 		return runComposeCommand(ctx, cwd, opts)
+	}
+
+	// Refuse --wait-ready for Xcode and host-only-Swift projects here, before
+	// any device is resolved: both are knowable from the filesystem alone (no
+	// wendy.json needed), but a missing wendy.json otherwise sends this
+	// function through the cfgMissing preflight below — which resolves/connects
+	// to a device (interactive picker or cloud tunnel) before wendy.json is
+	// ever loaded. Called with a nil appCfg since none is loaded yet; the
+	// appCfg-dependent checks (multi-service, native run.command) run again
+	// below once appCfg is loaded, and runWithAgent keeps its own call as a
+	// backstop for callers that reach it some other way.
+	if err := rejectUnsupportedWaitReady(cwd, nil, opts); err != nil {
+		return err
 	}
 
 	// The CLI owns the selected connection lifetime for both the preflight and
@@ -1071,12 +1160,23 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err != nil {
 		return commandErrorf(errConfigInvalid, "loading wendy.json: %w", err)
 	}
+	noteWaitReadyApp(ctx, appCfg.AppID)
 
 	if err := appCfg.Validate(); err != nil {
 		return commandErrorf(errConfigInvalid, "invalid wendy.json: %w", err)
 	}
+	activationStep(ctx, "connect", map[string]string{"project_recognized": "true"})
 	if err := warnAppConfigFile(cfgPath); err != nil {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
+	}
+
+	// Second pass, now that appCfg is loaded: catches the appCfg-dependent
+	// checks (multi-service, native run.command) that the project-type-only
+	// call above (nil appCfg, before cfgMissing) can't see. Still runs before
+	// the target device is resolved. runWithAgent keeps its own call to this as
+	// a backstop for callers that reach it some other way.
+	if err := rejectUnsupportedWaitReady(cwd, appCfg, opts); err != nil {
+		return err
 	}
 
 	// Debug mode requires host networking for remote debugger access.
@@ -1113,6 +1213,8 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			return err
 		}
 	}
+	activationStep(ctx, "build", map[string]string{"target_selected": "true"})
+	noteWaitReadyDevice(ctx, target.Agent)
 	mark("resolve + connect device")
 
 	// Build-file selection happens before wendy.json is loaded so device
@@ -1431,9 +1533,11 @@ func macOSNativeCreateContainerError(err error, appCfg *appconfig.AppConfig) err
 // starts the container on the agent.
 func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	// Verify auth certs are available if the device's registry requires mTLS.
+	activationStep(ctx, "auth", nil)
 	if err := requireRegistryAuth(ctx, conn); err != nil {
 		return err
 	}
+	activationStep(ctx, "build", nil)
 
 	// Query the device OS and architecture.
 	versionResp, err := agentVersionForRun(ctx, conn)
@@ -1680,7 +1784,7 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 	buildType := normalizeBuildType(requestedType)
 	if buildType != "docker" && buildType != "swift" && buildType != "python" && buildType != "compose" {
-		return "", commandErrorf(errConfigInvalid, "invalid value %q for --build-type: must be one of docker, swift, python, or compose", requestedType)
+		return "", markUsage(commandErrorf(errConfigInvalid, "invalid value %q for --build-type: must be one of docker, swift, python, or compose", requestedType))
 	}
 
 	switch buildType {
@@ -1739,6 +1843,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 // runWithProvider builds and runs via an external device provider.
 func runWithProvider(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, product string, entitlements []appconfig.Entitlement, opts runOptions) error {
+	if opts.waitReady || opts.readinessTimeout != 0 {
+		return commandErrorf(errConfigInvalid, "--wait-ready and --readiness-timeout require a WendyOS device target")
+	}
 	if opts.builder != "" {
 		return commandErrorf(errConfigInvalid, "--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
 	}
@@ -1876,8 +1983,25 @@ func providerBuild(ctx context.Context, p providers.DeviceProvider, device model
 		return tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
 	}
 	app, err := p.Build(ctx, device, projectPath, projectType, product, opts.debug)
+	// Both repairs below need someone to accept them, and neither runs while
+	// watching.
+	if opts.isWatch() || (!opts.yes && !isInteractiveTerminal()) {
+		return app, err
+	}
+	// The EIM check comes before the wendy_core one, so the retried build can
+	// still reach that offer.
+	if errors.Is(err, espidftoolchain.ErrEIMNotInstalled) {
+		installed, installErr := installMissingEIM(ctx, opts.yes)
+		if installErr != nil {
+			return nil, installErr
+		}
+		if !installed {
+			return app, err
+		}
+		app, err = p.Build(ctx, device, projectPath, projectType, product, opts.debug)
+	}
 	var missingCore *providers.MissingWendyCoreError
-	if !errors.As(err, &missingCore) || opts.isWatch() || (!opts.yes && !isInteractiveTerminal()) {
+	if !errors.As(err, &missingCore) {
 		return app, err
 	}
 	if err := setupLiteProject(ctx, projectPath, opts.yes); err != nil {
@@ -2059,11 +2183,15 @@ func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device 
 // runWithAgent is the existing gRPC agent pipeline. It reports each deploy it
 // attempts as one deploy_completed analytics event (WDY-3215).
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
+	if err := rejectUnsupportedWaitReady(cwd, appCfg, opts); err != nil {
+		return err
+	}
 	opts = opts.withConfiguredRestartPolicy(appCfg.RestartPolicy)
 	if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
 		return err
 	}
 	metrics := newDeployMetrics(opts)
+	metrics.ctx = ctx
 	err := runWithAgentRecorded(ctx, conn, cwd, appCfg, opts, metrics)
 	metrics.emit(err)
 	return err
@@ -2087,9 +2215,11 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 		}
 	}
 	// Multi-service path: when wendy.json has a services map, build all images
-	// in parallel and manage the app group lifecycle.
+	// in parallel and manage the app group lifecycle. --build-host is honoured
+	// here too: each service is built on the build host and delivered straight
+	// to this device (WDY-3120).
 	if len(appCfg.Services) > 0 {
-		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "multi-service projects"); err != nil {
+		if err := rejectMultiServiceFleetRun(opts); err != nil {
 			return err
 		}
 		metrics.transport = "multiservice"
@@ -2109,12 +2239,14 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 
 	// Resolve the target platform. Query the agent for its OS and architecture,
 	// then determine the effective platform from wendy.json or defaults.
+	activationStep(ctx, "connect", nil)
 	versionResp, err := agentVersionForRun(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
 	printRunDiskUsageWarning(versionResp)
 	mark("agent version metadata (in runWithAgent)")
+	activationStep(ctx, "build", map[string]string{"device_reachable": "true"})
 	metrics.deviceType = versionResp.GetDeviceType()
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
@@ -2490,6 +2622,19 @@ func registryPushWouldUseDocker(builder string) bool {
 // rebuild — this function never leaves the deploy worse off than skipping it
 // entirely would have.
 func tryPushExistingOCILayout(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, hint *ociReuseHint, repo string) error {
+	// deployByChunkDiff released the layout lock after its chunk push, so hold
+	// it again for this push and refuse content another run has rebuilt since.
+	lease, err := acquireOCILayoutLease(ctx, hint.layoutDir, func() {
+		cliNotice("Waiting for another wendy run of %s to release the build cache…", repo)
+	})
+	if err != nil {
+		return err
+	}
+	defer lease.release()
+	if err := hint.verify(); err != nil {
+		return err
+	}
+
 	// The OCI pusher runs on the host, not inside BuildKit's VM. Resolve a
 	// host-reachable address (and terminate device mTLS on a loopback proxy when
 	// required) instead of using host.docker.internal, which is only meaningful
@@ -2518,7 +2663,7 @@ func validateEnvFlag(entries []string) error {
 	for _, kv := range entries {
 		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
-			return commandErrorf(errConfigInvalid, "--env %q must be KEY=VALUE", kv)
+			return markUsage(commandErrorf(errConfigInvalid, "--env %q must be KEY=VALUE", kv))
 		}
 		if err := appconfig.ValidateEnvKey("--env", key); err != nil {
 			return classifyCommandError(errConfigInvalid, err)
@@ -2623,6 +2768,7 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 // shared between runSwiftWithAgent and runWithAgent. It creates the container,
 // optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
+	activationStep(ctx, "deploy", nil)
 	if opts.deploy {
 		_, err := conn.ContainerService.CreateContainer(ctx, createReq)
 		if err != nil {
@@ -2636,7 +2782,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 		return err
 	}
-	cliLogln("Container %s created.", containerDisplayName(appCfg))
+	if !isRobotTour(ctx) {
+		cliLogln("Container %s created.", containerDisplayName(appCfg))
+	}
 
 	return startExistingContainer(ctx, conn, appCfg, opts)
 }
@@ -2655,7 +2803,13 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		opts.reportDeployStarted()
-		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+		if !isRobotTour(ctx) {
+			cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+		}
+		if opts.waitReady {
+			drainDetachedStartOutput(stream)
+			return waitReadyAfterDetachedStart(ctx, conn, appCfg, opts, startedAppBaseline(appCfg))
+		}
 		// Detached returns as soon as the container is started — see
 		// runPostStartIfReady's doc comment.
 		return opts.reportDetachedRun(ctx, conn, appCfg.AppID, appCfg)
@@ -2698,28 +2852,14 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 
 	cliLogln("Application %s started.", containerDisplayName(appCfg))
 
-	// Set up Ctrl+C handler first so readiness polling is cancellable.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	defer signal.Stop(sigCh)
-	go func() {
-		select {
-		case <-sigCh:
-		case <-runCtx.Done():
-			return
-		}
-		cliLogln("\nStopping container...")
-		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.ContainerName(),
-		})
-		runCancel()
-	}()
-
 	// Announce + post-start hook, gated on readiness; the hook is tied to runCtx
-	// so Ctrl+C kills it.
-	runner := &serviceHookRunner{conn: conn, opts: opts}
-	defer func() { runCancel(); runner.reap() }()
+	// so Ctrl+C kills it. With --wait-ready the gate runs the readiness check
+	// and only a pass starts the runner.
+	runner := &serviceHookRunner{conn: conn, opts: hookRunnerOptions(opts)}
+	var gate *readinessGate
+	defer func() { runCancel(); gate.wait(); runner.reap() }()
 	hookFired := false
+	taskEnded := make(chan struct{}) // closed when the output ends on its own
 
 	gotFirstResponse := false
 	// Set when the stream ends on a genuine failure (as opposed to a clean
@@ -2730,6 +2870,7 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 	for {
 		resp, recvErr := outStream.Recv()
 		if recvErr == io.EOF {
+			close(taskEnded)
 			break
 		}
 		if recvErr != nil {
@@ -2765,7 +2906,11 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 		if resp.GetStarted() != nil && !hookFired {
 			hookFired = true
 			opts.reportDeployStarted()
-			runner.startAsync(runCtx, appCfg)
+			if opts.waitReady {
+				gate = startReadinessGate(runCtx, conn, appCfg, opts, gateTarget{stopOnFailure: true, base: startedAppBaseline(appCfg), taskEnded: taskEnded}, func() { runner.startAsync(runCtx, appCfg) })
+			} else {
+				runner.startAsync(runCtx, appCfg)
+			}
 		}
 		if out := resp.GetStdoutOutput(); out != nil {
 			_, _ = os.Stdout.Write(out.GetData())
@@ -2775,15 +2920,40 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 		}
 	}
 
+	if runErr == nil && ctx.Err() == nil {
+		// The output ended on its own: the app exited, or the gate stopped
+		// it. Let the gate finish before cancelling its context (runCtx), so
+		// its next poll records whether the app became ready before exiting.
+		gate.wait()
+	}
 	// Cancel runCtx to terminate the postStart hook if it's still running,
-	// then wait for it to exit so we don't leave orphan processes.
+	// then wait for it to exit so we don't leave orphan processes. The gate
+	// goes first: its onReady may start the runner.
 	runCancel()
+	gate.wait()
 	runner.reap()
+	if ctx.Err() != nil {
+		// Ctrl-C or SIGTERM: main's signal context cancelled ctx, which ended
+		// the stream — or, once the output had ended on its own, interrupted
+		// the wait for the gate. Stop the app here rather than from a signal
+		// goroutine: that goroutine raced runCtx.Done() (so Ctrl-C sometimes
+		// left the app running) and never saw SIGTERM at all. A task that
+		// already exited is not stopped (interruptedAttachedRun).
+		return interruptedAttachedRun(ctx, conn, appCfg, taskEnded)
+	}
+	if gate.Replaced() {
+		// Another deployment replaced the app during the check; the gate left
+		// it running. A success, as in attachedExitOutcome.
+		noteAppReplaced(appCfg)
+		return nil
+	}
+	if err := gate.Err(); err != nil {
+		return err
+	}
 	if runErr != nil {
 		return runErr
 	}
-	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
-	return nil
+	return attachedExitOutcome(ctx, conn, appCfg)
 }
 
 // makeReadinessProbe returns one reusable readiness attempt plus its display address and cleanup.
@@ -2791,10 +2961,14 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 // front of the browser request that follows.
 func makeReadinessProbe(hostname string, port int, useHTTP bool) (string, func(context.Context) error, func()) {
 	addr := net.JoinHostPort(hostname, fmt.Sprintf("%d", port))
-	dialer := net.Dialer{Timeout: 2 * time.Second}
+	dial := func(ctx context.Context, _, target string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return deviceLinkDialFn(ctx, target)
+	}
 	if !useHTTP {
 		return addr, func(ctx context.Context) error {
-			conn, err := dialer.DialContext(ctx, "tcp", addr)
+			conn, err := dial(ctx, "tcp", addr)
 			if err != nil {
 				return err
 			}
@@ -2804,7 +2978,7 @@ func makeReadinessProbe(hostname string, port int, useHTTP bool) (string, func(c
 
 	transport := &http.Transport{
 		Proxy:             nil,
-		DialContext:       dialer.DialContext,
+		DialContext:       dial,
 		DisableKeepAlives: true,
 	}
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
@@ -2826,13 +3000,25 @@ func makeReadinessProbe(hostname string, port int, useHTTP bool) (string, func(c
 // cancelled. Returns nil on success, the parent context error on cancellation,
 // or a timeout error if the probe deadline expires.
 func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostname string, httpPort int) error {
+	return waitForReadinessWithin(ctx, cfg, hostname, httpPort, readinessProbeTimeout(cfg, 0))
+}
+
+// readinessProbeTimeout is a readiness probe's deadline: --readiness-timeout
+// when set, else wendy.json's timeoutSeconds, else 30 s.
+func readinessProbeTimeout(cfg *appconfig.ReadinessConfig, override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	if cfg != nil && cfg.TimeoutSeconds > 0 {
+		return time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// waitForReadinessWithin is waitForReadiness with an explicit deadline.
+func waitForReadinessWithin(ctx context.Context, cfg *appconfig.ReadinessConfig, hostname string, httpPort int, timeout time.Duration) error {
 	if cfg == nil || cfg.TCPSocket == nil {
 		return nil
-	}
-
-	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
 	}
 
 	addr, probe, closeProbe := makeReadinessProbe(
@@ -2841,7 +3027,11 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 		httpPort != 0 && httpPort == cfg.TCPSocket.Port,
 	)
 	defer closeProbe()
-	cliLogln("Waiting for %s to be ready...", tui.Value(addr))
+	if isRobotTour(ctx) {
+		cliLogln("Waiting for your app...")
+	} else {
+		cliLogln("Waiting for %s to be ready...", tui.Value(addr))
+	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -2850,7 +3040,9 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 
 	for {
 		if err := probe(probeCtx); err == nil {
-			cliLogln("Ready.")
+			if !isRobotTour(ctx) {
+				cliLogln("Ready.")
+			}
 			return nil
 		}
 
@@ -2867,11 +3059,16 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 }
 
 // cloudHTTPReadinessPort selects a request-level readiness probe only for an
-// HTTP entitlement reached through the cloud mesh. Direct TCP readiness keeps
-// its documented connect-only semantics, while mesh HTTP avoids leaving an
-// empty relayed connection in front of the real browser request.
-func cloudHTTPReadinessPort(conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, readiness *appconfig.ReadinessConfig) int {
+// HTTP entitlement reached through the cloud mesh, i.e. when host is the
+// cloud connection's mesh hostname (see hostSideAppAddress). Direct TCP
+// readiness — including a cloud device probed on its reachable LAN address —
+// keeps its documented connect-only semantics, while mesh HTTP avoids leaving
+// an empty relayed connection in front of the real browser request.
+func cloudHTTPReadinessPort(conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, readiness *appconfig.ReadinessConfig, host string) int {
 	if conn == nil || conn.Reconnect == nil || readiness == nil || readiness.TCPSocket == nil {
+		return 0
+	}
+	if host == "" || host != conn.MeshHost {
 		return 0
 	}
 	port, ok := httpEntitlementPort(appCfg.Entitlements)
@@ -2919,6 +3116,17 @@ func expandHookEnv(s, hostname, appID, serviceName string) string {
 // Indirected through a var so tests can swap it out.
 var browserOpen = browseropen.Open
 
+// postStartBrowserAllowed reports whether a postStart openURL may launch a
+// browser. Only a person at an interactive terminal gets one: in JSON mode and
+// non-interactive runs (CI, coding agents, piped output) nobody is looking at
+// the tab and the host may have no browser, so the URL is printed instead.
+// Indirected so tests that swap browserOpen can opt in (see TestMain).
+var postStartBrowserAllowed = defaultPostStartBrowserAllowed
+
+func defaultPostStartBrowserAllowed() bool {
+	return !jsonOutput && isInteractiveTerminal()
+}
+
 // announceReachableURL prints an IP-based URL the developer can open to reach a
 // freshly started app. `wendy run` otherwise only surfaces the device's .local
 // hostname, which frequently fails to resolve in a browser (see issue #1301);
@@ -2928,9 +3136,24 @@ var browserOpen = browseropen.Open
 // silent on any error or when no reachable address can be determined.
 // Returns the device IP the printed URL uses, or "" when nothing was announced.
 func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) string {
-	ip := reportedReachableIP(ctx, conn, appCfg)
-	announceReachableURLForHost(appCfg, ip)
+	ip, url := reachableAppAddress(ctx, conn, appCfg)
+	if url == "" {
+		return ""
+	}
+	cliLogln("App reachable at %s", tui.Value(url))
 	return ip
+}
+
+// reachableAppAddress is announceReachableURL without the printing: the
+// device IP and the app URL built from it, or two empty strings when there is
+// nothing to show or the agent cannot be queried.
+func reachableAppAddress(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (ip, url string) {
+	ip = reportedReachableIP(ctx, conn, appCfg)
+	url = reachableAppURLForHost(appCfg, ip)
+	if url == "" {
+		return "", ""
+	}
+	return ip, url
 }
 
 // reportedReachableIP asks the agent for a candidate address only when the app
@@ -2959,12 +3182,12 @@ func reportedReachableIP(ctx context.Context, conn *grpcclient.AgentConnection, 
 	return ip
 }
 
-// announceReachableURLForHost prints the app URL for a host already selected
-// by the lifecycle routing logic. That host may be an agent-reported IP or the
-// stable mesh name exposed by the desktop VPN.
-func announceReachableURLForHost(appCfg *appconfig.AppConfig, host string) {
+// reachableAppURLForHost builds the app URL for a host already selected by the
+// lifecycle routing logic, or "" when there is nothing to show. That host may
+// be an agent-reported IP or the stable mesh name exposed by the desktop VPN.
+func reachableAppURLForHost(appCfg *appconfig.AppConfig, host string) string {
 	if host == "" {
-		return
+		return ""
 	}
 	var hookURL string
 	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
@@ -2972,11 +3195,7 @@ func announceReachableURLForHost(appCfg *appconfig.AppConfig, host string) {
 	}
 	readiness := effectiveReadiness(appCfg)
 	httpPort, _ := httpEntitlementPort(appCfg.Entitlements)
-	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, host, httpPort, readiness)
-	if url == "" {
-		return
-	}
-	cliLogln("App reachable at %s", tui.Value(url))
+	return reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, host, httpPort, readiness)
 }
 
 var meshServicePrefix = netip.MustParsePrefix("10.99.0.0/16")
@@ -3004,37 +3223,95 @@ func activeMeshHost(ctx context.Context, conn *grpcclient.AgentConnection) strin
 	return ""
 }
 
-// resolveHookHost returns the host the developer-side readiness probe and
-// postStart hook should target. When the desktop VPN is active, its stable mesh
-// hostname wins: cloud-reported interface IPs are often private and unreachable
-// from the developer's current network. A cloud connection without an active
-// mesh route is not assumed reachable: agent-reported interface addresses are
-// commonly private LAN addresses. IPv6 and LAN connections retain the existing
-// fallback behavior.
+// isCloudConnection reports whether conn reaches the device through the Wendy
+// Cloud tunnel. conn.Reconnect != nil is the cloud marker: it is the sole
+// assignment (cloud_tunnel.go, on the connection cloud_tunnel.go builds) for a
+// transport where the connection identity can't be re-derived from Host alone.
+// conn.Addr can't be used instead — it is empty for NewFromConn conns, cloud
+// tunnels included.
+func isCloudConnection(conn *grpcclient.AgentConnection) bool {
+	return conn != nil && conn.Reconnect != nil
+}
+
+// cloudLANProbeTimeout bounds the one reachability check a cloud-tunnel run
+// makes against the device's LAN address before using it from this machine:
+// long enough for a LAN (or VPN) round trip, short enough that a developer
+// who is not on the device's network barely notices it.
+const cloudLANProbeTimeout = 1500 * time.Millisecond
+
+// cloudLANAgentPorts are the ports lanAddressReachable dials: the device
+// agent's, which the CLI would dial on a direct LAN connection. A cloud asset
+// is a provisioned agent, which serves mTLS on
+// defaultAgentPort+agentMTLSPortOffset and shuts the plaintext port down (see
+// cloud_tunnel.go); the plaintext port covers an agent that still serves it.
+// A variable so tests can point it at a local listener.
+var cloudLANAgentPorts = []int{defaultAgentPort + agentMTLSPortOffset, defaultAgentPort}
+
+// lanAddressReachable reports whether this machine can reach ip, a cloud
+// device's LAN address: whether a TCP connect to one of the device agent's
+// ports there completes within cloudLANProbeTimeout. The agent listens
+// whenever the device is up (the app may not be listening yet when the check
+// runs), so a refused connection is not this device: typically another host
+// that has the same private address on the developer's own network. Only a
+// completed connect counts. Indirected so tests can stub it.
+var lanAddressReachable = func(ctx context.Context, ip string) bool {
+	return anyPortAnswers(ctx, func(port int) string {
+		return net.JoinHostPort(ip, strconv.Itoa(port))
+	}, cloudLANAgentPorts, cloudLANProbeTimeout)
+}
+
+// hostSideAppAddress resolves where this machine reaches the app: the host
+// for the readiness probe and postStart hook, and the URL to show ("" when
+// there is nothing to show). When the desktop VPN is active, its stable mesh
+// hostname wins (activeMeshHost): cloud-reported interface IPs are often
+// private and unreachable from the developer's current network. Otherwise
+// conn.Host is right for LAN connections; an IPv6 literal is swapped for the
+// IP the agent reports, since it is often an RFC 4941 temporary (privacy)
+// address that rotates away.
 //
-// conn.Reconnect != nil is the cloud marker: it is the sole assignment
-// (cloud_tunnel.go, on the connection cloud_tunnel.go builds) for a
-// transport where the connection identity can't be re-derived from Host
-// alone. conn.Addr can't be used instead — it is empty for NewFromConn
-// conns, cloud tunnels included.
-//
-// ok=false means no active mesh route exists for a cloud connection; callers
-// skip host-side probes/hooks with guidance instead of dialing either the cloud
-// asset's display name or an unverified device LAN address.
-func resolveHookHost(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (host string, ok bool) {
+// A cloud-tunnel connection's Host is the asset name, which does not resolve
+// from here, and the IP the agent reports is the device's LAN address, which
+// this machine can reach only when it is on (or routed into) that network.
+// So without an active mesh route a cloud run checks once, within
+// cloudLANProbeTimeout, whether it can connect to the device's agent at that
+// address (lanAddressReachable): if it can, the address is used as on a LAN
+// connection (WDY-2440). Otherwise — or when the agent reports no IP —
+// ok=false: probing that address, printing it as "App reachable at", or
+// opening it would mislead, so callers skip host-side probes and hooks with
+// cloudHostSkipNotice (readiness is not checked from this machine).
+func hostSideAppAddress(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (host, url string, ok bool) {
 	if meshHost := activeMeshHost(ctx, conn); meshHost != "" {
-		announceReachableURLForHost(appCfg, meshHost)
-		return meshHost, true
+		return meshHost, reachableAppURLForHost(appCfg, meshHost), true
 	}
-	isCloud := conn.Reconnect != nil
-	if isCloud {
-		return "", false
+	ip, url := reachableAppAddress(ctx, conn, appCfg)
+	if isCloudConnection(conn) {
+		if ip == "" || !lanAddressReachable(ctx, ip) {
+			return "", "", false
+		}
+		return ip, url, true
 	}
-	ip := announceReachableURL(ctx, conn, appCfg)
 	if ip != "" && isIPv6Literal(conn.Host) {
-		return ip, true
+		return ip, url, true
 	}
-	return conn.Host, true
+	return conn.Host, url, true
+}
+
+// resolveHookHost returns the host the developer-side readiness probe and
+// postStart hook should target, announcing the app URL on the way (see
+// hostSideAppAddress). ok=false means host-side lifecycle work must be skipped
+// with cloudHostSkipNotice.
+func resolveHookHost(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (host string, ok bool) {
+	host, url, ok := hostSideAppAddress(ctx, conn, appCfg)
+	if url != "" {
+		cliLogln("App reachable at %s", tui.Value(url))
+	}
+	return host, ok
+}
+
+// cloudHostSkipNotice explains why a cloud-tunnel run skips its host-side
+// readiness check and postStart hook.
+func cloudHostSkipNotice(appCfg *appconfig.AppConfig) string {
+	return fmt.Sprintf("Skipping postStart hook and the readiness check from this machine for %s: the device is connected through Wendy Cloud, Wendy Mesh is not active, and its LAN address is not reachable from here. Connect the desktop VPN to reach this cloud device.", containerDisplayName(appCfg))
 }
 
 // synthesizedOpenURLHook returns appCfg.Hooks unchanged when the app already
@@ -3064,7 +3341,8 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 
 // runPostStartIfReady waits for readiness, announces the reachable URL, and
 // launches host-side postStart actions. It is used by attached runs; detached
-// paths return after Started without waiting for readiness. In watch mode the
+// paths return after Started without waiting for readiness (unless
+// --wait-ready: see waitReadyAfterDetachedStart). In watch mode the
 // actions run once per container after the first successful readiness check.
 // A canceled or failed attempt releases that claim for a later deploy.
 //
@@ -3097,32 +3375,40 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	// http-entitlement-synthesized) and no postStart hook (explicit or
 	// http-entitlement-synthesized) has nothing for this function to do.
 	// Returning before resolveHookHost matters specifically for cloud
-	// connections: resolveHookHost would otherwise still run and, since neither
-	// mesh nor reported-IP resolution is relevant without a hook or port,
-	// potentially print a "Skipping postStart hook" notice
-	// for a hook that was never configured. Mirrors
-	// service_lifecycle.go's serviceHookRunner.runOne guard.
+	// connections: resolveHookHost would otherwise report that the host is
+	// unusable and print cloudHostSkipNotice for a hook that was never
+	// configured. Mirrors service_lifecycle.go's serviceHookRunner.runOne guard.
 	if readiness == nil && hooks == nil {
 		return nil
 	}
 
-	// Resolve the host BEFORE probing readiness: for a cloud connection,
-	// conn.Host is the tunnel's asset name, which does not resolve from this
-	// machine — dialing it always fails, so the postStart hook logic below
-	// would never even be reached unless the probe target is swapped too.
-	// This also means the "App reachable at ..." line (printed inside
-	// resolveHookHost/announceReachableURL) now prints before readiness is
-	// confirmed rather than after — acceptable since it is the same URL the
-	// user watches for regardless of when the probe finishes.
+	// Resolve the host BEFORE probing readiness: the probe and the hook must
+	// target the same address, and a cloud connection may have none this
+	// machine can reach. The "App reachable at ..." line (printed inside
+	// resolveHookHost) therefore prints before readiness is confirmed rather
+	// than after — acceptable since it is the same URL the user watches for
+	// regardless of when the probe finishes.
 	hookHost, hostOK := resolveHookHost(ctx, conn, appCfg)
 	if !hostOK {
-		cliNotice("Skipping postStart hook: Wendy Mesh is not active; connect the desktop VPN to reach this cloud device.")
+		if ctx.Err() == nil {
+			cliNotice("%s", cloudHostSkipNotice(appCfg))
+		}
 		return nil
 	}
 
-	err := waitForAttachedReadiness(ctx, conn, appCfg, hookHost)
+	if readiness != nil && readiness.TCPSocket != nil {
+		activationStep(ctx, "readiness", nil)
+	}
+	err := waitForAttachedReadiness(ctx, conn, appCfg, hookHost, opts.readinessTimeout)
 	rp("  ↳ runcontainer: readiness wait")
 	if err != nil {
+		if readiness != nil && readiness.TCPSocket != nil && !opts.managedRobot {
+			class, outcome := ExecutionErrorClass(err), "failed"
+			if class == "user_cancelled" || class == "context_canceled" {
+				outcome = "cancelled"
+			}
+			analytics.TrackStage(ctx, "app_readiness_failed", "wendy run", outcome, class, map[string]string{"stage": "run", "step": "readiness"})
+		}
 		if ctx.Err() == nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
 			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
@@ -3134,6 +3420,9 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	}
 	if ctx.Err() != nil {
 		return nil
+	}
+	if readiness != nil && readiness.TCPSocket != nil && !opts.managedRobot {
+		analytics.TrackStage(ctx, "app_ready", "wendy run", "completed", "", map[string]string{"step": "readiness"})
 	}
 	effectiveCfg := appCfg
 	if hooks != appCfg.Hooks {
@@ -3176,7 +3465,9 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 		// openURL is a URL by definition, so an IPv6 hostname must be
 		// bracketed; the CLI hook below stays raw for shell contexts.
 		url := expandHookEnv(hook.OpenURL, urlSafeHost(hostname), appCfg.AppID, serviceName)
-		if err := browserOpen(url); err != nil {
+		if !postStartBrowserAllowed() {
+			cliLogln("Hook postStart: not opening a browser without an interactive terminal; open %s", tui.Path(url))
+		} else if err := browserOpen(url); err != nil {
 			cliLogln("Warning: postStart openURL failed: %v", err)
 		} else {
 			cliLogln("Hook postStart: opened %s", tui.Path(url))
@@ -3288,16 +3579,27 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 	// hooks. They have completely different causes when one is slow.
 	rc := phaseTimer()
 	hookCtx, hookCancel := context.WithCancel(ctx)
-	runner := &serviceHookRunner{conn: conn, opts: opts}
-	defer func() { hookCancel(); runner.reap() }()
+	runner := &serviceHookRunner{conn: conn, opts: hookRunnerOptions(opts)}
+	var gate *readinessGate
+	defer func() { hookCancel(); gate.wait(); runner.reap() }()
 	hookFired := false
 	started := false
+	taskEnded := make(chan struct{}) // closed when the output ends on its own
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
+			close(taskEnded)
 			break
 		}
 		if err != nil {
+			if started && !opts.isWatch() && ctx.Err() != nil {
+				// Ctrl-C or SIGTERM during an attached run: stop the app like
+				// the registry path does. It used to keep running on the device.
+				// Report ErrUserCancelled so a SIGINT still exits 0;
+				// runWithInterruptChannel turns it into errTerminated on SIGTERM.
+				stopInterruptedApp(ctx, conn, appCfg)
+				return ErrUserCancelled
+			}
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
@@ -3315,9 +3617,17 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 			if opts.detach {
 				// Mirror startAndStreamContainer's detach branch: the container
 				// is started, so return without tailing logs or waiting on
-				// readiness (see runPostStartIfReady's doc comment). The container keeps
-				// running independently of this (now-abandoned) output stream.
-				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+				// readiness (see runPostStartIfReady's doc comment) unless
+				// --wait-ready asks for it. The container keeps running
+				// independently of this output stream, which is abandoned
+				// here (drained while --wait-ready waits).
+				if !isRobotTour(ctx) {
+					cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
+				}
+				if opts.waitReady {
+					drainDetachedStartOutput(stream)
+					return waitReadyAfterDetachedStart(ctx, conn, appCfg, opts, startedAppBaseline(appCfg))
+				}
 				return opts.reportDetachedRun(ctx, conn, appCfg.AppID, appCfg)
 			}
 			// Attached runs wait for readiness, announce the URL, and fire the
@@ -3330,7 +3640,11 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 					opts.watchState.reapCommand(cmd)
 					return nil
 				}
-				runner.startAsync(hookCtx, appCfg)
+				if opts.waitReady {
+					gate = startReadinessGate(hookCtx, conn, appCfg, opts, gateTarget{stopOnFailure: true, base: startedAppBaseline(appCfg), taskEnded: taskEnded}, func() { runner.startAsync(hookCtx, appCfg) })
+				} else {
+					runner.startAsync(hookCtx, appCfg)
+				}
 			}
 			continue
 		}
@@ -3349,8 +3663,26 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 	if !started {
 		return commandErrorf(errContainerStartFailed, "agent closed the stream before confirming the container started")
 	}
-	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
-	return nil
+	// The output ended on its own: the app exited, or the gate stopped it.
+	// Let the gate finish (hookCtx stays live until the deferred cancel) so
+	// its next poll records whether the app became ready before exiting.
+	gate.wait()
+	if ctx.Err() != nil {
+		// Ctrl-C or SIGTERM during that wait (the gate stood down). Unlike
+		// the interrupt branch above, the task this run started has exited:
+		// nothing is stopped (interruptedAttachedRun).
+		return interruptedAttachedRun(ctx, conn, appCfg, taskEnded)
+	}
+	if gate.Replaced() {
+		// Another deployment replaced the app during the check; the gate left
+		// it running. A success, as in attachedExitOutcome.
+		noteAppReplaced(appCfg)
+		return nil
+	}
+	if err := gate.Err(); err != nil {
+		return err
+	}
+	return attachedExitOutcome(ctx, conn, appCfg)
 }
 
 // phaseTimer returns a closure that logs the elapsed time since the previous
@@ -3473,9 +3805,28 @@ func formatRegistryFallbackNotice(chunkErr error, imageBytes int64) string {
 // chunkExportPlan) and the build succeeded and was read back successfully:
 // nil for the "tar" export plan (whose temp directory is removed before the
 // caller could reuse it) and whenever the build/read itself failed.
+//
+// configDigest (ociConfigDigest of the image config read back after the build)
+// pins the hint to THIS run's build: the layout lock is released after the
+// chunk push, so another `wendy run` of the app may rebuild the directory
+// before a fallback reuses it.
 type ociReuseHint struct {
-	layoutDir string
-	platform  string
+	layoutDir    string
+	platform     string
+	configDigest string
+}
+
+// verify re-reads the layout and fails when it no longer holds the image this
+// run built. The caller must hold the layout lock.
+func (h *ociReuseHint) verify() error {
+	_, config, err := readOCILayoutDirLayers(h.layoutDir, h.platform)
+	if err != nil {
+		return fmt.Errorf("re-reading the built image: %w", err)
+	}
+	if ociConfigDigest(config) != h.configDigest {
+		return fmt.Errorf("the build cache was rebuilt by another wendy run since this run built it")
+	}
+	return nil
 }
 
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
@@ -3506,7 +3857,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			var buildLog bytes.Buffer
 			if err := build(ctx, &buildLog, &buildLog); err != nil {
 				if ctx.Err() == nil {
-					renderBuildFailure(os.Stderr, "", buildLog.String(), err)
+					return renderBuildFailure(os.Stderr, "", buildLog.String(), err)
 				}
 				return err
 			}
@@ -3538,12 +3889,16 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	fillStats := func() {
 		stats.imageBytes = totalCompressedLayerBytes(layers)
 	}
+	var lease *ociLayoutLease
 	if exportMode == "dir" {
-		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+		acquired, err := acquireOCILayoutLease(ctx, layoutDir, func() {
+			cliNotice("Waiting for another wendy run of %s to release the build cache…", appCfg.AppID)
+		})
 		if err != nil {
 			return nil, hint, err
 		}
-		defer releaseLayout()
+		lease = acquired
+		defer lease.release()
 		build := func(buildCtx context.Context, stream, logw io.Writer) error {
 			return buildImageToOCILayoutDir(buildCtx, cwd, dockerfile, platform, buildArgs, opts.builder, layoutDir, stream, logw)
 		}
@@ -3620,21 +3975,31 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		// The layout directory now holds a known-good, freshly built image —
 		// record it so a chunk-diff failure below can fall back to reusing it
 		// (see ociReuseHint) instead of a redundant second buildx build.
-		hint = &ociReuseHint{layoutDir: layoutDir, platform: platform}
-		// Once the deploy is done with the layout: GC blobs superseded by this
-		// build, THEN dedup identical blobs across app layout dirs, evict
-		// least-recently-used caches over the size cap, and bound the daemon
-		// store. Defers run LIFO, so maintenance is registered first and GC
-		// last — otherwise the size cap would measure this build's soon-to-be-
-		// pruned orphans as live usage and evict other apps for nothing. Both
-		// are best-effort; this build's own layout is protected (keep) so
-		// maintenance never yanks it, and a failed GC only leaves garbage for
-		// the next run to collect.
+		hint = &ociReuseHint{layoutDir: layoutDir, platform: platform, configDigest: ociConfigDigest(imageConfig)}
+		lease.markBuilt()
+		// Cross-app cache maintenance (dedup identical blobs across app layout
+		// dirs, evict least-recently-used caches over the size cap, bound the
+		// daemon store) is unrelated to THIS directory's lock, so it stays on
+		// its original schedule — deployByChunkDiff's exit (after Started for a
+		// detached/watch run, after the app exits for an attached one) — rather
+		// than moving up to right after the chunk push, which would add its
+		// cost (two cache-root walks plus a `docker buildx prune`, up to 60s)
+		// to every deploy's latency. Call lease.release() first, not last, so
+		// GC always precedes maintenance even though this defer — registered
+		// after the earlier `defer lease.release()` — actually runs before it
+		// (LIFO): release() is idempotent, so the push's own early release (or
+		// the outer defer, on a failure path before the push) just makes this
+		// call a no-op. Maintenance running after the unlock is fine: this
+		// build's own layout stays protected in-process via keep, the size cap
+		// takes its own per-dir tryLockCacheUnit, and dedup swaps identical
+		// content atomically.
 		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
 			keep := map[string]bool{layoutDir: true}
-			defer func() { _, _ = maintainBuildCaches(ctx, userCache, buildCacheMaxBytes(), keep) }()
+			defer func() {
+				lease.release()
+				_, _ = maintainBuildCaches(ctx, userCache, buildCacheMaxBytes(), keep)
+			}()
 		}
-		defer func() { _ = gcOCILayoutDir(layoutDir) }()
 	} else {
 		tmp, err := os.MkdirTemp("", "wendy-oci-*")
 		if err != nil {
@@ -3655,12 +4020,15 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		fillStats()
 	}
 	mark("read+decompress layers")
+	activationStep(ctx, "deploy", nil)
 
 	sizeClause := ""
 	if compressedTotal := totalCompressedLayerBytes(layers); compressedTotal > 0 {
 		sizeClause = fmt.Sprintf(" (%s compressed)", tui.Value(tui.ByteProgress{Current: compressedTotal}.String()))
 	}
-	cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
+	if !isRobotTour(ctx) {
+		cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
+	}
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
 		return nil, hint, err
@@ -3703,6 +4071,14 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	stats.pushCompleted = true
 	mark("chunk+query+write+prepare")
+	// Every layer blob has been read and pushed; RunContainer sends only the
+	// headers. Release the layout now (GCing blobs this build superseded) so
+	// another `wendy run` of this app can build while this one streams logs.
+	// Cache maintenance stays deferred to this function's exit — see the
+	// defer registered where the build succeeded above.
+	if lease != nil {
+		lease.release()
+	}
 	// Carry the post-start agent-hook metadata so the agent runs the device-host
 	// hook on start, matching the registry path's StartContainer call.
 	rpcCtx := ctx

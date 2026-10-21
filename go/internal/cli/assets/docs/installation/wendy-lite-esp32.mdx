@@ -24,10 +24,9 @@ Swift and other WebAssembly apps remain available through the optional Wendy Lit
 - A supported ESP32 development board
 - A USB data cable
 - The Wendy CLI ([install it](/docs/#1-install-the-wendy-cli))
-- The [ESP-IDF Installation Manager (`eim`)](https://dl.espressif.com/dl/eim/). On macOS, install it with `brew install espressif/eim/eim`
 - An existing ESP-IDF project, or a new project created with the standard ESP-IDF tooling
 
-Wendy uses `eim` to run ESP-IDF 5.5.4. If that version is not installed, the first `wendy run` installs it for you.
+Wendy uses the [ESP-IDF Installation Manager (`eim`)](https://dl.espressif.com/dl/eim/) to run ESP-IDF 5.5.4. If `eim` is missing, `wendy run` offers to install it with Homebrew (`brew install espressif/eim/eim`); without Homebrew, install it yourself. If ESP-IDF 5.5.4 is not installed, the first `wendy run` installs it for you.
 
 ## Install the Wendy Firmware
 
@@ -51,7 +50,9 @@ Wendy uses `eim` to run ESP-IDF 5.5.4. If that version is not installed, the fir
 
     Select the target that matches your chip, then choose your board. For generic ESP32-C5, ESP32-C6, and ESP32-S3 boards, select the variant labeled **native app support**.
 
-    The CLI detects the USB serial port, verifies the chip model, downloads the correct Wendy firmware, and flashes it directly. No separate `esptool` installation is required.
+    If multiple ESP32 USB candidates are connected, choose the device to flash from the serial port picker. Each entry shows its port path and whether it uses native USB or a USB-UART bridge. A single candidate is selected automatically.
+
+    The CLI verifies the chip model before writing and flashes the downloaded Wendy firmware directly. No separate `esptool` installation is required. Flash retries keep your selected port; if it disappears, the CLI asks you to select a device again.
   </Step>
 
   <Step>

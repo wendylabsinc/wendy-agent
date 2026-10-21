@@ -1,7 +1,7 @@
 {
   "name": "wendy-agentic-coding",
-  "version": "0.6.2",
-  "description": "Wendy CLI setup, device installation and first-boot checks, template apps, explicit deployment targets, ROS 2 and robot verification workflows.",
+  "version": "0.6.3",
+  "description": "Wendy CLI setup, device installation, app deployment, ROS 2 verification, and Wendy Data campaigns, episodes, and application recording streams.",
   "author": {
     "name": "Wendy Labs",
     "url": "https://github.com/wendylabsinc"
@@ -13,6 +13,8 @@
     "wendy",
     "wendyos",
     "wendy-json",
+    "wendy-data",
+    "data-campaigns",
     "entitlements",
     "build-run",
     "device-ops",
@@ -31,7 +33,7 @@
   "interface": {
     "displayName": "Wendy",
     "shortDescription": "Install devices and build, deploy, and debug Wendy apps.",
-    "longDescription": "Set up Wendy CLI and MCP, install and verify a device, create an app, configure permissions, deploy to an explicit target, and verify app or robot behavior.",
+    "longDescription": "Set up Wendy CLI and MCP, install and verify a device, create an app, configure permissions, deploy to an explicit target, and verify app or robot behavior. Configure Wendy Data campaigns to capture sensors, events, and model results; inspect and download episodes or export durable application streams.",
     "developerName": "Wendy Labs",
     "category": "Productivity",
     "capabilities": [
@@ -49,7 +51,9 @@
       "Use Wendy to run this app detached and stream logs.",
       "Use Wendy to debug this WendyOS device runtime issue from logs to root cause.",
       "Use Wendy to plan this device installation and verify its first boot.",
-      "Use Wendy to deploy this robot app in simulation and verify its sensor and stop behavior."
+      "Use Wendy to deploy this robot app in simulation and verify its sensor and stop behavior.",
+      "Use Wendy Data to create a campaign for this device and verify a recorded episode.",
+      "Use Wendy Data to add durable sensor recording streams to this app."
     ],
     "brandColor": "#10A37F",
     "composerIcon": "./assets/wendy_social_logo.png",

@@ -2,6 +2,17 @@
 
 Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients against the agent's gRPC server. Certificates are issued by a CA managed by either Wendy Cloud or a self-hosted **pki-core** instance.
 
+## Device unenrollment and retired Agent RPCs
+
+For UUID/direct PKI devices, Cloud's signed `DeleteAsset` operation owns
+certificate revocation. The CLI verifies issuer-signed revocation evidence and
+exact retained deletion binding before requesting guarded local erasure.
+See [Cloud-owned unenrollment](/docs/device/unenrollment).
+
+The prerelease Agent RPCs `RevokeACMECertificate` and `CheckACMERevocation` are
+deprecated and always return `UNIMPLEMENTED` on updated Agents. They are not an
+alternate revocation path. Numeric Cloud v1 cleanup remains separate.
+
 ## Certificate roles
 
 | Certificate | Issued to | Used for |
@@ -10,6 +21,30 @@ Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients agains
 | CLI cert | Developer machine via `wendy auth login` | mTLS client auth when connecting to provisioned devices |
 
 The device's mTLS CA pool is built from the `chainPem` field in `provisioning.json`. CLI clients must present a certificate whose chain terminates at that same CA. If `chainPem` is absent or empty, the agent refuses to build a TLS configuration and returns an error indicating that the device may need to be re-provisioned.
+
+### Credential persistence
+
+On WendyOS, the agent keeps enrollment state in `/etc/wendy-agent/`:
+
+| File | Contents | Permissions |
+|------|----------|-------------|
+| `device-key.pem` | Device private key | `0600` |
+| `provisioning.json` | Enrollment details, device certificate (`certPem`) and CA chain (`chainPem`); new writes exclude the private key | `0600` |
+
+Unchanged saves and agent restarts preserve these files when their contents and
+permissions are already correct. Required updates and permission repairs still
+write the affected file; the Go agent uses atomic replacement and filesystem
+syncing. When migrating an older JSON file containing `keyPem`, the agent saves
+the separate key before removing the embedded copy.
+
+The agent no longer emits `device.pem`, `ca.pem` or `.provisioned`.
+Unprovisioning still removes copies left by older agents. Agent services,
+including the embedded container registry, receive credentials in memory;
+these persistence files are internal agent state, not an app credential API.
+
+The Swift agent follows the same layout for software-backed keys. With a
+Secure Enclave key, there is no `device-key.pem`; the wrapped key is held in
+the Keychain.
 
 ## Certificate identity and URI SAN
 
@@ -92,6 +127,14 @@ The CLI verifies device server certificates on all mTLS connections (BLE, LAN gR
 
 4. **SPKI pinning** — On first mTLS connection to a device — over BLE, LAN gRPC, or the cloud tunnel — its SPKI (Subject Public Key Info) fingerprint is pinned in `~/.wendy/known_devices.json`, keyed by the certificate's Wendy asset identity. A later connection presenting a different key while the *previously pinned* certificate is still within its validity window is hard-refused (a `PinMismatchError` aborts the handshake): a renewal replaces an expiring certificate, it does not race one that is still live, so an unexplained key change during that window is treated as a MITM signal, not a warning. Once the pinned certificate has expired, a new key is ordinary rotation — accepted silently, and the pin is updated to the new fingerprint.
 
+### Device-to-device peer verification (UUID pin)
+
+When one device dials another by its device UUID, the agent runs `VerifyPeerDevice` after the chain check. The peer leaf must carry exactly one tenant SPIFFE device principal (`spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>`), its tenant must equal the calling device's own tenant, and its device UUID must equal the roster entry for the dialed name. There is no grace mode: a calling device with no tenant identity of its own refuses every device peer. The dialed address is a routing hint only and is not part of the check. `NewClientTLSConfigExpectingPeer` selects this strict rule whenever the peer identifier is a UUID.
+
+A legacy asset-ID string selects the older asset pin: the certificate must identify the expected asset, and its scope must match the calling device's own scope when that scope is known. Only this legacy path permits an unknown calling scope; it still requires the exact asset identity and a valid certificate chain.
+
+The wendy net data plane still dials peers by their legacy asset ID with the asset pin at this stage; it moves to the UUID rule when it addresses peers by device UUID (WDY-3923).
+
 ## Device identity pinning (default device)
 
 On the first successful connection to a hostname, the CLI records that hostname's identity in `~/.wendy/config.json` under `devicePins`: the **organisation**, the **cloud host** that issued its certificate, and the **asset id** from the device certificate's identity SAN (the name of its tenant SPIFFE principal, or the legacy `urn:wendy:org:<org>:asset:<assetID>` URN on an old chain), and that **principal** when it has one. Every later connection to that hostname is checked against the pin — this is what feeds `ServerVerifyOpts.ExpectedIdentity` above, so a wrong device is rejected during the TLS handshake itself, not after.
@@ -120,7 +163,7 @@ This clears the local pin only — it never dials the device, so it works even w
 
 Both forms are accepted because the two stores are keyed differently. The identity-change refusals above name a hostname, and the hostname form clears it (a pin records its device's principal on the first connect after the SPIFFE cutover, which is how the hostname form still reaches the SPKI entry). The **SPKI** refusal (point 4 above) can only name the certificate identity, because that is what `known_devices.json` is keyed by — the tenant SPIFFE principal for a pki-core-issued device, the legacy URN for an old chain and there is often no hostname to offer: `wendy device list` and the device picker dial the device's IP, and an agent that never advertises `orgid` in its mDNS records leaves nothing locally that maps a name to an asset. Copy the identity out of the refusal and pass it back — it clears the SPKI entry and any `devicePins` entry naming the same asset.
 
-Unpinning by hostname also clears pins filed under the device's *other* names (the cloud roster's asset name, its mesh name), because one device is legitimately pinned under several — but only when those pins name the same organisation and asset. Those alternate names come from mDNS, which is unauthenticated, so a pin naming a *different* asset is a different device's pin and is left alone. Unpinning a local VM by its alias, `wendy device unpin vm:<name>`, clears only that VM's pin, never the `127.0.0.1` pin every other loopback address shares. Whatever is cleared is printed, one line per entry, so an unpin never removes trust state silently.
+Unpinning by hostname also clears pins filed under the device's *other* names (the cloud roster's asset name, its wendy net name), because one device is legitimately pinned under several — but only when those pins name the same organisation and asset. Those alternate names come from mDNS, which is unauthenticated, so a pin naming a *different* asset is a different device's pin and is left alone. Unpinning a local VM by its alias, `wendy device unpin vm:<name>`, clears only that VM's pin, never the `127.0.0.1` pin every other loopback address shares. Whatever is cleared is printed, one line per entry, so an unpin never removes trust state silently.
 
 ### Re-enrolling after an intentional reset or organization move
 
@@ -153,10 +196,10 @@ Agents whose certificates carry no asset identity at all are never treated as sw
 
 ## Multi-key pin lookup
 
-One device can answer to more than one name, and different surfaces record its pin under different ones: an ordinary connection records under the mDNS hostname actually dialed, cloud seeding records under the asset's roster name, and a mesh dial names the device by its mesh name. Resolving "does this dial have a pin" therefore checks, in order:
+One device can answer to more than one name, and different surfaces record its pin under different ones: an ordinary connection records under the mDNS hostname actually dialed, cloud seeding records under the asset's roster name, and a wendy net dial names the device by its wendy net name. Resolving "does this dial have a pin" therefore checks, in order:
 
 1. The name the caller dialed (`--device` value, saved default, or the device picker's name).
-2. The mesh name from the discovery-cache entry whose hostname matches (1), if the cache has one.
+2. The wendy net name from the discovery-cache entry whose hostname matches (1), if the cache has one.
 3. That entry's display name.
 
 Consulting an alias can only ever *find* a pin, never discard one: an attacker-chosen alias can at most impose a stricter constraint that the real device still satisfies, never a way to bypass one. The trust decision itself always rests on the certificate, never on which name resolved the lookup.
@@ -260,6 +303,13 @@ wendy device enroll \
 › shell has no effect. The agent logs a warning naming the target address
 › whenever the variable is active, because the enrollment token is a bearer
 › credential. Never set it on a real device.
+›
+› The CLI's own cloud dials follow the same rule: TLS for every address, so
+› `wendy` commands that talk to a local plaintext cloud need
+› `WENDY_CLOUD_INSECURE=1` in **your** shell as well. A local or on-prem tunnel
+› broker is always verified by hostname: its certificate must chain to the
+› Wendy CA and carry a DNS or IP SAN for the address the CLI dials (for
+› example `localhost` or the LAN IP).
 
 After this, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
 

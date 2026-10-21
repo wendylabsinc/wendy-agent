@@ -49,12 +49,15 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 var errAppStopping = errors.New("app is currently being stopped")
+
+var errHostShuttingDown = errors.New("host is shutting down")
 
 // Compile-time check that *Client satisfies services.ContainerdClient.
 var _ services.ContainerdClient = (*Client)(nil)
@@ -95,6 +98,17 @@ type dbusProxyManager interface {
 	Start(context.Context, string) (string, error)
 	Stop(string) error
 	StopAll()
+}
+
+// dbusProxyManagerOrNil converts the manager main.go passes, which is a nil
+// *dbusproxy.Manager when xdg-dbus-proxy is not installed. Storing that pointer
+// directly would yield a non-nil interface holding a nil pointer, which passes
+// every c.proxyManager nil check and then panics in Stop/Start (WDY-3835).
+func dbusProxyManagerOrNil(m *dbusproxy.Manager) dbusProxyManager {
+	if m == nil {
+		return nil
+	}
+	return m
 }
 
 type Client struct {
@@ -155,6 +169,11 @@ type Client struct {
 	// cleanup phase. Checked by create/start paths to reject concurrent lifecycle races
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
+
+	// hostShutdown is set when StopTasksForHostShutdown begins and never
+	// cleared: the host is powering off, so start paths refuse to create a task
+	// and the exits that stop causes are not recorded.
+	hostShutdown atomic.Bool
 
 	// ros2ExecRefs counts active ExecROS2 calls per sidecar name. Protected by mu.
 	// Teardown paths check this before SIGKILLing a sidecar (WDY-1702 H5).
@@ -393,7 +412,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		client:            c,
 		logger:            logger,
 		namespace:         "default",
-		proxyManager:      proxyMgr,
+		proxyManager:      dbusProxyManagerOrNil(proxyMgr),
 		appServices:       make(map[string]map[string]*appconfig.ServiceConfig),
 		primaryPIDs:       make(map[string]uint32),
 		appIsolation:      make(map[string]string),
@@ -1080,6 +1099,22 @@ func toCreateContainerProgress(progress UnpackProgress) *agentpb.CreateContainer
 }
 
 func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress services.ProgressFunc) error {
+	return c.createContainer(ctx, req, appCfg, onProgress, false)
+}
+
+// ValidateContainer makes every check CreateContainerWithProgress makes
+// before it replaces an existing container of the same name, and stops there:
+// it creates and replaces nothing. A multi-service deploy validates each
+// service before replacing any, so a service that would fail leaves the whole
+// app on its previous version (WDY-3850). It may pull and unpack the image,
+// which the create that follows then reuses.
+func (c *Client) ValidateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error {
+	return c.createContainer(ctx, req, appCfg, nil, true)
+}
+
+// createContainer is CreateContainerWithProgress, or with validateOnly only
+// its prepare phase (see ValidateContainer).
+func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress services.ProgressFunc, validateOnly bool) (retErr error) {
 	createStarted := time.Now()
 	var replaceDuration, imageResolveDuration, unpackDuration, specDuration, snapshotDuration time.Duration
 	var replacedExisting bool
@@ -1166,7 +1201,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if serviceName != "" {
 		logFields = append(logFields, zap.String("service_name", serviceName))
 	}
-	c.logger.Info("Creating container", logFields...)
+	if validateOnly {
+		c.logger.Info("Validating container", logFields...)
+	} else {
+		c.logger.Info("Creating container", logFields...)
+	}
 
 	// Determine version from the app config or default.
 	version := appCfg.Version
@@ -1174,99 +1213,44 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		version = "latest"
 	}
 
-	// Delete any pre-existing container with the same name.
-	phaseStarted := time.Now()
-	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
-		replacedExisting = true
+	// A replace builds and checks everything it can while the old container
+	// still runs, so a redeploy refused for its image, config or entitlements
+	// leaves the previous version running (WDY-3850). Only the steps that need
+	// the old container gone follow its removal, in the swap further down.
+	existing, err := c.client.LoadContainer(ctx, containerName)
+	if err != nil {
+		existing = nil
+	}
+	replacedExisting = existing != nil
+	if existing != nil {
 		// Pause the restart monitor for this name for the rest of this
 		// function: without it, a crash-looping app's next tick can call
 		// StartContainer on this same container between our kill and delete
 		// below, resurrecting the task and racing us (observed live:
 		// "cannot delete running task: failed precondition"). Held through
 		// the new container's creation further down too, so the monitor
-		// cannot also race the fresh task being started.
-		resumeRestarts := c.suppressRestarts(containerName)
-		defer resumeRestarts()
+		// cannot also race the fresh task being started. It starts here,
+		// before the swap: a restart the monitor began while this create
+		// pulls and prepares would wait on the container's lock and then
+		// start the new container. A refused redeploy resumes restarts of the
+		// old container when it returns. A validation creates no container,
+		// so a restart waiting on it restarts the old one, as it should.
+		if !validateOnly {
+			resumeRestarts := c.suppressRestarts(containerName)
+			defer resumeRestarts()
+		}
+	}
 
-		oldHadSystemAPI := false
-		oldHadData := false
-		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
-			oldEntitlements := parseEntitlementsFromAnnotations(oldLabels)
-			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
-			oldHadData = entitlementsContain(oldEntitlements, appconfig.EntitlementEpisodeWrite)
-			oldSpec, _ := existing.Spec(ctx)
-			if oldLabels[labelKeyNetworkIdentity] == desiredNetworkIdentity {
-				reusedNetworkSandbox, _ = c.reusableNetworkSandbox(ctx, containerName, desiredNetworkIdentity)
-				if reusedNetworkSandbox == nil && oldSpec != nil {
-					reusedNetworkSandbox, _ = c.recoverNetworkSandbox(ctx, existing, desiredNetworkIdentity, oldLabels, oldSpec)
-				}
-			}
-			if reusedNetworkSandbox == nil {
-				c.purgePersistedNetworkSandbox(ctx, existing, oldLabels, oldSpec)
-			}
-		}
-		if reusedNetworkSandbox == nil {
-			// Identity mismatch, unhealthy namespace, legacy container, or a
-			// non-CNI configuration: release every external network side effect
-			// before the old task disappears.
-			c.destroyNetworkSandbox(ctx, containerName)
-		} else {
-			c.logger.Debug("Retaining compatible network sandbox across container replacement",
-				zap.String("container_name", containerName), zap.String("netns", reusedNetworkSandbox.path))
-		}
-		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
-		// Kill the old task's whole process group — not just init — and wait
-		// for it to exit. A surviving process keeps devices/ports the new
-		// container needs (WDY-1818: /dev/video0 held for hours after replace).
-		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
-			if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
-				c.logger.Error("Failed to delete old task during replace; forcing runtime delete",
-					zap.String("container_name", containerName),
-					zap.Error(termErr))
-				c.forceDeleteTask(ctx, containerName)
-			}
-		} else {
-			// Task may be orphaned (shim crashed). Force-delete via the task
-			// service directly so the runtime clears the old task ID.
-			c.forceDeleteTask(ctx, containerName)
-		}
-		delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup)
-		if delErr != nil && errdefs.IsFailedPrecondition(delErr) {
-			// A task exists again despite the kill above — most likely the
-			// restart monitor's tick winning a race against suppressRestarts
-			// (a tick already past its check when Suppress was called), or an
-			// unrelated in-flight start. Kill it again and retry the delete
-			// once rather than failing the whole replace outright.
-			c.logger.Warn("Existing container still has a running task after kill; retrying",
-				zap.String("container_name", containerName), zap.Error(delErr))
-			if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
-				if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
-					// Mirror the first attempt's fallback above: if the
-					// re-kill itself fails, fall back to force-deleting the
-					// task via the runtime directly before retrying, rather
-					// than retrying the container delete against a task we
-					// know we failed to kill.
-					c.logger.Error("Failed to kill racing task during replace retry; forcing runtime delete",
-						zap.String("container_name", containerName), zap.Error(termErr))
-					c.forceDeleteTask(ctx, containerName)
-				}
-			}
-			delErr = existing.Delete(ctx, containerd.WithSnapshotCleanup)
-		}
-		if delErr != nil && !errdefs.IsNotFound(delErr) {
-			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
-		}
-		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
-			c.systemAPISocketProvider.Release(appID, serviceName)
-		}
-		if oldHadData && c.dataSocketProvider != nil {
-			c.dataSocketProvider.Release(appID, serviceName)
-		}
-		// Stop old D-Bus proxy if any.
-		if c.proxyManager != nil {
-			_ = c.proxyManager.Stop(containerName)
-		}
-		replaceDuration = time.Since(phaseStarted)
+	// SECURITY (WDY-1093): refuse to start a bluetooth container when the D-Bus
+	// proxy is unavailable, rather than silently starting it without the filter.
+	if err := c.requireDBusProxy(appCfg, containerName); err != nil {
+		return err
+	}
+	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) && c.systemAPISocketProvider == nil {
+		return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
+	}
+	if appCfg.HasEntitlement(appconfig.EntitlementEpisodeWrite) && c.dataSocketProvider == nil {
+		return fmt.Errorf("episode-write entitlement unavailable: app data socket manager is not configured")
 	}
 
 	// Try the local image store first. The device-local registry shares
@@ -1275,8 +1259,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// loopback. Fall back to a pull only on miss; use PlainHTTP for the
 	// local-registry case.
 	var image containerd.Image
-	var err error
-	phaseStarted = time.Now()
+	phaseStarted := time.Now()
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_UNPACKING})
 	image, err = c.client.GetImage(ctx, imageName)
 	if err != nil {
@@ -1296,48 +1279,33 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	imageResolveDuration = time.Since(phaseStarted)
 
-	// Start D-Bus proxy if bluetooth entitlement is present. The returned
-	// socket directory is keyed by containerName (which includes the service
-	// name for multi-service apps), so it must be threaded through to the
-	// bluetooth entitlement verbatim — reconstructing it from appID alone would
-	// drop the service suffix and runc would fail with a missing bind-mount
-	// source.
-	// SECURITY (WDY-1093): refuse to start a bluetooth container when the D-Bus
-	// proxy is unavailable, rather than silently starting it without the filter.
-	if err := c.requireDBusProxy(appCfg, containerName); err != nil {
-		return err
-	}
-
-	var dbusProxyStarted bool
-	var dbusProxySocketDir string
-	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		dir, err := c.proxyManager.Start(ctx, containerName)
-		if err != nil {
-			return fmt.Errorf("starting D-Bus proxy for %q: %w", containerName, err)
-		}
-		dbusProxySocketDir = dir
-		dbusProxyStarted = true
-		defer func() {
-			if dbusProxyStarted {
-				_ = c.proxyManager.Stop(containerName)
-			}
-		}()
-	}
-
 	// Unpack the image into the snapshotter if not already done.
+	reportUnpack := func(progress UnpackProgress) {
+		if mapped := toCreateContainerProgress(progress); mapped != nil {
+			report(mapped)
+		}
+	}
 	phaseStarted = time.Now()
-	unpacked, err := image.IsUnpacked(ctx, c.snapshotter)
+	unpacked, err := c.imageUnpacked(ctx, image)
 	if err != nil {
 		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
 	}
+	unpackAfterSwap := false
 	if !unpacked {
 		c.logger.Info("Unpacking image", zap.String("image", imageName))
-		if err := c.UnpackImage(ctx, image, func(progress UnpackProgress) {
-			if mapped := toCreateContainerProgress(progress); mapped != nil {
-				report(mapped)
+		if err := c.UnpackImage(ctx, image, reportUnpack); err != nil {
+			// WDY-3799: layer snapshots that are not stacked on their parents
+			// cannot be replaced while a container still runs on them. When
+			// that is only the container this create replaces, retry once it
+			// is gone. Any other user would still block the retry, so refuse
+			// while the old container still runs.
+			var blocked *layerRepairBlockedError
+			if existing == nil || !errors.As(err, &blocked) || !blocked.onlyBlockedBy(containerName) {
+				return fmt.Errorf("unpacking image %q: %w", imageName, err)
 			}
-		}); err != nil {
-			return fmt.Errorf("unpacking image %q: %w", imageName, err)
+			c.logger.Info("Image repair is blocked; retrying after the existing container is removed",
+				zap.String("image", imageName), zap.Error(err))
+			unpackAfterSwap = true
 		}
 	}
 	unpackDuration = time.Since(phaseStarted)
@@ -1436,45 +1404,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		c.applyQualcommNPURuntime(spec)
 	}
 
-	var systemAPISocketDir string
-	systemAPIRefOwned := false
-	var dataSocketDir string
-	dataRefOwned := false
-	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
-		if c.systemAPISocketProvider == nil {
-			return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
-		}
-		systemAPISocketDir, err = c.systemAPISocketProvider.Ensure(
-			appID,
-			serviceName,
-			[]string{services.SystemAPICapabilityNotifications},
-		)
-		if err != nil {
-			return fmt.Errorf("preparing app System API socket: %w", err)
-		}
-		systemAPIRefOwned = true
-		defer func() {
-			if systemAPIRefOwned {
-				c.systemAPISocketProvider.Release(appID, serviceName)
-			}
-		}()
-	}
-	if appCfg.HasEntitlement(appconfig.EntitlementEpisodeWrite) {
-		if c.dataSocketProvider == nil {
-			return fmt.Errorf("episode-write entitlement unavailable: app data socket manager is not configured")
-		}
-		dataSocketDir, err = ensureDataSockets(c.dataSocketProvider, appID, serviceName, appCfg.Entitlements)
-		if err != nil {
-			return fmt.Errorf("preparing app data socket: %w", err)
-		}
-		dataRefOwned = true
-		defer func() {
-			if dataRefOwned {
-				c.dataSocketProvider.Release(appID, serviceName)
-			}
-		}()
-	}
-
 	var hostResolvConfPath string
 	if entitlementsUseHostNetwork(appCfg.Entitlements) {
 		if systemdResolvedStubAvailable() {
@@ -1491,10 +1420,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
+	// The host socket directories are left out: the sockets are prepared in
+	// the swap, after the old container has released its own, and
+	// ApplyHostSockets mounts them there.
 	opts := localoci.ApplyOptions{
-		DBusProxySocketDir: dbusProxySocketDir,
-		SystemAPISocketDir: systemAPISocketDir,
-		DataSocketDir:      dataSocketDir,
 		HostResolvConfPath: hostResolvConfPath,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
@@ -1589,9 +1518,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	if desiredNetworkIdentity != "" {
 		labels[labelKeyNetworkIdentity] = desiredNetworkIdentity
-		if reusedNetworkSandbox != nil {
-			labels[labelKeyNetworkSandboxIP] = reusedNetworkSandbox.ip
-		}
 	}
 
 	// Publish the resolved ROS 2 configuration as a container label so the
@@ -1652,7 +1578,209 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
+	// Every service of a shared-ipc group, primary and secondary alike, mounts
+	// the group's shm segment. Creating the host dir alone is not enough —
+	// without the bind mount a service keeps its private tmpfs /dev/shm and
+	// never shares segments with the others. The namespace join itself waits
+	// for the swap below.
+	if appCfg.Isolation == "shared-ipc" {
+		shmPath, shmErr := ensureSharedSHM(appID)
+		if shmErr != nil {
+			return shmErr
+		}
+		localoci.RemoveDefaultSHM(spec)
+		spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
+	}
+
+	// Remove duplicate device nodes before handing the spec to runc: independent
+	// provisioners (CDI/L4T-CSV GPU setup and the gpu entitlement) can add the
+	// same node, and runc mknod()s each entry, so a duplicate path would fail
+	// container creation with EEXIST.
+	localoci.DedupeDevices(spec)
+
+	// Check the mounts assembled so far while the old container still runs.
+	// The swap adds the host socket and namespace mounts, then checks again.
+	if err := localoci.ValidateMounts(spec); err != nil {
+		return err
+	}
+	specDuration = time.Since(phaseStarted)
+	if validateOnly {
+		return nil
+	}
+
+	// The swap: remove the old container, then create the new one. Each step
+	// from here on needs the old container gone. containerd has no rename, so
+	// the container ID must be free. The WDY-3799 repair may need the old
+	// container's snapshots released. The socket managers record one owner
+	// per service, so the old container must release its sockets before the
+	// new one claims them. The D-Bus proxy is keyed by the container name, and
+	// a redeployed shared-namespace primary would otherwise find its own old
+	// task alive and join it.
+	phaseStarted = time.Now()
+	if existing != nil {
+		// From here on the old container loses its network and its task, so
+		// a failure leaves the app without a running version, even when the
+		// delete itself is what fails. Say so, or the user would assume the
+		// previous version is still up.
+		defer func() {
+			if retErr != nil {
+				retErr = fmt.Errorf("%w; the previous version of %q was stopped and is no longer running", retErr, containerName)
+			}
+		}()
+
+		oldHadSystemAPI := false
+		oldHadData := false
+		if oldLabels, labelErr := existing.Labels(ctx); labelErr == nil {
+			oldEntitlements := parseEntitlementsFromAnnotations(oldLabels)
+			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
+			oldHadData = entitlementsContain(oldEntitlements, appconfig.EntitlementEpisodeWrite)
+			oldSpec, _ := existing.Spec(ctx)
+			if oldLabels[labelKeyNetworkIdentity] == desiredNetworkIdentity {
+				reusedNetworkSandbox, _ = c.reusableNetworkSandbox(ctx, containerName, desiredNetworkIdentity)
+				if reusedNetworkSandbox == nil && oldSpec != nil {
+					reusedNetworkSandbox, _ = c.recoverNetworkSandbox(ctx, existing, desiredNetworkIdentity, oldLabels, oldSpec)
+				}
+			}
+			if reusedNetworkSandbox == nil {
+				c.purgePersistedNetworkSandbox(ctx, existing, oldLabels, oldSpec)
+			}
+		}
+		if reusedNetworkSandbox == nil {
+			// Identity mismatch, unhealthy namespace, legacy container, or a
+			// non-CNI configuration: release every external network side effect
+			// before the old task disappears.
+			c.destroyNetworkSandbox(ctx, containerName)
+		} else {
+			c.logger.Debug("Retaining compatible network sandbox across container replacement",
+				zap.String("container_name", containerName), zap.String("netns", reusedNetworkSandbox.path))
+		}
+		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
+		// Kill the old task's whole process group — not just init — and wait
+		// for it to exit. A surviving process keeps devices/ports the new
+		// container needs (WDY-1818: /dev/video0 held for hours after replace).
+		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
+			if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+				c.logger.Error("Failed to delete old task during replace; forcing runtime delete",
+					zap.String("container_name", containerName),
+					zap.Error(termErr))
+				c.forceDeleteTask(ctx, containerName)
+			}
+		} else {
+			// Task may be orphaned (shim crashed). Force-delete via the task
+			// service directly so the runtime clears the old task ID.
+			c.forceDeleteTask(ctx, containerName)
+		}
+		delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		if delErr != nil && errdefs.IsFailedPrecondition(delErr) {
+			// A task exists again despite the kill above — most likely the
+			// restart monitor's tick winning a race against suppressRestarts
+			// (a tick already past its check when Suppress was called), or an
+			// unrelated in-flight start. Kill it again and retry the delete
+			// once rather than failing the whole replace outright.
+			c.logger.Warn("Existing container still has a running task after kill; retrying",
+				zap.String("container_name", containerName), zap.Error(delErr))
+			if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
+				if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+					// Mirror the first attempt's fallback above: if the
+					// re-kill itself fails, fall back to force-deleting the
+					// task via the runtime directly before retrying, rather
+					// than retrying the container delete against a task we
+					// know we failed to kill.
+					c.logger.Error("Failed to kill racing task during replace retry; forcing runtime delete",
+						zap.String("container_name", containerName), zap.Error(termErr))
+					c.forceDeleteTask(ctx, containerName)
+				}
+			}
+			delErr = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		}
+		if delErr != nil && !errdefs.IsNotFound(delErr) {
+			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
+		}
+		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
+			c.systemAPISocketProvider.Release(appID, serviceName)
+		}
+		if oldHadData && c.dataSocketProvider != nil {
+			c.dataSocketProvider.Release(appID, serviceName)
+		}
+		// Stop old D-Bus proxy if any.
+		if c.proxyManager != nil {
+			_ = c.proxyManager.Stop(containerName)
+		}
+		replaceDuration = time.Since(phaseStarted)
+	}
+	if desiredNetworkIdentity != "" && reusedNetworkSandbox != nil {
+		labels[labelKeyNetworkSandboxIP] = reusedNetworkSandbox.ip
+	}
+
+	if unpackAfterSwap {
+		phaseStarted = time.Now()
+		if err := c.UnpackImage(ctx, image, reportUnpack); err != nil {
+			return fmt.Errorf("unpacking image %q: %w", imageName, err)
+		}
+		unpackDuration += time.Since(phaseStarted)
+	}
+
+	// Start D-Bus proxy if bluetooth entitlement is present. The returned
+	// socket directory is keyed by containerName (which includes the service
+	// name for multi-service apps), so it must be threaded through to the
+	// bluetooth entitlement verbatim — reconstructing it from appID alone would
+	// drop the service suffix and runc would fail with a missing bind-mount
+	// source.
+	var dbusProxyStarted bool
+	var dbusProxySocketDir string
+	if c.proxyManager != nil && hasBluetooth(appCfg) {
+		dir, err := c.proxyManager.Start(ctx, containerName)
+		if err != nil {
+			return fmt.Errorf("starting D-Bus proxy for %q: %w", containerName, err)
+		}
+		dbusProxySocketDir = dir
+		dbusProxyStarted = true
+		defer func() {
+			if dbusProxyStarted {
+				_ = c.proxyManager.Stop(containerName)
+			}
+		}()
+	}
+
+	// The providers were checked before the swap.
+	var systemAPISocketDir string
+	systemAPIRefOwned := false
+	var dataSocketDir string
+	dataRefOwned := false
+	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
+		systemAPISocketDir, err = c.systemAPISocketProvider.Ensure(
+			appID,
+			serviceName,
+			[]string{services.SystemAPICapabilityNotifications},
+		)
+		if err != nil {
+			return fmt.Errorf("preparing app System API socket: %w", err)
+		}
+		systemAPIRefOwned = true
+		defer func() {
+			if systemAPIRefOwned {
+				c.systemAPISocketProvider.Release(appID, serviceName)
+			}
+		}()
+	}
+	if appCfg.HasEntitlement(appconfig.EntitlementEpisodeWrite) {
+		dataSocketDir, err = ensureDataSockets(c.dataSocketProvider, appID, serviceName, appCfg.Entitlements)
+		if err != nil {
+			return fmt.Errorf("preparing app data socket: %w", err)
+		}
+		dataRefOwned = true
+		defer func() {
+			if dataRefOwned {
+				c.dataSocketProvider.Release(appID, serviceName)
+			}
+		}()
+	}
+	localoci.ApplyHostSockets(spec, &entCfg, localoci.ApplyOptions{
+		DBusProxySocketDir: dbusProxySocketDir,
+		SystemAPISocketDir: systemAPISocketDir,
+		DataSocketDir:      dataSocketDir,
+	})
+
 	if appconfig.IsSharedNamespaceIsolation(appCfg.Isolation) {
 		primaryPID, hasPrimary := c.getPrimaryPID(appID)
 		// The recorded primary is only trustworthy while its task is alive: a
@@ -1681,35 +1809,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 					f.Close()
 				}
 			}()
-			if appCfg.Isolation == "shared-ipc" {
-				shmPath, shmErr := ensureSharedSHM(appID)
-				if shmErr != nil {
-					return shmErr
-				}
-				localoci.RemoveDefaultSHM(spec)
-				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
-			}
-		} else {
-			// Primary service: mount the shared shm segment too. Creating the
-			// host dir alone is not enough — without the bind mount the
-			// primary keeps its private tmpfs /dev/shm and never shares
-			// segments with the secondaries that mount /run/wendy/shm/<appID>.
-			if appCfg.Isolation == "shared-ipc" {
-				shmPath, shmErr := ensureSharedSHM(appID)
-				if shmErr != nil {
-					return shmErr
-				}
-				localoci.RemoveDefaultSHM(spec)
-				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
-			}
 		}
 	}
-
-	// Remove duplicate device nodes before handing the spec to runc: independent
-	// provisioners (CDI/L4T-CSV GPU setup and the gpu entitlement) can add the
-	// same node, and runc mknod()s each entry, so a duplicate path would fail
-	// container creation with EEXIST.
-	localoci.DedupeDevices(spec)
 
 	// A retained namespace is injected only after the complete new runtime
 	// configuration has been validated and matched against the old network
@@ -1723,8 +1824,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// SECURITY (WDY-1102): backstop against any mount whose source resolves into
 	// containerd's runtime directory (the control socket is a host-escape vector).
-	// Runs on the fully assembled spec — entitlement, shared-SHM, and default
-	// mounts — immediately before it is handed to the runtime.
+	// Runs on the fully assembled spec — entitlement, host socket, shared-SHM,
+	// and default mounts — immediately before it is handed to the runtime.
 	if err := localoci.ValidateMounts(spec); err != nil {
 		return err
 	}
@@ -1734,7 +1835,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if err != nil {
 		return fmt.Errorf("marshaling OCI spec: %w", err)
 	}
-	specDuration = time.Since(phaseStarted)
 
 	// Prefer the fresh writable rootfs PrepareImage created concurrently with
 	// upload. Immutable layer snapshots are reused either way; consuming this
@@ -2056,6 +2156,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	if c.appStopping[appID] {
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
+	if c.hostShutdown.Load() {
+		return nil, fmt.Errorf("starting %q: %w", appName, errHostShuttingDown)
+	}
 
 	// Start streams one container's output, so a bare appID naming a group is
 	// an error here rather than a fan-out.
@@ -2231,6 +2334,11 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	muHeld = true
 	if c.appStopping[appID] {
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
+	}
+	// Host shutdown lists tasks without this mutex, so a start already past
+	// this check can still be missed; the agent sweeps again for it.
+	if c.hostShutdown.Load() {
+		return nil, fmt.Errorf("starting %q: %w", appName, errHostShuttingDown)
 	}
 
 	if restartPolicy != nil {
@@ -2903,12 +3011,46 @@ func validateUserEnv(entries []string) error {
 // DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
 // enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
 // until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
-// uses UDP. ROS_LOCALHOST_ONLY selects loopback for app-scoped discovery; for
-// host-scoped discovery CycloneDDS selects a device interface automatically.
-// No <Interfaces> block is supplied so the same inline config works for both
-// scopes. Re-enabling zero-copy needs an iox-roudi system service on the device
-// first (WDY-884).
+// uses UDP. Scopes app and device use it; ROS_LOCALHOST_ONLY selects loopback.
+// Scopes peripherals and network use cycloneDDSBeyondDeviceConfig instead.
+// Re-enabling zero-copy needs an iox-roudi system service on the device first
+// (WDY-884).
 const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
+
+// cycloneDDSBeyondDeviceConfig is the CycloneDDS configuration for scopes that
+// discover beyond the device (peripherals, network). It also joins the
+// device's loopback, so such an app still reaches the device's own apps.
+// Device-scoped apps (ROS_LOCALHOST_ONLY=1) run CycloneDDS on loopback with
+// multicast off and find each other by unicast to the localhost ports of each
+// participant index. A wider participant only meets them with loopback in its
+// interfaces, a participant index of its own and localhost as a peer. Loopback
+// is marked multicast-capable: otherwise CycloneDDS turns multicast off on
+// every interface and no longer discovers anything beyond the device.
+//
+// interfaces limits discovery to the given peripheral interfaces; with none,
+// CycloneDDS picks the device's interface as it does without a configuration.
+// The names come from rtps.PeripheralInterfaces, which only returns kernel
+// interface names, so they are safe to place in the XML.
+func cycloneDDSBeyondDeviceConfig(interfaces []string) string {
+	var b strings.Builder
+	b.WriteString(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" multicast="true"/>`)
+	for _, name := range interfaces {
+		b.WriteString(`<NetworkInterface name="` + name + `"/>`)
+	}
+	if len(interfaces) == 0 {
+		b.WriteString(`<NetworkInterface autodetermine="true"/>`)
+	}
+	b.WriteString(`</Interfaces></General>`)
+	b.WriteString(`<Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery>`)
+	b.WriteString(`<SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`)
+	return b.String()
+}
+
+// ros2PeripheralInterfaces finds the device's peripheral interfaces; tests
+// replace it.
+var ros2PeripheralInterfaces = func() ([]string, error) {
+	return rtps.PeripheralInterfaces()
+}
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
@@ -2932,11 +3074,21 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 			"the container without ROS_DOMAIN_ID isolation (it would default to domain 0)",
 			appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
 	}
-	discoveryScope := ros2.ResolvedDiscoveryScope()
-	if discoveryScope == "" {
-		return nil, fmt.Errorf("frameworks.ros2.discoveryScope %q is not %q or %q; refusing to "+
-			"start the container with an undefined DDS discovery scope",
-			ros2.DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
+	scope := ros2.ResolvedScope()
+	if scope == "" {
+		return nil, fmt.Errorf("frameworks.ros2 scope %q / discoveryScope %q is not valid; refusing to "+
+			"start the container with an undefined DDS discovery scope", ros2.Scope, ros2.DiscoveryScope)
+	}
+	// Peripherals without any peripheral interface is exactly device scope.
+	var peripherals []string
+	if scope == appconfig.ROS2ScopePeripherals {
+		var err error
+		if peripherals, err = ros2PeripheralInterfaces(); err != nil {
+			return nil, fmt.Errorf("finding peripheral interfaces for frameworks.ros2 scope %q: %w", scope, err)
+		}
+		if len(peripherals) == 0 {
+			scope = appconfig.ROS2ScopeDevice
+		}
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
@@ -2945,11 +3097,17 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 	if rmw := ros2.ResolvedRMW(); rmw != "" {
 		env = append(env, "RMW_IMPLEMENTATION="+rmw)
 		if rmw == appconfig.ROS2DefaultRMW {
-			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
+			if scope == appconfig.ROS2ScopePeripherals || scope == appconfig.ROS2ScopeNetwork {
+				env = append(env, "CYCLONEDDS_URI="+cycloneDDSBeyondDeviceConfig(peripherals))
+			} else {
+				env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
+			}
 		}
 	}
-	// Services are app-local by default. Host-scoped tools such as Foxglove
-	// explicitly opt in to discovering ROS 2 participants on the device network.
+	// Scopes app and device discover over loopback only; app is kept to itself
+	// by its own domain (ResolvedDomainID). Peripherals discovers beyond the
+	// device, but CycloneDDS is limited to loopback and the peripheral
+	// interfaces above. Network discovers on loopback and the device's network.
 	//
 	// Both variables are set, not just ROS_LOCALHOST_ONLY. That one has been
 	// deprecated since Iron in favour of ROS_AUTOMATIC_DISCOVERY_RANGE, and
@@ -2957,7 +3115,7 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 	// claim to support, the sole mechanism enforcing app-local isolation was at
 	// best deprecated. For an app carrying `network: host` it is the only thing
 	// between that app and every other DDS participant on the device.
-	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
+	if scope == appconfig.ROS2ScopeNetwork || scope == appconfig.ROS2ScopePeripherals {
 		env = append(env, "ROS_LOCALHOST_ONLY=0", "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET")
 	} else {
 		env = append(env, "ROS_LOCALHOST_ONLY=1", "ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")
@@ -3709,11 +3867,15 @@ func (c *Client) streamOutput(
 		)
 		// Persist why this run ended so a stopped/crashed container can explain
 		// itself later (the task and this live stream are about to disappear).
+		// Not when the host is powering off: StopTasksForHostShutdown ended the
+		// run, and its 137 or 143 would show the app as crashed after the reboot.
 		// Detached context: the RPC ctx may be torn down the instant we return.
-		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		reason := classifyExit(code, taskOOMKilled(recCtx, task))
-		c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
-		cancel()
+		if !c.hostShutdown.Load() {
+			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reason := classifyExit(code, taskOOMKilled(recCtx, task))
+			c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
+			cancel()
+		}
 	}
 
 	if taskExited {
@@ -4049,6 +4211,19 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	}
 	c.appStopping[appID] = true
 	c.mu.Unlock()
+	// The cleanup section at the end clears appStopping. If a panic skips it
+	// (the gRPC interceptor recovers it), clear it here, or every later stop and
+	// delete of this app is refused until the agent restarts (WDY-3835). Only
+	// on that path: a late delete after normal cleanup could wipe the flag of a
+	// concurrent stop that has since claimed the app.
+	appStoppingCleared := false
+	defer func() {
+		if !appStoppingCleared {
+			c.mu.Lock()
+			delete(c.appStopping, appID)
+			c.mu.Unlock()
+		}
+	}()
 
 	// A whole-app operation is keyed by bare appID, while service starts and
 	// creates are keyed by concrete container ID. Hold every member key for the
@@ -4121,6 +4296,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 		delete(c.serviceIPs, appID)
 	}
 	delete(c.appStopping, appID)
+	appStoppingCleared = true
 	c.mu.Unlock()
 
 	return errors.Join(errs...)

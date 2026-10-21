@@ -299,10 +299,13 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 	}
 	cloudAuth := devicePickerInitialAuth(cfg)
 	var createReq *errCreateSimulator
+	var startReq *errStartSimulator
 	// Resume the tab that opened the login, organization, or simulator prompt.
 	openOn := devicePickerLocalTab
+	var flash simulatorFlash
 	for {
-		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth), openOn)
+		err := discoverContinuousWithCloudAuth(ctx, opts, includeLocal, cloudAuth, defaultOrgForCloudAuth(cfg, cloudAuth), openOn, flash)
+		flash = simulatorFlash{}
 		switch {
 		case errors.Is(err, errDevicePickerLogin):
 			openOn = devicePickerCloudTab
@@ -328,6 +331,18 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 				return createErr
 			}
 			openOn = devicePickerSimulatorTab
+		case errors.As(err, &startReq):
+			// Same hand-off as create: the boot, the agent wait and the first
+			// robot build draw their own progress with the TUI gone, then the
+			// view comes back on the tab with the outcome on its status line.
+			name := startReq.name
+			startReq = nil
+			openOn = devicePickerSimulatorTab
+			flash = simulatorStartOutcome(name, startSimulatorFn(ctx, name))
+			if ctx.Err() != nil {
+				// Ctrl+C outside any TUI cancels the command, not just the start.
+				return ErrUserCancelled
+			}
 		case errors.Is(err, errDevicePickerSwitchOrg):
 			openOn = devicePickerCloudTab
 			cfg, err = config.Load()
@@ -362,13 +377,13 @@ func defaultOrgForCloudAuth(cfg *config.Config, auth *config.AuthConfig) int32 {
 	return 0
 }
 
-func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool, cloudAuth *config.AuthConfig, defaultOrg int32, openOn devicePickerTab) error {
+func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool, cloudAuth *config.AuthConfig, defaultOrg int32, openOn devicePickerTab, flash simulatorFlash) error {
 	opts.Timeout = 3 * time.Second // per-scan timeout
 	discoverCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	local := newDiscoverModel(discoverCtx, opts, includeLocal)
-	m := newDiscoverTabsModel(discoverCtx, local, cloudAuth, defaultOrg, openOn)
+	m := newDiscoverTabsModel(discoverCtx, local, cloudAuth, defaultOrg, openOn).withSimulatorFlash(flash)
 	// Alt screen: the table grows to fill the window, and the alternate
 	// buffer restores the user's terminal content when the TUI exits.
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -387,6 +402,8 @@ func discoverContinuousWithCloudAuth(ctx context.Context, opts discovery.Discove
 		return errDevicePickerSwitchOrg
 	case devicePickerCreateVM:
 		return &errCreateSimulator{name: dm.createVMName}
+	case devicePickerStartVM:
+		return &errStartSimulator{name: dm.startVMName}
 	}
 	return nil
 }
@@ -483,13 +500,14 @@ func waitExternalSnapshot(p providers.DeviceProvider, ch <-chan []models.Externa
 
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
 type discoverDeviceInfo struct {
-	ID          int32  `json:"id,omitempty"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	USB         string `json:"usb,omitempty"`
-	Address     string `json:"address"`
-	Version     string `json:"version,omitempty"`
-	Provisioned string `json:"provisioned,omitempty"`
+	ProbeFailure *models.ProbeFailure `json:"probeFailure,omitempty"`
+	ID           int32                `json:"id,omitempty"`
+	Name         string               `json:"name"`
+	Type         string               `json:"type"`
+	USB          string               `json:"usb,omitempty"`
+	Address      string               `json:"address"`
+	Version      string               `json:"version,omitempty"`
+	Provisioned  string               `json:"provisioned,omitempty"`
 }
 
 type discoverTableItem struct {
@@ -764,20 +782,21 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) > 0 && cursor >= 0 && cursor < len(items) {
-				deviceID := items[cursor].defaultDevice
-				_ = saveDefaultDevice(deviceID)
-				m.flashMessage = "Default device set to: " + deviceID
+				// A toggle, as on the Simulator and Cloud tabs: 'd' on the
+				// row the ✦ is already on clears it.
+				if discoverItemIsDefault(items[cursor], discoverDefaultKey()) {
+					_ = saveDefaultDevice("")
+					m.flashMessage = "Default device cleared."
+				} else {
+					deviceID := items[cursor].defaultDevice
+					_ = saveDefaultDevice(deviceID)
+					m.flashMessage = "Default device set to: " + deviceID
+				}
 				m.flashIsError = false
 				m.refreshTable()
 				return m, clearFlashAfter(3 * time.Second)
 			}
 			return m, nil
-		case "x":
-			_ = saveDefaultDevice("")
-			m.flashMessage = "Default device cleared."
-			m.flashIsError = false
-			m.refreshTable()
-			return m, clearFlashAfter(3 * time.Second)
 		}
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
@@ -931,6 +950,11 @@ func (m discoverModel) View() string {
 		return ""
 	}
 
+	hint := ""
+	if selected := m.selectedHint(); selected != "" {
+		hint = tui.WrapHint("  ⚠  "+selected, m.windowWidth)
+	}
+
 	var sb strings.Builder
 
 	sb.WriteString(m.viewLine(scanStyle.Render("⟳ Scanning for WendyOS devices...")) + "\n")
@@ -943,7 +967,7 @@ func (m discoverModel) View() string {
 		if m.canScrollTable() {
 			scrollHint = ", ←/→ scroll"
 		}
-		sb.WriteString(m.viewLine(dimStyle.Render("  ↑/↓ navigate"+scrollHint+", enter copy, a copy all, u update, d set default, x unset default, q quit")) + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("  ↑/↓ navigate"+scrollHint+", enter copy, a copy all, u update, d toggle default, q quit")) + "\n")
 	}
 
 	if warning := m.bleWarningLine(); warning != "" {
@@ -959,8 +983,8 @@ func (m discoverModel) View() string {
 	if !m.collection.IsEmpty() {
 		sb.WriteString(tui.ColorizeProbeGlyphs(m.tableView()) + "\n")
 		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend(discoverPickerItems(m.tableItems)))) + "\n")
-		if hint := m.selectedHint(); hint != "" {
-			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
+		if hint != "" {
+			sb.WriteString(hintWarnStyle.Render(hint) + "\n")
 		}
 	} else if m.hasResults {
 		sb.WriteString(m.viewLine(dimStyle.Render("No devices found yet...")) + "\n")
@@ -1092,7 +1116,7 @@ func (m *discoverModel) refreshTable() {
 		m.tableItems[i].picker.Probe = st
 		if st == tui.ProbePending {
 			m.tableItems[i].picker.ProbeFrame = frame
-			// Still connecting: don't show the no-access hint yet.
+			// Still connecting: don't show the probe-failure hint yet.
 			m.tableItems[i].picker.Hint = ""
 		}
 	}
@@ -1104,11 +1128,15 @@ func (m *discoverModel) refreshTable() {
 		m.table.SetCursor(0)
 	}
 	m.table.SetWidth(tui.PickerTableWidth(m.table.Columns()))
-	m.table.SetHeight(tui.PickerTableHeight(len(rows), m.windowHeight))
+	height := m.windowHeight
+	if height > 0 {
+		height = max(1, height-tui.PickerHintHeight(pickerItems, m.windowWidth, "  ⚠  "))
+	}
+	m.table.SetHeight(tui.PickerTableHeight(len(rows), height))
 }
 
 // selectedHint returns the hint for the highlighted table row, e.g. the
-// no-access explanation for a provisioned device this CLI cannot query.
+// probe failure and suggested recovery steps.
 func (m discoverModel) selectedHint() string {
 	cursor := m.table.Cursor()
 	if cursor < 0 || cursor >= len(m.tableItems) {
@@ -1220,7 +1248,13 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 	t.SetWidth(tui.PickerTableWidth(t.Columns()))
 	t.SetHeight(max(len(rows)+1, 1))
 
-	return t.View() + "\n" + dimStyle.Render("  "+tui.DeviceTableLegend(pickerItems)) + "\n"
+	result := t.View() + "\n" + dimStyle.Render("  "+tui.DeviceTableLegend(pickerItems)) + "\n"
+	for _, item := range items {
+		if item.picker.Hint != "" {
+			result += "\n" + item.picker.Name + ": " + item.picker.Hint + "\n"
+		}
+	}
+	return result
 }
 
 func newDiscoverTable(interactive bool) tui.BubbleTable {
@@ -1300,11 +1334,6 @@ func humanReadableArch(arch string) string {
 	}
 }
 
-// discoverNoAccessHint explains a blank version column on a provisioned
-// device: the metadata probe failed because this CLI has no certificate the
-// device accepts (unprovisioned CLI, or logged into a different account).
-const discoverNoAccessHint = "This device is provisioned and this CLI does not have access, so agent details cannot be read. Run 'wendy auth login' with an account that can access it."
-
 // lanProvisionedDisplay maps a LAN device's advertised mTLS state to the
 // "Provisioned" column value. Non-LAN devices don't advertise this, so nil
 // returns "".
@@ -1316,16 +1345,6 @@ func lanProvisionedDisplay(lan *models.LANDevice) string {
 		return "Provisioned"
 	}
 	return "Unprovisioned"
-}
-
-// lanNoAccessHint returns discoverNoAccessHint when the device advertises
-// mTLS (provisioned) but the agent metadata probe came back empty — the
-// signature of a CLI that cannot authenticate to it.
-func lanNoAccessHint(lan *models.LANDevice, agentVersion string) string {
-	if lan != nil && lan.IsMTLS && agentVersion == "" {
-		return discoverNoAccessHint
-	}
-	return ""
 }
 
 // agentBehindCLI reports whether agentVer is an older release than cliVer and
@@ -1528,6 +1547,14 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 			defaultDevice = firstNonEmpty(d.LAN.Hostname, d.LAN.IPAddress, d.LAN.DisplayName)
 		}
 		provisioned := lanProvisionedDisplay(d.LAN)
+		var failure *models.ProbeFailure
+		probe := tui.ProbeNone
+		if d.LAN != nil {
+			failure = d.LAN.ProbeFailure
+		}
+		if failure != nil {
+			probe = tui.ProbeFailed
+		}
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
 				Name:          discovery.SanitiseDisplayName(d.DisplayName),
@@ -1539,17 +1566,19 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				OS:            d.OS,
 				OSVersion:     d.OSVersion,
 				Provisioned:   provisioned,
-				Hint:          lanNoAccessHint(d.LAN, d.AgentVersion),
+				Hint:          lanProbeHint(d.LAN),
+				Probe:         probe,
 				DedupKey:      d.DisplayName,
 				SortKey:       deviceSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
-				Name:        d.DisplayName,
-				Type:        deviceType,
-				USB:         usb,
-				Address:     address,
-				Version:     d.AgentVersion,
-				Provisioned: provisioned,
+				Name:         d.DisplayName,
+				Type:         deviceType,
+				USB:          usb,
+				Address:      address,
+				Version:      d.AgentVersion,
+				Provisioned:  provisioned,
+				ProbeFailure: failure,
 			},
 			lanName:       lanName,
 			lanKey:        lanKey,
@@ -1622,13 +1651,23 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 func discoverPickerItems(items []discoverTableItem) []tui.PickerItem {
 	pickerItems := make([]tui.PickerItem, 0, len(items))
 	for _, item := range items {
-		pickerItem := item.picker
-		if item.defaultDevice != "" {
-			pickerItem.DefaultKeys = append(pickerItem.DefaultKeys, item.defaultDevice)
-		}
-		pickerItems = append(pickerItems, pickerItem)
+		pickerItems = append(pickerItems, discoverPickerItem(item))
 	}
 	return pickerItems
+}
+
+func discoverPickerItem(item discoverTableItem) tui.PickerItem {
+	pickerItem := item.picker
+	if item.defaultDevice != "" {
+		pickerItem.DefaultKeys = append(pickerItem.DefaultKeys, item.defaultDevice)
+	}
+	return pickerItem
+}
+
+// discoverItemIsDefault reports whether item is the row the ✦ marks, matching
+// it the same way the table does.
+func discoverItemIsDefault(item discoverTableItem, defaultKey string) bool {
+	return tui.PickerItemIsDefault(discoverPickerItem(item), defaultKey)
 }
 
 func discoverSortKey(item tui.PickerItem) string {
@@ -1835,3 +1874,9 @@ func copyToClipboard(text string) error {
 type errCreateSimulator struct{ name string }
 
 func (e *errCreateSimulator) Error() string { return "create simulator " + e.name }
+
+// errStartSimulator asks the discover loop to start a VM and come back, for the
+// same reason as errCreateSimulator: the boot owns the terminal while it runs.
+type errStartSimulator struct{ name string }
+
+func (e *errStartSimulator) Error() string { return "start simulator " + e.name }

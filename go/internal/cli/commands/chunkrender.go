@@ -53,13 +53,18 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 		if detachedJSONRun(ctx) {
 			out = os.Stderr
 		}
-		stop := startChunkPushHeartbeat(prog, out, chunkPushPlainHeartbeatInterval)
+		if isRobotTour(ctx) {
+			fmt.Fprintln(out, "Preparing your robot app...")
+		}
+		stop := startChunkPushHeartbeatForTour(prog, out, chunkPushPlainHeartbeatInterval, isRobotTour(ctx))
 		headers, err := pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, nil, false, prog, cfg)
 		stop()
 		if err != nil {
 			return nil, err
 		}
-		cliLogln("%s", prog.Snapshot().Summary())
+		if !isRobotTour(ctx) {
+			cliLogln("%s", prog.Snapshot().Summary())
+		}
 		return headers, nil
 	}
 
@@ -70,7 +75,15 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 	pushCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	tp := tui.NewProgressProgram(tui.NewProgress("Sending changed layers to device...").WithoutErrorView())
+	title := "Sending changed layers to device..."
+	if isRobotTour(ctx) {
+		title = "Preparing your robot app..."
+	}
+	bar := tui.NewProgress(title).WithoutErrorView()
+	if progressHintsOff(ctx) {
+		bar = bar.WithoutHints()
+	}
+	tp := tui.NewProgressProgram(bar)
 
 	var (
 		headers []*agentpb.RunContainerLayerHeader
@@ -92,7 +105,12 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 			case <-done:
 				return
 			case <-ticker.C:
-				tp.Send(chunkPushUpdateMsg(prog.Snapshot()))
+				snap := prog.Snapshot()
+				msg := chunkPushUpdateMsg(snap)
+				if isRobotTour(ctx) {
+					msg = tourChunkPushUpdateMsg(snap)
+				}
+				tp.Send(msg)
 			}
 		}
 	}()
@@ -113,7 +131,9 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 	if pushErr != nil {
 		return nil, pushErr
 	}
-	cliLogln("%s", prog.Snapshot().Summary())
+	if !isRobotTour(ctx) {
+		cliLogln("%s", prog.Snapshot().Summary())
+	}
 	return headers, nil
 }
 
@@ -133,6 +153,10 @@ func pushLayersWithProgress(ctx context.Context, cs agentpb.WendyContainerServic
 // stop is then an immediate no-op), matching newBuildPlainRenderer's
 // heartbeat<=0 case.
 func startChunkPushHeartbeat(prog *chunkPushProgress, w io.Writer, interval time.Duration) (stop func()) {
+	return startChunkPushHeartbeatForTour(prog, w, interval, false)
+}
+
+func startChunkPushHeartbeatForTour(prog *chunkPushProgress, w io.Writer, interval time.Duration, tour bool) (stop func()) {
 	done := make(chan struct{})
 	var stopOnce sync.Once
 
@@ -151,7 +175,16 @@ func startChunkPushHeartbeat(prog *chunkPushProgress, w io.Writer, interval time
 				return
 			case <-ticker.C:
 				snap := prog.Snapshot()
-				fmt.Fprintf(w, "  ...     %s  %s  (%s)\n", snap.Activity(), snap.Line(), formatChunkPushElapsed(snap.Elapsed))
+				if tour {
+					msg := tourChunkPushUpdateMsg(snap)
+					detail := ""
+					if !snap.Preparing && !snap.Prepared {
+						detail = snap.Bytes().String()
+					}
+					fmt.Fprintf(w, "  %s %s (%s)\n", msg.Title, detail, formatChunkPushElapsed(snap.Elapsed))
+				} else {
+					fmt.Fprintf(w, "  ...     %s  %s  (%s)\n", snap.Activity(), snap.Line(), formatChunkPushElapsed(snap.Elapsed))
+				}
 			}
 		}
 	}()
@@ -160,6 +193,19 @@ func startChunkPushHeartbeat(prog *chunkPushProgress, w io.Writer, interval time
 		stopOnce.Do(func() { close(done) })
 		<-stopped
 	}
+}
+
+func tourChunkPushUpdateMsg(s chunkPushSnapshot) tui.ProgressUpdateMsg {
+	msg := chunkPushUpdateMsg(s)
+	msg.Detail = ""
+	msg.Title = "Preparing your robot app..."
+	if s.Preparing || s.Prepared {
+		msg.Title = "Starting your robot app..."
+	} else if s.PlannedBytes > 0 {
+		msg.Title = "Transferring your robot app..."
+		msg.Written, msg.Total = s.SentBytes, s.PlannedBytes
+	}
+	return msg
 }
 
 // chunkPushUpdateMsg renders a chunkPushSnapshot as a tui.ProgressUpdateMsg

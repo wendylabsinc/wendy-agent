@@ -81,14 +81,46 @@ func TestDeviceCloudMTLSChainAndHostname(t *testing.T) {
 				}
 				select {
 				case count := <-presented:
-					if count != 2 {
-						t.Fatalf("presented %d certificates, want complete leaf+CA chain", count)
+					// TLSKeyPair omits a proven self-signed root: this server already
+					// trusts it locally. The successful required-mTLS RPC proves the
+					// normalized leaf authenticates; required intermediates have a
+					// separate wire-retention regression in localmesh.
+					if count != 1 {
+						t.Fatalf("presented %d certificates, want normalized leaf without self-signed root", count)
 					}
 				case <-ctx.Done():
 					t.Fatal(ctx.Err())
 				}
 			} else if e == nil {
 				t.Fatal("accepted Cloud certificate for wrong hostname")
+			}
+		})
+	}
+}
+
+func TestLiteBrokerHost(t *testing.T) {
+	for _, tc := range []struct{ cloud, want string }{
+		{"api.wendy.sh", "tunnel.wendy.dev"},
+		{"api.wendy.dev", "tunnel.wendy.dev"},
+		{"api.dev.wendy.sh", "tunnel.dev.wendy.dev"},
+		{"api.dev.wendy.dev", "tunnel.dev.wendy.dev"},
+		{"cloud.example", "cloud.example"},
+		{"localhost", "localhost"},
+		{"devices.wendy.dev", "devices.wendy.dev"},
+	} {
+		for _, cloud := range []string{tc.cloud, tc.cloud + ":9443", "https://" + tc.cloud, "https://" + tc.cloud + ":9443/"} {
+			t.Run(cloud, func(t *testing.T) {
+				got, err := LiteBrokerHost(cloud)
+				if err != nil || got != tc.want {
+					t.Fatalf("LiteBrokerHost(%q) = %q, %v; want %q", cloud, got, err, tc.want)
+				}
+			})
+		}
+	}
+	for _, cloud := range []string{"", "http://cloud.example", "https://user:pass@cloud.example", "https://cloud.example/path", "https://cloud.example?query=1", "https://cloud.example#fragment", "cloud example"} {
+		t.Run("invalid/"+cloud, func(t *testing.T) {
+			if _, err := LiteBrokerHost(cloud); err == nil {
+				t.Fatalf("accepted invalid Cloud endpoint %q", cloud)
 			}
 		})
 	}

@@ -34,6 +34,7 @@ import (
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
 	agentdata "github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	"github.com/wendylabsinc/wendy/go/internal/agent/framesource"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostexec"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
@@ -44,8 +45,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/networkaccess"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
+	"github.com/wendylabsinc/wendy/go/internal/agent/robotarm"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
@@ -56,6 +59,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unitree"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -145,6 +149,12 @@ func main() {
 	if envPath := os.Getenv("WENDY_CONFIG_PATH"); envPath != "" {
 		configPath = envPath
 	}
+	accessPolicy, err := networkaccess.Load(configPath)
+	if err != nil {
+		logger.Fatal("Invalid network access configuration", zap.Error(err))
+	}
+	logger.Info("Agent network access", zap.Bool("allowed", accessPolicy.AllowsNetwork))
+	configpartition.ApplyDiscoveryAccess(logger, accessPolicy)
 
 	configpartition.Apply(logger, configPath)
 
@@ -288,7 +298,7 @@ func main() {
 	shellSvc := services.NewShellService(logger, hostexec.New())
 	audioSvc := services.NewAudioService(logger)
 
-	provisioningSvc := services.NewProvisioningService(logger, configPath)
+	provisioningSvc := services.NewProvisioningService(logger, configPath, timesyncMgr)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
@@ -338,7 +348,9 @@ func main() {
 	otelMetricReceiver := services.NewOTELMetricsReceiver(telemetryBuf)
 	otelTraceReceiver := services.NewOTELTraceReceiver(telemetryBuf)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Optional startup work can block after resource-owning workers begin.
+	// Handle termination now so those workers can drain during startup too.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Keep the chunk store bounded (WDY-3212, WDY-3217). This retires the
@@ -376,10 +388,22 @@ func main() {
 	}
 
 	go timesyncMgr.RunDirect(ctx)
-	go timesyncMgr.RunMulticast(ctx)
+	if accessPolicy.AllowsNetwork {
+		go timesyncMgr.RunMulticast(ctx)
+	}
 
 	startROS2BatteryMonitor(ctx, logger, configPath, discoveryPool)
 
+	// Calibrated frames are the other thing this device can publish from a
+	// camera: colour plus depth aligned to it, with the scale and intrinsics
+	// that make both measurable. It is a separate service, not a mode of
+	// StreamVideo, because a measurement is not a picture. The RealSense
+	// source is native — calibration over UVC controls, Z16 via the agent's
+	// own capture loop, colour borrowed from the shared camera hub — so there
+	// is nothing to install beyond this binary.
+	calibratedFrameSvc := services.NewCalibratedFrameService(ctx, logger,
+		framesource.NewRegistry(services.NewRealSenseProvider(logger, videoSvc, "")))
+	defer calibratedFrameSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
 	videoSvc.StartDiscovery()
@@ -419,6 +443,7 @@ func main() {
 		}
 		return certPEM, chainPEM, keyPEM
 	}
+	robotArmSvc := services.NewRobotArmService(robotarm.NewStore("/var/lib/wendy/robot-arm-bindings.json"), robotarm.Discover)
 	sensorStore := mcusource.NewPairingStore("/var/lib/wendy/sensor-pairings.json")
 	if err := sensorStore.Load(); err != nil {
 		logger.Warn("loading sensor pairing store failed", zap.Error(err))
@@ -442,13 +467,35 @@ func main() {
 	// Let `wendy device audio list` name mounted Loopback capture subdevices
 	// after the remote source they carry, instead of a generic "plughw:2,1".
 	audioSvc.SetSensorLinkNaming(audioLoop.Mounts, sensorStore.NameFor)
-	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, ros2camera.NewFrameWriter, audioLoop)
+	audioSvc.SetSensorLinkPrincipalNaming(sensorStore.NameForKey)
+	// The camera hub takes SensorLink frames from this feed instead of reading
+	// them back from their v4l2loopback node, which serves one reader at a time
+	// and so would lock out any app that opens the camera directly.
+	sensorFrames := services.NewSensorFrameFeed()
+	videoSvc.SetSensorFrameFeed(sensorFrames)
+	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, sensorFrames.WrapWriters(ros2camera.NewFrameWriter), audioLoop)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
-	sensorAgentOrgID := func() int32 {
-		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
-		return orgID
+	sensorAgentScope := func() certs.Scope {
+		certPEM, _, _ := mcuIdentity()
+		scope, _ := certs.ScopeFromCertPEM(certPEM)
+		_, scope.OrgID, _, _ = provisioningSvc.ProvisioningInfo()
+		return scope
 	}
-	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentOrgID, sensorRunner.Start, sensorRunner.Stop, sensorSup.IsConnected)
+	sensorSvc := services.NewSensorPairingService(logger, sensorStore, sensorAgentScope, sensorRunner.Start, sensorRunner.StopPairing, sensorSup.IsPairingConnected)
+	// `device pair` lists sources from this device's network, so this device
+	// must not offer itself. Its asset ID is read per request because
+	// enrollment can assign one while the agent runs.
+	sensorSvc.SetSourceDiscovery(nil, func() services.SensorSourceSelf {
+		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		return services.LocalSensorSourceSelf(assetID)
+	})
+	_, _, _, unitreeEnrolled := provisioningSvc.ProvisioningInfo()
+	unitreeSvc := services.NewUnitreeService(ctx, filepath.Join(configPath, "unitree-pairings.json"), unitreePairingOwner(deviceScope(provisioningSvc), unitreeEnrolled))
+	defer unitreeSvc.Close()
+	unitreeRobotSvc := services.NewUnitreeRobotService(unitreeSvc)
+	if err := unitreeSvc.Restore(); err != nil {
+		logger.Warn("loading Unitree pairings failed", zap.Error(err))
+	}
 	// Boot-resume: every previously paired source reconnects on its own —
 	// addr == "" tells the runner to resolve the source's current LAN address
 	// by asset id rather than trusting a possibly-stale one from disk.
@@ -487,9 +534,10 @@ func main() {
 			registrySrv = nil
 		}
 
-		registryAddr := "0.0.0.0:5000"
-		if addr := os.Getenv("WENDY_REGISTRY_ADDR"); addr != "" {
-			registryAddr = addr
+		registryAddr, err := accessPolicy.RegistryAddress(os.Getenv("WENDY_REGISTRY_ADDR"))
+		if err != nil {
+			logger.Error("Invalid registry address", zap.Error(err))
+			return
 		}
 
 		srv, err := registry.Start(ctx, containerdAddr, registryAddr, logger, tlsConfig)
@@ -605,6 +653,9 @@ func main() {
 	// ProvisioningInfo() is called inside the goroutine to avoid re-entering the
 	// provisioning mutex when called from the OnProvisioned callback.
 	startTunnelBroker := func() {
+		if !accessPolicy.AllowsNetwork {
+			return
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -720,6 +771,8 @@ func main() {
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		agentpbv2.RegisterWendySensorPairingServiceServer(srv, sensorSvc)
+		agentpbv2.RegisterWendyCalibratedFrameServiceServer(srv, calibratedFrameSvc)
+		agentpbv2.RegisterWendyRobotArmServiceServer(srv, robotArmSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
@@ -777,6 +830,11 @@ func main() {
 
 		// Register all services on the mTLS server.
 		registerAllServices(srv)
+		// Robot pairing transfers keys and initiates LAN connections. Keep the
+		// service off the plaintext provisioning listener, even though its
+		// handlers also reject unauthenticated transports.
+		agentpbv2.RegisterWendyUnitreeServiceServer(srv, unitreeSvc)
+		agentpbv2.RegisterWendyUnitreeRobotServiceServer(srv, unitreeRobotSvc)
 
 		// WendyShellService opens an interactive *host* root shell. It is
 		// deliberately registered ONLY here, on the mTLS server, so it is
@@ -811,7 +869,7 @@ func main() {
 		}
 		mtlsPort := strconv.Itoa(portNum + 1)
 
-		lis, err := net.Listen("tcp", "[::]:"+mtlsPort)
+		lis, err := listenForAccess(accessPolicy, mtlsPort)
 		if err != nil {
 			logger.Error("Failed to listen on mTLS port", zap.String("port", mtlsPort), zap.Error(err))
 			return
@@ -831,6 +889,9 @@ func main() {
 
 	// Only called after provisioning so the cert is available.
 	startBLEPeripheral := func(certPEM, chainPEM, keyPEM string) {
+		if !accessPolicy.AllowsNetwork {
+			return
+		}
 		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, logger, certNotBeforeFloor(certPEM))
 		if err != nil {
 			logger.Error("Failed to build BLE TLS config", zap.Error(err))
@@ -867,6 +928,10 @@ func main() {
 	}()
 	meshDialer = services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
 	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
+	// Not scoped by accessPolicy: the nat REDIRECT rewrites container traffic
+	// to the bridge address, which a loopback listener never receives. The
+	// proxy only relays connections whose original destination is a mesh VIP,
+	// so a direct connection from another host is closed without effect.
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
 	}
@@ -901,9 +966,17 @@ func main() {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
 		_, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
+
+	// Advertise the device's Ethernet addresses so hosts can prefer the cable.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.RunWiredAdvertisement(ctx, logger)
+	}()
 
 	// Start the embedded dev container registry (Linux only, best-effort).
 	// If already provisioned, start immediately with HTTPS; otherwise HTTP until provisioned.
@@ -938,10 +1011,16 @@ func main() {
 		)
 		registerAllServices(agentServer)
 
-		agentLis, err := net.Listen("tcp", "[::]:"+agentPort)
+		agentLis, err := listenForAccess(accessPolicy, agentPort)
 		if err != nil {
 			logger.Fatal("Failed to listen on agent port", zap.String("port", agentPort), zap.Error(err))
 		}
+
+		// Avahi's service file survives agent restarts. Reconcile it after
+		// binding the setup listener, including when stored enrollment has
+		// lost its key or certificate. This only changes discovery metadata;
+		// the enrollment record is retained for recovery.
+		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
 
 		wg.Add(1)
 		go func() {
@@ -955,7 +1034,9 @@ func main() {
 
 	// Keep the USB gadget interface reachable at the well-known link-local
 	// address the CLI dials directly (no mDNS/DHCP needed over USB-C).
-	go usbgadget.EnsureWellKnownAddress(ctx, 30*time.Second, logger)
+	if accessPolicy.AllowsNetwork {
+		go usbgadget.EnsureWellKnownAddress(ctx, 30*time.Second, logger)
+	}
 
 	// Local control socket: the agent's full gRPC over a unix socket with NO
 	// mTLS. Access is gated solely by the admin entitlement (oci.applyAdmin
@@ -968,6 +1049,8 @@ func main() {
 			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
 		)
 		registerAllServices(localSocketServer)
+		agentpbv2.RegisterWendyUnitreeServiceServer(localSocketServer, unitreeSvc)
+		agentpbv2.RegisterWendyUnitreeRobotServiceServer(localSocketServer, unitreeRobotSvc)
 
 		// oci.AdminAgentSocketHostPath is the single source of truth for this
 		// path: the admin entitlement bind-mounts its parent directory into
@@ -995,6 +1078,11 @@ func main() {
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
+		// Bind to the callback's authenticated leaf before exposing a new tenant.
+		unitreeScope, _ := certs.ScopeFromCertPEM(certPEM)
+		if err := unitreeSvc.Rebind(unitreePairingOwner(unitreeScope, true)); err != nil {
+			logger.Error("Clearing previous enrollment's Unitree pairings failed", zap.Error(err))
+		}
 		defer func() {
 			for i := range keyData {
 				keyData[i] = 0
@@ -1027,6 +1115,7 @@ func main() {
 				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
 			}
 		}()
+		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
@@ -1042,6 +1131,13 @@ func main() {
 	// plaintext port and exit so systemd restarts the agent into unprovisioned
 	// mode. A clean restart is simpler and more reliable than tearing down the
 	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
+	// Revoke Unitree sessions and keys before Unprovision reports success.
+	// A failed clear is retried when the agent restarts unenrolled.
+	provisioningSvc.BeforeUnprovisioned = func() {
+		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
+			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
+		}
+	}
 	provisioningSvc.OnUnprovisioned = func() {
 		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
 		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
@@ -1160,8 +1256,6 @@ func main() {
 	if v := os.Getenv("WENDY_DATA_INGEST_URL"); v != "" {
 		dataTransferWorker.SetIngestEndpoint(v)
 		logger.Info("data transfer worker: ingest endpoint", zap.String("url", v))
-	} else {
-		logger.Error("data transfer worker: WENDY_DATA_INGEST_URL is not set; episode uploads are disabled")
 	}
 	wg.Add(1)
 	go func() {
@@ -1169,35 +1263,42 @@ func main() {
 		dataTransferWorker.Run(ctx)
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-ctx.Done()
+	logger.Info("Termination requested, shutting down")
+	// Never disarmed: returning from main ends the process, and it also covers
+	// the deferred cleanup that runs after shutdown.run.
+	armShutdownWatchdog(logger, shutdownDeadline, os.Exit)
 
-	sig := <-sigCh
-	logger.Info("Received signal, shutting down", zap.String("signal", sig.String()))
-
-	cancel()
-	_ = meshProxy.Close()
+	shutdown := &agentShutdown{
+		logger: logger,
+		hostShuttingDown: func(ctx context.Context) bool {
+			return hostShuttingDown(ctx, systemctlOutput)
+		},
+		cancel: func() {
+			cancel()
+			_ = meshProxy.Close()
+		},
+		shutdownHTTP: otelHTTPReceiver.Shutdown,
+		background:   &wg,
+	}
+	if ctrdClient != nil {
+		shutdown.stopApps = func(ctx context.Context) (int, error) {
+			return ctrdClient.StopTasksForHostShutdown(ctx, agentcontainerd.HostShutdownGrace)
+		}
+	}
 	if agentServer != nil {
-		agentServer.GracefulStop()
+		shutdown.servers = append(shutdown.servers, namedGRPCServer{"agent", agentServer})
 	}
 	if localSocketServer != nil {
-		localSocketServer.GracefulStop()
+		shutdown.servers = append(shutdown.servers, namedGRPCServer{"local socket", localSocketServer})
 	}
-	otelServer.GracefulStop()
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := otelHTTPReceiver.Shutdown(shutdownCtx); err != nil {
-		logger.Error("OTEL HTTP server shutdown error", zap.Error(err))
-	}
-
+	shutdown.servers = append(shutdown.servers, namedGRPCServer{"OTEL", otelServer})
 	mtlsMu.Lock()
 	if mtlsServer != nil {
-		mtlsServer.GracefulStop()
+		shutdown.servers = append(shutdown.servers, namedGRPCServer{"mTLS", mtlsServer})
 	}
 	mtlsMu.Unlock()
-
-	wg.Wait()
+	shutdown.run()
 
 	logger.Info("wendy-agent stopped")
 }
@@ -1247,6 +1348,15 @@ func deviceScope(provisioningSvc *services.ProvisioningService) certs.Scope {
 	// "unidentified" — the same grace the mTLS interceptor applies.
 	_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 	return certs.Scope{OrgID: orgID}
+}
+
+// unitreePairingOwner keeps locally created pairings separate from enrolled
+// tenants. Unknown enrolled identities fail closed rather than adopt local keys.
+func unitreePairingOwner(scope certs.Scope, enrolled bool) unitree.PairingOwner {
+	if scope.Known() {
+		return unitree.PairingOwner{TenantUUID: scope.TenantUUID, OrgID: scope.OrgID}
+	}
+	return unitree.PairingOwner{Local: !enrolled}
 }
 
 // ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and

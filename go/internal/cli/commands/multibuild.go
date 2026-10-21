@@ -193,6 +193,19 @@ func computeServicePlans(cwd, platform, backend, gpuArch string, serviceEnvs map
 	return plans
 }
 
+// serviceImageRepo is the repository one service's image is built into and
+// deployed from: <app>-<service>, lowercased because a repository name must be.
+//
+// It is one function because the name has to be identical in three places that
+// never compare notes — the local build+push, the remote build's push target,
+// and the reference createService starts the container from. A divergence there
+// is silent: the build succeeds, the image lands under a name nothing reads,
+// and the container comes up on whatever older image still holds the expected
+// one.
+func serviceImageRepo(appID, service string) string {
+	return fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(service))
+}
+
 // serviceFingerprintKey namespaces a deploy fingerprint per service within an
 // app group, so each service's build inputs are tracked independently.
 func serviceFingerprintKey(appID, service string) string {
@@ -440,6 +453,12 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	sfOpts := debugStagefileOptions(opts.debug)
 	serviceEnvs := effectiveServiceEnvs(appCfg, services, opts.env)
 	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, serviceEnvs, services, buildArgs, sfOpts...)
+	// A remote build cannot report the layer identities required to create or
+	// refresh these persistent skip decisions. Do not let a fingerprint from an
+	// earlier local build silently bypass --build-host. Watch-mode preservation
+	// is added below and remains valid because it describes the current watch
+	// session rather than an image identity from a different build path.
+	skip = serviceBuildSkips(opts.buildHost, skip)
 
 	// Build the full per-service create configs before selecting watch work: a
 	// service is unchanged only when both its image inputs and its effective
@@ -487,15 +506,33 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if len(skip) < len(services) {
-		noteEmulatedBuild(platform, false)
+	// With --build-host the builds happen on that device instead and it
+	// delivers each image here; everything from this point on is identical,
+	// because both paths land the same localhost:<port>/<app>-<service>:latest
+	// reference on this device (WDY-3120).
+	var (
+		failed          map[string]error
+		preparedContent map[string][]string
+		buildErr        error
+	)
+	if opts.buildHost != "" {
+		failed, buildErr = buildServicesRemote(ctx, conn, opts.buildHost, cwd, appCfg, services, platform, buildArgs, opts.chunking, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
+		// Cancellation can follow a successful delivery, so invalidate old
+		// local fingerprints even when the remote build returns an error.
+		invalidateRemoteServiceDeployFingerprints(appCfg.AppID, deviceKey, services, skip)
+	} else {
+		if len(skip) < len(services) {
+			noteEmulatedBuild(platform, true)
+		}
+		failed, preparedContent, buildErr = buildServicesParallelWithContent(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, opts.chunking, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
 	}
-	failed, preparedContent, buildErr := buildServicesParallelWithContent(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, opts.chunking, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
 	if buildErr != nil {
 		return buildErr
 	}
 
-	recordServiceDeployFingerprints(appCfg.AppID, appCfg.Version, deviceKey, services, skip, failed, hashes, preparedContent)
+	if opts.buildHost == "" {
+		recordServiceDeployFingerprints(appCfg.AppID, appCfg.Version, deviceKey, services, skip, failed, hashes, preparedContent)
+	}
 
 	// Default (all-or-nothing): any build/push failure aborts the whole group so
 	// no half-deployed group is left behind. --keep-going deploys what built and
@@ -553,23 +590,28 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		appLevelCfg = nil
 	}
 
-	createService := func(name string) error {
-		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
-			strings.ToLower(appCfg.AppID), strings.ToLower(name))
+	serviceCreateRequest := func(name string) (*agentpb.CreateContainerRequest, error) {
+		deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, serviceImageRepo(appCfg.AppID, name))
 
 		serviceCfg := svcCfgs[name]
 		appConfigData, err := json.Marshal(serviceCfg)
 		if err != nil {
-			return fmt.Errorf("marshaling config for service %s: %w", name, err)
+			return nil, fmt.Errorf("marshaling config for service %s: %w", name, err)
 		}
 
-		restartPolicy := resolveRestartPolicy(opts)
-		createReq := &agentpb.CreateContainerRequest{
+		return &agentpb.CreateContainerRequest{
 			ImageName:     deviceImage,
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
-			RestartPolicy: restartPolicy,
+			RestartPolicy: resolveRestartPolicy(opts),
 			Env:           serviceEnvs[name],
+		}, nil
+	}
+
+	createService := func(name string) error {
+		createReq, err := serviceCreateRequest(name)
+		if err != nil {
+			return err
 		}
 
 		cliLogln("Creating container for service %s...", name)
@@ -578,6 +620,10 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		}
 		cliLogln("Service %s container created.", name)
 		return nil
+	}
+
+	if err := validateServicesBeforeReplace(ctx, conn.ContainerService, ordered, serviceCreateRequest); err != nil {
+		return err
 	}
 
 	if opts.deploy {
@@ -620,6 +666,31 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// In --keep-going mode, exit non-zero after deploying the healthy subset so
 	// callers/CI still see that some services failed.
 	return partialErr
+}
+
+// serviceBuildSkips keeps persistent content-verified skips for local builds,
+// but remote builds start from an empty set. buildServicesRemote cannot report
+// the layer identities needed to prove that a previous fingerprint still
+// describes the image now registered on the device.
+func serviceBuildSkips(buildHost string, persistent map[string]bool) map[string]bool {
+	if strings.TrimSpace(buildHost) == "" {
+		return persistent
+	}
+	return map[string]bool{}
+}
+
+// invalidateRemoteServiceDeployFingerprints removes the old locally-verifiable
+// identity after a remote service build is attempted. It runs even when the
+// build reports an error because the remote RPC may have delivered content
+// before failing; retaining the old identity would not fail closed. Services
+// preserved by watch did not invoke the remote build and keep their fingerprint.
+func invalidateRemoteServiceDeployFingerprints(appID, deviceKey string, services map[string]*appconfig.ServiceConfig, skip map[string]bool) {
+	for name := range services {
+		if skip[name] {
+			continue
+		}
+		removeDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey)
+	}
 }
 
 // recordServiceDeployFingerprints persists only successful build/preparations.
@@ -717,6 +788,9 @@ func buildServicesParallelCore(
 	if !quietBuild && isInteractiveTerminal() && !detachedJSONRun(ctx) {
 		title := fmt.Sprintf("Building %d service(s)...", len(names))
 		m := tui.NewMultiSpinner(title, names)
+		if progressHintsOff(ctx) {
+			m = m.WithoutHints()
+		}
 		prog = tui.NewProgressProgram(m)
 	}
 
@@ -758,7 +832,7 @@ func buildServicesParallelCore(
 
 			start := time.Now()
 			contextDir := filepath.Join(cwd, svc.Context)
-			repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+			repo := serviceImageRepo(appID, name)
 			dockerfile, planned := dockerfiles[name]
 			var dockerfileErr error
 			if !planned {
@@ -840,7 +914,8 @@ func buildServicesParallelCore(
 
 	// Collect per-service failures. For failed services, summarize their buffered
 	// output now that the spinner has exited and the terminal is clean, retaining
-	// the full raw log in a temporary file for deeper inspection. The caller
+	// the full raw log in a temporary file for deeper inspection, and name the
+	// failing step and its cause in the service's error. The caller
 	// decides whether any failure aborts the group (default) or only its own
 	// service is dropped (--keep-going, WDY-1691).
 	failed := map[string]error{}
@@ -851,7 +926,7 @@ func buildServicesParallelCore(
 			// "no registry on the Mac agent" error, where retried-push spam would
 			// bury the actionable message.
 			if progressErr == nil && buildCtx.Err() == nil && r.log != "" && !isRegistryUnavailable(r.err) {
-				renderBuildFailure(os.Stderr, r.name, r.log, r.err)
+				failed[r.name] = renderBuildFailure(os.Stderr, r.name, r.log, r.err)
 			}
 		}
 	}
@@ -909,6 +984,12 @@ func buildServicesParallelWithContent(
 	quietBuild bool,
 	sfOpts ...stagefile.Option,
 ) (map[string]error, map[string][]string, error) {
+	// Tag the context so ociLayoutBuildWaitNotice knows quietBuild routes every
+	// worker's logOutput into a failure-only buffer below, regardless of
+	// terminal interactivity (see quietBuildLogKey). Set once here rather than
+	// per worker: buildServicesParallelCore derives buildCtx from this ctx via
+	// context.WithCancel, which preserves values.
+	ctx = contextWithQuietBuildLog(ctx, quietBuild)
 	// Resolved once for the group: every service deploys to this one device,
 	// so they share its GPU architecture.
 	gpuArch := serviceGPUArch(ctx, cwd, services, conn)
@@ -942,7 +1023,7 @@ func buildServicesParallelWithContent(
 		if failed[name] != nil || skip[name] {
 			continue
 		}
-		repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+		repo := serviceImageRepo(appID, name)
 		if ids := content[repo]; len(ids) > 0 {
 			byService[name] = append([]string(nil), ids...)
 		}

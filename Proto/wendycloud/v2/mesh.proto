@@ -17,6 +17,9 @@ service MeshRosterService {
 message GetMeshRosterRequest {}
 
 message MeshRosterEntry {
+  // Retired duplicate device UUID; never reuse its wire number or name.
+  reserved 3;
+  reserved "device_uuid";
   string name = 1;      // device asset name, server-normalized to a DNS label
   string asset_id = 2;
 }

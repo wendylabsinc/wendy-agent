@@ -20,8 +20,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
+	"github.com/wendylabsinc/wendy/go/internal/shared/unenrollproof"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -29,18 +31,32 @@ import (
 // provisioningState is persisted to disk at configPath/provisioning.json.
 // NOTE: KeyPEM is retained only for one-time migration of existing deployments;
 // new writes never populate it — the private key lives exclusively in
-// device-key.pem (mode 0o400) and is never written to provisioning.json.
+// device-key.pem (mode 0o600) and is never written to provisioning.json.
 type provisioningState struct {
-	Enrolled         bool   `json:"enrolled"`
-	CloudHost        string `json:"cloudHost,omitempty"`
-	OrgID            int32  `json:"orgId,omitempty"`
-	AssetID          int32  `json:"assetId,omitempty"`
-	KeyPEM           string `json:"keyPem,omitempty"` // read-only: migration only; never written
-	CertPEM          string `json:"certPem,omitempty"`
-	ChainPEM         string `json:"chainPem,omitempty"`
-	PrincipalURI     string `json:"principalURI,omitempty"`
-	ACMEDirectoryURL string `json:"acmeDirectoryURL,omitempty"`
+	Enrolled         bool               `json:"enrolled"`
+	CloudHost        string             `json:"cloudHost,omitempty"`
+	OrgID            int32              `json:"orgId,omitempty"`
+	AssetID          int32              `json:"assetId,omitempty"`
+	KeyPEM           string             `json:"keyPem,omitempty"` // read-only: migration only; never written
+	CertPEM          string             `json:"certPem,omitempty"`
+	ChainPEM         string             `json:"chainPem,omitempty"`
+	PrincipalURI     string             `json:"principalURI,omitempty"`
+	ACMEDirectoryURL string             `json:"acmeDirectoryURL,omitempty"`
+	Unenrollment     *unenrollmentState `json:"unenrollment,omitempty"`
 }
+
+// Public recovery evidence lives in the existing provisioning state, never
+// alongside it in additional persistent files. Pending survives key cleanup;
+// completed is written only after all credential removals are durable.
+type unenrollmentState struct {
+	Status  string `json:"status"`
+	Receipt []byte `json:"receipt"`
+}
+
+const (
+	unenrollmentPending   = "pending"
+	unenrollmentCompleted = "completed"
+)
 
 type CloudDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
 
@@ -98,32 +114,49 @@ type OnProvisionedFunc func(certPEM, chainPEM string, keyData []byte)
 // restart the agent process. If nil, no post-unprovision action is taken.
 type OnUnprovisionedFunc func()
 
+// BeforeUnprovisionedFunc runs synchronously after enrollment state is cleared
+// and before the RPC reports success, so dependent device-local credentials are
+// revoked first. It cannot fail unprovisioning; implementations log errors.
+type BeforeUnprovisionedFunc func()
+
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
-	logger          *zap.Logger
-	configPath      string
-	mu              sync.Mutex
-	enrolled        bool
-	cloudHost       string
-	orgID           int32
-	assetID         int32
-	keyPEM          []byte // stored as []byte so it can be zeroed on rotation/shutdown
-	certPEM         string
-	chainPEM        string
-	principalURI    string
-	CloudDialer     CloudDialer
-	OnProvisioned   OnProvisionedFunc
-	OnUnprovisioned OnUnprovisionedFunc
+	logger              *zap.Logger
+	configPath          string
+	mu                  sync.Mutex
+	unenrollmentMu      sync.Mutex
+	enrolled            bool
+	resetRecoveryErr    error
+	trustedTime         func(context.Context) (timesync.TimeWindow, error)
+	verifyCloudReset    func(context.Context, []byte, string, string, string, []byte, *x509.Certificate, time.Time, time.Time) ([]byte, error)
+	cloudHost           string
+	orgID               int32
+	assetID             int32
+	keyPEM              []byte // stored as []byte so it can be zeroed on rotation/shutdown
+	certPEM             string
+	chainPEM            string
+	principalURI        string
+	CloudDialer         CloudDialer
+	OnProvisioned       OnProvisionedFunc
+	OnUnprovisioned     OnUnprovisionedFunc
+	BeforeUnprovisioned BeforeUnprovisionedFunc
 }
 
-func NewProvisioningService(logger *zap.Logger, configPath string) *ProvisioningService {
+func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*timesync.Manager) *ProvisioningService {
 	svc := &ProvisioningService{
-		logger:      logger,
-		configPath:  configPath,
-		CloudDialer: DefaultCloudDialer,
+		logger:           logger,
+		configPath:       configPath,
+		CloudDialer:      DefaultCloudDialer,
+		verifyCloudReset: unenrollproof.VerifyCloudReset,
 	}
-	svc.loadState()
+	if len(clock) > 0 && clock[0] != nil {
+		svc.trustedTime = clock[0].FreshTime
+	}
+	svc.resetRecoveryErr = svc.recoverCloudReset()
+	if svc.resetRecoveryErr == nil {
+		svc.loadState()
+	}
 	return svc
 }
 
@@ -159,6 +192,9 @@ func (s *ProvisioningService) IsProvisioned(_ context.Context, _ *agentpb.IsProv
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.resetRecoveryErr != nil {
+		return nil, status.Error(codes.Unavailable, "authorized reset recovery incomplete")
+	}
 	if s.enrolled {
 		return &agentpb.IsProvisionedResponse{
 			Response: &agentpb.IsProvisionedResponse_Provisioned{
@@ -188,6 +224,9 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		}
 	}()
 
+	if s.resetRecoveryErr != nil {
+		return nil, status.Error(codes.FailedPrecondition, "authorized reset recovery must finish before enrollment")
+	}
 	if s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is already provisioned")
 	}
@@ -289,6 +328,9 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 // persistProvisioning runs with mu held. The returned callback must run after
 // releasing mu, and only after the complete state is durable.
 func (s *ProvisioningService) persistProvisioning(state *provisioningState, keyPEM []byte) (func(), error) {
+	if err := WriteDeviceKey(s.configPath, keyPEM); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to save device key: %v", err)
+	}
 	if err := s.saveState(state); err != nil {
 		s.logger.Error("Failed to persist provisioning state", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to save provisioning state: %v", err)
@@ -303,13 +345,6 @@ func (s *ProvisioningService) persistProvisioning(state *provisioningState, keyP
 	s.keyPEM = keyPEM
 	s.certPEM = state.CertPEM
 	s.chainPEM = state.ChainPEM
-
-	// Write individual PEM files so the container registry can mount and use them.
-	// string(keyPEM) creates a temporary copy; filesystem write cannot be avoided.
-	if err := s.writePEMFiles(string(keyPEM), state.CertPEM, state.ChainPEM); err != nil {
-		s.logger.Error("Failed to write PEM files for registry", zap.Error(err))
-		// Non-fatal: provisioning.json is the source of truth.
-	}
 
 	s.logger.Info("Provisioning completed successfully",
 		zap.Int32("org_id", s.orgID),
@@ -338,6 +373,10 @@ func (s *ProvisioningService) persistProvisioning(state *provisioningState, keyP
 // the response is sent so the agent can revert its mDNS advertisement and
 // restart into plaintext mode.
 func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.UnprovisionRequest) (*agentpb.UnprovisionResponse, error) {
+	return s.unprovision("", "")
+}
+
+func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint string) (*agentpb.UnprovisionResponse, error) {
 	s.mu.Lock()
 	locked := true
 	defer func() {
@@ -350,12 +389,27 @@ func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.Unprovis
 		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
 	}
 
+	if s.principalURI != "" {
+		if expectedPrincipal == "" || expectedPrincipal != s.principalURI {
+			return nil, status.Error(codes.FailedPrecondition, "direct PKI reset requires the exact expected principal through v2")
+		}
+		if expectedFingerprint == "" || expectedFingerprint != s.certificateFingerprintLocked() || !s.cloudResetAuthorizedLocked() {
+			return nil, status.Error(codes.FailedPrecondition, "verify Cloud unenrollment and installed-leaf PKI revocation before clearing enrollment keys")
+		}
+	}
+
 	s.logger.Info("Unprovisioning device",
 		zap.Int32("org_id", s.orgID),
 		zap.Int32("asset_id", s.assetID),
 	)
 
-	if err := s.clearStateFiles(); err != nil {
+	var cleanupErr error
+	if s.principalURI != "" {
+		cleanupErr = s.finishCloudReset()
+	} else {
+		cleanupErr = s.clearStateFiles()
+	}
+	if err := cleanupErr; err != nil {
 		s.logger.Error("Failed to delete provisioning state files", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to delete provisioning state: %v", err)
 	}
@@ -375,9 +429,13 @@ func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.Unprovis
 
 	s.logger.Info("Device unprovisioned; agent will restart into unprovisioned mode")
 
-	cb := s.OnUnprovisioned
+	before, cb := s.BeforeUnprovisioned, s.OnUnprovisioned
 	locked = false
 	s.mu.Unlock()
+
+	if before != nil {
+		before()
+	}
 
 	if cb != nil {
 		// Invoke asynchronously after a short delay so the RPC response is
@@ -393,11 +451,19 @@ func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.Unprovis
 }
 
 // clearStateFiles removes all on-disk provisioning artifacts: the state file,
-// the device private key, the mounted PEM files, and the .provisioned marker.
+// the device private key, and legacy certificate copies and enrollment marker.
 // A missing file is not treated as an error.
 func (s *ProvisioningService) clearStateFiles() error {
+	if err := os.Remove(s.statePath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing provisioning state: %w", err)
+	}
+	return s.clearCredentialFiles()
+}
+
+// PKI reset keeps provisioning.json as its durable recovery record while
+// removing the same credentials and markers as the numeric legacy path.
+func (s *ProvisioningService) clearCredentialFiles() error {
 	files := []string{
-		s.statePath(),
 		filepath.Join(s.configPath, "device-key.pem"),
 		filepath.Join(s.configPath, "device.pem"),
 		filepath.Join(s.configPath, "ca.pem"),
@@ -423,7 +489,7 @@ func (s *ProvisioningService) statePath() string {
 }
 
 // loadState loads provisioning state from disk.
-// The private key is always read from device-key.pem (mode 0o400). If that
+// The private key is always read from device-key.pem (mode 0o600). If that
 // file is absent but the legacy provisioning.json contains a KeyPEM entry, the
 // key is migrated to device-key.pem and removed from provisioning.json so that
 // subsequent reads use the dedicated file.
@@ -456,25 +522,32 @@ func (s *ProvisioningService) loadState() {
 			s.keyPEM = keyData
 		} else if state.KeyPEM != "" {
 			s.keyPEM = []byte(state.KeyPEM)
-			if writeErr := os.WriteFile(keyPath, s.keyPEM, 0o400); writeErr == nil {
-				s.logger.Info("Migrated device key from provisioning.json to device-key.pem")
-				// Rewrite provisioning.json without the now-migrated key.
-				toSave := state
-				toSave.KeyPEM = ""
-				if saveData, marshalErr := json.MarshalIndent(toSave, "", "  "); marshalErr == nil {
-					_ = os.WriteFile(s.statePath(), saveData, 0o600)
-				}
-			} else {
-				s.logger.Warn("Failed to migrate device key to device-key.pem", zap.Error(writeErr))
+		} else {
+			if readErr == nil {
+				readErr = fmt.Errorf("device key file is empty")
 			}
+			s.logger.Error("Stored enrollment has no usable private key; authenticated services cannot start",
+				zap.String("path", keyPath), zap.Error(readErr))
+		}
+		if s.certPEM == "" {
+			s.logger.Error("Stored enrollment has no certificate; authenticated services cannot start",
+				zap.String("path", s.statePath()))
 		}
 	}
 
-	// Ensure PEM files exist on disk (may have been lost during OTA update).
-	if s.enrolled && len(s.keyPEM) > 0 && s.certPEM != "" {
-		if err := s.writePEMFiles(string(s.keyPEM), s.certPEM, s.chainPEM); err != nil {
-			s.logger.Warn("Failed to restore PEM files from provisioning state", zap.Error(err))
-		}
+	if !s.enrolled || len(s.keyPEM) == 0 {
+		return
+	}
+	// Preserve correct files and repair permissions without emitting unused
+	// certificate copies. Persist a legacy key before removing it from JSON.
+	if err := WriteDeviceKey(s.configPath, s.keyPEM); err != nil {
+		s.logger.Warn("Failed to persist device key", zap.Error(err))
+		return
+	}
+	// Keep the original JSON bytes on ordinary startup, including formatting
+	// and fields written by a newer agent, while repairing file permissions.
+	if err := WriteProvisioningState(s.configPath, data); err != nil {
+		s.logger.Warn("Failed to repair provisioning state file", zap.Error(err))
 	}
 }
 
@@ -484,6 +557,9 @@ func (s *ProvisioningService) loadState() {
 func (s *ProvisioningService) loadOrGenerateKey() ([]byte, error) {
 	keyPath := filepath.Join(s.configPath, "device-key.pem")
 	if data, err := os.ReadFile(keyPath); err == nil && len(data) > 0 {
+		if err := WriteDeviceKey(s.configPath, data); err != nil {
+			return nil, err
+		}
 		s.logger.Info("Reusing existing device key", zap.String("path", keyPath))
 		return data, nil
 	}
@@ -494,17 +570,12 @@ func (s *ProvisioningService) loadOrGenerateKey() ([]byte, error) {
 	}
 	keyPEM := []byte(keyStr)
 
-	// Persist the key so it's reused on future provisioning.
-	// 0o400: private key must be read-only after creation.
-	if err := os.MkdirAll(s.configPath, 0o700); err == nil {
-		_ = os.WriteFile(keyPath, keyPEM, 0o400)
+	// Do not begin enrollment unless the key has been persisted successfully.
+	if err := WriteDeviceKey(s.configPath, keyPEM); err != nil {
+		return nil, err
 	}
 
 	return keyPEM, nil
-}
-
-func (s *ProvisioningService) writePEMFiles(keyPEM, certPEM, chainPEM string) error {
-	return WritePEMFiles(s.configPath, keyPEM, certPEM, chainPEM)
 }
 
 // saveState writes provisioning state to disk.
@@ -525,5 +596,5 @@ func (s *ProvisioningService) saveState(state *provisioningState) error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
-	return os.WriteFile(s.statePath(), data, 0o600)
+	return WriteProvisioningState(s.configPath, data)
 }

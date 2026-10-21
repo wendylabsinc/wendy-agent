@@ -20,7 +20,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/networkaccess"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
@@ -351,9 +355,19 @@ func applyDeviceName(logger *zap.Logger, name string) error {
 // Use the absolute path: exec.Command resolves binaries from the calling
 // process's PATH, not from cmd.Env, so bare "systemctl" would not be found.
 func restartAvahiDaemon(logger *zap.Logger, env []string) bool {
-	restart := exec.Command("/usr/bin/systemctl", "restart", "avahi-daemon")
+	// Discovery is best-effort: a stuck service manager must not keep the
+	// setup listener from serving or prevent enrollment from completing.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	restart := exec.CommandContext(ctx, "/usr/bin/systemctl", "restart", "avahi-daemon")
 	restart.Env = env
+	// Bound output-pipe cleanup too, in case a child inherits systemctl's
+	// stdout/stderr and survives cancellation of the command itself.
+	restart.WaitDelay = time.Second
 	if out, err := restart.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		logger.Warn("systemctl restart avahi-daemon failed", zap.Error(err), zap.String("output", string(out)))
 		return false
 	}
@@ -363,6 +377,9 @@ func restartAvahiDaemon(logger *zap.Logger, env []string) bool {
 // updateAvahiDeviceName rewrites the name/displayname/fqdn TXT records in the
 // avahi service file and reloads avahi-daemon so mDNS picks up the new name.
 func updateAvahiDeviceName(logger *zap.Logger, name string, env []string) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	const serviceFile = "/etc/avahi/services/wendyos-mdns.service"
 
 	data, err := os.ReadFile(serviceFile)
@@ -410,6 +427,23 @@ func UpdateAvahiForUnprovisioning(logger *zap.Logger, plaintextPort int) {
 	})
 }
 
+// ApplyDiscoveryAccess hides or restores Wendy's avahi advertisements to match
+// the saved network access choice. Best-effort like the other discovery
+// updates: local mode binds only loopback anyway, so a read-only or
+// locked-down /etc is logged rather than stopping the agent.
+func ApplyDiscoveryAccess(logger *zap.Logger, policy networkaccess.Policy) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
+	changed, err := policy.UpdateAdvertisements(defaultAvahiServiceDir)
+	if err != nil {
+		logger.Warn("Could not apply discovery access choice", zap.Error(err))
+	}
+	if changed {
+		restartAvahiDaemon(logger, nil)
+	}
+}
+
 // defaultAvahiServiceDir is the directory scanned for avahi service files on
 // a real device. Tests pass an alternate directory to updateAvahiService.
 const defaultAvahiServiceDir = "/etc/avahi/services"
@@ -426,6 +460,9 @@ const defaultAvahiServiceDir = "/etc/avahi/services"
 // real. Left un-injected it prompts for polkit authorization on a developer
 // machine and blocks the package's tests for the length of that timeout.
 func updateAvahiService(logger *zap.Logger, serviceDir string, port int, tls bool, assetID, orgID int32, restartAvahi func() bool) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	entries, err := os.ReadDir(serviceDir)
 	if err != nil {
 		logger.Warn("Could not read avahi services dir", zap.String("path", serviceDir), zap.Error(err))
@@ -563,6 +600,9 @@ func updateOrgIDTXTRecord(block string, orgID int32) string {
 // independently of provisioning state. Consumer devices in this plan never
 // call it; it exists so the source-role wiring and the picker agree on the key.
 func UpdateAvahiSensorlink(logger *zap.Logger, on bool) {
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+
 	entries, err := os.ReadDir(defaultAvahiServiceDir)
 	if err != nil {
 		logger.Warn("Could not read avahi services dir", zap.String("path", defaultAvahiServiceDir), zap.Error(err))
@@ -706,13 +746,17 @@ func applyPreProvisioning(logger *zap.Logger, cfgDir, configPath string) {
 		return
 	}
 
-	if err := services.WritePEMFiles(configPath, state.KeyPEM, state.CertPEM, state.ChainPEM); err != nil {
-		logger.Error("Failed to write PEM files from config partition",
+	// Flashing is an explicit local reset. Valid first-boot provisioning may
+	// replace prior recovery state; it does not perform Cloud cleanup.
+	if err := services.WriteDeviceKey(configPath, []byte(state.KeyPEM)); err != nil {
+		logger.Error("Failed to write device key from config partition",
 			zap.String("configPath", configPath), zap.Error(err))
 		return
 	}
 
-	if err := os.WriteFile(filepath.Join(configPath, "provisioning.json"), data, 0o600); err != nil {
+	// The private key belongs only in device-key.pem. Commit enrollment after
+	// that file is durable, and preserve identical files if an import is retried.
+	if err := services.WriteProvisioningState(configPath, data); err != nil {
 		logger.Error("Failed to write provisioning.json from config partition", zap.Error(err))
 		return
 	}
@@ -889,4 +933,107 @@ func linkNotReady(err error) bool {
 	var dnsErr *net.DNSError
 	var opErr *net.OpError
 	return errors.As(err, &dnsErr) || errors.As(err, &opErr)
+}
+
+// PersistDeviceUUID writes the enrolled certificate's device UUID to
+// /etc/wendyos/device-uuid and into the _wendyos._udp id= TXT record, so mDNS
+// advertises the same id the certificate proves (WDY-3919). It does not
+// restart avahi: call it before UpdateAvahiForProvisioning, which does. A
+// legacy asset certificate carries no device UUID and leaves both untouched.
+func PersistDeviceUUID(logger *zap.Logger, certPEM string) {
+	if err := persistDeviceUUID("/", defaultAvahiServiceDir, certPEM); err != nil {
+		logger.Warn("Could not persist the device UUID", zap.Error(err))
+	}
+}
+
+func persistDeviceUUID(root, serviceDir, certPEM string) error {
+	chain, err := certs.ParseCertsFromPEM([]byte(certPEM))
+	if err == nil && len(chain) == 0 {
+		err = errors.New("no certificate")
+	}
+	if err != nil {
+		return fmt.Errorf("parsing device certificate: %w", err)
+	}
+	device, err := meshid.DeviceFromCert(chain[0])
+	if err != nil {
+		return nil // legacy asset certificate: no device UUID to persist
+	}
+	id := device.UUID().String()
+	uuidPath := filepath.Join(root, "etc/wendyos/device-uuid")
+	if old, _ := os.ReadFile(uuidPath); strings.TrimSpace(string(old)) != id {
+		// generate-hostname.sh falls back to the device-uuid suffix when the
+		// device has no explicit hostname or device-name; pin the name it
+		// answers by now so the new UUID does not rename it at the next boot.
+		if err := pinCurrentHostname(root); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(uuidPath), 0o755); err != nil {
+			return err
+		}
+		if err := writeDeviceIdentityFile(uuidPath, []byte(id+"\n")); err != nil {
+			return err
+		}
+	}
+
+	unlock := services.LockAvahiServiceFile()
+	defer unlock()
+	entries, err := os.ReadDir(serviceDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		serviceFile := filepath.Join(serviceDir, e.Name())
+		data, err := os.ReadFile(serviceFile)
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".service") || err != nil || !strings.Contains(string(data), "_wendyos._udp") {
+			continue
+		}
+		return writeDeviceIdentityFile(serviceFile, []byte(replaceTXTRecord(string(data), "id", id)))
+	}
+	return nil
+}
+
+func pinCurrentHostname(root string) error {
+	explicit := filepath.Join(root, "etc/wendy-agent/hostname")
+	for _, named := range []string{explicit, filepath.Join(root, "etc/wendyos/device-name")} {
+		info, err := os.Stat(named)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("hostname source %s is not a regular file", named)
+		}
+		data, err := os.ReadFile(named)
+		if err != nil {
+			return err
+		}
+		// The boot script ignores empty name files and derives a name from the
+		// UUID instead. Merely finding the file does not preserve that name.
+		if strings.TrimSpace(string(data)) != "" {
+			return nil
+		}
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(explicit), 0o755); err != nil {
+		return err
+	}
+	return writeDeviceIdentityFile(explicit, []byte(hostname+"\n"))
+}
+
+// Keep persistence links intact and make the hostname pin durable before the
+// device UUID changes. A torn hostname/UUID/XML write must not survive a reboot.
+func writeDeviceIdentityFile(path string, data []byte) error {
+	target, err := atomicfile.ResolveWritePath(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	return atomicfile.Write(target, data, 0644)
 }
