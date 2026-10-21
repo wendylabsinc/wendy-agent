@@ -127,7 +127,7 @@ func lanGuardNetworks(inventory map[string]map[string]string, registry map[strin
 		}
 		subnet, exists := registry[appID]
 		if !exists {
-			return nil, fmt.Errorf("live mesh app %s has no trusted subnet allocation", appID)
+			return nil, fmt.Errorf("live net app %s has no trusted subnet allocation", appID)
 		}
 		networks = append(networks, subnet)
 	}

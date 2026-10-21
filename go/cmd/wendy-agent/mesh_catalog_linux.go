@@ -347,7 +347,7 @@ func (m *meshCatalogManager) startBridge(a *catalogActivation, app catalogApp) e
 		path := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), bridgeNamespace.Fd())
 		lanAccess = meshcatalog.NewLANProjector(path, app.ip, app.gateway, app.bridge)
 		lanAccess.SetErrorHandler(func(err error) {
-			m.logger.Warn("mesh app physical-LAN projection denied", zap.String("app_id", app.appID), zap.Error(err))
+			m.logger.Warn("net app physical-LAN projection denied", zap.String("app_id", app.appID), zap.Error(err))
 		})
 		bridge.SetLANProjection(a.lanBrowser.Snapshot, lanAccess)
 	}

@@ -81,8 +81,11 @@ func AcquireForwarding(key string) error {
 		if err := InitLANServiceChain(); err != nil {
 			return err
 		}
-		if err := InitBridgeInternetChain(); err != nil {
-			return err
+		// Keep chain creation on the same command runner as the owned
+		// forwarding rules, including in isolated unit-test fixtures.
+		out, err := lanIPTables("-t", "filter", "-N", BridgeInternetChain)
+		if err != nil && !strings.Contains(string(out), "already exists") {
+			return fmt.Errorf("create Internet forwarding chain: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
 		rules := forwardingRules()
 		for i := len(rules) - 1; i >= 0; i-- {

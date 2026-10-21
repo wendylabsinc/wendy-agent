@@ -593,7 +593,7 @@ func (c *Client) startMeshMDNS(containerName, appID, netnsPath, ip string, ports
 	}
 	address := net.ParseIP(ip).To4()
 	if address == nil {
-		return errors.New("mesh app has no IPv4 address")
+		return errors.New("net app has no IPv4 address")
 	}
 	gatewayIP := append(net.IP(nil), address...)
 	gatewayIP[3] = gatewayIP[3]&0xf0 | 1 // CNI bridge uses a /28 and its first address.
