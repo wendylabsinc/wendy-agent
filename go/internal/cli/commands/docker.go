@@ -1517,6 +1517,10 @@ func ociBuilderName() string {
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
+		if _, selection := dockerSelection(); selection != "" {
+			sum := sha256.Sum256([]byte(selection))
+			base += "-" + hex.EncodeToString(sum[:6])
+		}
 	}
 	return base + "-oci"
 }
@@ -2024,6 +2028,12 @@ func dockerConfigEnv(configDir string) []string {
 		if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
 			baseEnv = append(baseEnv, e)
 		}
+	}
+	// The credential-free config intentionally omits the user's config.json.
+	// Carry its active context explicitly, otherwise buildx silently switches
+	// back to default while docker version/inspect used the selected daemon.
+	if context, _ := dockerSelection(); context != "" && os.Getenv("DOCKER_CONTEXT") == "" {
+		baseEnv = append(baseEnv, "DOCKER_CONTEXT="+context)
 	}
 	return append(baseEnv, "DOCKER_CONFIG="+configDir)
 }
