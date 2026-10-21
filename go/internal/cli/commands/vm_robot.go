@@ -564,7 +564,9 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	} else {
 		cliLogln("Building and provisioning %s in %s (the first build downloads pinned assets and ROS dependencies)...", runtime.name, name)
 	}
-	err = runWithAgent(ctx, conn, source, cfg, runOptions{
+	// The deploy's progress views would otherwise rotate tips about scaffolding
+	// a project or editing wendy.json, which is not what the user is doing.
+	err = runWithAgent(withoutProgressHints(ctx), conn, source, cfg, runOptions{
 		managedRobot: true, buildType: "docker", builder: "docker", dockerfile: "Dockerfile",
 		detach: true, yes: true, restartUnlessStopped: true,
 		env: runtime.environment(name, profile),
@@ -701,13 +703,23 @@ func robotEndpoint(ctx context.Context, name string) (*vm.Store, vm.RobotProfile
 		return store, profile, 0, err
 	}
 	if !exists {
-		return store, profile, 0, vm.ErrRobotProfileMissing
+		return store, profile, 0, robotProfileMissing(store, name)
 	}
 	port, err := store.TCPPortMapping(ctx, name, vm.RobotSandboxGuestPort)
 	if err == nil && port == 0 {
 		err = fmt.Errorf("robot sandbox has no live forward; connect to vm:%s to provision it", name)
 	}
 	return store, profile, port, err
+}
+
+// robotProfileMissing explains a VM without a robot profile. A VM that does not
+// exist has none either, but "no robot profile" would send the user off to
+// configure one on a name that was simply mistyped.
+func robotProfileMissing(store *vm.Store, name string) error {
+	if st, err := store.Status(name); err == nil && !st.Exists {
+		return fmt.Errorf("no VM named %q", name)
+	}
+	return vm.ErrRobotProfileMissing
 }
 
 func newVMRobotCmd() *cobra.Command {
@@ -1009,7 +1021,7 @@ func readSimulatorRobots(ctx context.Context, statuses []vm.Status) map[string]s
 			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: err.Error()}
 			continue
 		}
-		info := simulatorRobotInfo{Kind: runtime.name, State: "stopped", Hint: "Connect to start the robot and open its sandbox with 'wendy vm robot open " + status.Name + "'."}
+		info := simulatorRobotInfo{Kind: runtime.name, State: "stopped", Hint: "Press s to start " + status.Name + " and its robot; then 'wendy vm robot open " + status.Name + "' opens the sandbox."}
 		if !status.Running {
 			result[status.Name] = info
 			continue
