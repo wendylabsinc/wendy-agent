@@ -50,7 +50,7 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 	})
 	eventAddress := make(chan *net.UnixAddr, 1)
 	ready := make(chan struct{})
-	setups := make(chan string, 64)
+	commands := make(chan string, 64)
 	go func() {
 		defer close(serverDone)
 		controller := &discoveryController{services: map[string]discoveryService{}}
@@ -67,8 +67,9 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 				eventAddress <- addr
 			case cmd == "PING":
 				reply = "PONG"
+				commands <- cmd
 			case strings.HasPrefix(cmd, "NAN_NDP_REQUEST "), strings.HasPrefix(cmd, "NAN_NDP_RESPONSE "):
-				setups <- cmd
+				commands <- cmd
 			default:
 				reply, err = controller.command(cmd)
 				if err != nil {
@@ -116,26 +117,51 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 	presence := func(n uint16) string {
 		return hex.EncodeToString([]byte("wendy-nan:1:" + testDevice(t, n).UUID().String()))
 	}
-	for _, bad := range invalidNANTargets {
+	for i, bad := range invalidNANTargets {
 		if strings.ContainsAny(bad, " \t\n") {
 			continue // Event fields are already whitespace delimited.
 		}
-		emit(fmt.Sprintf("NAN-DISCOVERY-RESULT subscribe_id=2 publish_id=9 address=%s ssi=%s", bad, presence(200)))
+		emit(fmt.Sprintf("NAN-DISCOVERY-RESULT subscribe_id=2 publish_id=9 address=%s ssi=%s", bad, presence(300+uint16(i))))
 		emit(fmt.Sprintf("NAN-NDP-REQUEST publish_inst_id=1 peer_nmi=%s init_ndi=02:00:00:00:00:03 ndp_id=1 ssi=%s", bad, presence(20)))
 		emit(fmt.Sprintf("NAN-NDP-REQUEST publish_inst_id=1 peer_nmi=02:00:00:00:00:05 init_ndi=%s ndp_id=1 ssi=%s", bad, presence(20)))
 	}
-	// These two valid events are FIFO barriers: seeing their commands proves
-	// every earlier invalid event was processed, rather than merely waiting.
+	// Incoming responses are immediate; outgoing candidates are scheduled on
+	// the ticker. Accept either valid command order, but no invalid target.
+	// Each malformed discovery above claims a distinct device so known-peer
+	// matching cannot hide it if it accidentally enters the candidate queue.
 	emit(fmt.Sprintf("NAN-DISCOVERY-RESULT subscribe_id=2 publish_id=9 address=02:00:00:00:00:04 ssi=%s", presence(200)))
 	emit(fmt.Sprintf("NAN-NDP-REQUEST publish_inst_id=1 peer_nmi=02:00:00:00:00:05 init_ndi=02:00:00:00:00:06 ndp_id=1 ssi=%s", presence(20)))
-	for _, prefix := range []string{"NAN_NDP_REQUEST handle=2 ndi=wnanndi0 peer_nmi=02:00:00:00:00:04 ", "NAN_NDP_RESPONSE accept handle=1 ndi=wnanndi0 peer_nmi=02:00:00:00:00:05 "} {
+	want := map[string]bool{
+		"NAN_NDP_REQUEST handle=2 ndi=wnanndi0 peer_nmi=02:00:00:00:00:04 ":         false,
+		"NAN_NDP_RESPONSE accept handle=1 ndi=wnanndi0 peer_nmi=02:00:00:00:00:05 ": false,
+	}
+	remaining := len(want)
+	deadline := time.After(8 * time.Second)
+	for {
 		select {
-		case cmd := <-setups:
-			if !strings.HasPrefix(cmd, prefix) {
-				t.Fatalf("invalid event emitted a setup command before valid barrier: %s", cmd)
+		case cmd := <-commands:
+			if cmd == "PING" {
+				if remaining == 0 {
+					// Same-socket FIFO proves the previous candidate batch is
+					// complete, including any invalid setup after the valid ones.
+					return
+				}
+				continue
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("valid event barrier did not issue setup command")
+			matched := false
+			for prefix, seen := range want {
+				if !seen && strings.HasPrefix(cmd, prefix) {
+					want[prefix] = true
+					remaining--
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				t.Fatalf("invalid or duplicate setup command: %s", cmd)
+			}
+		case <-deadline:
+			t.Fatalf("valid event/candidate batch did not complete; missing %d commands", remaining)
 		}
 	}
 }
