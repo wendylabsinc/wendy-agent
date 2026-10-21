@@ -125,6 +125,56 @@ func TestSignedRouteSequenceProofAheadOfUpdateConverges(t *testing.T) {
 	}
 }
 
+func TestSignedRouteSequenceUpdateAheadOfProofRecovers(t *testing.T) {
+	n := newSignedRouteTestNetwork(t, 3, func(config *babel.Config) {
+		config.UpdateInterval = 4 * time.Second
+	})
+	n.connect(0, 1, 1)
+	n.connect(0, 2, 2)
+	proof := n.sign(1, time.Minute, false)
+	n.accept(1, proof)
+	n.accept(2, proof)
+	n.step(0, babel.Originate{Prefix: n.nodes[0].device.prefix})
+	n.advance(2 * time.Second)
+	origin := n.nodes[0]
+	rejected := []uint64{0, n.nodes[1].routing.Snapshot().Counters.Rejected, n.nodes[2].routing.Snapshot().Counters.Rejected}
+	n.step(0, babel.Receive{ID: 1, Packet: routeSequenceRequest(origin.device.prefix, origin.device.routerID, 1)})
+	// The reliable proof stream and Babel datagrams are independently ordered.
+	// Deliver both the explicit response and fanout while only sequence zero
+	// is authorized; neither neighbour may install the unverified sequence.
+	n.advance(2200 * time.Millisecond)
+	for _, index := range []int{1, 2} {
+		n.assertForwarded(index, true, 0)
+		if n.nodes[index].routing.Snapshot().Counters.Rejected <= rejected[index] {
+			t.Fatalf("node %d did not reject the update ahead of its proof", index)
+		}
+	}
+	proof = n.sign(2, time.Minute, false)
+	for _, index := range []int{1, 2} {
+		n.accept(index, proof)
+		n.step(index, babel.Tick{})
+		n.assertForwarded(index, false, 0)
+	}
+	// Neither leaf has advertised this route onward, so it has no feasibility
+	// history from which to solicit a sequence. The periodic origin update
+	// must repair the lost opportunity without weakening proof admission.
+	n.deliver()
+	n.advance(5 * time.Second)
+	for _, index := range []int{1, 2} {
+		n.assertForwarded(index, true, 1)
+	}
+	n.advance(8 * time.Second)
+	if seq := origin.routing.Snapshot().Seqno; seq != 1 {
+		t.Fatalf("late proof caused sequence churn: %d", seq)
+	}
+	for _, index := range []int{1, 2} {
+		n.assertForwarded(index, true, 1)
+		if requests := n.nodes[index].routing.Snapshot().PendingRequests; requests != 0 {
+			t.Fatalf("node %d retained %d sequence requests", index, requests)
+		}
+	}
+}
+
 func (n *signedRouteTestNetwork) now() time.Time { return n.epoch.Add(n.elapsed) }
 
 func (n *signedRouteTestNetwork) step(index int, event babel.Event) {
