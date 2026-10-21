@@ -204,9 +204,15 @@ func (q *streamIPSendQueue) sourceBytes(source [16]byte) int {
 }
 
 func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
+	needFastSpace := incoming.fast && q.fastBytes()+incoming.bytes > q.fastByteBudget()
 	// TCP retransmissions can arrive after a later segment. Preserve the
 	// earliest logical prefix in that flow, including when it arrives later.
 	for i := len(q.pending) - 1; i >= 0; i-- {
+		// Evicting bulk cannot relieve a full fast lane. Keep admitted data
+		// when the smaller prefix would still be refused after its eviction.
+		if needFastSpace && !q.pending[i].fast {
+			continue
+		}
 		if tcpQueuedBefore(incoming.data, q.pending[i].data) {
 			return i
 		}
@@ -217,7 +223,6 @@ func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
 	// from a different sender must not discard another flight's opening bytes.
 	source := incoming.source
 	needSourceSpace := q.sourceBytes(source)+incoming.bytes > q.sourceByteBudget()
-	needFastSpace := incoming.fast && q.fastBytes()+incoming.bytes > q.fastByteBudget()
 	ownClassBytes := 0
 	for _, p := range q.pending {
 		if p.source == source && p.fast == incoming.fast {

@@ -174,8 +174,8 @@ Lite operator setup over the Cloud relay also permits 60 seconds in the CLI
 and companion firmware. Caller cancellation, certificate expiry and signed
 session-grant expiry still apply; the gateway does not terminate operator TLS.
 
-The BLE IP queue retains its 8 KiB cap and per-source fairness. Its minimum
-allows one full packet plus a short ACK for each of two senders, so an ACK
+The BLE IP queue retains its 16 KiB cap and per-source fairness. Its minimum
+allows two full packets plus a short ACK for each of four senders, so an ACK
 does not evict its own waiting data packet. Packet age
 allows the bounded queue plus one active packet to drain at the observed rate,
 capped at five seconds; before a rate sample it allows two seconds. A faster

@@ -1032,3 +1032,26 @@ func TestStreamIPQueueEarlierTCPRetransmissionPreservesOtherFlows(t *testing.T) 
 		})
 	}
 }
+
+func TestStreamIPQueueRefusedFastTCPPrefixKeepsBulkTail(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	if !q.enqueue(1, queueTestTCP(TunnelMTU, 1, 2260), now) {
+		t.Fatal("bulk TCP tail not admitted")
+	}
+	// Fill the independent fast-lane budget with other sources. A small
+	// retransmission cannot free fast capacity by evicting its bulk tail.
+	for source := byte(2); source < 250; source++ {
+		if !q.enqueue(uint32(source), queueTestIP(streamFastIPMax, source), now) {
+			break
+		}
+	}
+	before := q.snapshot()
+	if q.enqueue(1000, queueTestTCP(streamFastIPMax, 1, 1000), now) {
+		t.Fatal("prefix exceeded the fast-lane budget")
+	}
+	after := q.snapshot()
+	if after.Bytes != before.Bytes || after.Packets != before.Packets || after.DroppedCapacity != before.DroppedCapacity+1 {
+		t.Fatalf("refused prefix discarded admitted traffic: before=%+v after=%+v", before, after)
+	}
+}
