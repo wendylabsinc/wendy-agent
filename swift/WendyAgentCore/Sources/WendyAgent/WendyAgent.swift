@@ -377,6 +377,7 @@ public actor WendyAgent {
             containerService,
             AudioService(),
             SensorService(),
+            RobotArmService(path: stateDirectory.appendingPathComponent("robot-arm-bindings.json")),
             provisioningService,
             ProvisioningServiceV2(v1: provisioningService),
             TelemetryService(broadcaster: broadcaster),
