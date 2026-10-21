@@ -323,8 +323,7 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 		}
 	}
 	d.history = next
-<<<<<<< HEAD
-	d.entries[device.Principal()] = directoryEntry{manifest: m, wire: w, hash: hash, signature: binding, retainUntil: now.Add(MaxLease + 5*time.Second)}
+	d.entries[device.Principal()] = directoryEntry{manifest: m, wire: w, hash: hash, signature: binding, retainUntil: receipt.Until, activeUntil: now.Add(time.UnixMilli(m.Expires).Sub(d.wallHighWater))}
 	return true, nil
 }
 
@@ -373,6 +372,7 @@ func cloneSignedManifest(w SignedManifest) SignedManifest {
 func (d *Directory) CurrentRecordChain(w SignedManifest, now time.Time) ([][]byte, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.expireLocked(now)
 	e, ok := d.entries[w.Principal]
 	if !ok || !bytes.Equal(w.Body, e.wire.Body) || !bytes.Equal(w.Signature, e.wire.Signature) {
 		return nil, false
@@ -384,7 +384,7 @@ func (d *Directory) CurrentRecordChain(w SignedManifest, now time.Time) ([][]byt
 // It never removes a replay floor, extends a lease, or renews retention.
 func (d *Directory) currentEntryChain(principal string, e directoryEntry, now time.Time) ([][]byte, bool) {
 	expires := time.UnixMilli(e.manifest.Expires)
-	if !expires.After(now) {
+	if e.expired || !e.activeUntil.After(now) || !expires.After(now) || !expires.After(d.wallHighWater) {
 		return nil, false
 	}
 	chain, id, ok := d.cache.Get(principal, now)
@@ -400,12 +400,6 @@ func (d *Directory) currentEntryChain(principal string, e directoryEntry, now ti
 		return nil, false
 	}
 	return chain, true
-=======
-	d.entries[device.Principal()] = directoryEntry{
-		manifest: m, wire: w, hash: hash, retainUntil: receipt.Until,
-		activeUntil: now.Add(time.UnixMilli(m.Expires).Sub(d.wallHighWater)),
-	}
-	return true, nil
 }
 
 // expireLocked remembers observed wall time independently of tombstone retention
@@ -421,7 +415,6 @@ func (d *Directory) expireLocked(now time.Time) {
 			d.entries[principal] = e
 		}
 	}
->>>>>>> 942431181 (mesh: authorize route origins with expiring device signatures)
 }
 
 func manifestHash(body []byte) string {
@@ -461,13 +454,8 @@ func (d *Directory) Records(now time.Time) []SignedManifest {
 	defer d.mu.Unlock()
 	d.expireLocked(now)
 	out := []SignedManifest{}
-<<<<<<< HEAD
 	for principal, e := range d.entries {
 		if _, ok := d.currentEntryChain(principal, e, now); !ok {
-=======
-	for _, e := range d.entries {
-		if e.expired {
->>>>>>> 942431181 (mesh: authorize route origins with expiring device signatures)
 			continue
 		}
 		w := e.wire

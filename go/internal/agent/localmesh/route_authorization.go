@@ -48,7 +48,7 @@ func (d *Directory) RouteAuthorizations(now time.Time) map[RouteOrigin]bool {
 		if e.expired || m.Withdraw || m.Version != ManifestVersionRoute || m.Route == nil {
 			continue
 		}
-		if _, _, ok := d.cache.Get(principal, now); !ok {
+		if _, ok := d.currentEntryChain(principal, e, now); !ok {
 			continue
 		}
 		route := *m.Route
