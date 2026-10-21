@@ -61,14 +61,16 @@ one-liner that carries a short-lived enrollment token:
 
 ```bash
 curl -fsSL https://install.wendy.dev/agent.sh | \
-  WENDY_ENROLLMENT_TOKEN=<token> WENDY_CLOUD_HOST=<cloud-host> bash
+  WENDY_ENROLLMENT_TOKEN=<token> WENDY_CLOUD_HOST=<cloud-host> bash -s -- --network-access network
 ```
 
 The agent enrolls into your organization on first startup. No `wendy device
 enroll` step needed. The token expires after about an hour, so run the command
 promptly. Without these variables the agent installs unenrolled and is
 discoverable over your local network if you chose network access. Enrollment
-does not override a local-only access choice.
+does not override a local-only access choice: a local-only agent does not open
+the cloud relay, so the device stays offline in your org. The printed command
+therefore includes `--network-access network`.
 
 If the device cannot reach Wendy Cloud during its first startup (for example,
 because the network is not yet up), enrollment is skipped and the token file is
