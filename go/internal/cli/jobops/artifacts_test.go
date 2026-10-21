@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/jobops"
 )
@@ -105,5 +107,27 @@ func TestArtifactsPullRefusesOversizedFileBeforeReadingIt(t *testing.T) {
 	c := connection(t, &host{})
 	if _, err = jobops.Pull(context.Background(), c, source, t.TempDir(), []string{"too-large.bin"}); err == nil {
 		t.Fatal("oversized artifact accepted")
+	}
+}
+
+func TestArtifactPullDoesNotBlockOnExistingNamedPipe(t *testing.T) {
+	tool, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("POSIX named-pipe contract")
+	}
+	source := fixture(t)
+	out := t.TempDir()
+	if data, err := exec.Command(tool, filepath.Join(out, "status.json")).CombinedOutput(); err != nil {
+		t.Skipf("mkfifo unavailable: %v %s", err, data)
+	}
+	c := connection(t, &host{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := jobops.Pull(ctx, c, source, out, []string{"status.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["verified_files"] != 1 {
+		t.Fatal(result)
 	}
 }

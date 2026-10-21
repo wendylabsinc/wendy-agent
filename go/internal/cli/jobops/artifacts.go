@@ -55,6 +55,10 @@ func Pull(ctx context.Context, conn *grpcclient.AgentConnection, jobPath, destin
 	defer root.Close()
 	known := map[string]string{}
 	for _, name := range files {
+		existing, statErr := root.Lstat(name)
+		if statErr != nil || !existing.Mode().IsRegular() {
+			continue
+		}
 		f, e := root.Open(name)
 		if e != nil {
 			continue
@@ -106,6 +110,10 @@ func Pull(ctx context.Context, conn *grpcclient.AgentConnection, jobPath, destin
 		}
 		delete(seen, file.Path)
 		if file.Unchanged {
+			existing, e := root.Lstat(file.Path)
+			if e != nil || !existing.Mode().IsRegular() {
+				return nil, fmt.Errorf("unchanged local artifact is no longer regular")
+			}
 			current, e := root.Open(file.Path)
 			if e != nil {
 				return nil, e
