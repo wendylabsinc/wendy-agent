@@ -499,7 +499,9 @@ func (m *ContainerMonitor) restartStaleNAN(ctx context.Context, name string) {
 		m.logger.Error("Failed to restart NAN app after socket refresh", zap.String("app_name", name), zap.Error(err))
 		return
 	}
-	m.drainOutput(name, outputCh)
+	// Output lasts for the whole new task lifetime. Release the refresh guard
+	// now so a later supplicant socket replacement can restart it again.
+	go m.drainOutput(name, outputCh)
 }
 
 // restartAction is one unit of restart work: either a single container, or an

@@ -129,6 +129,41 @@ type staleNANGroupClient struct {
 	restarted chan string
 }
 
+type liveNANMonitorClient struct {
+	*staleNANMonitorClient
+	output chan services.ContainerOutput
+}
+
+func (f *liveNANMonitorClient) StartContainer(context.Context, string, string, *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
+	return f.output, nil
+}
+
+func TestMonitorCanRefreshNANSocketAgainWhileTaskOutputIsOpen(t *testing.T) {
+	f := &liveNANMonitorClient{
+		staleNANMonitorClient: &staleNANMonitorClient{fakeContainerd: &fakeContainerd{}, stale: []string{"camera"}},
+		output:                make(chan services.ContainerOutput),
+	}
+	defer close(f.output)
+	m := newMonitorWithClient(f)
+	m.Register("camera", RestartUnlessStopped, 0)
+	done := make(chan struct{})
+	go func() {
+		m.restartStaleNAN(context.Background(), "camera")
+		m.restartStaleNAN(context.Background(), "camera")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("socket refresh remained in flight for the task's output lifetime")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.stops) != 2 {
+		t.Fatalf("successive socket replacements stopped the app %d times, want 2", len(f.stops))
+	}
+}
+
 func (f *staleNANGroupClient) StaleNANSocketContainers(context.Context) ([]string, error) {
 	return f.stale, nil
 }

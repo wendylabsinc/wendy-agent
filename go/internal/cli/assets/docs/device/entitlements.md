@@ -138,8 +138,12 @@ supplicant replies can cross the mount namespace. The app owns its own
 publish/subscribe and NDP handles. Add `{ "type": "network", "mode": "host" }`
 separately when the app sends IP packets over its NDP. This grant does not
 expose the global or station Wi-Fi control sockets. NAN shares one radio-wide
-cluster, so apps must avoid radio-wide start/stop/reset commands. A supplicant
-restart replaces the mounted socket; redeploy the app to refresh it.
+cluster, so apps must avoid radio-wide start/stop/reset commands. A read-only
+socket mount does not restrict control commands; grant `nan` only to trusted
+apps. A supplicant restart replaces the mounted socket; the agent restarts
+monitored apps to refresh it. Redeploy apps using restart policy `no`. The
+final prepared app release restores the original socket permissions when
+the socket still matches the agent's recorded grant.
 
 ## Input
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/nancontrol"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -256,11 +257,19 @@ func runRadio(ctx context.Context, ident meshid.Device, connected chan<- radioPe
 	local := iface.HardwareAddr.String()
 	defer drainRadio(control, rawEvents, local, "", logger)
 	ssi := hex.EncodeToString([]byte("wendy-nan:1:" + ident.UUID().String()))
-	socket, err := nanControlSocketIdentity()
+	// Permission changes update the socket receipt atomically with this snapshot.
+	unlockManagement, err := nancontrol.Lock(ctx)
 	if err != nil {
 		return err
 	}
-	discovery, err := startDiscovery(control, discoveryOwnerPath, ident, socket, ssi)
+	discovery, err := func() (*discoveryLease, error) {
+		defer unlockManagement()
+		socket, err := nanControlSocketIdentity()
+		if err != nil {
+			return nil, err
+		}
+		return startDiscovery(control, discoveryOwnerPath, ident, socket, ssi)
+	}()
 	if err != nil {
 		return err
 	}

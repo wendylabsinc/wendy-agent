@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/errdefs"
+	"github.com/wendylabsinc/wendy/go/internal/agent/nancontrol"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"go.uber.org/zap"
@@ -20,6 +22,16 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func nanTestSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "nan-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "nan0")
+}
 
 func TestStaleNANSocketContainers(t *testing.T) {
 	dir := t.TempDir()
@@ -262,5 +274,75 @@ func TestNANEntitlementDetection(t *testing.T) {
 	}
 	if !hasNANEntitlement([]appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}, {Type: appconfig.EntitlementNAN}}) {
 		t.Fatal("NAN entitlement was not detected")
+	}
+}
+
+func TestNANPreparationWaitsForProviderManagementTransaction(t *testing.T) {
+	unlock, err := nancontrol.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := prepareNANEntitlement(ctx, "camera"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("app prepared during provider reset: %v", err)
+	}
+}
+
+func TestNANSocketPermissionRestoreWaitsForFinalReservation(t *testing.T) {
+	oldRoot, oldHelper, oldRestore := nanClientRootPath, runNANHelper, restoreNANSocketAccess
+	nanClientRootPath = t.TempDir()
+	runNANHelper = func(context.Context, ...string) error { return nil }
+	restored := 0
+	restoreNANSocketAccess = func(string) error { restored++; return nil }
+	t.Cleanup(func() { nanClientRootPath, runNANHelper, restoreNANSocketAccess = oldRoot, oldHelper, oldRestore })
+	for _, app := range []string{"camera", "sensor"} {
+		if err := os.Mkdir(nanAppClientDir(app), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := releaseNANEntitlement(context.Background(), "camera"); err != nil {
+		t.Fatal(err)
+	}
+	if restored != 0 {
+		t.Fatal("a second app's prepared reservation lost socket access")
+	}
+	if err := releaseNANEntitlement(context.Background(), "sensor"); err != nil {
+		t.Fatal(err)
+	}
+	if restored != 1 {
+		t.Fatalf("final reservation restored permissions %d times", restored)
+	}
+}
+
+func TestNANMonitorRetriesPermissionRestoreAfterFinalDelete(t *testing.T) {
+	oldRoot, oldRestore, oldPath := nanClientRootPath, restoreNANSocketAccess, localoci.NANControlSocketHostPath
+	nanClientRootPath = t.TempDir()
+	localoci.NANControlSocketHostPath = nanTestSocketPath(t)
+	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: localoci.NANControlSocketHostPath, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	calls := 0
+	restoreNANSocketAccess = func(string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("temporary restore failure")
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		nanClientRootPath, restoreNANSocketAccess, localoci.NANControlSocketHostPath = oldRoot, oldRestore, oldPath
+	})
+	c := newROS2ContainerTestClient(t, nil, nil)
+	for range 2 {
+		if _, err := c.StaleNANSocketContainers(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("permission restore retried %d times", calls)
 	}
 }

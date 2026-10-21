@@ -12,6 +12,7 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/errdefs"
+	"github.com/wendylabsinc/wendy/go/internal/agent/nancontrol"
 	"github.com/wendylabsinc/wendy/go/internal/agent/networkmanager"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -97,12 +98,25 @@ func (c *Client) StaleNANSocketContainers(ctx context.Context) ([]string, error)
 			c.logger.Warn("Could not reconcile stopped app NAN interface", zap.String("app_id", appID), zap.Error(err))
 		}
 	}
+	// A final delete may have succeeded while restoring socket access failed.
+	// Retry even when there is no longer a container record to reconcile.
+	unlock, err := nancontrol.Lock(ctx)
+	if err != nil {
+		return stale, err
+	}
+	defer unlock()
+	if err := restoreUnusedNANSocketAccess(); err != nil {
+		c.logger.Warn("Could not restore idle NAN socket permissions", zap.Error(err))
+	}
 	return stale, nil
 }
 
 const nanHelperPath = "/usr/sbin/wendyos-nan"
 
 var nanClientRootPath = "/var/lib/wendy/nan-clients"
+
+var grantNANSocketAccess = nancontrol.GrantSocketAccess
+var restoreNANSocketAccess = nancontrol.RestoreSocketAccess
 
 // App NDIs have their own names so an app never tears down the mesh provider's
 // wnanndi0 or another app's data paths. Linux IFNAMSIZ limits names to 15 bytes.
@@ -150,6 +164,8 @@ var runNANHelper = func(ctx context.Context, args ...string) error {
 }
 
 var setNANLinkUp = func(ctx context.Context, ndi string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "ip", "link", "set", "dev", ndi, "up")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -163,6 +179,11 @@ var setNANLinkUp = func(ctx context.Context, ndi string) error {
 // `ndi-create` are idempotent; an already-running mesh or app session survives.
 func prepareNANEntitlement(ctx context.Context, appID string) (string, error) {
 	ndi := nanAppNDI(appID)
+	unlock, err := nancontrol.Lock(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	if err := ensureAppNDIUnmanaged(ctx); err != nil {
 		return "", err
 	}
@@ -183,15 +204,6 @@ func prepareNANEntitlement(ctx context.Context, appID string) (string, error) {
 	if fi.Mode()&os.ModeSocket == 0 {
 		return "", fmt.Errorf("nan entitlement: %s is not a Unix socket", path)
 	}
-	// The Pi5 supplicant creates nan0 as root:root 0770. Grant exactly this
-	// socket to the reserved group that OCI adds only to nan-entitled apps.
-	// The global and wlan0 sockets remain root-only and are never mounted.
-	if err := os.Chown(path, 0, int(localoci.NANControlGroupGID)); err != nil {
-		return "", fmt.Errorf("grant NAN socket group: %w", err)
-	}
-	if err := os.Chmod(path, 0o770); err != nil {
-		return "", fmt.Errorf("grant NAN socket group access: %w", err)
-	}
 	clientDir := nanAppClientDir(appID)
 	if err := os.MkdirAll(clientDir, 0o770); err != nil {
 		return "", fmt.Errorf("prepare NAN client socket directory: %w", err)
@@ -201,6 +213,12 @@ func prepareNANEntitlement(ctx context.Context, appID string) (string, error) {
 	}
 	if err := os.Chmod(clientDir, 0o770); err != nil {
 		return "", fmt.Errorf("grant NAN client directory access: %w", err)
+	}
+	// SECURITY: This privileged grant is restricted by the file mount, not
+	// by GID secrecy: other root containers can setgid but cannot see nan0.
+	// The final app reservation restores the original host socket permissions.
+	if err := grantNANSocketAccess(path, int(localoci.NANControlGroupGID)); err != nil {
+		return "", fmt.Errorf("grant NAN socket access: %w", err)
 	}
 	return ndi, nil
 }
@@ -219,10 +237,34 @@ func ensureAppNDIUnmanaged(ctx context.Context) error {
 // releaseNANEntitlement removes only the app's NDI. nan0 is intentionally
 // retained: another app or the localmesh provider may still be using it.
 func releaseNANEntitlement(ctx context.Context, appID string) error {
+	unlock, err := nancontrol.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := runNANHelper(ctx, "ndi-remove", nanAppNDI(appID)); err != nil {
 		return err
 	}
-	return os.RemoveAll(nanAppClientDir(appID))
+	if err := os.RemoveAll(nanAppClientDir(appID)); err != nil {
+		return err
+	}
+	// Every successfully prepared app reserves this root-owned child directory
+	// before granting socket access. Other apps' creates and releases share the
+	// management lock, so the final-user check cannot race a fresh reservation.
+	return restoreUnusedNANSocketAccess()
+}
+
+// Caller holds the management lock so another app cannot prepare a reservation
+// between this inventory and the ownership-checked permission restoration.
+func restoreUnusedNANSocketAccess() error {
+	entries, err := os.ReadDir(nanClientRootPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if len(entries) == 0 {
+		return restoreNANSocketAccess(localoci.NANControlSocketHostPath)
+	}
+	return nil
 }
 
 func hasNANEntitlement(entitlements []appconfig.Entitlement) bool {

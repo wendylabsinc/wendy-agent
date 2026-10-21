@@ -801,6 +801,10 @@ func applyNAN(spec *Spec, ndi, clientDir string) error {
 	if fi, err := os.Lstat(clientDir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("nan entitlement: client socket directory %s is unavailable", clientDir)
 	}
+	// SECURITY: nan is a device-trusted direct radio-control grant. A read-only
+	// bind protects this inode but does not filter Unix datagram commands:
+	// entitled apps can disrupt the shared cluster, including Wendy Net. The
+	// separate file mount keeps global/station control sockets inaccessible.
 	spec.Mounts = append(spec.Mounts, Mount{
 		Destination: ctrNANControlSocketPath,
 		Source:      NANControlSocketHostPath,

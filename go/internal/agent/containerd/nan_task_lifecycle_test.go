@@ -11,7 +11,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"google.golang.org/grpc"
 	"net"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -170,7 +169,7 @@ func TestNANMonitorRechecksInheritedStoppedTaskBeforeCleanup(t *testing.T) {
 		t.Run(fmt.Sprint(restarted), func(t *testing.T) {
 			c := nanLifecycleClient(t, "camera", false)
 			removed := captureNANRemoval(t, c)
-			host := filepath.Join(t.TempDir(), "nan0")
+			host := nanTestSocketPath(t)
 			socket, err := net.Listen("unix", host)
 			if err != nil {
 				t.Fatal(err)
@@ -222,7 +221,7 @@ func TestNANMonitorMissingTaskAndNonEntitledIsolation(t *testing.T) {
 		t.Run(fmt.Sprint(entitled), func(t *testing.T) {
 			c := nanLifecycleClient(t, "camera", false)
 			removed := captureNANRemoval(t, c)
-			host := filepath.Join(t.TempDir(), "nan0")
+			host := nanTestSocketPath(t)
 			socket, err := net.Listen("unix", host)
 			if err != nil {
 				t.Fatal(err)

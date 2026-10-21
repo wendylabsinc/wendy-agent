@@ -449,10 +449,15 @@ It does not expose the global or station Wi-Fi control sockets.
 NAN has one radio-wide cluster, so an app shares cluster settings and airtime
 with other NAN users on the host even though its publish/NDP handles and data
 interface are separate. Do not issue `NAN_STOP`, `NAN_START`, or other
-radio-wide resets from the app while others use the radio. The socket is a
+radio-wide resets from the app while others use the radio. The read-only
+mount does not filter control commands or isolate a misbehaving controller;
+grant this entitlement only through trusted device deployments. The socket is a
 single-file bind mount for isolation; a `wpa_supplicant` restart replaces its
-inode, so redeploy the app to refresh the mount. The app NDI is removed on
-app stop/delete; the shared `nan0` remains available to other users.
+inode. The agent refreshes the mount by restarting apps registered with its
+restart monitor; redeploy apps using restart policy `no` to refresh it. The app NDI is removed on
+app stop/delete; the shared `nan0` remains available to other users. When
+the final prepared app releases its NDI, the agent restores the original
+socket permissions if the socket still belongs to that permission grant.
 
 ### `persist`
 

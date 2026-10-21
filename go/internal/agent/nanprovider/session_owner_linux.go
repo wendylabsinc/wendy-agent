@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/nancontrol"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -32,18 +32,11 @@ func nanControlSocketIdentity() (socketIdentity, error) {
 }
 
 func controlSocketIdentity(path string) (socketIdentity, error) {
-	info, err := os.Lstat(path)
+	token, err := nancontrol.SocketIdentity(path)
 	if err != nil {
 		return socketIdentity{}, err
 	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return socketIdentity{}, fmt.Errorf("NAN control path %s is not a Unix socket", path)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return socketIdentity{}, fmt.Errorf("NAN control path %s has unsupported stat metadata", path)
-	}
-	return socketIdentity{dev: uint64(stat.Dev), ino: stat.Ino, ctimeSec: stat.Ctim.Sec, ctimeNsec: stat.Ctim.Nsec}, nil
+	return socketIdentity{dev: token.Dev, ino: token.Ino, ctimeSec: token.CtimeSec, ctimeNsec: token.CtimeNsec}, nil
 }
 
 type sessionPlan struct {
