@@ -77,7 +77,7 @@ def decode_project(encoded, kind):
         size = vector(geom.get("size"), dimensions[shape], f"{name}.size", 4)
         if min(size) <= 0:
             raise ValueError(f"{name}: sizes must be positive")
-        position = vector(geom.get("position"), 3, f"{name}.position", 20)
+        vector(geom.get("position"), 3, f"{name}.position", 20)
         quat = vector(geom.get("quaternion", [1, 0, 0, 0]), 4, f"{name}.quaternion (wxyz)", 1)
         if not math.isclose(sum(v*v for v in quat), 1, abs_tol=1e-5):
             raise ValueError(f"{name}: quaternion must have unit length")
