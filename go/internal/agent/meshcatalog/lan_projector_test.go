@@ -189,3 +189,76 @@ func TestLANProjectorReportsDistinctGrantFailureAndRecovery(t *testing.T) {
 		t.Fatalf("new failure after recovery not logged: %d", len(failures))
 	}
 }
+
+func TestLANProjectorRetriesFinalRouteAndGuardCleanup(t *testing.T) {
+	for _, failure := range []string{"route", "guard"} {
+		t.Run(failure, func(t *testing.T) {
+			p := NewLANProjector("/proc/self/ns/net", "10.42.2.2", "10.42.2.1", "wendy0")
+			service := LANService{Interface: lanTestInterface(), Address: net.ParseIP("192.168.41.22"), Port: 8080, Protocol: "tcp"}
+			p.ensure = func(hostnetwork.LANServiceAccess) error { return nil }
+			p.withdraw = func(hostnetwork.LANServiceAccess) error { return nil }
+			fail, routes, guards := true, 0, 0
+			p.withdrawRoute = func(hostnetwork.LANServiceAccess) error {
+				routes++
+				if fail && failure == "route" {
+					return fmt.Errorf("route delete failed")
+				}
+				return nil
+			}
+			p.withdrawDrop = func(hostnetwork.LANServiceAccess) error {
+				guards++
+				if fail && failure == "guard" {
+					return fmt.Errorf("guard delete failed")
+				}
+				return nil
+			}
+			p.Sync([]LANService{service})
+			p.Sync(nil)
+			if len(p.tracked) != 0 || len(p.cleanup) == 0 {
+				t.Fatal("lost final cleanup retry state")
+			}
+			if failure == "route" && guards != 0 {
+				t.Fatal("removed guard while route still live")
+			}
+			fail = false
+			p.Close()
+			if len(p.cleanup) != 0 || len(p.blocked) != 0 || routes < 2 || guards == 0 {
+				t.Fatalf("cleanup did not recover: pending=%v blocked=%v routes=%d guards=%d", p.cleanup, p.blocked, routes, guards)
+			}
+			// A later observation must be able to acquire the same destination.
+			p.Sync([]LANService{service})
+			if !p.visible[lanAccessKey(p.access(service))] {
+				t.Fatal("cleanup failure permanently blocked destination")
+			}
+		})
+	}
+}
+
+func TestLANProjectionWithdrawsGrantsDuringNativeClaimOverflow(t *testing.T) {
+	f := newFixture(t)
+	catalog, _ := f.newCatalog(t, p533, "default", nil, nil)
+	bridge, err := NewMDNSBridge(AppScope{AppID: "com.wendy.browse", AppIP: net.ParseIP("10.42.2.2"), BridgeIndex: 8}, catalog, testVIPs(t), func(string, Record) bool { return true }, func(SignedRecord) {}, emptyBridgeRouteView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iface := lanTestInterface()
+	cache := NewLANCache()
+	cache.Observe(iface, net.ParseIP("192.168.41.22"), announcement("Camera", 60, 8080, "192.168.41.22"), f.now)
+	p := NewLANProjector("/proc/self/ns/net", "10.42.2.2", "10.42.2.1", "wendy0")
+	withdrawn := 0
+	p.ensure = func(hostnetwork.LANServiceAccess) error { return nil }
+	p.withdraw = func(hostnetwork.LANServiceAccess) error { withdrawn++; return nil }
+	p.withdrawRoute = func(hostnetwork.LANServiceAccess) error { return nil }
+	p.withdrawDrop = func(hostnetwork.LANServiceAccess) error { return nil }
+	bridge.SetLANProjection(func(now time.Time) []LANService { return cache.Snapshot([]localmesh.PhysicalLANInterface{iface}, now) }, p)
+	if got, err := bridge.projection(f.now); err != nil || len(got) != 4 {
+		t.Fatalf("initial records=%v err=%v", got, err)
+	}
+	bridge.claimsOverflowTill = f.now.Add(3 * time.Second)
+	if got, err := bridge.projection(f.now.Add(time.Second)); err != nil || len(got) != 0 || withdrawn != 1 {
+		t.Fatalf("overflow retained grant: records=%v withdrawals=%d err=%v", got, withdrawn, err)
+	}
+	if got, err := bridge.projection(f.now.Add(3 * time.Second)); err != nil || len(got) != 4 {
+		t.Fatalf("claim expiry did not recover: records=%v err=%v", got, err)
+	}
+}

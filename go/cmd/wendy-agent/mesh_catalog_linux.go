@@ -25,6 +25,7 @@ import (
 
 type catalogApp struct {
 	name, appID, ip, bridge, netnsPath, gateway string
+	namespace                                   *os.File
 	ports                                       map[uint16]uint16
 	udpPorts                                    map[uint16]uint16
 }
@@ -274,7 +275,14 @@ func (m *meshCatalogManager) StartMeshApp(containerName, appID, ip, bridge, netn
 		}
 		target[port.Container] = port.Host
 	}
-	app := catalogApp{name: containerName, appID: appID, ip: ip, bridge: bridge, netnsPath: netnsPath, gateway: gateway, ports: mapped, udpPorts: udpMapped}
+	// Pin the task namespace before retaining it for delayed LAN discovery.
+	// A PID path can name an unrelated task after the original task exits.
+	namespace, err := os.Open(netnsPath)
+	if err != nil {
+		return fmt.Errorf("pin wendy net app namespace: %w", err)
+	}
+	pinnedPath := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), namespace.Fd())
+	app := catalogApp{namespace: namespace, name: containerName, appID: appID, ip: ip, bridge: bridge, netnsPath: pinnedPath, gateway: gateway, ports: mapped, udpPorts: udpMapped}
 	m.StopMeshApp(containerName)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -287,6 +295,7 @@ func (m *meshCatalogManager) StartMeshApp(containerName, appID, ip, bridge, netn
 
 func (m *meshCatalogManager) StopMeshApp(containerName string) {
 	m.mu.Lock()
+	app := m.apps[containerName]
 	delete(m.apps, containerName)
 	var bridge catalogBridgeRun
 	if m.active != nil {
@@ -297,6 +306,9 @@ func (m *meshCatalogManager) StopMeshApp(containerName string) {
 	if bridge.cancel != nil {
 		bridge.cancel()
 		<-bridge.done
+	}
+	if app.namespace != nil {
+		_ = app.namespace.Close()
 	}
 }
 
@@ -323,8 +335,17 @@ func (m *meshCatalogManager) startBridge(a *catalogActivation, app catalogApp) e
 	}
 	bridge.SetRemoteSync(a.runtime.ProjectionReady, a.runtime.InvalidateProjection)
 	var lanAccess *meshcatalog.LANProjector
+	var bridgeNamespace *os.File
 	if a.lanBrowser != nil {
-		lanAccess = meshcatalog.NewLANProjector(app.netnsPath, app.ip, app.gateway, app.bridge)
+		// Deactivate detaches the activation before waiting for old bridges.
+		// StopMeshApp may then release the app's descriptor concurrently, so
+		// this bridge owns a separate descriptor through its final cleanup.
+		bridgeNamespace, err = os.Open(app.netnsPath)
+		if err != nil {
+			return fmt.Errorf("pin LAN projection namespace: %w", err)
+		}
+		path := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), bridgeNamespace.Fd())
+		lanAccess = meshcatalog.NewLANProjector(path, app.ip, app.gateway, app.bridge)
 		lanAccess.SetErrorHandler(func(err error) {
 			m.logger.Warn("mesh app physical-LAN projection denied", zap.String("app_id", app.appID), zap.Error(err))
 		})
@@ -335,7 +356,10 @@ func (m *meshCatalogManager) startBridge(a *catalogActivation, app catalogApp) e
 	a.bridges[app.name] = catalogBridgeRun{cancel, done}
 	go func() {
 		defer close(done)
-		defer lanAccess.Close()
+		if bridgeNamespace != nil {
+			defer bridgeNamespace.Close()
+			defer lanAccess.Close()
+		}
 		if err := bridge.Run(ctx); err != nil && ctx.Err() == nil {
 			m.logger.Warn("wendy net app mDNS bridge stopped", zap.String("app_id", app.appID), zap.Error(err))
 		}

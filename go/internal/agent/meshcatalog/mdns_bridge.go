@@ -297,6 +297,11 @@ func (b *MDNSBridge) projection(now time.Time) ([]dns.RR, error) {
 		}
 	}
 	services := b.lanSource(now)
+	if b.claimsOverflowTill.After(now) {
+		// Names omitted by the bounded native claim cache may collide too.
+		// Withdraw unsigned grants until every untracked claim has expired.
+		services = nil
+	}
 	allowed := make([]LANService, 0, len(services))
 	for _, service := range services {
 		conflict := false

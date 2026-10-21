@@ -14,6 +14,7 @@ import (
 type LANProjector struct {
 	netns, appIP, gateway, appBridge string
 	tracked                          map[string]hostnetwork.LANServiceAccess
+	cleanup                          map[string]hostnetwork.LANServiceAccess
 	visible                          map[string]bool
 	blocked                          map[string]bool
 	ensure                           func(hostnetwork.LANServiceAccess) error
@@ -26,7 +27,7 @@ type LANProjector struct {
 
 func NewLANProjector(netns, appIP, gateway, appBridge string) *LANProjector {
 	return &LANProjector{netns: netns, appIP: appIP, gateway: gateway, appBridge: appBridge,
-		tracked: make(map[string]hostnetwork.LANServiceAccess), visible: make(map[string]bool), blocked: make(map[string]bool),
+		tracked: make(map[string]hostnetwork.LANServiceAccess), cleanup: make(map[string]hostnetwork.LANServiceAccess), visible: make(map[string]bool), blocked: make(map[string]bool),
 		reported: make(map[string]string),
 		ensure:   hostnetwork.EnsureLANServiceAccess, withdraw: hostnetwork.WithdrawLANServiceAccess,
 		withdrawRoute: hostnetwork.WithdrawLANRoute, withdrawDrop: hostnetwork.WithdrawLANDrop}
@@ -67,6 +68,12 @@ func (p *LANProjector) Sync(services []LANService) []dns.RR {
 	desired := make(map[string]hostnetwork.LANServiceAccess, len(services))
 	previousDestinations := make(map[string]hostnetwork.LANServiceAccess)
 	previousInterfaces := make(map[string]hostnetwork.LANServiceAccess)
+	// Port grants can already be gone while route/guard cleanup still fails.
+	// Retain their access tuples across sweeps, including Close retries.
+	for _, old := range p.cleanup {
+		previousDestinations[lanDestinationKey(old)] = old
+		previousInterfaces[lanInterfaceKey(old)] = old
+	}
 	for _, old := range p.tracked {
 		previousDestinations[lanDestinationKey(old)] = old
 		previousInterfaces[lanInterfaceKey(old)] = old
@@ -139,16 +146,31 @@ func (p *LANProjector) Sync(services []LANService) []dns.RR {
 			activeInterfaces[lanInterfaceKey(a)] = true
 		}
 	}
+	p.cleanup = make(map[string]hostnetwork.LANServiceAccess)
 	for destination, a := range previousDestinations {
 		if !activeDestinations[destination] {
 			if err := p.withdrawRoute(a); err != nil {
 				p.blocked[destination] = true
+				p.cleanup[lanInterfaceKey(a)] = a
+				p.report("route/"+destination, err)
+			} else {
+				delete(p.reported, "route/"+destination)
 			}
 		}
 	}
 	for iface, a := range previousInterfaces {
-		if !activeInterfaces[iface] && !p.blocked[lanDestinationKey(a)] {
-			_ = p.withdrawDrop(a)
+		if activeInterfaces[iface] {
+			continue
+		}
+		if p.blocked[lanDestinationKey(a)] {
+			p.cleanup[iface] = a
+			continue
+		}
+		if err := p.withdrawDrop(a); err != nil {
+			p.cleanup[iface] = a
+			p.report("guard/"+iface, err)
+		} else {
+			delete(p.reported, "guard/"+iface)
 		}
 	}
 	// Distinct service names can share one A RR. Emit each wire record once.
@@ -182,7 +204,7 @@ func (p *LANProjector) Close() {
 		return
 	}
 	for range 3 {
-		if len(p.tracked) == 0 {
+		if len(p.tracked) == 0 && len(p.cleanup) == 0 {
 			break
 		}
 		p.Sync(nil)

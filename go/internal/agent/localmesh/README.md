@@ -289,3 +289,27 @@ Run the native affected-package race checks and the opt-in
 The latter creates four real routers in separate network namespaces with only
 A-B, B-C and C-D links, checks multihop catalogue readiness and withdrawal after
 partition/heal, and asserts no catalogue TCP listener on port 43022.
+
+
+## Application service discovery
+
+Applications with the mesh network entitlement can browse signed Wendy Net
+services over their private DNS-SD bridge. Remote services appear while the
+origin has a live host route, a current device announcement and a reconciled
+service inventory. Route loss withdraws their DNS records without renewing the
+signed service lease; recovery projects only services still present and live.
+
+When Ethernet or infrastructure Wi-Fi is enabled for Wendy Net, the same app
+bridge also exposes services observed directly on those physical links. These
+LAN advertisements are unsigned and remain local to this device. Each complete
+DNS-SD service must name its on-link sender as its IPv4 endpoint. Projection
+installs an app-specific /32 route and forwarding grant for the advertised TCP
+or UDP port. Other ports and unsolicited LAN-to-app traffic remain blocked.
+App-owned names and signed Wendy Net names take precedence over LAN names.
+Goodbyes, lease expiry, interface loss and application shutdown revoke grants;
+agent startup revokes inherited grants before reauthorizing current services.
+
+LAN browsing currently supports IPv4 endpoints and excludes Wendy Net carrier,
+underlay and service address ranges. Namespace tests cover scoped forwarding,
+withdrawal and coexistence with host Avahi; physical-link acceptance remains a
+separate validation step.
