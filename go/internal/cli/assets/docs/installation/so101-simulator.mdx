@@ -19,6 +19,9 @@ and starts its managed runtime. The first start downloads pinned model assets
 and runtime dependencies. The viewer has six joint sliders, pause, reset and
 a wave demo.
 
+Unlike the Go2, G1 and ROSMASTER R2 profiles, SO-101 has no ROS 2 or DDS
+interface. Control it through the viewer or the runtime's HTTP API.
+
 You can also choose SO-101 under `wendy discover` → Simulator → Create.
 `wendy vm robot restart arm-sim` recovers runtime failures, while
 `wendy vm robot update arm-sim` applies the current CLI's runtime source.
