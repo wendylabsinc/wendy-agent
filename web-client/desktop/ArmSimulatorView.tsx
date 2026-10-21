@@ -28,6 +28,8 @@ export default function ArmSimulatorView({
   const viewer = useRef<SandboxViewer | null>(null);
   const [status, setStatus] = useState<ArmStatus>();
   const [error, setError] = useState("");
+  // Cleared by the next successful poll, unlike an action's error.
+  const [pollError, setPollError] = useState("");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const request = useCallback(
@@ -62,9 +64,12 @@ export default function ArmSimulatorView({
     async function poll() {
       try {
         const next = (await request("/api/status")) as ArmStatus;
-        if (!disposed) setStatus(next);
+        if (!disposed) {
+          setStatus(next);
+          setPollError("");
+        }
       } catch (e) {
-        if (!disposed) setError(String(e));
+        if (!disposed) setPollError(String(e));
       } finally {
         if (!disposed) timer = setTimeout(poll, 500);
       }
@@ -175,9 +180,9 @@ export default function ArmSimulatorView({
           </div>
         </aside>
       </div>
-      {(error || status?.error) && (
+      {(error || pollError || status?.error) && (
         <p className="desktop-error" role="alert">
-          {error || status?.error}
+          {error || pollError || status?.error}
         </p>
       )}
     </div>

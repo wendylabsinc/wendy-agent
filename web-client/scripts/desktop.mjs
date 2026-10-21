@@ -66,7 +66,7 @@ async function copySource(kind) {
     await cp(join(source, path), join(target, path), {
       recursive: true,
       filter: (path) => !/(__pycache__|\.pyc$|\.DS_Store$)/.test(path) &&
-        !(kind === "so101" && path.includes("so101_sim/vendor")),
+        !(kind === "so101" && /so101_sim[\\/]vendor/.test(path)),
     });
   const hash = createHash("sha256");
   async function visit(path, relative = "") {
