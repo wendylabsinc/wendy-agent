@@ -344,7 +344,7 @@ func TestStartNamesTheVMOnlyWhenThereIsSomethingToStart(t *testing.T) {
 
 	// A status that cannot be read is an error, not a status line.
 	vmStatusFn = func(string) (vm.Status, error) { return vm.Status{}, errors.New("store unreadable") }
-	if flash, isErr, name := startSimulatorRow(item); name != "" || !isErr || flash != "store unreadable" {
+	if flash, isErr, name := startSimulatorRow(item); name != "" || !isErr || flash != "Store unreadable." {
 		t.Errorf("unreadable status: flash=%q isErr=%t name=%q", flash, isErr, name)
 	}
 }

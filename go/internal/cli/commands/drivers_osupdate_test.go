@@ -377,8 +377,8 @@ func TestWarnDriverAddons_DriversDirStagingFailureBlocksOnce(t *testing.T) {
 	if !pf.blocking() || len(pf.unstaged) != 1 {
 		t.Fatalf("unstaged = %+v, want acme-nic blocking exactly once", pf.unstaged)
 	}
-	if !strings.Contains(pf.unstaged[0].reason, "Something went wrong. Try again.") || strings.Contains(pf.unstaged[0].reason, "signature verification failed") {
-		t.Errorf("reason = %q, want the agent's cause", pf.unstaged[0].reason)
+	if !strings.Contains(pf.unstaged[0].reason, "Staging failed: something went wrong. Try again.") || strings.Contains(pf.unstaged[0].reason, "signature verification failed") {
+		t.Errorf("reason = %q, want the mapped staging failure", pf.unstaged[0].reason)
 	}
 }
 

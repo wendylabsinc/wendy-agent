@@ -370,7 +370,7 @@ func TestSensorPairErrorsPreservePairingsAndBlockUnauthorizedPair(t *testing.T) 
 	client.discoverErr = status.Error(codes.Internal, "LAN unavailable")
 	updated, _ = m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if len(m.rows) != 2 || !strings.Contains(m.View(), "Something went wrong. Try again.") || !strings.Contains(m.View(), "not reachable") || strings.Contains(m.View(), "rpc error") {
+	if len(m.rows) != 2 || !strings.Contains(m.View(), "something went wrong. Try again.") || !strings.Contains(m.View(), "not reachable") || strings.Contains(m.View(), "rpc error") {
 		t.Fatalf("failed scan lost rows or error context: %s", m.View())
 	}
 	// A failed forget leaves the saved pairing available for retry.
@@ -452,7 +452,7 @@ func TestSensorPairScanCancellationKeepsKnownDevices(t *testing.T) {
 	// The fake device answers a cancelled call the way gRPC does.
 	updated, _ := m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if client.discoveries != 1 || len(m.devices) != 1 || m.scanning || !strings.Contains(m.message, "The action was cancelled.") {
+	if client.discoveries != 1 || len(m.devices) != 1 || m.scanning || !strings.Contains(m.message, "the action was cancelled.") {
 		t.Fatalf("cancelled scan discarded known devices or stayed scanning: %q", m.message)
 	}
 	// A local scan cut short by cancellation is reported the same way.
@@ -465,7 +465,7 @@ func TestSensorPairScanCancellationKeepsKnownDevices(t *testing.T) {
 	h.client = &unimplementedDiscoveryClient{client}
 	updated, _ = m.Update(h.scan()())
 	m = updated.(sensorPairModel)
-	if len(m.devices) != 1 || !strings.Contains(m.message, "The action was cancelled.") {
+	if len(m.devices) != 1 || !strings.Contains(m.message, "the action was cancelled.") {
 		t.Fatalf("cancelled local scan discarded known devices: %q", m.message)
 	}
 }
