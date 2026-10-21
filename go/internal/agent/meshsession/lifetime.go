@@ -26,21 +26,21 @@ func limitSessionLifetime(credentials *localmesh.Credentials, conn *quic.Conn) (
 		return time.Time{}, err
 	}
 	if local.Device != credentials.Device || peer.Device.Tenant() != local.Device.Tenant() || peer.Device == local.Device {
-		return time.Time{}, errors.New("mesh app session identity changed")
+		return time.Time{}, errors.New("net app session identity changed")
 	}
 	expires := local.NotAfter
 	if peer.NotAfter.Before(expires) {
 		expires = peer.NotAfter
 	}
 	if !expires.After(time.Now()) {
-		return time.Time{}, errors.New("mesh app credentials expired")
+		return time.Time{}, errors.New("net app credentials expired")
 	}
 	go func() {
 		timer := time.NewTimer(time.Until(expires))
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			_ = conn.CloseWithError(1, "mesh app credentials expired")
+			_ = conn.CloseWithError(1, "net app credentials expired")
 		case <-conn.Context().Done():
 		}
 	}()

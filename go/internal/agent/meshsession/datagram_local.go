@@ -41,7 +41,7 @@ func DialLocalUDP(ctx context.Context, auth UDPAuthorizer, port uint16) (*LocalD
 
 func (f *LocalDatagramFlow) Send(payload []byte) error {
 	if len(payload) == 0 || len(payload) > MaxUDPPayload {
-		return errors.New("invalid mesh UDP payload size")
+		return errors.New("invalid net UDP payload size")
 	}
 	return f.auth.WithAuthorizedUDPToken(f.port, f.token, func(address netip.AddrPort) error {
 		if err := f.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
@@ -78,7 +78,7 @@ func (f *LocalDatagramFlow) Receive(ctx context.Context) ([]byte, error) {
 			return nil, err
 		}
 		if n == 0 || n > MaxUDPPayload {
-			return nil, errors.New("invalid mesh UDP reply size")
+			return nil, errors.New("invalid net UDP reply size")
 		}
 		if err := f.auth.WithAuthorizedUDPToken(f.port, f.token, func(address netip.AddrPort) error { return nil }); err != nil {
 			return nil, err

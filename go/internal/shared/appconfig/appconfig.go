@@ -566,7 +566,7 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 					return fmt.Errorf("%s[%d]: invalid network port mapping", prefix, i)
 				}
 				if pm.Protocol == "udp" && e.Mode != "mesh" {
-					return fmt.Errorf("%s[%d]: UDP port mappings require mesh mode", prefix, i)
+					return fmt.Errorf("%s[%d]: UDP port mappings require network mode \"mesh\"", prefix, i)
 				}
 			}
 		case EntitlementPersist:

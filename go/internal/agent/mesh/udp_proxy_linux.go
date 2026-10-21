@@ -71,7 +71,7 @@ type UDPProxy struct {
 
 func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy, vips *VIPTable) (*UDPProxy, error) {
 	if dialer == nil || sources == nil || vips == nil {
-		return nil, errors.New("missing UDP mesh dialer or app source registry")
+		return nil, errors.New("missing UDP net dialer or app source registry")
 	}
 	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), replyListen: listenUDPReply}, nil
 }

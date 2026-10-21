@@ -33,6 +33,7 @@ type Client struct {
 	mu           sync.Mutex
 	peers        map[meshid.Device]*pooledSession
 	sessions     map[*pooledSession]struct{} // includes retired sessions with active streams
+	udpSessions  map[*udpSession]struct{}    // dedicated datagram sessions, including pending setup
 	closed       bool
 	stop         chan struct{}
 	done         chan struct{}
@@ -57,7 +58,7 @@ func NewClient(credentials *localmesh.Credentials) (*Client, error) {
 	if credentials == nil {
 		return nil, errors.New("missing wendy net app credentials")
 	}
-	c := &Client{credentials: credentials, peers: make(map[meshid.Device]*pooledSession), sessions: make(map[*pooledSession]struct{}), stop: make(chan struct{}), done: make(chan struct{}),
+	c := &Client{credentials: credentials, peers: make(map[meshid.Device]*pooledSession), sessions: make(map[*pooledSession]struct{}), udpSessions: make(map[*udpSession]struct{}), stop: make(chan struct{}), done: make(chan struct{}),
 		dial: func(ctx context.Context, endpoint netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
 			return quic.DialAddr(ctx, endpoint.String(), tlsConfig, config)
 		}}
@@ -111,6 +112,15 @@ func (c *Client) Close() error {
 			conns = append(conns, entry.conn)
 		}
 	}
+	for entry := range c.udpSessions {
+		entry.retired = true
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+		if entry.flow != nil {
+			conns = append(conns, entry.flow.conn)
+		}
+	}
 	c.peers = make(map[meshid.Device]*pooledSession)
 	c.mu.Unlock()
 	for _, conn := range conns {
@@ -155,6 +165,12 @@ func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 			peers[entry.peer] = entry.address
 		}
 	}
+	for entry := range c.udpSessions {
+		address, err := Resolve(snapshot, entry.peer)
+		if err != nil || address != entry.address {
+			peers[entry.peer] = entry.address
+		}
+	}
 	for peer, endpoint := range peers {
 		address, err := Resolve(snapshot, peer)
 		if err != nil || address != endpoint {
@@ -179,6 +195,18 @@ func (c *Client) invalidateLocked(peer meshid.Device) []*quic.Conn {
 		if entry.peer == peer {
 			entry.retired = true
 			conns = append(conns, entry.conn)
+		}
+	}
+	for entry := range c.udpSessions {
+		if entry.peer != peer {
+			continue
+		}
+		entry.retired = true
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+		if entry.flow != nil {
+			conns = append(conns, entry.flow.conn)
 		}
 	}
 	return conns

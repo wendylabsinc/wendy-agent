@@ -307,6 +307,31 @@ IP networking access.
 
 > **Deprecation notice:** an omitted `mode` maps to host networking today, and the agent logs a `WARN` at container create for any `network` entitlement without an explicit `mode`, flagging that its ports are publicly reachable. This default will change to isolated `"bridge"` networking in a future major release. If you want to keep host networking going forward, set `"mode": "host"` explicitly now; if you want isolated networking with outbound internet, opt in early with `"mode": "bridge"`.
 
+Wendy Net UDP services declare `protocol: "udp"` on each published port:
+
+```json
+{
+  "type": "network",
+  "mode": "mesh",
+  "serviceCIDR": "10.99.0.0/16",
+  "ports": [{ "host": 47777, "container": 7777, "protocol": "udp" }]
+}
+```
+
+The service listens on its container address (or `0.0.0.0:7777`). Other
+net apps send to this device's service VIP on UDP port `47777`. TCP remains
+the default when `protocol` is omitted; TCP and UDP mappings with the same
+host port are independent. Only a running app's explicitly published UDP
+ports accept peer traffic. UDP DNS-SD announcements require a matching UDP
+mapping and use service types ending in `._udp`.
+
+UDP currently carries payloads of 1–1000 bytes; empty or larger datagrams
+are dropped. Delivery remains unreliable, so applications handle retries.
+A source/destination tuple expires after 30 seconds without an app request;
+its next request establishes a fresh authenticated flow. New flows on slow
+links can take longer to establish than exchanges on an existing socket.
+Net UDP requires Linux TPROXY support on the device.
+
 ### `gpu`
 
 Hardware-dependent GPU or board-telemetry access.

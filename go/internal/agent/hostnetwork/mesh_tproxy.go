@@ -52,7 +52,7 @@ func meshUDPRuleExists(chain string, args []string) (bool, error) {
 // TPROXY target before reporting readiness to the app lifecycle.
 func InitMeshUDPTProxy(proxyPort int) error {
 	if proxyPort <= 0 || proxyPort > 65535 {
-		return errors.New("invalid mesh UDP proxy port")
+		return errors.New("invalid net UDP proxy port")
 	}
 	// br_netfilter invokes IPv4 PREROUTING while the packet is still being
 	// bridged. TPROXY can mark it there, but the bridge then consumes the
@@ -60,10 +60,10 @@ func InitMeshUDPTProxy(proxyPort int) error {
 	// routed app traffic through the ordinary IPv4 hook when this sysctl is
 	// zero (or br_netfilter is not loaded, as on the target images).
 	if value, err := os.ReadFile("/proc/sys/net/bridge/bridge-nf-call-iptables"); err == nil && strings.TrimSpace(string(value)) != "0" {
-		return errors.New("mesh UDP TPROXY requires net.bridge.bridge-nf-call-iptables=0")
+		return errors.New("net UDP TPROXY requires net.bridge.bridge-nf-call-iptables=0")
 	}
 	if out, err := exec.Command("iptables", "-w", "5", "-t", "mangle", "-N", MeshUDPChainName).CombinedOutput(); err != nil && !strings.Contains(string(out), "already exists") {
-		return fmt.Errorf("creating mesh UDP chain: %w (%s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("creating net UDP chain: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	// An impossible tuple checks the actual xt_TPROXY kernel target without
 	// catching host or app traffic while the probe rule exists.
@@ -105,7 +105,7 @@ func EnsureMeshUDPTProxyPolicy() error {
 	}
 	ruleLines := nonemptyLines(rules)
 	if len(ruleLines) > 1 || len(ruleLines) == 1 && (!strings.Contains(ruleLines[0], "fwmark "+meshUDPMark+" ") || !strings.HasSuffix(ruleLines[0], "lookup "+meshUDPTable)) {
-		return errors.New("foreign IPv4 policy rule owns mesh UDP priority 18864")
+		return errors.New("foreign IPv4 policy rule owns net UDP priority 18864")
 	}
 	routes, routeErr := meshUDPCommand("ip", "-4", "route", "show", "table", meshUDPTable)
 	if routeErr != nil && !strings.Contains(routes, "FIB table does not exist") {
@@ -116,7 +116,7 @@ func EnsureMeshUDPTProxyPolicy() error {
 		routeLines = nil
 	}
 	if len(routeLines) > 1 || len(routeLines) == 1 && !strings.HasPrefix(routeLines[0], "local default dev lo ") {
-		return errors.New("foreign route owns mesh UDP table 18867")
+		return errors.New("foreign route owns net UDP table 18867")
 	}
 	if len(routeLines) == 0 {
 		if _, err := meshUDPCommand("ip", "-4", "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", meshUDPTable); err != nil {
@@ -141,43 +141,45 @@ func nonemptyLines(s string) []string {
 	return lines
 }
 
-func meshUDPInterceptArgs(ip, cidr, bridge string, proxyPort int) []string {
+func meshUDPInterceptArgs(ip, cidr string, proxyPort int) []string {
 	return []string{"-s", ip + "/32", "-d", cidr, "-p", "udp", "-j", "TPROXY", "--on-port", strconv.Itoa(proxyPort), "--tproxy-mark", meshUDPMark}
 }
 
-func AddMeshUDPIntercept(ip, cidr, bridge string, proxyPort int) error {
+// AddMeshUDPIntercept tracks one service container, so sibling services on the
+// same app bridge retain independent rules while a redeploy replaces its IP.
+func AddMeshUDPIntercept(ip, cidr, ownerID string, proxyPort int) error {
 	meshUDPInterceptMu.Lock()
 	defer meshUDPInterceptMu.Unlock()
 	owner := meshUDPInterceptOwner{ip, cidr, proxyPort}
-	if old, ok := meshUDPInterceptOwners[bridge]; ok && old != owner {
-		if err := removeMeshUDPInterceptRule(meshUDPInterceptArgs(old.ip, old.cidr, bridge, old.proxyPort)); err != nil {
-			return fmt.Errorf("replacing stale mesh UDP interception for %s: %w", bridge, err)
+	if old, ok := meshUDPInterceptOwners[ownerID]; ok && old != owner {
+		if err := removeMeshUDPInterceptRule(meshUDPInterceptArgs(old.ip, old.cidr, old.proxyPort)); err != nil {
+			return fmt.Errorf("replacing stale net UDP interception for %s: %w", ownerID, err)
 		}
-		delete(meshUDPInterceptOwners, bridge)
+		delete(meshUDPInterceptOwners, ownerID)
 	}
-	args := meshUDPInterceptArgs(ip, cidr, bridge, proxyPort)
+	args := meshUDPInterceptArgs(ip, cidr, proxyPort)
 	if exists, err := meshUDPRuleExists(MeshUDPChainName, args); err != nil {
 		return err
 	} else if exists {
-		meshUDPInterceptOwners[bridge] = owner
+		meshUDPInterceptOwners[ownerID] = owner
 		return nil
 	}
 	_, err := meshUDPCommand("iptables", append([]string{"-t", "mangle", "-A", MeshUDPChainName}, args...)...)
 	if err == nil {
-		meshUDPInterceptOwners[bridge] = owner
+		meshUDPInterceptOwners[ownerID] = owner
 	}
 	return err
 }
 
-func RemoveMeshUDPIntercept(ip, cidr, bridge string, proxyPort int) error {
+func RemoveMeshUDPIntercept(ip, cidr, ownerID string, proxyPort int) error {
 	meshUDPInterceptMu.Lock()
 	defer meshUDPInterceptMu.Unlock()
 	owner := meshUDPInterceptOwner{ip, cidr, proxyPort}
-	if err := removeMeshUDPInterceptRule(meshUDPInterceptArgs(ip, cidr, bridge, proxyPort)); err != nil {
+	if err := removeMeshUDPInterceptRule(meshUDPInterceptArgs(ip, cidr, proxyPort)); err != nil {
 		return err
 	}
-	if meshUDPInterceptOwners[bridge] == owner {
-		delete(meshUDPInterceptOwners, bridge)
+	if meshUDPInterceptOwners[ownerID] == owner {
+		delete(meshUDPInterceptOwners, ownerID)
 	}
 	return nil
 }

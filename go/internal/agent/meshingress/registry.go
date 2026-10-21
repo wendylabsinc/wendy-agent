@@ -1,4 +1,4 @@
-// Package meshingress tracks the host TCP ports a running, isolated mesh app
+// Package meshingress tracks the TCP and UDP ports a running, isolated mesh app
 // has explicitly published. Peer sessions consult this registry before
 // connecting directly to its verified container endpoint.
 package meshingress

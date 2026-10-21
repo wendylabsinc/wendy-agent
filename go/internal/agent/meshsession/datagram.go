@@ -2,11 +2,9 @@ package meshsession
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
-	"io"
 	"net"
 	"net/netip"
 	"time"
@@ -33,7 +31,7 @@ type DatagramFlow struct{ conn *quic.Conn }
 
 func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer meshid.Device, address netip.AddrPort, port uint16) (*DatagramFlow, error) {
 	if credentials == nil || port == 0 || !address.IsValid() {
-		return nil, errors.New("invalid mesh UDP dial")
+		return nil, errors.New("invalid net UDP dial")
 	}
 	cfg, err := credentials.PeerTLSWithTickets(peer, ALPN, "app-quic")
 	if err != nil {
@@ -41,37 +39,19 @@ func DialUDP(ctx context.Context, credentials *localmesh.Credentials, peer meshi
 	}
 	conn, err := quic.DialAddr(ctx, address.String(), cfg, quicConfig())
 	if err != nil {
-		return nil, fmt.Errorf("mesh UDP QUIC dial: %w", err)
+		return nil, fmt.Errorf("net UDP QUIC dial: %w", err)
 	}
 	if _, err := limitSessionLifetime(credentials, conn); err != nil {
-		_ = conn.CloseWithError(1, "mesh app credentials invalid")
+		_ = conn.CloseWithError(1, "net app credentials invalid")
 		return nil, err
 	}
-	stream, err := conn.OpenStreamSync(ctx)
+	stream, err := requestAppPort(ctx, conn, port, udpOpenMagic)
 	if err != nil {
 		_ = conn.CloseWithError(1, "UDP open failed")
 		return nil, err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = stream.SetDeadline(deadline)
-	}
-	var open [6]byte
-	copy(open[:4], udpOpenMagic[:])
-	binary.BigEndian.PutUint16(open[4:], port)
-	if _, err := stream.Write(open[:]); err != nil {
-		_ = conn.CloseWithError(1, "UDP open failed")
-		return nil, err
-	}
-	var ack [1]byte
-	if _, err := io.ReadFull(stream, ack[:]); err != nil {
-		_ = conn.CloseWithError(1, "UDP open failed")
-		return nil, err
-	}
+	stream.CancelRead(0)
 	_ = stream.Close()
-	if ack[0] != 1 {
-		_ = conn.CloseWithError(1, "UDP denied")
-		return nil, ErrDenied
-	}
 	return &DatagramFlow{conn: conn}, nil
 }
 
@@ -80,7 +60,7 @@ func (f *DatagramFlow) Send(payload []byte) error {
 		return net.ErrClosed
 	}
 	if len(payload) == 0 || len(payload) > MaxUDPPayload {
-		return errors.New("invalid mesh UDP payload size")
+		return errors.New("invalid net UDP payload size")
 	}
 	return f.conn.SendDatagram(payload)
 }
@@ -94,7 +74,7 @@ func (f *DatagramFlow) Receive(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	if len(payload) == 0 || len(payload) > MaxUDPPayload {
-		return nil, errors.New("invalid mesh UDP reply size")
+		return nil, errors.New("invalid net UDP reply size")
 	}
 	return payload, nil
 }
@@ -106,7 +86,7 @@ func (f *DatagramFlow) Close() error {
 	return f.conn.CloseWithError(0, "UDP flow closed")
 }
 
-func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port uint16, stream *quic.Stream) {
+func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port uint16, stream *quic.Stream, protocol *sessionProtocol) {
 	auth, ok := s.authorizer.(UDPAuthorizer)
 	if !ok || port == 0 {
 		return
@@ -123,6 +103,11 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 		return
 	}
 	defer local.Close()
+	if !protocol.admit(true) {
+		deny(stream)
+		return
+	}
+	defer conn.CloseWithError(0, "UDP flow complete")
 	if _, err := stream.Write([]byte{1}); err != nil {
 		return
 	}
@@ -132,9 +117,11 @@ func (s *Server) serveDatagrams(parent context.Context, conn *quic.Conn, port ui
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer cancel()
+		// The request loop owns idle expiry and closes local before joining us.
+		// A receive deadline here would kill send-only flows despite live requests.
 		buf := make([]byte, MaxUDPPayload+1)
 		for {
-			_ = local.SetReadDeadline(time.Now().Add(udpIdleTimeout))
 			n, err := local.Read(buf)
 			if err != nil {
 				return

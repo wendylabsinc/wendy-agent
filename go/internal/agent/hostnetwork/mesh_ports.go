@@ -214,11 +214,11 @@ func iptablesOption(fields []string, option string) string {
 // registry check and this cleanup with other app ingress setup.
 func FlushOrphanMeshPort(hostPort uint16, protocol string) error {
 	if hostPort == 0 || protocol != "tcp" && protocol != "udp" {
-		return fmt.Errorf("invalid orphan mesh port cleanup")
+		return fmt.Errorf("invalid orphan net port cleanup")
 	}
 	out, err := meshPortsIPTables("-t", "nat", "-S", MeshPortsChainName)
 	if err != nil {
-		return fmt.Errorf("listing mesh ingress forwards: %w (%s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("listing net ingress forwards: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
@@ -232,14 +232,14 @@ func FlushOrphanMeshPort(hostPort uint16, protocol string) error {
 		target := iptablesOption(fields, "--to-destination")
 		ip, portText, err := net.SplitHostPort(target)
 		if err != nil || net.ParseIP(ip).To4() == nil {
-			return fmt.Errorf("invalid Wendy mesh ingress target %q", target)
+			return fmt.Errorf("invalid Wendy Net ingress target %q", target)
 		}
 		portValue, err := strconv.ParseUint(portText, 10, 16)
 		if err != nil || portValue == 0 {
-			return fmt.Errorf("invalid Wendy mesh ingress target port %q", target)
+			return fmt.Errorf("invalid Wendy Net ingress target port %q", target)
 		}
 		if delOut, err := meshPortsIPTables(append([]string{"-t", "nat", "-D", MeshPortsChainName}, fields[2:]...)...); err != nil {
-			return fmt.Errorf("removing orphan mesh ingress: %w (%s)", err, strings.TrimSpace(string(delOut)))
+			return fmt.Errorf("removing orphan net ingress: %w (%s)", err, strings.TrimSpace(string(delOut)))
 		}
 		if err := flushStaleRulesForPort("POSTROUTING", uint16(portValue), ip, protocol); err != nil {
 			return err

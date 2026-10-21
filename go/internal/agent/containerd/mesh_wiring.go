@@ -456,10 +456,10 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, container
 		}
 		return fmt.Errorf("wendy net egress: adding REDIRECT rule for app %q: %w", appID, err)
 	}
-	if err := hostnetwork.AddMeshUDPIntercept(ip, params.cidr, bridgeName(appID), mesh.UDPProxyPort); err != nil {
+	if err := hostnetwork.AddMeshUDPIntercept(ip, params.cidr, containerName, mesh.UDPProxyPort); err != nil {
 		_ = hostnetwork.RemoveMeshRedirect(ip, params.cidr, mesh.ProxyPort)
 		_ = hostnetwork.RemoveMeshRule(ip, params.cidr)
-		return fmt.Errorf("mesh egress: adding UDP TPROXY rule for app %q: %w", appID, err)
+		return fmt.Errorf("net egress: adding UDP TPROXY rule for app %q: %w", appID, err)
 	}
 
 	// DNS is best-effort: without it, device-N.cloud.wendy.dev hostnames fail
@@ -476,7 +476,7 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, container
 		return err
 	}
 	if err := c.claimMeshSource(containerName, appID, ip, params.cidr); err != nil {
-		return fmt.Errorf("mesh egress: claiming app source: %w", err)
+		return fmt.Errorf("net egress: claiming app source: %w", err)
 	}
 
 	c.logger.Info("wendy net egress applied",
@@ -665,7 +665,7 @@ func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, contai
 		if err != nil {
 			return err
 		}
-		errs = append(errs, removeMeshEgressRule(ip, cidr), removeMeshEgressRedirect(ip, cidr, mesh.ProxyPort), removeMeshUDPEgressIntercept(ip, cidr, bridgeName(appID), mesh.UDPProxyPort))
+		errs = append(errs, removeMeshEgressRule(ip, cidr), removeMeshEgressRedirect(ip, cidr, mesh.ProxyPort), removeMeshUDPEgressIntercept(ip, cidr, containerName, mesh.UDPProxyPort))
 		for _, pm := range ent.Ports {
 			remove := removeMeshIngressPortForward
 			if pm.Protocol == "udp" {

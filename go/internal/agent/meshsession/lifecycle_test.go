@@ -58,12 +58,13 @@ func lifecycleServer(t *testing.T, creds *localmesh.Credentials, auth Authorizer
 				}
 				defer conn.CloseWithError(0, "test done")
 				go func() { <-ctx.Done(); conn.CloseWithError(0, "test done") }()
+				protocol := &sessionProtocol{}
 				for {
 					stream, err := conn.AcceptStream(ctx)
 					if err != nil {
 						return
 					}
-					go server.serveStream(ctx, conn, stream)
+					go server.serveStream(ctx, conn, stream, protocol)
 				}
 			}()
 		}

@@ -23,8 +23,8 @@ type UDPDialFunc func(context.Context, meshid.Device, uint16) (UDPFlow, error)
 type UDPProxy struct{}
 
 func NewUDPProxy(UDPDialFunc, *meshingress.Registry, *VIPTable) (*UDPProxy, error) {
-	return nil, errors.New("mesh UDP VIP proxy requires Linux")
+	return nil, errors.New("net UDP VIP proxy requires Linux")
 }
-func (*UDPProxy) Start(string) error { return errors.New("mesh UDP VIP proxy requires Linux") }
+func (*UDPProxy) Start(string) error { return errors.New("net UDP VIP proxy requires Linux") }
 func (*UDPProxy) Close() error       { return nil }
 func (*UDPProxy) Addr() net.Addr     { return nil }

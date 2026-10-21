@@ -263,7 +263,7 @@ func main() {
 	meshUDPReady := false
 	if runtime.GOOS == "linux" {
 		if err := hostnetwork.InitMeshUDPTProxy(mesh.UDPProxyPort); err != nil {
-			logger.Warn("mesh UDP VIP interception unavailable", zap.Error(err))
+			logger.Warn("net UDP VIP interception unavailable", zap.Error(err))
 		} else {
 			meshUDPReady = true
 		}
@@ -382,7 +382,7 @@ func main() {
 					return
 				case <-ticker.C:
 					if err := hostnetwork.EnsureMeshUDPTProxyPolicy(); err != nil {
-						logger.Warn("mesh UDP VIP policy repair failed", zap.Error(err))
+						logger.Warn("net UDP VIP policy repair failed", zap.Error(err))
 					}
 				}
 			}
@@ -968,7 +968,6 @@ func main() {
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
 	var localMeshAppClient *meshsession.Client
-	var localMeshCredentials *localmesh.Credentials
 	// Persistent VIP table shared by DNS answers, the proxy's reverse
 	// lookup, and every allocation: (tenant UUID, device UUID) ↔ VIP. A
 	// corrupt table file refuses to open rather than silently re-allocating
@@ -1003,7 +1002,6 @@ func main() {
 			}
 			localMeshMu.Lock()
 			localMeshAppClient = appClient
-			localMeshCredentials = credentials
 			localMeshMu.Unlock()
 			go func() { <-ctx.Done(); _ = appClient.Close() }()
 			wg.Add(1)
@@ -1143,22 +1141,23 @@ func main() {
 		}
 		localMeshMu.RLock()
 		snapshot := localMeshSnapshot
-		credentials := localMeshCredentials
+		appClient := localMeshAppClient
 		localMeshMu.RUnlock()
-		if snapshot == nil || credentials == nil {
+		if snapshot == nil || appClient == nil {
 			return nil, meshsession.ErrNoRoute
 		}
 		address, err := meshsession.Resolve(snapshot(), peer)
 		if err != nil {
+			appClient.Invalidate(peer)
 			return nil, err
 		}
-		return meshsession.DialUDP(dialCtx, credentials, peer, address, port)
+		return appClient.DialUDP(dialCtx, peer, address, port)
 	}), meshIngress, meshVIPs)
 	if udpErr == nil {
 		udpErr = udpProxy.Start(fmt.Sprintf(":%d", mesh.UDPProxyPort))
 	}
 	if udpErr != nil {
-		logger.Warn("mesh UDP proxy failed to start; UDP VIP egress disabled", zap.Error(udpErr))
+		logger.Warn("net UDP proxy failed to start; UDP VIP egress disabled", zap.Error(udpErr))
 	}
 
 	// Hybrid friendly-name resolver: <devicename>.<org-slug>.cloud.wendy.dev.

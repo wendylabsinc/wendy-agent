@@ -114,7 +114,7 @@ func (t *VIPTable) Allocate(device meshid.Device) (netip.Addr, error) {
 		return netip.Addr{}, t.persistenceErr
 	}
 	if !device.IsValid() {
-		return netip.Addr{}, errors.New("mesh: VIP allocation requires a device identity")
+		return netip.Addr{}, errors.New("net: VIP allocation requires a device identity")
 	}
 
 	id := device.UUID()
@@ -207,7 +207,7 @@ func (t *VIPTable) RetireTenant(tenant meshid.Tenant) error {
 		return t.persistenceErr
 	}
 	if !tenant.IsValid() {
-		return errors.New("mesh: VIP retirement requires a tenant identity")
+		return errors.New("net: VIP retirement requires a tenant identity")
 	}
 
 	var dropped []vipEntry
@@ -228,7 +228,7 @@ func (t *VIPTable) RetireTenant(tenant meshid.Tenant) error {
 		// Tenant retirement is an admission change. Even a pre-rename failure
 		// must stop old VIPs resolving under the new enrollment.
 		if t.persistenceErr == nil {
-			t.persistenceErr = fmt.Errorf("mesh: VIP tenant retirement failed: %w; reopen table before further use", err)
+			t.persistenceErr = fmt.Errorf("net: VIP tenant retirement failed: %w; reopen table before further use", err)
 		}
 		return t.persistenceErr
 	}

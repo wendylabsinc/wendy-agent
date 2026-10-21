@@ -1,5 +1,5 @@
-// Package meshsession carries app TCP flows in end-to-end QUIC streams over
-// the Babel-routed local mesh. Hop links cannot read these streams.
+// Package meshsession carries app TCP streams and UDP datagrams in end-to-end
+// QUIC sessions over the Babel-routed local mesh. Hop links cannot read them.
 package meshsession
 
 import (
@@ -83,7 +83,7 @@ func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.D
 		return nil, fmt.Errorf("wendy net app QUIC dial: %w", err)
 	}
 	if _, err := limitSessionLifetime(credentials, conn); err != nil {
-		_ = conn.CloseWithError(1, "mesh app credentials invalid")
+		_ = conn.CloseWithError(1, "net app credentials invalid")
 		return nil, err
 	}
 	ok := false
@@ -101,6 +101,10 @@ func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.D
 }
 
 func requestPort(ctx context.Context, conn *quic.Conn, port uint16) (*quic.Stream, error) {
+	return requestAppPort(ctx, conn, port, [4]byte{'W', 'A', 'S', '1'})
+}
+
+func requestAppPort(ctx context.Context, conn *quic.Conn, port uint16, magic [4]byte) (*quic.Stream, error) {
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("wendy net app stream open: %w", err)
@@ -134,7 +138,7 @@ func requestPort(ctx context.Context, conn *quic.Conn, port uint16) (*quic.Strea
 	}
 	defer joinCancellation()
 	var hello [6]byte
-	copy(hello[:4], "WAS1")
+	copy(hello[:4], magic[:])
 	binary.BigEndian.PutUint16(hello[4:], port)
 	if _, err = stream.Write(hello[:]); err != nil {
 		if ctx.Err() != nil {
@@ -277,7 +281,7 @@ func (s *Server) Addr() net.Addr {
 
 func (s *Server) serve(parent context.Context, conn *quic.Conn) {
 	if _, err := limitSessionLifetime(s.credentials, conn); err != nil {
-		_ = conn.CloseWithError(1, "mesh app credentials invalid")
+		_ = conn.CloseWithError(1, "net app credentials invalid")
 		return
 	}
 	var streams sync.WaitGroup
@@ -291,6 +295,7 @@ func (s *Server) serve(parent context.Context, conn *quic.Conn) {
 		case <-doneConn:
 		}
 	}()
+	protocol := &sessionProtocol{}
 	sem := make(chan struct{}, 8)
 	for {
 		stream, err := conn.AcceptStream(conn.Context())
@@ -303,7 +308,7 @@ func (s *Server) serve(parent context.Context, conn *quic.Conn) {
 			go func() {
 				defer streams.Done()
 				defer func() { <-sem }()
-				s.serveStream(parent, conn, stream)
+				s.serveStream(parent, conn, stream, protocol)
 			}()
 		default:
 			stream.CancelRead(1)
@@ -312,7 +317,32 @@ func (s *Server) serve(parent context.Context, conn *quic.Conn) {
 	}
 }
 
-func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *quic.Stream) {
+// Raw QUIC datagrams have no flow identifier. A connection can therefore carry
+// pooled TCP streams or exactly one admitted UDP flow, never both. Keep the
+// decision across stream goroutines, including after a control stream closes.
+type sessionProtocol struct {
+	mu       sync.Mutex
+	tcp, udp bool
+}
+
+func (p *sessionProtocol) admit(udp bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if udp {
+		if p.tcp || p.udp {
+			return false
+		}
+		p.udp = true
+	} else {
+		if p.udp {
+			return false
+		}
+		p.tcp = true
+	}
+	return true
+}
+
+func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *quic.Stream, protocol *sessionProtocol) {
 	// Both halves must retire before quic-go returns incoming stream credit.
 	// Early rejection never reads the peer's FIN/reset, so explicitly abandon
 	// receive on every terminal path. Graceful Close preserves a queued ACK;
@@ -327,7 +357,7 @@ func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *qu
 	}
 	port := binary.BigEndian.Uint16(hello[4:])
 	if string(hello[:4]) == "WAU1" {
-		s.serveDatagrams(parent, conn, port, stream)
+		s.serveDatagrams(parent, conn, port, stream, protocol)
 		return
 	}
 	if string(hello[:4]) != "WAS1" {
@@ -341,6 +371,10 @@ func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *qu
 		return
 	}
 	defer local.Close()
+	if !protocol.admit(false) {
+		deny(stream)
+		return
+	}
 	var revoked <-chan struct{}
 	if owned, ok := local.(interface{ Done() <-chan struct{} }); ok {
 		revoked = owned.Done()

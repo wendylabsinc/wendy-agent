@@ -2582,11 +2582,11 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 				if err := c.applyMeshIngressPorts(appName, appID, reusedNetworkSandbox.ip, ent.Ports); err != nil {
 					return nil, failStartedTask(fmt.Errorf("wendy net ingress setup failed for reused sandbox %q: %w", appName, err))
 				}
-				if err := hostnetwork.AddMeshUDPIntercept(reusedNetworkSandbox.ip, ent.ServiceCIDR, bridgeName(appID), mesh.UDPProxyPort); err != nil {
-					return nil, failStartedTask(fmt.Errorf("mesh UDP redirect setup failed for reused sandbox %q: %w", appName, err))
+				if err := hostnetwork.AddMeshUDPIntercept(reusedNetworkSandbox.ip, ent.ServiceCIDR, appName, mesh.UDPProxyPort); err != nil {
+					return nil, failStartedTask(fmt.Errorf("net UDP redirect setup failed for reused sandbox %q: %w", appName, err))
 				}
 				if err := c.claimMeshSource(appName, appID, reusedNetworkSandbox.ip, ent.ServiceCIDR); err != nil {
-					return nil, failStartedTask(fmt.Errorf("mesh source attribution failed for reused sandbox %q: %w", appName, err))
+					return nil, failStartedTask(fmt.Errorf("net source attribution failed for reused sandbox %q: %w", appName, err))
 				}
 			}
 		}
@@ -4974,7 +4974,7 @@ func (c *Client) rehydrateRunningMeshIngressAttempt(ctx context.Context, ctr con
 		scheduleRetry("port setup", err)
 		return
 	}
-	if err := hostnetwork.AddMeshUDPIntercept(ip, ent.ServiceCIDR, bridgeName(appID), mesh.UDPProxyPort); err != nil {
+	if err := hostnetwork.AddMeshUDPIntercept(ip, ent.ServiceCIDR, ctr.ID(), mesh.UDPProxyPort); err != nil {
 		cancelWait()
 		c.releaseMeshIngressRun(ctr.ID(), run)
 		scheduleRetry("UDP interception", err)

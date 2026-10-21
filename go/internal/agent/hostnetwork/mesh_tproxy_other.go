@@ -4,7 +4,7 @@ package hostnetwork
 
 import "errors"
 
-var errMeshUDPPlatform = errors.New("mesh UDP VIP interception requires Linux")
+var errMeshUDPPlatform = errors.New("net UDP VIP interception requires Linux")
 
 func InitMeshUDPTProxy(int) error                              { return errMeshUDPPlatform }
 func EnsureMeshUDPTProxyPolicy() error                         { return errMeshUDPPlatform }
