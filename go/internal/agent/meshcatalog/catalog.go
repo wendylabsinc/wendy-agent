@@ -1,6 +1,7 @@
 package meshcatalog
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -276,10 +277,7 @@ func (c *Catalog) Snapshot(now time.Time) []Record {
 		if entry.record.Withdraw {
 			continue
 		}
-		// A renewed principal must not lend its trust to an artifact signed
-		// with the previous certificate, which may no longer be trusted.
-		chain, _, ok := c.cache.Get(entry.record.Key.Device, now)
-		if !ok || localmesh.Fingerprint(chain) != entry.wire.Fingerprint {
+		if _, ok := c.currentEntryChain(entry, now); !ok {
 			continue
 		}
 		r := entry.record
@@ -297,8 +295,7 @@ func (c *Catalog) Records(now time.Time) []SignedRecord {
 	c.prune(now)
 	keys := make([]Key, 0, len(c.entries))
 	for key, entry := range c.entries {
-		chain, _, ok := c.cache.Get(entry.record.Key.Device, now)
-		if ok && localmesh.Fingerprint(chain) == entry.wire.Fingerprint {
+		if _, ok := c.currentEntryChain(entry, now); ok {
 			keys = append(keys, key)
 		}
 	}
@@ -308,4 +305,39 @@ func (c *Catalog) Records(now time.Time) []SignedRecord {
 		out = append(out, cloneWire(c.entries[key].wire))
 	}
 	return out
+}
+
+// CurrentRecordChain returns an owned current chain only for the exact latest
+// admitted artifact, including its signature and fingerprint. Callers must use
+// that same chain for any paired descriptor. This validity snapshot does not
+// reserve trust while a subsequent transport write is in flight.
+func (c *Catalog) CurrentRecordChain(w SignedRecord, now time.Time) ([][]byte, bool) {
+	if len(w.Body) == 0 || len(w.Body) > MaxRecordBytes {
+		return nil, false
+	}
+	var record Record
+	if json.Unmarshal(w.Body, &record) != nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[record.Key]
+	if !ok || w.Fingerprint != entry.wire.Fingerprint || !bytes.Equal(w.Body, entry.wire.Body) || !bytes.Equal(w.Signature, entry.wire.Signature) {
+		return nil, false
+	}
+	return c.currentEntryChain(entry, now)
+}
+
+// currentEntryChain requires c.mu. A renewed principal cannot lend trust to a
+// previous-certificate artifact, nor extend its signed lease or replay receipt.
+func (c *Catalog) currentEntryChain(entry storedRecord, now time.Time) ([][]byte, bool) {
+	expires := time.UnixMilli(entry.record.Expires)
+	if !expires.After(now) {
+		return nil, false
+	}
+	chain, id, ok := c.cache.Get(entry.record.Key.Device, now)
+	if !ok || id.Device.Principal() != entry.record.Key.Device || localmesh.Fingerprint(chain) != entry.wire.Fingerprint || expires.After(id.NotAfter) {
+		return nil, false
+	}
+	return chain, true
 }

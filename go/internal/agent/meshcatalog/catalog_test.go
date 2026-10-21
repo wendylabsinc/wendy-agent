@@ -37,13 +37,18 @@ type fixture struct {
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
+	return newFixtureWithOptions(t, 24*time.Hour, nil)
+}
+
+func newFixtureWithOptions(t *testing.T, lifetime time.Duration, reuse map[string]*localmesh.Credentials) fixture {
+	t.Helper()
 	now := time.Now().Truncate(time.Second)
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	caTmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour),
-		NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true,
+		NotAfter: now.Add(lifetime), IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
 	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
 	if err != nil {
@@ -59,6 +64,9 @@ func newFixture(t *testing.T) fixture {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if previous := reuse[principal]; previous != nil {
+			key = previous.Signer.(*ecdsa.PrivateKey)
 		}
 		uri, _ := url.Parse(principal)
 		leaf := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), NotBefore: caTmpl.NotBefore,

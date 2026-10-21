@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
@@ -128,8 +129,18 @@ type Synchronizer struct {
 	// exact signed body last queued for each service so the periodic repair
 	// pass sends only records that a dropped Broadcast never queued.
 	sentRecords  map[Key]sentRecordStamp
-	pending      map[string][]SignedRecord
+	pending      map[string][]pendingServiceRecord
 	certificates *localmesh.CertificateExchange
+}
+
+type pendingServiceRecord struct {
+	wire    SignedRecord
+	renewal *pendingServiceRenewal
+}
+
+type pendingServiceRenewal struct {
+	chain    localmesh.CertificateChain
+	deadline time.Time
 }
 
 type sentRecordStamp struct {
@@ -139,7 +150,7 @@ type sentRecordStamp struct {
 
 func NewSynchronizer(c *Catalog, cache *localmesh.IdentityCache) *Synchronizer {
 	return &Synchronizer{catalog: c, cache: cache, sent: map[string]bool{},
-		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]SignedRecord{}, certificates: localmesh.NewCertificateExchange(cache, c.device.Tenant())}
+		sentRecords: map[Key]sentRecordStamp{}, pending: map[string][]pendingServiceRecord{}, certificates: localmesh.NewCertificateExchange(cache, c.device.Tenant())}
 }
 
 func (s *Synchronizer) Record(w SignedRecord, now time.Time) []Message {
@@ -242,27 +253,59 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 		}
 		pending := s.pending[principal]
 		delete(s.pending, principal)
-		for _, w := range pending {
-			_, admitted, err := s.Receive(Message{Kind: "record", Record: &w}, now)
+		// Warm data belongs to its advertised exchange. A legacy bundle may
+		// populate public bytes, but only matching exchange completion retries it.
+		for _, entry := range pending {
+			if entry.renewal != nil {
+				s.pending[principal] = append(s.pending[principal], entry)
+			}
+		}
+		for _, entry := range pending {
+			if entry.renewal != nil {
+				continue
+			}
+			_, admitted, err := s.Receive(Message{Kind: "record", Record: &entry.wire}, now)
 			if err != nil {
 				return nil, nil, err
 			}
 			changed = append(changed, admitted...)
 		}
 	case "record":
+		s.prunePending(now)
 		ok, err := s.catalog.Accept(*m.Record, now)
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrStale) {
 			return nil, nil, nil
 		}
-		if errors.Is(err, ErrIdentityNeeded) {
+		var renewal *pendingServiceRenewal
+		if errors.Is(err, errCertificateMismatch) {
+			var record Record
+			if json.Unmarshal(m.Record.Body, &record) == nil && record.Key.Mesh == s.catalog.mesh {
+				chain, deadline, active := s.certificates.PendingChain(record.Key.Device, now)
+				if active && len(chain.Hashes) > 0 && chain.Hashes[0] == m.Record.Fingerprint {
+					renewal = &pendingServiceRenewal{chain: chain, deadline: deadline}
+				}
+			}
+		}
+		if errors.Is(err, ErrIdentityNeeded) || renewal != nil {
+			// Repeated hints/data cannot refresh a deferred artifact's first deadline.
+			if renewal != nil {
+				for _, entries := range s.pending {
+					for _, entry := range entries {
+						if entry.renewal != nil && sameServiceWire(entry.wire, *m.Record) {
+							return nil, nil, nil
+						}
+					}
+				}
+			}
 			count, retainedBytes := 0, 0
 			for _, entries := range s.pending {
 				count += len(entries)
 				for _, wire := range entries {
-					retainedBytes += len(wire.Body) + len(wire.Signature) + len(wire.Fingerprint)
+					retainedBytes += pendingServiceBytes(wire)
 				}
 			}
-			incomingBytes := len(m.Record.Body) + len(m.Record.Signature) + len(m.Record.Fingerprint)
+			pending := pendingServiceRecord{wire: cloneWire(*m.Record), renewal: renewal}
+			incomingBytes := pendingServiceBytes(pending)
 			if count >= maxPendingRecords || retainedBytes+incomingBytes > maxPendingRecordBytes {
 				return nil, nil, errPendingIdentities
 			}
@@ -271,8 +314,8 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 				return nil, nil, errors.New("invalid wendy net service record body")
 			}
 			first := len(s.pending[record.Key.Device]) == 0
-			s.pending[record.Key.Device] = append(s.pending[record.Key.Device], cloneWire(*m.Record))
-			if first {
+			s.pending[record.Key.Device] = append(s.pending[record.Key.Device], pending)
+			if first && renewal == nil {
 				return []Message{{Kind: "identity-request", Principal: record.Key.Device}}, nil, nil
 			}
 			return nil, nil, nil
@@ -295,11 +338,19 @@ func (s *Synchronizer) certificateResult(messages []*localmesh.CertificateMessag
 	for _, m := range messages {
 		replies = append(replies, Message{Kind: "certificate", Certificate: m})
 	}
+	// Poll can complete several principals at once. Detach all their data
+	// before recursive Receive prunes descriptors already removed by Poll.
+	ready := make(map[string][]pendingServiceRecord, len(completed))
 	for _, principal := range completed {
-		pending := s.pending[principal]
+		ready[principal] = s.pending[principal]
 		delete(s.pending, principal)
-		for _, w := range pending {
-			out, admitted, err := s.Receive(Message{Kind: "record", Record: &w}, now)
+	}
+	for _, principal := range completed {
+		for _, w := range ready[principal] {
+			if !s.pendingReady(principal, w, now) {
+				continue
+			}
+			out, admitted, err := s.Receive(Message{Kind: "record", Record: &w.wire}, now)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -307,17 +358,70 @@ func (s *Synchronizer) certificateResult(messages []*localmesh.CertificateMessag
 			changed = append(changed, admitted...)
 		}
 	}
+	s.prunePending(now)
 	return replies, changed, nil
 }
 
 func (s *Synchronizer) ContinueCertificates(now time.Time) ([]Message, []SignedRecord, error) {
+	s.prunePending(now)
+	messages, completed, err := s.certificates.Poll(now)
+	return s.certificateResult(messages, completed, err, now)
+}
+
+func (s *Synchronizer) Close() {
+	s.certificates.Close()
+	clear(s.pending)
+}
+
+func sameServiceWire(a, b SignedRecord) bool {
+	return a.Fingerprint == b.Fingerprint && bytes.Equal(a.Body, b.Body) && bytes.Equal(a.Signature, b.Signature)
+}
+func sameServiceChain(a, b localmesh.CertificateChain) bool {
+	return a.Principal == b.Principal && slices.Equal(a.Hashes, b.Hashes)
+}
+func pendingServiceBytes(p pendingServiceRecord) int {
+	n := len(p.wire.Body) + len(p.wire.Signature) + len(p.wire.Fingerprint)
+	if p.renewal != nil {
+		n += len(p.renewal.chain.Principal)
+		for _, hash := range p.renewal.chain.Hashes {
+			n += len(hash)
+		}
+	}
+	return n
+}
+
+// A pending renewal is retried only with its advertised full chain already
+// admitted by the unchanged verifier.
+func (s *Synchronizer) pendingReady(principal string, p pendingServiceRecord, now time.Time) bool {
+	if p.renewal == nil {
+		return true
+	}
+	if !p.renewal.deadline.After(now) {
+		return false
+	}
+	chain, _, ok := s.cache.Get(principal, now)
+	if !ok {
+		return false
+	}
+	description := localmesh.DescribeCertificates(principal, chain)
+	return description != nil && sameServiceChain(p.renewal.chain, *description.Chain)
+}
+
+func (s *Synchronizer) prunePending(now time.Time) {
 	for principal, records := range s.pending {
 		keep := records[:0]
-		for _, wire := range records {
+		for _, entry := range records {
 			var record Record
-			if json.Unmarshal(wire.Body, &record) == nil && time.UnixMilli(record.Expires).After(now) {
-				keep = append(keep, wire)
+			if json.Unmarshal(entry.wire.Body, &record) != nil || !time.UnixMilli(record.Expires).After(now) {
+				continue
 			}
+			if entry.renewal != nil {
+				chain, _, active := s.certificates.PendingChain(principal, now)
+				if !entry.renewal.deadline.After(now) || !active || !sameServiceChain(entry.renewal.chain, chain) {
+					continue
+				}
+			}
+			keep = append(keep, entry)
 		}
 		clear(records[len(keep):])
 		if len(keep) == 0 {
@@ -326,11 +430,7 @@ func (s *Synchronizer) ContinueCertificates(now time.Time) ([]Message, []SignedR
 			s.pending[principal] = keep
 		}
 	}
-	messages, completed, err := s.certificates.Poll(now)
-	return s.certificateResult(messages, completed, err, now)
 }
-
-func (s *Synchronizer) Close() { s.certificates.Close() }
 
 // Only called after Catalog.Accept has verified the artifact, including duplicates.
 // A supplier already possesses its exact body and signing certificate.

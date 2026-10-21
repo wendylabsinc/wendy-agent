@@ -33,11 +33,12 @@ const (
 )
 
 var (
-	ErrExpired        = errors.New("expired wendy net service record")
-	ErrStale          = errors.New("stale wendy net service generation")
-	ErrIdentityNeeded = errors.New("wendy net service identity bundle needed")
-	labelPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
-	typePattern       = regexp.MustCompile(`^_[A-Za-z0-9][A-Za-z0-9-]{0,14}\._tcp$`)
+	ErrExpired             = errors.New("expired wendy net service record")
+	ErrStale               = errors.New("stale wendy net service generation")
+	ErrIdentityNeeded      = errors.New("wendy net service identity bundle needed")
+	errCertificateMismatch = errors.New("wendy net service certificate fingerprint mismatch")
+	labelPattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+	typePattern            = regexp.MustCompile(`^_[A-Za-z0-9][A-Za-z0-9-]{0,14}\._tcp$`)
 )
 
 // Key is a service's stable owner scope: the mesh name plus the owning
@@ -158,8 +159,13 @@ func verify(w SignedRecord, cache *localmesh.IdentityCache, now time.Time) (Reco
 	if !ok {
 		return r, "", ErrIdentityNeeded
 	}
-	if id.Device.Principal() != r.Key.Device || localmesh.Fingerprint(chain) != w.Fingerprint ||
-		time.UnixMilli(r.Expires).After(id.NotAfter) {
+	if id.Device.Principal() != r.Key.Device {
+		return r, "", errors.New("wendy net service origin does not match certificate")
+	}
+	if localmesh.Fingerprint(chain) != w.Fingerprint {
+		return r, "", errCertificateMismatch
+	}
+	if time.UnixMilli(r.Expires).After(id.NotAfter) {
 		return r, "", errors.New("wendy net service origin or lease does not match certificate")
 	}
 	leaf, err := x509.ParseCertificate(chain[0])

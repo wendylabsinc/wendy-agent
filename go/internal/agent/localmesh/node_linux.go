@@ -573,6 +573,9 @@ func (n *Node) writeControls(ctx context.Context, p *nodePeer) error {
 	// at most four control messages. No catalogue work runs on Node.Run.
 	urgent := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var m ControlMessage
 		if urgent >= 4 {
 			select {

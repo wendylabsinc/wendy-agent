@@ -3,10 +3,12 @@ package meshcatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"time"
 
 	"github.com/wendylabsinc/WendyOS/go/babel"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
@@ -54,7 +56,10 @@ func (r *Runtime) syncPeers(ctx context.Context) {
 					// peerCtx cancels on disconnect or runtime shutdown. Finish
 					// every message in order rather than timing out halfway and
 					// closing the shared authenticated connection.
-					err := r.hub.Send(peerCtx, p.id, data)
+					current, err := r.prepareDirectControl(data, time.Now())
+					if err == nil && current != nil {
+						err = r.hub.Send(peerCtx, p.id, current)
+					}
 					p.queued.Add(-int64(len(data)))
 					r.signal()
 					if err != nil {
@@ -72,6 +77,47 @@ func (r *Runtime) syncPeers(ctx context.Context) {
 			delete(r.peers, id)
 		}
 	}
+}
+
+// prepareDirectControl rechecks direct catalogue exports after queue delay.
+// Certificate requests/chunks and other protocols (including later opaque
+// gossip frames) remain unchanged. Once hub.Send starts, a message is in flight.
+func (r *Runtime) prepareDirectControl(data []byte, now time.Time) ([]byte, error) {
+	var envelope struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Kind != "record" && envelope.Kind != "certificate" {
+		return data, nil
+	}
+	var message inventoryMessage
+	if err := json.Unmarshal(data, &message); err != nil {
+		return nil, err
+	}
+	if err := message.validate(); err != nil {
+		return nil, err
+	}
+	if message.Kind == "record" {
+		if _, ok := r.catalog.CurrentRecordChain(*message.Record, now); !ok {
+			return nil, nil
+		}
+		return data, nil
+	}
+	if message.Certificate.Chain == nil {
+		return data, nil
+	}
+	principal := message.Certificate.Chain.Principal
+	chain, _, ok := r.catalog.cache.Get(principal, now)
+	if !ok {
+		return nil, nil
+	}
+	message.Certificate = localmesh.DescribeCertificates(principal, chain)
+	if message.Certificate == nil {
+		return nil, errors.New("invalid current catalogue certificate chain")
+	}
+	return inventoryWire(message)
 }
 func (r *Runtime) queue(p *catalogPeer, messages ...inventoryMessage) bool {
 	frames := make([][]byte, 0, len(messages))

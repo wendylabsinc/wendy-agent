@@ -44,7 +44,10 @@ func TestCatalogueSenderPreservesLinkUnderBackpressure(t *testing.T) {
 		defer cancel()
 		r.syncPeers(ctx)
 		p := r.peers[peer.ID]
-		body := bytes.Repeat([]byte("a"), 20<<10)
+		body, err := inventoryWire(inventoryMessage{Message: Message{Kind: "bundle", Bundle: [][]byte{bytes.Repeat([]byte("a"), 20<<10)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.queued.Add(int64(len(body)))
 		p.out <- body
 		<-blocked
@@ -68,7 +71,10 @@ func TestCatalogueSenderPreservesLinkUnderBackpressure(t *testing.T) {
 		if p.queued.Load() != 0 {
 			t.Fatal("completed message remains in bounded byte accounting")
 		}
-		next := []byte("next complete message")
+		next, err := inventoryWire(inventoryMessage{Message: Message{Kind: "snapshot-done"}})
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.queued.Add(int64(len(next)))
 		p.out <- next
 		synctest.Wait()
@@ -104,7 +110,10 @@ func TestCatalogueSenderCancelsPartialMessage(t *testing.T) {
 		defer cancel()
 		r.syncPeers(ctx)
 		p := r.peers[peer.ID]
-		data := bytes.Repeat([]byte("a"), 20<<10)
+		data, err := inventoryWire(inventoryMessage{Message: Message{Kind: "bundle", Bundle: [][]byte{bytes.Repeat([]byte("a"), 20<<10)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.queued.Add(int64(len(data)))
 		p.out <- data
 		<-started
