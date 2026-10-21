@@ -28,7 +28,7 @@ struct HardwareInventory: HardwareDiscovering {
     func discover(categoryFilter: String?) async throws -> [HardwareCapability] {
         // Share the serial inventory with pairing. This category reads only
         // IORegistry metadata and never opens a port.
-        if categoryFilter == "serial" { return try serialCapabilities() }
+        if categoryFilter == "serial" { return serialCapabilities() }
         async let displays = dataType("SPDisplaysDataType")
         async let usb = dataType("SPUSBDataType")
         async let camera = dataType("SPCameraDataType")
@@ -60,7 +60,7 @@ struct HardwareInventory: HardwareDiscovering {
             )
         }
         caps.append(contentsOf: Self.networkCapabilities())
-        caps.append(contentsOf: (try? serialCapabilities()) ?? [])
+        caps.append(contentsOf: serialCapabilities())
 
         if let categoryFilter, !categoryFilter.isEmpty {
             caps = caps.filter { $0.category == categoryFilter }
@@ -68,8 +68,11 @@ struct HardwareInventory: HardwareDiscovering {
         return caps
     }
 
-    private func serialCapabilities() throws -> [HardwareCapability] {
-        try USBSerialInventory().discover().map { device in
+    /// An IORegistry failure yields no serial entries, with or without a
+    /// category filter, as on the Go Agent.
+    private func serialCapabilities() -> [HardwareCapability] {
+        let devices = (try? USBSerialInventory().discover()) ?? []
+        return devices.map { device in
             HardwareCapability(
                 category: "serial",
                 devicePath: device.devicePath,

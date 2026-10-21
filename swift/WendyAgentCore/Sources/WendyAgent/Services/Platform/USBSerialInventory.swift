@@ -24,23 +24,25 @@ struct USBSerialInventory: Sendable {
             let service = IOIteratorNext(iterator)
             if service == 0 { break }
             defer { IOObjectRelease(service) }
-            func property(_ key: String) -> Any? {
-                unsafe IORegistryEntrySearchCFProperty(
-                    service,
-                    kIOServicePlane,
-                    key as CFString,
-                    kCFAllocatorDefault,
-                    IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)
-                )
-            }
+            // String descriptors are read from the adapter's own USB device. A
+            // parent search would continue past an adapter without a serial
+            // number or vendor name and return a hub's instead.
+            let usbDevice = Self.usbDevice(above: service)
+            defer { if usbDevice != 0 { IOObjectRelease(usbDevice) } }
             var metadata: [String: String] = [:]
             for key in ["idVendor", "idProduct", "locationID", "bInterfaceNumber"] {
-                if let value = property(key) as? NSNumber { metadata[key] = value.stringValue }
+                let value = Self.property(key, of: service, searchingParents: true)
+                if let value = value as? NSNumber { metadata[key] = value.stringValue }
             }
-            for key in [
-                "IOCalloutDevice", "USB Serial Number", "USB Vendor Name", "USB Product Name",
-            ] {
-                if let value = property(key) as? String { metadata[key] = value }
+            if let path = Self.property("IOCalloutDevice", of: service) as? String {
+                metadata["IOCalloutDevice"] = path
+            }
+            if usbDevice != 0 {
+                for key in ["USB Serial Number", "USB Vendor Name", "USB Product Name"] {
+                    if let value = Self.property(key, of: usbDevice) as? String {
+                        metadata[key] = value
+                    }
+                }
             }
             if let device = Self.device(metadata),
                 FileManager.default.fileExists(atPath: device.devicePath)
@@ -49,6 +51,41 @@ struct USBSerialInventory: Sendable {
             }
         }
         return devices.sorted { $0.devicePath < $1.devicePath }
+    }
+
+    private static func property(
+        _ key: String,
+        of entry: io_registry_entry_t,
+        searchingParents: Bool = false
+    ) -> Any? {
+        let parents = IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)
+        return unsafe IORegistryEntrySearchCFProperty(
+            entry,
+            kIOServicePlane,
+            key as CFString,
+            kCFAllocatorDefault,
+            searchingParents ? parents : 0
+        )
+    }
+
+    /// The nearest USB device above a serial node, which the caller releases;
+    /// 0 when the node isn't USB-backed.
+    private static func usbDevice(above service: io_registry_entry_t) -> io_registry_entry_t {
+        var parents: io_iterator_t = 0
+        let result = unsafe IORegistryEntryCreateIterator(
+            service,
+            kIOServicePlane,
+            IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents),
+            &parents
+        )
+        guard result == KERN_SUCCESS else { return 0 }
+        defer { IOObjectRelease(parents) }
+        while true {
+            let entry = IOIteratorNext(parents)
+            if entry == 0 { return 0 }
+            if unsafe IOObjectConformsTo(entry, "IOUSBHostDevice") != 0 { return entry }
+            IOObjectRelease(entry)
+        }
     }
 
     /// Decimal numeric IORegistry properties; fixture-testable independently of IOKit.
