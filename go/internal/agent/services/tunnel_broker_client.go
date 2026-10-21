@@ -236,7 +236,7 @@ func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls
 		RootCAs:    caPool,
 	}
 
-	// Present the device's ECDSA leaf certificate so the broker can authenticate
+	// Present the device's leaf certificate (P-256 or ML-DSA-65) so the broker can authenticate
 	// this connection via mTLS once it starts requesting client certs. Loading
 	// only the leaf (not the ML-DSA CA chain) keeps Go's TLS stack from tripping
 	// over ML-DSA parse failures.

@@ -137,6 +137,7 @@ type ProvisioningService struct {
 	certPEM             string
 	chainPEM            string
 	principalURI        string
+	acmeDirectoryURL    string
 	CloudDialer         CloudDialer
 	OnProvisioned       OnProvisionedFunc
 	OnUnprovisioned     OnUnprovisionedFunc
@@ -237,8 +238,10 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		zap.Int32("asset_id", req.GetAssetId()),
 	)
 
-	// Reuse the device's existing private key if present, otherwise generate a new one.
-	keyPEM, err := s.loadOrGenerateKey()
+	// Reuse the device's existing private key if present, otherwise generate a
+	// new one. The legacy Cloud issuer predates ML-DSA device keys, so this path
+	// stays P-256; pki-core enrollments use ML-DSA-65 (provisioning_acme.go).
+	keyPEM, err := s.loadOrGenerateKey(certs.GenerateKeyPair)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to load or generate key pair: %v", err)
 	}
@@ -342,6 +345,7 @@ func (s *ProvisioningService) persistProvisioning(state *provisioningState, keyP
 	s.orgID = state.OrgID
 	s.assetID = state.AssetID
 	s.principalURI = state.PrincipalURI
+	s.acmeDirectoryURL = state.ACMEDirectoryURL
 	s.keyPEM = keyPEM
 	s.certPEM = state.CertPEM
 	s.chainPEM = state.ChainPEM
@@ -465,6 +469,7 @@ func (s *ProvisioningService) clearStateFiles() error {
 func (s *ProvisioningService) clearCredentialFiles() error {
 	files := []string{
 		filepath.Join(s.configPath, "device-key.pem"),
+		filepath.Join(s.configPath, pendingDeviceKeyFile),
 		filepath.Join(s.configPath, "device.pem"),
 		filepath.Join(s.configPath, "ca.pem"),
 		filepath.Join(s.configPath, ".provisioned"),
@@ -510,6 +515,7 @@ func (s *ProvisioningService) loadState() {
 	s.orgID = state.OrgID
 	s.assetID = state.AssetID
 	s.principalURI = state.PrincipalURI
+	s.acmeDirectoryURL = state.ACMEDirectoryURL
 	s.certPEM = state.CertPEM
 	s.chainPEM = state.ChainPEM
 
@@ -533,6 +539,7 @@ func (s *ProvisioningService) loadState() {
 			s.logger.Error("Stored enrollment has no certificate; authenticated services cannot start",
 				zap.String("path", s.statePath()))
 		}
+		s.finishInterruptedRenewal()
 	}
 
 	if !s.enrolled || len(s.keyPEM) == 0 {
@@ -553,8 +560,8 @@ func (s *ProvisioningService) loadState() {
 
 // loadOrGenerateKey returns the PEM-encoded private key for this device as []byte.
 // It reuses the key at {configPath}/device-key.pem if it exists, otherwise
-// generates a new one and persists it.
-func (s *ProvisioningService) loadOrGenerateKey() ([]byte, error) {
+// generates a new one with generate and persists it.
+func (s *ProvisioningService) loadOrGenerateKey(generate func() (string, error)) ([]byte, error) {
 	keyPath := filepath.Join(s.configPath, "device-key.pem")
 	if data, err := os.ReadFile(keyPath); err == nil && len(data) > 0 {
 		if err := WriteDeviceKey(s.configPath, data); err != nil {
@@ -564,7 +571,7 @@ func (s *ProvisioningService) loadOrGenerateKey() ([]byte, error) {
 		return data, nil
 	}
 
-	keyStr, err := certs.GenerateKeyPair()
+	keyStr, err := generate()
 	if err != nil {
 		return nil, err
 	}
