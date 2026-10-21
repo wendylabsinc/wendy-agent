@@ -96,26 +96,29 @@ func decryptInstruction(e *pb.EncryptedDialInstructionEnvelope, c claims, lease 
 }
 
 func validateService(d *pb.DialInstruction) error {
-	// Cloud's standard catalog currently contains only these two TCP services.
-	// Refuse unknown descriptors and non-loopback targets before opening a socket.
-	if d.Transport != pb.DialTransport_DIAL_TRANSPORT_TCP || len(d.AuthorizedDatagramDestinations) != 0 {
-		return fmt.Errorf("unsupported Cloud dial transport")
+	transport, port, err := serviceTarget(string(d.ServiceDescriptor))
+	if err != nil {
+		return err
+	}
+	if d.Transport != transport {
+		return fmt.Errorf("cloud service transport mismatch")
+	}
+	if transport == pb.DialTransport_DIAL_TRANSPORT_DATAGRAM {
+		if d.Host != "" || d.Port != 0 || len(d.AuthorizedDatagramDestinations) != 1 {
+			return fmt.Errorf("invalid UDP service target")
+		}
+		dst := d.AuthorizedDatagramDestinations[0]
+		if dst.GetDestinationId() != 1 || dst.GetLoopbackPort() != port {
+			return fmt.Errorf("cloud UDP service destination mismatch")
+		}
+		return nil
+	}
+	if d.Port != port || len(d.AuthorizedDatagramDestinations) != 0 {
+		return fmt.Errorf("cloud TCP service port mismatch")
 	}
 	ip := net.ParseIP(d.Host)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("Cloud dial target is not loopback")
-	}
-	switch string(d.ServiceDescriptor) {
-	case "wendy-agent":
-		if d.Port != 50052 {
-			return fmt.Errorf("invalid agent service port")
-		}
-	case "ssh":
-		if d.Port != 22 {
-			return fmt.Errorf("invalid SSH service port")
-		}
-	default:
-		return fmt.Errorf("unsupported Cloud service descriptor")
+		return fmt.Errorf("cloud dial target is not loopback")
 	}
 	return nil
 }

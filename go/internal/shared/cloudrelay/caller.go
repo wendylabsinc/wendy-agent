@@ -172,10 +172,18 @@ func LitePrincipalSigner(certPEM string, keyPEM []byte) (func([]byte) ([]byte, e
 // broker with an ephemeral caller key. authCtx's identity metadata is used only
 // on Cloud's authorization RPC, and is never forwarded to the relay.
 func OpenTCP(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier *Verifier, assetID, service string, signRequest func([]byte) ([]byte, error)) (net.Conn, error) {
+	s, err := openPortSession(ctx, authCtx, cloudConn, verifier, assetID, service, pb.DialTransport_DIAL_TRANSPORT_TCP, signRequest)
+	if err != nil {
+		return nil, err
+	}
+	return s.Conn(), nil
+}
+
+func openPortSession(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier *Verifier, assetID, service string, transport pb.DialTransport, signRequest func([]byte) ([]byte, error)) (*Session, error) {
 	if _, err := uuid.Parse(assetID); err != nil {
 		return nil, fmt.Errorf("invalid Cloud asset UUID")
 	}
-	if service != "wendy-agent" && service != "ssh" {
+	if actual, _, err := serviceTarget(service); err != nil || actual != transport {
 		return nil, fmt.Errorf("Cloud has no supported tunnel service %q", service)
 	}
 	request, key, descriptor, err := PrincipalRequest(assetID, service, signRequest)
@@ -188,8 +196,16 @@ func OpenTCP(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier 
 	if err != nil {
 		return nil, fmt.Errorf("authorizing Cloud tunnel (%s): %w", pb.TunnelAuthorizationService_RequestTunnel_FullMethodName, err)
 	}
-	if response.Broker == nil || len(response.AuthorizedDatagramDestinations) != 0 {
-		return nil, fmt.Errorf("invalid Cloud TCP authorization response")
+	if response.Broker == nil {
+		return nil, fmt.Errorf("missing Cloud tunnel broker")
+	}
+	destinations := response.AuthorizedDatagramDestinations
+	if transport == pb.DialTransport_DIAL_TRANSPORT_TCP {
+		if len(destinations) != 0 {
+			return nil, fmt.Errorf("invalid Cloud TCP authorization response")
+		}
+	} else if len(destinations) != 1 || destinations[0].GetDestinationId() != 1 {
+		return nil, fmt.Errorf("invalid Cloud UDP authorization response")
 	}
 	c, err := verifier.verify(ctx, response.SessionGrantJws, grantType, response.Broker.Audience, time.Now())
 	if err != nil {
@@ -202,7 +218,7 @@ func OpenTCP(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, verifier 
 	if err != nil {
 		return nil, err
 	}
-	return s.Conn(), nil
+	return s, nil
 }
 
 // PrincipalRequest binds a tunnel-v2 request to a fresh caller key.
