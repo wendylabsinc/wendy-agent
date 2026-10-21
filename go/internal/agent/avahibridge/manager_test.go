@@ -416,3 +416,37 @@ func TestPrepareLongContainerIDAndOwnerMismatch(t *testing.T) {
 		t.Fatal("foreign state was overwritten")
 	}
 }
+
+func TestFailedRunningRecoveryPreservesMountedDirectory(t *testing.T) {
+	bin := t.TempDir()
+	stubBinaries(t, bin)
+	t.Setenv("AVAHI_STUB_LOG", filepath.Join(bin, "calls.log"))
+	m := newStubManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dir, err := m.Prepare(ctx, "app1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartDaemon(ctx, "app1", "/missing-namespace", nil); err == nil {
+		t.Fatal("missing namespace accepted")
+	}
+	if err := m.StopPreservingMounts("app1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Prepare(ctx, "app1"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(dir)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("failed running recovery replaced mounted directory")
+	}
+	m.ready = func(context.Context, string) error { return nil }
+	if err := m.StartDaemon(ctx, "app1", "/dev/null", func(context.Context) (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+}

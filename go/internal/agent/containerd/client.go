@@ -5008,11 +5008,11 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 					if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
 						if err := c.startAvahiForTask(ctx, ctr.ID(), task.Pid()); err != nil {
 							c.logger.Error("Could not restore running container Avahi daemon", zap.String("id", ctr.ID()), zap.Error(err))
-							_ = c.avahiManager.Stop(ctr.ID())
+							_ = c.avahiManager.StopPreservingMounts(ctr.ID())
 						}
 					} else {
 						c.logger.Error("Could not load running task for Avahi recovery", zap.String("id", ctr.ID()), zap.Error(taskErr))
-						_ = c.avahiManager.Stop(ctr.ID())
+						_ = c.avahiManager.StopPreservingMounts(ctr.ID())
 					}
 				}
 			}

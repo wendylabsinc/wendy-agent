@@ -573,6 +573,16 @@ func (m *Manager) stopInstance(containerName string, inst *instance, preserveDir
 
 // Stop kills a container's avahi stack and removes its state.
 func (m *Manager) Stop(containerName string) error {
+	return m.stop(containerName, false)
+}
+
+// StopPreservingMounts releases a failed recovery stack without detaching the
+// proxy directory inode that a surviving task may still have bind-mounted.
+func (m *Manager) StopPreservingMounts(containerName string) error {
+	return m.stop(containerName, true)
+}
+
+func (m *Manager) stop(containerName string, preserveDirs bool) error {
 	m.mu.Lock()
 	inst, ok := m.instances[containerName]
 	if !ok {
@@ -580,7 +590,7 @@ func (m *Manager) Stop(containerName string) error {
 		return nil
 	}
 	delete(m.instances, containerName)
-	m.stopInstance(containerName, inst, false)
+	m.stopInstance(containerName, inst, preserveDirs)
 	m.mu.Unlock()
 	return nil
 }
