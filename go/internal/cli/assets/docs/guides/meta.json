@@ -11,6 +11,7 @@
     "stagefile",
     "multi-app-deployments",
     "fleet-deployment",
+    "wendy-net-services",
     "llm-integration"
   ]
 }

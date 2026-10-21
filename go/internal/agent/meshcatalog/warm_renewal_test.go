@@ -12,9 +12,10 @@ import (
 )
 
 // A descriptor is a bounded repair hint from this link, never trust in its
-// claimed leaf. Both real certificate chains remain trusted throughout.
+// claimed leaf. Both real chains are trusted when renewal starts; the old
+// certificate can expire while its bounded repair remains pending.
 func TestWarmServiceRenewalRequiresExactPendingDescriptor(t *testing.T) {
-	old, current := newFixtureWithOptions(t, 30*time.Second, nil), newFixture(t)
+	old, current := newFixtureWithOptions(t, 15*time.Second, nil), newFixture(t)
 	old.now = current.now
 	sameKey := newFixtureWithOptions(t, 24*time.Hour, old.creds)
 	sameKey.now = old.now
@@ -22,7 +23,7 @@ func TestWarmServiceRenewalRequiresExactPendingDescriptor(t *testing.T) {
 	shortNew.now = old.now
 	origin, _ := old.newCatalog(t, p533, "default", nil, nil)
 	initialSpec := testSpec()
-	initialSpec.Lease = 20 * time.Second
+	initialSpec.Lease = 10 * time.Second
 	first, err := origin.Publish(initialSpec, old.now)
 	if err != nil {
 		t.Fatal(err)
@@ -194,12 +195,18 @@ func TestWarmServiceRenewalRequiresExactPendingDescriptor(t *testing.T) {
 				return
 			}
 			if mode == "deadline" {
-				// Repeating a descriptor cannot extend the first pending record deadline.
+				// Repeating a descriptor/data after the old certificate expires cannot
+				// downgrade this warm candidate into an unbound cold-cache retry.
 				near := old.now.Add(29 * time.Second)
 				if _, _, err := receiver.Receive(Message{Kind: "certificate", Certificate: descriptor}, near); err != nil {
 					t.Fatal(err)
 				}
 				if _, _, err := receiver.Receive(Message{Kind: "record", Record: &incoming}, near); err != nil {
+					t.Fatal(err)
+				}
+				changedWire := cloneWire(incoming)
+				changedWire.Signature[0] ^= 1
+				if _, _, err := receiver.Receive(Message{Kind: "record", Record: &changedWire}, near); err != nil {
 					t.Fatal(err)
 				}
 				if _, _, err := receiver.ContinueCertificates(old.now.Add(30 * time.Second)); err != nil {

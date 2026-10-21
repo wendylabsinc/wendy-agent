@@ -1,0 +1,127 @@
+---
+title: Share and discover app services
+description: Publish TCP services across Wendy Net using mDNS, with an app-owned discovery socket.
+---
+
+Let an app on one Wendy device find and connect to an app on another. Your app
+advertises a service using normal mDNS/DNS-SD, the discovery protocol used by
+Bonjour and Avahi. Wendy Net carries admitted service information between devices;
+apps browse it through their own network interface.
+
+Start with enrolled devices in the same organization and a working Wendy Net connection.
+Use current Linux WendyOS images with full Wendy Net support.
+
+## 1. Give the publishing app Wendy Net access
+
+Merge this into its `wendy.json`:
+
+```json
+{
+  "appId": "com.example.net-api",
+  "platform": "linux",
+  "version": "1.0.0",
+  "isolation": "isolated",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "mesh",
+      "serviceCIDR": "10.99.0.0/16",
+      "ports": [
+        { "host": 18080, "container": 8080 }
+      ]
+    }
+  ]
+}
+```
+
+Keep the literal configuration value `"mesh"`; it selects Wendy Net service
+networking. Use `10.99.0.0/16`, the currently supported service address range.
+Do not replace this with the device's LAN subnet.
+
+Run your server on the container's address or `0.0.0.0:8080`, not loopback alone.
+The example publishes TCP port 18080 for other Wendy Net apps. Choose an unused
+published port if another app on the same device already uses it.
+
+Deploy after saving:
+
+```sh
+wendy run --device <publishing-device>
+```
+
+The port mapping permits incoming connections; it does not announce a service
+by itself. The app must also publish a discovery announcement as described below.
+
+## 2. Publish with your app's mDNS library
+
+If your app already uses a library that opens its own mDNS socket, keep using it.
+It needs no `avahi`, Bluetooth, or direct Wi-Fi Aware entitlement.
+
+For the example above, advertise:
+
+| Value | Example |
+| --- | --- |
+| Instance name | `My API` |
+| Service type | `_http._tcp.local.` |
+| Hostname | An app-owned `.local.` hostname. |
+| Address | The app's IPv4 address on `eth0`. |
+| Port | The **container** port, `8080`. |
+| TXT data | Your service metadata, or an empty TXT record. |
+
+Use the container interface for multicast discovery. Publish the complete PTR,
+SRV, TXT and IPv4 address records; most DNS-SD libraries produce these together.
+Keep them refreshed while the server is available, and send the library's goodbye
+or unregister the service when stopping it. Advertising an unrelated host address
+or an undeclared port does not publish an accessible Wendy Net service.
+
+Wendy translates the announced container port into the declared published port.
+Remote browsers receive a Wendy Net service address and port 18080 in this example.
+Use those returned values to connect; do not substitute the publisher's container
+or management address.
+
+## 3. Browse from a second app
+
+Give the client a private Wendy Net network too. It can omit incoming ports if
+it only makes outbound service connections:
+
+```json
+{
+  "appId": "com.example.net-client",
+  "platform": "linux",
+  "version": "1.0.0",
+  "isolation": "isolated",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "mesh",
+      "serviceCIDR": "10.99.0.0/16"
+    }
+  ]
+}
+```
+
+Deploy to another connected device and browse `_http._tcp.local.` with the app's
+mDNS library. Resolve a result and connect to its returned address and port.
+Display names may gain a suffix to distinguish identical services from different
+devices; avoid matching an entire generated name as a permanent identifier.
+
+Service discovery can cross intermediate Wendy Net devices without a direct
+connection to the publishing device. Discovery is not an application health
+check: verify an actual request to the discovered server.
+
+## Troubleshoot discovery
+
+1. Check the Wendy Net connection and running agent on both devices.
+2. Confirm both apps run with the intended private network and `serviceCIDR`.
+3. Check the publisher listens on the container port and advertises its own IPv4
+   address, a complete service record, and the matching transport type.
+4. Check the declared port mapping.
+5. Resolve from the client app and test the returned endpoint, rather than an
+   address copied from another device.
+
+Stopping the publisher, withdrawing its announcement, or losing its route removes
+the service after the relevant discovery and lease updates. After a partition or
+restart, allow routes and service state to reconcile. An old cached record may
+remain briefly; applications should handle disappearance and failed connections.
+
+See the [network and Avahi reference](/docs/advanced/apps/wendy.json#network)
+for detailed limits.

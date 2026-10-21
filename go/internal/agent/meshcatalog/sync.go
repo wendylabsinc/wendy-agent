@@ -294,13 +294,34 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 			}
 		}
 		if errors.Is(err, ErrIdentityNeeded) || renewal != nil {
-			// Repeated hints/data cannot refresh a deferred artifact's first deadline.
-			if renewal != nil {
-				for _, entries := range s.pending {
-					for _, entry := range entries {
-						if entry.renewal != nil && sameServiceWire(entry.wire, *m.Record) {
-							return nil, nil, nil
+			// All records already waiting on this exact origin/descriptor share
+			// its first fetch deadline, including new records arriving after the
+			// old identity expires. Descriptor/data churn cannot renew that wait.
+			var record Record
+			if json.Unmarshal(m.Record.Body, &record) == nil {
+				for _, entry := range s.pending[record.Key.Device] {
+					if entry.renewal == nil || entry.wire.Fingerprint != m.Record.Fingerprint {
+						continue
+					}
+					if renewal == nil {
+						chain, _, active := s.certificates.PendingChain(record.Key.Device, now)
+						if active && sameServiceChain(entry.renewal.chain, chain) {
+							renewal = &pendingServiceRenewal{chain: chain, deadline: entry.renewal.deadline}
 						}
+					} else if sameServiceChain(entry.renewal.chain, renewal.chain) && entry.renewal.deadline.Before(renewal.deadline) {
+						renewal.deadline = entry.renewal.deadline
+					}
+				}
+			}
+		}
+		if errors.Is(err, ErrIdentityNeeded) || renewal != nil {
+			// Repeated hints/data cannot refresh a deferred artifact's first
+			// deadline, even if expiry/eviction of the old cached certificate now
+			// makes verification report an ordinary cold-cache miss.
+			for _, entries := range s.pending {
+				for _, entry := range entries {
+					if entry.renewal != nil && sameServiceWire(entry.wire, *m.Record) {
+						return nil, nil, nil
 					}
 				}
 			}

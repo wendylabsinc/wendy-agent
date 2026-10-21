@@ -110,9 +110,17 @@ func (n *neighbourNetwork) connect(a, b int) babel.LinkID {
 	id := n.next
 	n.edges[id] = testEdge{a, b, id}
 	n.mu.Unlock()
+	// A real reliable transport buffers the first write while its remote reader
+	// starts. Do not deliver through this in-memory link until both ends exist.
+	ready := make(chan struct{})
 	for _, ends := range [][2]int{{a, b}, {b, a}} {
 		from, to := ends[0], ends[1]
 		n.hubs[from].Add(localmesh.ControlPeer{ID: id, Device: n.catalogs[to].device}, func(ctx context.Context, data []byte) error {
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			n.mu.RLock()
 			_, live := n.edges[id]
 			n.mu.RUnlock()
@@ -131,6 +139,7 @@ func (n *neighbourNetwork) connect(a, b int) babel.LinkID {
 			return n.hubs[to].Deliver(id, m.Catalog)
 		}, func() { n.disconnect(id) })
 	}
+	close(ready)
 	return id
 }
 func (n *neighbourNetwork) disconnect(id babel.LinkID) {
