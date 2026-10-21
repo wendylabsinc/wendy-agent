@@ -27,10 +27,9 @@ For a chosen test topology, configure both ends of each edge:
 The lower device UUID initiates the connection. The listener checks the
 configured peer list, then QUIC mutual authentication pins the complete peer
 principal. The unauthenticated TCP preface is only an ordering/admission hint.
-The framed TCP carrier exists to simulate graph topologies; its head-of-line
-blocking makes it unsuitable as the final LAN or radio carrier. Automatically discovered Ethernet, infrastructure WiFi, NAN and BLE attach
-to the same node through their own providers. The framed TCP carrier remains
-an optional way to configure test edges.
+The framed TCP carrier is an optional way to configure simulated graph edges.
+Automatically discovered Ethernet, infrastructure Wi-Fi, NAN and BLE attach to
+the same node through their own providers.
 
 Production Ethernet and infrastructure Wi-Fi discovery uses native QUIC over
 IPv4 UDP port 43023, bound to each eligible physical interface and local address.
