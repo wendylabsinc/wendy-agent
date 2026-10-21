@@ -275,8 +275,13 @@ func TestManagerClaimsAfterUnansweredDiscover(t *testing.T) {
 		t.Fatalf("state = %v, want serving", got)
 	}
 
-	// The DISCOVER alone should have registered the camera, so it is listable as
-	// known-but-offline before it has an address.
+	// Pre-claim traffic is only observation. A retransmission after serving
+	// starts can register the directly attached camera before its first lease.
+	if cams := h.reg.List(); len(cams) != 0 {
+		t.Fatalf("pre-claim DISCOVER registered %d cameras", len(cams))
+	}
+	h.feed("eth0", &Packet{Type: Discover, XID: 2,
+		CHAddr: net.HardwareAddr{0xec, 0x71, 0xdb, 0x2a, 0xae, 0x7e}, Hostname: "RLC-520A"})
 	cams := h.reg.List()
 	if len(cams) != 1 {
 		t.Fatalf("registry has %d cameras, want 1", len(cams))
@@ -939,5 +944,42 @@ func TestManagerDoesNotRestoreClaimWithoutMatchingCamera(t *testing.T) {
 				t.Fatalf("served %v without evidence the link was ours", got)
 			}
 		})
+	}
+}
+
+// An addressless port may lead to an office/home LAN. Neither phones nor
+// laptops requesting addresses there are evidence of a camera, before or after
+// the upstream server makes the link permanently ineligible for our DHCP.
+func TestManagerDoesNotRegisterSharedLANClients(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "watcher", func() bool { return len(h.watchedLinks()) == 1 })
+	for i, name := range []string{"iPhone", "MacBooks-Air", "Tesla_Model_S", "Watch"} {
+		mac := net.HardwareAddr{0, 1, 2, 3, 4, byte(i + 1)}
+		for _, kind := range []MessageType{Discover, Request} {
+			h.feed("eth0", &Packet{Type: kind, CHAddr: mac, Hostname: name})
+		}
+	}
+	h.feed("eth0", &Packet{Type: Offer, ServerID: net.IPv4(192, 168, 1, 1)})
+	h.feed("eth0", &Packet{Type: Request, CHAddr: net.HardwareAddr{0, 1, 2, 3, 4, 5}, Hostname: "MacBook-Pro"})
+	h.advance(time.Hour)
+	h.mgr.scanOnce(ctx)
+	if got := h.reg.List(); len(got) != 0 {
+		t.Fatalf("shared LAN clients registered as cameras: %+v", got)
+	}
+	if got := h.servedLinks(); len(got) != 0 {
+		t.Fatalf("shared LAN served as a camera link: %v", got)
+	}
+}
+
+func TestNoteClientRequiresStartedServer(t *testing.T) {
+	h := newManagerHarness(t, nil)
+	// claim installs this bookkeeping before address setup and server startup.
+	h.mgr.claimed["eth0"] = SegmentFor(0)
+	h.mgr.noteClient("eth0", &Packet{Type: Discover, CHAddr: net.HardwareAddr{0, 1, 2, 3, 4, 5}})
+	if got := h.reg.List(); len(got) != 0 {
+		t.Fatalf("client registered before server startup: %+v", got)
 	}
 }
