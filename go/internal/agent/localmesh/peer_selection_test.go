@@ -3,7 +3,6 @@ package localmesh
 import (
 	"fmt"
 	"math/rand"
-	"strings"
 	"sync"
 	"testing"
 	"time"

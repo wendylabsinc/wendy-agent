@@ -242,7 +242,7 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 		return nil, err
 	}
 	if err := reclaimMeshForwarding(); err != nil {
-		return nil, kernelOperationError("reclaim mesh forwarding", "", err)
+		return nil, kernelOperationError("reclaim net forwarding", "", err)
 	}
 	address := device.MeshAddress()
 	// An abrupt exit leaves the dummy link, its TUNs, their rules and the mesh
@@ -286,7 +286,7 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	// to the host's ordinary uplink. A learnt route has a lower priority.
 	guard := netlink.Route{Table: RouteTable, Protocol: routeProtocol, Family: netlink.FAMILY_V6, Type: unix.RTN_UNREACHABLE, Priority: 32767, Dst: ipNet(netip.MustParsePrefix("::/0"))}
 	if err = netlink.RouteAdd(&guard); err != nil {
-		return nil, kernelOperationError("install IPv6 guard route in mesh table", kernelPolicyRequirement, err)
+		return nil, kernelOperationError("install IPv6 guard route in net table", kernelPolicyRequirement, err)
 	}
 	k.routes = append(k.routes, guard)
 	// Mesh traffic is looked up in this table only. Everything else keeps the
@@ -297,11 +297,11 @@ func NewKernel(device meshid.Device) (*Kernel, error) {
 	rule.Table = RouteTable
 	rule.Dst = ipNet(meshid.MeshPrefix)
 	if err = netlink.RuleAdd(rule); err != nil {
-		return nil, kernelOperationError("install IPv6 mesh policy rule", kernelPolicyRequirement, err)
+		return nil, kernelOperationError("install IPv6 net policy rule", kernelPolicyRequirement, err)
 	}
 	k.rule = rule
 	if err = k.enableForwarding(); err != nil {
-		return nil, kernelOperationError("enable mesh forwarding", "", err)
+		return nil, kernelOperationError("enable net forwarding", "", err)
 	}
 	ok = true
 	return k, nil
@@ -366,7 +366,7 @@ func (k *Kernel) AddPeer(id babel.LinkID, peer meshid.Device) (*os.File, error) 
 	}
 	// The device's own mesh address is the source for payload leaving this link.
 	if err = netlink.AddrAdd(tun, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(k.device.MeshAddress(), 128)), Flags: unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD}); err != nil {
-		return nil, kernelOperationError("assign peer TUN IPv6 mesh address", kernelIPv6Requirement, err)
+		return nil, kernelOperationError("assign peer TUN IPv6 net address", kernelIPv6Requirement, err)
 	}
 	if err = netlink.LinkSetUp(tun); err != nil {
 		return nil, kernelOperationError("bring up peer TUN", kernelTUNRequirement, err)

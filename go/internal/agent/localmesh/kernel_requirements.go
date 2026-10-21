@@ -24,12 +24,12 @@ func kernelOperationError(operation, requirement string, err error) error {
 	if requirement != "" && (errors.Is(err, syscall.EAFNOSUPPORT) ||
 		errors.Is(err, syscall.EPROTONOSUPPORT) || errors.Is(err, syscall.EOPNOTSUPP) ||
 		errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.ENODEV) || errors.Is(err, syscall.ENOENT)) {
-		return fmt.Errorf("local-mesh kernel: %s: %w; check %s", operation, err, requirement)
+		return fmt.Errorf("wendy-net kernel: %s: %w; check %s", operation, err, requirement)
 	}
 	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
-		return fmt.Errorf("local-mesh kernel: %s: %w; check process permissions and confinement, including CAP_NET_ADMIN for mesh setup", operation, err)
+		return fmt.Errorf("wendy-net kernel: %s: %w; check process permissions and confinement, including CAP_NET_ADMIN for net setup", operation, err)
 	}
-	return fmt.Errorf("local-mesh kernel: %s: %w", operation, err)
+	return fmt.Errorf("wendy-net kernel: %s: %w", operation, err)
 }
 
 type kernelCapabilityCheck struct {

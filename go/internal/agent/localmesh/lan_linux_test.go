@@ -467,7 +467,7 @@ func TestLANWorkerFailureClosesPendingConnections(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				selected := lanInterface{iface: net.Interface{Name: "no-such-lan"}, ip: net.IPv4(127, 0, 0, 1), net: &net.IPNet{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)}, cost: EthernetLinkCost}
-				done <- serveLANInterface(ctx, LANConfig{Credentials: b}, selected, &lanClaims{active: make(map[lanClaim]bool)}, socket, mdnsConn, nil)
+				done <- serveLANInterface(ctx, LANConfig{Credentials: b}, selected, lanTestClaims(b), socket, mdnsConn, nil)
 			}()
 			tlsConfig, err := a.PeerTLS(b.Device)
 			if err != nil {
@@ -543,7 +543,8 @@ func TestLANWorkerFailureClosesPendingConnections(t *testing.T) {
 
 func TestLANIncomingAdmissionBoundAndSubnet(t *testing.T) {
 	selected := lanInterface{net: &net.IPNet{IP: net.IPv4(192, 0, 2, 0), Mask: net.CIDRMask(24, 32)}}
-	gate := lanIncomingContext(selected)
+	claims := lanTestClaims(&Credentials{Device: lanDevice(t, 460)})
+	gate := lanIncomingContext(selected, claims)
 	info := &quic.ClientInfo{RemoteAddr: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 43023}}
 	var cancels []context.CancelFunc
 	defer func() {
