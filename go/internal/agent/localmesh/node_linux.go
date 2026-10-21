@@ -650,6 +650,27 @@ func (n *Node) writeControls(ctx context.Context, p *nodePeer) error {
 				urgent = 0
 			}
 		}
+		if m.Kind == "bundle" {
+			// A leaf receives a whole chain instead of certificate hints. The
+			// queued leaf only names a principal to look up; current cache trust
+			// supplies the actual bytes, including after same-key renewal.
+			if n.cache == nil || len(m.Bundle) == 0 {
+				continue
+			}
+			leaf, err := x509.ParseCertificate(m.Bundle[0])
+			if err != nil {
+				continue
+			}
+			device, err := meshid.DeviceFromCert(leaf)
+			if err != nil {
+				continue
+			}
+			chain, _, ok := n.cache.Get(device.Principal(), time.Now())
+			if !ok {
+				continue
+			}
+			m.Bundle = chain
+		}
 		if m.Kind == "certificate" && m.Certificate != nil && m.Certificate.Chain != nil {
 			// Chain hints can wait behind a slow write across renewal too.
 			// Keep content-addressed requests/chunks independent, but name
