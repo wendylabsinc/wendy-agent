@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -123,10 +124,14 @@ type BeforeUnprovisionedFunc func() error
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
-	logger              *zap.Logger
-	configPath          string
-	mu                  sync.Mutex
-	unenrollmentMu      sync.Mutex
+	logger         *zap.Logger
+	configPath     string
+	mu             sync.Mutex
+	unenrollmentMu sync.Mutex
+	// lifecycleMu orders publication of dependent enrollment resources with
+	// reset. Callbacks may reenter read APIs, so it must precede mu and must
+	// never be acquired while mu is held.
+	lifecycleMu         sync.Mutex
 	enrolled            bool
 	resetRecoveryErr    error
 	resetCleanupErr     error
@@ -383,6 +388,19 @@ func (s *ProvisioningService) persistProvisioning(state *provisioningState, keyP
 	}
 	return func() {
 		if cb != nil {
+			s.lifecycleMu.Lock()
+			defer s.lifecycleMu.Unlock()
+			// A reset may win the gap between persistence and this callback.
+			// Never republish resources for an enrollment it already erased.
+			s.mu.Lock()
+			current := s.enrolled && s.cloudHost == state.CloudHost && s.orgID == state.OrgID &&
+				s.assetID == state.AssetID && s.principalURI == state.PrincipalURI &&
+				s.certPEM == state.CertPEM && s.chainPEM == state.ChainPEM && bytes.Equal(s.keyPEM, cbKeyPEM)
+			s.mu.Unlock()
+			if !current {
+				clear(cbKeyPEM)
+				return
+			}
 			cb(state.CertPEM, state.ChainPEM, cbKeyPEM)
 		}
 	}, nil
@@ -398,6 +416,8 @@ func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.Unprovis
 }
 
 func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint string) (*agentpb.UnprovisionResponse, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
 	locked := true
 	defer func() {
