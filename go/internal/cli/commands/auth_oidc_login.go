@@ -647,21 +647,19 @@ func ensureOAuthAccessToken(ctx context.Context, auth *config.AuthConfig) error 
 	return persistOAuthSession(auth)
 }
 
+// Callers hold auth-refresh.lock first. config.Update then takes config.lock
+// only around this load/modify/save, so an unrelated writer cannot restore a
+// pre-rotation snapshot. Never acquire the auth lock from an Update callback.
 func persistOAuthSession(auth *config.AuthConfig) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	for i := range cfg.Auth {
-		if sameOAuthSession(&cfg.Auth[i], auth) {
-			cfg.Auth[i] = *auth
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving refreshed OAuth session: %w", err)
+	return config.Update(func(cfg *config.Config) (bool, error) {
+		for i := range cfg.Auth {
+			if sameOAuthSession(&cfg.Auth[i], auth) {
+				cfg.Auth[i] = *auth
+				return true, nil
 			}
-			return nil
 		}
-	}
-	return fmt.Errorf("OAuth session is no longer present in config")
+		return false, fmt.Errorf("OAuth session is no longer present in config")
+	})
 }
 
 // buildAuthorizeURL assembles the authorization request.
