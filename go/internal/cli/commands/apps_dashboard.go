@@ -267,9 +267,9 @@ func waitForAppsDashVolumes(ch chan appsDashVolumesMsg) tea.Cmd {
 
 func appsDashPollFlash(err error) string {
 	if status.Code(err) == codes.Unimplemented {
-		return "Poll notice: " + userFacingGRPCError(err)
+		return userFacingGRPCError(fmt.Errorf("Poll notice: %w", err))
 	}
-	return "Poll error: " + userFacingGRPCError(err)
+	return userFacingGRPCError(fmt.Errorf("Poll error: %w", err))
 }
 
 func userFacingGRPCError(err error) string {

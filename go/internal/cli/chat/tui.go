@@ -931,7 +931,7 @@ func (m *chatModel) finishVoiceTurn(err error, canceled bool) {
 	}
 	text := strings.TrimSpace(m.turnReply)
 	if err != nil {
-		text = "I couldn't complete the task: " + usermessage.Text(err)
+		text = usermessage.Text(fmt.Errorf("I couldn't complete the task: %w", err))
 	}
 	if text == "" {
 		return

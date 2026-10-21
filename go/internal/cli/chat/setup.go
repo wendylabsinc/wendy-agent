@@ -118,7 +118,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 		chooseProvider = false
 		cfg, err = ResolveConnection(cfg)
 		if err != nil {
-			ui.Note("That connection needs another look: " + usermessage.Text(err))
+			ui.Note(usermessage.Text(fmt.Errorf("That connection needs another look: %w", err)))
 			chooseProvider = true
 			continue
 		}
@@ -218,7 +218,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 						return Config{}, err
 					}
 					if err != nil {
-						ui.Note("The download didn't finish: " + usermessage.Text(err))
+						ui.Note(usermessage.Text(fmt.Errorf("The download didn't finish: %w", err)))
 					}
 				}
 				continue
@@ -261,7 +261,7 @@ func runSetup(ctx context.Context, opts SetupOptions, ui setupUI, backend setupB
 				}
 			}
 			if err := backend.save(toSave); err != nil {
-				ui.Note("You're connected, but I couldn't remember this setup: " + usermessage.Text(err))
+				ui.Note(usermessage.Text(fmt.Errorf("You're connected, but I couldn't remember this setup: %w", err)))
 			} else {
 				ui.Note("Ready. Next time, just run wendy chat. Use --setup whenever you want to switch AI.")
 			}

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -377,12 +378,12 @@ func (m unitreePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selected := m.selected().GetSerial()
 		var errs []string
 		if msg.listErr != nil {
-			errs = append(errs, "Saved Unitree pairings: "+userFacingGRPCError(msg.listErr))
+			errs = append(errs, userFacingGRPCError(fmt.Errorf("Saved Unitree pairings: %w", msg.listErr)))
 		} else {
 			m.paired = msg.paired
 		}
 		if msg.discoveryErr != nil {
-			errs = append(errs, "Unitree discovery: "+userFacingGRPCError(msg.discoveryErr))
+			errs = append(errs, userFacingGRPCError(fmt.Errorf("Unitree discovery: %w", msg.discoveryErr)))
 		} else {
 			m.discovered = msg.discovered
 		}
@@ -409,7 +410,7 @@ func (m unitreePairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case unitreePairOpMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.message = "Unitree request failed: " + userFacingGRPCError(msg.err)
+			m.message = userFacingGRPCError(fmt.Errorf("Unitree request failed: %w", msg.err))
 			return m, nil
 		}
 		paired := make([]*agentpbv2.UnitreeRobot, 0, len(m.paired)+1)

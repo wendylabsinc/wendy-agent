@@ -306,14 +306,14 @@ func (m sensorPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.devices = msg.devices
 			m.localNetwork = msg.localNetwork
 		} else {
-			errors = append(errors, "Discovery failed: "+usermessage.Text(msg.discoveryErr))
+			errors = append(errors, usermessage.Text(fmt.Errorf("Discovery failed: %w", msg.discoveryErr)))
 		}
 		m.pairingsKnown = msg.pairingsErr == nil
 		m.principalPairing = msg.principalPairing
 		if m.pairingsKnown {
 			m.pairings = msg.pairings
 		} else {
-			errors = append(errors, "Could not load pairings: "+usermessage.Text(msg.pairingsErr))
+			errors = append(errors, usermessage.Text(fmt.Errorf("Could not load pairings: %w", msg.pairingsErr)))
 		}
 		m.message = strings.Join(errors, "\n")
 		m.refreshRows()

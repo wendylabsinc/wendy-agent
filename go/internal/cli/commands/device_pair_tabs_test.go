@@ -577,7 +577,7 @@ func TestSensorPairDeviceDiscoveryErrorsAreNotReplacedByLocalScan(t *testing.T) 
 		updated, _ = m.Update(h.scan()())
 		m = updated.(sensorPairModel)
 		view := ansi.Strip(m.View())
-		if !strings.Contains(m.message, "Discovery failed: "+tc.want) || strings.Contains(view, "rpc error") || m.localNetwork {
+		if !strings.Contains(m.message, "Discovery failed: "+strings.ToLower(tc.want[:1])+tc.want[1:]) || strings.Contains(view, "rpc error") || m.localNetwork {
 			t.Fatalf("%v: message = %q", tc.err, m.message)
 		}
 		// Sources from the previous successful scan stay listed.

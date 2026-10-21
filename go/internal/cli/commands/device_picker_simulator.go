@@ -320,7 +320,7 @@ func (m simulatorPickerModel) View() string {
 		return "Looking for local VMs..."
 	}
 	if m.err != nil {
-		return "Could not read the VM store: " + usermessage.Text(m.err)
+		return usermessage.Text(fmt.Errorf("Could not read the VM store: %w", m.err))
 	}
 	return m.picker.View()
 }

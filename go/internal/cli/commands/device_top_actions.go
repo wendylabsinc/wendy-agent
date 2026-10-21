@@ -146,7 +146,7 @@ func (m topModel) updateLogs(msg topLogsMsg) (tea.Model, tea.Cmd) {
 		if msg.err == io.EOF {
 			m.logsStatus = "Log stream ended"
 		} else {
-			m.logsStatus = "Logs unavailable: " + userFacingGRPCError(msg.err)
+			m.logsStatus = userFacingGRPCError(fmt.Errorf("Logs unavailable: %w", msg.err))
 		}
 		if m.logsCancel != nil {
 			m.logsCancel()

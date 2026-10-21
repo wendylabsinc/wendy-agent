@@ -124,7 +124,7 @@ func TestAppsDashboardModel_VolumesUnimplementedShowsCleanNotice(t *testing.T) {
 	updated, _ := m.Update(appsDashVolumesMsg{err: err})
 	m = updated.(appsDashboardModel)
 
-	want := "Poll notice: Container volume management is not supported by Wendy Agent for Mac."
+	want := "Poll notice: container volume management is not supported by Wendy Agent for Mac."
 	if m.flash != want {
 		t.Fatalf("flash = %q, want %q", m.flash, want)
 	}

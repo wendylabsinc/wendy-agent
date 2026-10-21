@@ -322,7 +322,7 @@ func (e provisionedAgentUnauthorizedError) Error() string {
 func (e provisionedAgentUnauthorizedError) MessageWithoutSteps() string {
 	text := e.Error()
 	if prefix, _, ok := strings.Cut(text, "\nLast mTLS error: "); ok {
-		return prefix + "\nLast mTLS error: " + usermessage.Text(e.cause)
+		return prefix + usermessage.Text(fmt.Errorf("\nLast mTLS error: %w", e.cause))
 	}
 	return text
 }

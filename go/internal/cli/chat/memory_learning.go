@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
+	"fmt"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // Search results are refreshed when replaying history, just like automatic
@@ -93,7 +95,7 @@ func (e *Engine) learnMemory(ctx context.Context, prompt string, emit func(Event
 	}()
 	prior, err := e.memory.store.Search(ctx, prompt, "", 8)
 	if err != nil {
-		emit(Event{Type: "memory", Text: "Could not review notes: " + usermessage.Text(err)})
+		emit(Event{Type: "memory", Text: usermessage.Text(fmt.Errorf("Could not review notes: %w", err))})
 		return
 	}
 	data, _ := json.Marshal(struct {
@@ -135,7 +137,7 @@ func (e *Engine) learnMemory(ctx context.Context, prompt string, emit func(Event
 		}
 		output, err := e.memory.Execute(ctx, call)
 		if err != nil {
-			emit(Event{Type: "memory", Text: "Could not save a note: " + usermessage.Text(err)})
+			emit(Event{Type: "memory", Text: usermessage.Text(fmt.Errorf("Could not save a note: %w", err))})
 			continue
 		}
 		emit(Event{Type: "memory", Text: output})

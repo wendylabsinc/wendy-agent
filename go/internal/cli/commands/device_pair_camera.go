@@ -179,7 +179,7 @@ func (m cameraPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cameraPairScanMsg:
 		m.scanning = false
 		if msg.err != nil {
-			m.message = "Camera discovery failed: " + userFacingGRPCError(msg.err)
+			m.message = userFacingGRPCError(fmt.Errorf("Camera discovery failed: %w", msg.err))
 			return m, nil
 		}
 		selectedID := m.selected().GetId()
@@ -194,7 +194,7 @@ func (m cameraPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cameraPairOpMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.message = "Camera request failed: " + userFacingGRPCError(msg.err)
+			m.message = userFacingGRPCError(fmt.Errorf("Camera request failed: %w", msg.err))
 			return m, nil
 		}
 		devices := make([]*agentpb.VideoDevice, 0, len(m.devices))
