@@ -1,6 +1,7 @@
 package localmesh
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -39,7 +40,8 @@ func TestWarmReceiverDefersNewKeyManifestDuringAdvertisedChainFetch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := Manifest{Version: 1, Device: old.Device.UUID(), Revision: 2, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	manifest := routeManifest(renewed.Device, now)
+	manifest.Revision = 2
 	wire, err := SignManifest(manifest, renewed.Certificate.Certificate, renewed.Signer, now)
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +70,7 @@ func TestWarmReceiverDefersNewKeyManifestDuringAdvertisedChainFetch(t *testing.T
 	if len(changed) != 0 || len(dest.Snapshot(now)) != 0 {
 		t.Fatal("unverified renewal was admitted before chain completion")
 	}
+	assertWarmRouteAuthorities(t, dest, now)
 	// Resume the exact asynchronous certificate requests after the manifest.
 	var toSender []ControlMessage
 	toSender = append(toSender, replies...)
@@ -93,9 +96,11 @@ func TestWarmReceiverDefersNewKeyManifestDuringAdvertisedChainFetch(t *testing.T
 	if len(changed) != 1 || len(dest.Snapshot(now)) != 1 {
 		t.Fatal("verified new-key manifest did not recover after certificate completion")
 	}
+	assertWarmRouteAuthorities(t, dest, now, wire)
 	if _, err = dest.Accept(wire, now.Add(2*time.Minute)); !errors.Is(err, ErrExpiredManifest) {
 		t.Fatal("pending renewal extended the signed lease", err)
 	}
+	assertWarmRouteAuthorities(t, dest, now.Add(2*time.Minute))
 }
 
 type warmRenewalFixture struct {
@@ -138,7 +143,10 @@ func (f warmRenewalFixture) receiver(t *testing.T) (*Synchronizer, *Directory, *
 }
 func (f warmRenewalFixture) wire(t *testing.T, at time.Time) SignedManifest {
 	t.Helper()
-	w, err := SignManifest(Manifest{Version: 1, Device: f.old.Device.UUID(), Revision: 2, Issued: at.UnixMilli(), Expires: at.Add(MaxLease).UnixMilli(), AgentPort: 50052}, f.renewed.Certificate.Certificate, f.renewed.Signer, at)
+	m := routeManifest(f.renewed.Device, at)
+	m.Revision = 2
+	m.Expires = at.Add(MaxLease).UnixMilli()
+	w, err := SignManifest(m, f.renewed.Certificate.Certificate, f.renewed.Signer, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +172,30 @@ func (f warmRenewalFixture) source(t *testing.T, credentials *Credentials) *Sync
 func warmDescriptor(c *Credentials) ControlMessage {
 	return ControlMessage{Kind: "certificate", Certificate: DescribeCertificates(c.Device.Principal(), c.Certificate.Certificate)}
 }
+
+// Exercise the actual route-admission consumer of the renewed signed wires.
+// routeManifest follows the introducing stage's current proof version, so the
+// same warm-cache cases also verify the later full-principal signature format.
+func assertWarmRouteAuthorities(t *testing.T, d *Directory, now time.Time, wires ...SignedManifest) {
+	t.Helper()
+	authorized := d.RouteAuthorizations(now)
+	if len(authorized) != len(wires) {
+		t.Fatalf("route authorities=%v, want %d verified current proofs", authorized, len(wires))
+	}
+	for _, wire := range wires {
+		var m Manifest
+		if err := json.Unmarshal(wire.Body, &m); err != nil {
+			t.Fatal(err)
+		}
+		if m.Version != ManifestVersionRoute || m.Route == nil || !authorized[*m.Route] {
+			t.Fatalf("verified current route proof was not authorized: %+v", m)
+		}
+		if _, ok := d.CurrentRecordChain(wire, now); !ok {
+			t.Fatal("route authorization did not match the current signed wire")
+		}
+	}
+}
+
 func driveWarmCertificateFetch(sender, receiver *Synchronizer, requests []ControlMessage, now time.Time) ([]SignedManifest, error) {
 	var changed []SignedManifest
 	for steps := 0; len(requests) > 0; steps++ {
@@ -220,6 +252,7 @@ func TestWarmRenewalDoesNotDeferOrdinaryInvalidSignatures(t *testing.T) {
 			if scenario != "malformed-body" && !errors.Is(err, ErrInvalidManifestSignature) {
 				t.Fatal("unexpected rejection", err)
 			}
+			assertWarmRouteAuthorities(t, d, at)
 		})
 	}
 }
@@ -240,12 +273,14 @@ func TestWarmRenewalInvalidSignatureFailsAfterMatchingChainVerification(t *testi
 	if len(receiver.pendingRenewals) != 1 || len(d.Snapshot(f.now)) != 0 {
 		t.Fatal("unverified signature gained authority")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 	if _, err = driveWarmCertificateFetch(sender, receiver, requests, f.now); !errors.Is(err, ErrInvalidManifestSignature) {
 		t.Fatal("bad signature did not fail after matching chain verification", err)
 	}
 	if len(d.Snapshot(f.now)) != 0 || len(receiver.pending) != 0 || len(receiver.pendingRenewals) != 0 {
 		t.Fatal("failed retry was retained or projected")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 }
 
 func TestWarmRenewalDescriptorReplacementDropsBoundWire(t *testing.T) {
@@ -286,6 +321,7 @@ func TestWarmRenewalDescriptorReplacementDropsBoundWire(t *testing.T) {
 	if !ok || !sameChain(chain, f.third.Certificate.Certificate) || len(d.Snapshot(f.now)) != 0 {
 		t.Fatal("descriptor replacement did not remain independent of old pending signature")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 }
 
 func TestWarmRenewalOriginalDeadlineDoesNotExtendOnRepeatedHints(t *testing.T) {
@@ -320,6 +356,7 @@ func TestWarmRenewalOriginalDeadlineDoesNotExtendOnRepeatedHints(t *testing.T) {
 	if len(receiver.pending) != 0 || len(receiver.pendingRenewals) != 0 || len(d.Snapshot(at)) != 0 {
 		t.Fatal("pending deadline was renewed")
 	}
+	assertWarmRouteAuthorities(t, d, at)
 }
 
 func TestWarmRenewalCrossNeighbourCompletionAndOwnedPendingWire(t *testing.T) {
@@ -352,6 +389,7 @@ func TestWarmRenewalCrossNeighbourCompletionAndOwnedPendingWire(t *testing.T) {
 	if _, ok := d.CurrentRecordChain(original, f.now); !ok {
 		t.Fatal("pending input aliased caller bytes or mismatched completion")
 	}
+	assertWarmRouteAuthorities(t, d, f.now, original)
 }
 
 func TestWarmRenewalPendingCapacityRemainsBounded(t *testing.T) {
@@ -370,6 +408,7 @@ func TestWarmRenewalPendingCapacityRemainsBounded(t *testing.T) {
 	if len(receiver.pending) != 128 || len(receiver.pendingRenewals) != 0 || len(d.Snapshot(f.now)) != 0 {
 		t.Fatal("pending overflow exceeded existing bound or admitted authority")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 }
 
 func TestWarmRenewalFullDescriptorBindingSurvivesIdentityEviction(t *testing.T) {
@@ -459,7 +498,9 @@ func TestWarmRenewalSeveralSharedCompletionsRetryEveryPrincipal(t *testing.T) {
 		if _, _, err = receiver.Receive(warmDescriptor(c), f.now); err != nil {
 			t.Fatal(err)
 		}
-		w, err := SignManifest(Manifest{Version: 1, Device: c.Device.UUID(), Revision: 2, Issued: f.now.UnixMilli(), Expires: f.now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, c.Certificate.Certificate, c.Signer, f.now)
+		m := routeManifest(c.Device, f.now)
+		m.Revision = 2
+		w, err := SignManifest(m, c.Certificate.Certificate, c.Signer, f.now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -470,6 +511,7 @@ func TestWarmRenewalSeveralSharedCompletionsRetryEveryPrincipal(t *testing.T) {
 	if len(receiver.pendingRenewals) != 2 {
 		t.Fatal("expected both exact pending descriptors")
 	}
+	assertWarmRouteAuthorities(t, d, f.now)
 	for i, owner := range owners {
 		if _, err = driveWarmCertificateFetch(provider, owner, requests[i], f.now); err != nil {
 			t.Fatal(err)
@@ -479,6 +521,7 @@ func TestWarmRenewalSeveralSharedCompletionsRetryEveryPrincipal(t *testing.T) {
 	if err != nil || len(changed) != 2 || len(d.Snapshot(f.now)) != 2 {
 		t.Fatal("batch completion discarded a later principal's pending retry", len(changed), err)
 	}
+	assertWarmRouteAuthorities(t, d, f.now, changed...)
 }
 
 func TestWarmRenewalPendingChainSnapshotIsOwnedAndActorScoped(t *testing.T) {
@@ -533,6 +576,7 @@ func TestWarmRenewalPreservesColdCertificateRepair(t *testing.T) {
 	if err != nil || len(changed) != 1 || len(d.Snapshot(f.now)) != 1 {
 		t.Fatal("cold cache did not recover", err)
 	}
+	assertWarmRouteAuthorities(t, d, f.now, w)
 }
 
 func TestWarmRenewalExpiredSignedCandidateDropsBeforeFetchDeadline(t *testing.T) {
@@ -541,7 +585,9 @@ func TestWarmRenewalExpiredSignedCandidateDropsBeforeFetchDeadline(t *testing.T)
 	if _, _, err := receiver.Receive(warmDescriptor(f.renewed), f.now); err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{Version: 1, Device: f.old.Device.UUID(), Revision: 2, Issued: f.now.UnixMilli(), Expires: f.now.Add(10 * time.Second).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(f.renewed.Device, f.now)
+	m.Revision = 2
+	m.Expires = f.now.Add(10 * time.Second).UnixMilli()
 	w, err := SignManifest(m, f.renewed.Certificate.Certificate, f.renewed.Signer, f.now)
 	if err != nil {
 		t.Fatal(err)
@@ -559,4 +605,5 @@ func TestWarmRenewalExpiredSignedCandidateDropsBeforeFetchDeadline(t *testing.T)
 	if _, _, active := receiver.certificates.PendingChain(w.Principal, at); !active {
 		t.Fatal("test did not distinguish signed expiry from the longer fetch deadline")
 	}
+	assertWarmRouteAuthorities(t, d, at)
 }
