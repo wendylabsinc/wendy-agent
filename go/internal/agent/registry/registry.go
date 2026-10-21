@@ -173,6 +173,10 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// Registry contents are data, including publisher-selected media types.
+		// Isolate a browser that opens an HTML response without changing the
+		// image bytes or their digest.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 		next.ServeHTTP(w, r)
 	})
 }

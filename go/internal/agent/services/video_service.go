@@ -1065,12 +1065,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger, pool *rtps.Pool, r
 
 	// Load persisted network cameras. A failure here must not stop the video
 	// service: local cameras still work without it.
-	if err := svc.registry.Load(); err != nil {
-		logger.Warn("loading network camera registry failed", zap.Error(err))
-	}
-	if err := svc.credentials.Load(); err != nil {
-		logger.Warn("loading network camera credentials failed", zap.Error(err))
-	}
+	svc.loadNetworkCameras()
 	svc.controls = newCameraControlStore(cameraControlsPath)
 	svc.applyLocalControls = applyCameraControlsV4L2
 	svc.controlDefaultsFor = cameraControlDefaults
@@ -1399,6 +1394,28 @@ func (s *VideoService) resolveSource(devID uint32) (videoSource, error) {
 	}
 	path := fmt.Sprintf("/dev/video%d", devID)
 	return videoSource{kind: sourceV4L2, key: path, path: path}, nil
+}
+
+// loadNetworkCameras cleans old passive DHCP observations before discovery and
+// loopback creation. If either file cannot be read, keep all records: absence of
+// credentials has not been established safely.
+func (s *VideoService) loadNetworkCameras() {
+	registryErr := s.registry.Load()
+	if registryErr != nil {
+		s.logger.Warn("loading network camera registry failed", zap.Error(registryErr))
+	}
+	credentialsErr := s.credentials.Load()
+	if credentialsErr != nil {
+		s.logger.Warn("loading network camera credentials failed", zap.Error(credentialsErr))
+	}
+	if registryErr == nil && credentialsErr == nil {
+		before := len(s.registry.List())
+		if err := s.registry.PruneUnconfirmedDHCP(s.credentials.Has); err != nil {
+			s.logger.Warn("cleaning legacy DHCP camera observations failed", zap.Error(err))
+		} else if removed := before - len(s.registry.List()); removed > 0 {
+			s.logger.Info("removed unconfirmed DHCP camera observations", zap.Int("count", removed))
+		}
+	}
 }
 
 // SetCameraCredentials stores the login for a network camera. The secret is

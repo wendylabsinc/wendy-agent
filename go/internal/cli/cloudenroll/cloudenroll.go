@@ -7,8 +7,10 @@ package cloudenroll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -18,6 +20,7 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -61,6 +64,15 @@ func EnrollmentConfig(auth *config.AuthConfig, deviceID, directoryURL string) (a
 	return cfg, nil
 }
 
+// maxMintAttempts bounds the device UUID collision guard: the first mint plus
+// three regenerations. A random UUID colliding even once is already rare.
+const maxMintAttempts = 4
+
+// errDeviceUUIDTaken is Cloud's pre-mint refusal of a device UUID that is
+// already in use, or whose wendy net address another identity claims, in ANY
+// tenant. Cloud names only the field, never the holder.
+var errDeviceUUIDTaken = errors.New("device UUID already in use")
+
 // MintEAB signs the operator enrollment request and relays it to Cloud's
 // DeviceEnrollmentService.EnrollDevice, returning cfg populated with the
 // once-only EAB credential and the registered asset id. The caller supplies
@@ -69,23 +81,47 @@ func EnrollmentConfig(auth *config.AuthConfig, deviceID, directoryURL string) (a
 // exactly what the live enroll does up to the agent step, so it also serves the
 // image pre-enroll bake. hw is the device's own hardware report (ReadHardware);
 // nil sends none, as the pre-enroll bake must, having no device to ask.
+//
+// The device UUID in cfg is the device's one identity: Cloud adopts it as the
+// asset id. When Cloud refuses it as taken, MintEAB mints a fresh UUID and
+// re-signs, at most maxMintAttempts times in all; a refused UUID is never
+// reused. The returned cfg carries the UUID Cloud accepted.
 func MintEAB(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.AuthConfig, cfg acmeenroll.Config, name string, hw *cloudpbv2.DeviceHardware) (acmeenroll.Config, string, error) {
+	for attempt := 1; ; attempt++ {
+		out, assetID, err := mintOnce(tokenCtx, cloudConn, auth, cfg, name, hw)
+		if !errors.Is(err, errDeviceUUIDTaken) || attempt == maxMintAttempts {
+			return out, assetID, err
+		}
+		if cfg, err = EnrollmentConfig(auth, uuid.NewString(), cfg.DirectoryURL); err != nil {
+			return cfg, "", err
+		}
+	}
+}
+
+func mintOnce(tokenCtx context.Context, cloudConn *grpc.ClientConn, auth *config.AuthConfig, cfg acmeenroll.Config, name string, hw *cloudpbv2.DeviceHardware) (acmeenroll.Config, string, error) {
 	artifact, err := cloudrequest.EnrollmentRequest(auth, cfg.DeviceID)
 	if err != nil {
 		return cfg, "", fmt.Errorf("signing enrollment request: %w", err)
 	}
 	credential := &cloudpbv2.EnrollDeviceResponse{}
-	err = cloudrequest.Invoke(tokenCtx, cloudConn, auth, cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpbv2.EnrollDeviceRequest{
+	var trailer metadata.MD
+	err = cloudrequest.InvokeWithTrailer(tokenCtx, cloudConn, auth, cloudpbv2.DeviceEnrollmentService_EnrollDevice_FullMethodName, &cloudpbv2.EnrollDeviceRequest{
 		DeviceId: cfg.DeviceID, DeviceClass: cloudpbv2.DeviceClass_DEVICE_CLASS_B,
 		EnrollmentRequestJws: artifact, Name: name, Hardware: hw,
-	}, credential)
+	}, credential, &trailer)
 	switch status.Code(err) {
 	case codes.Unimplemented:
 		return cfg, "", fmt.Errorf("this Cloud deployment does not support OIDC device enrollment; it needs DeviceEnrollmentService/EnrollDevice")
-	case codes.AlreadyExists, codes.InvalidArgument:
+	case codes.AlreadyExists:
+		field := trailer.Get(cloudrequest.CollidingFieldMetadataKey)
+		if slices.Contains(field, "device_id") || slices.Contains(field, "mesh_suffix") {
+			return cfg, "", fmt.Errorf("Cloud refused device UUID %s before minting anything: %w", cfg.DeviceID, errDeviceUUIDTaken)
+		}
 		// Cloud validates the name and its unique indexes BEFORE relaying to
 		// pki-core, so nothing was minted. Saying so is the point: the operator
 		// otherwise assumes they just spent a single-use credential.
+		return cfg, "", fmt.Errorf("Cloud refused this enrollment before minting anything, so no credential was spent: %w", err)
+	case codes.InvalidArgument:
 		return cfg, "", fmt.Errorf("Cloud refused this enrollment before minting anything, so no credential was spent: %w", err)
 	}
 	if err != nil {
