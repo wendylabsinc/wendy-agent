@@ -325,3 +325,68 @@ func TestLeafListenerCancellationClosesPendingHandshakes(t *testing.T) {
 		t.Fatal("leaf listener retained pending handshakes on shutdown")
 	}
 }
+
+// The production Lite parser accepts bundles, manifests and identity requests.
+// It cannot participate in a router's descriptor/chunk certificate exchange.
+func TestLeafDirectoryUsesVerifiedBundlesAndRepairsMissingIdentity(t *testing.T) {
+	source, chain, key, device, now := directoryFixture(t)
+	proof, err := SignManifest(Manifest{Version: ManifestVersionRoute, Device: device.UUID(), Revision: 1,
+		Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 5054,
+		Route: &RouteOrigin{Prefix: netip.PrefixFrom(device.MeshAddress(), 128), RouterID: 42}}, chain, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Accept(proof, now); err != nil {
+		t.Fatal(err)
+	}
+	sender := newLeafSynchronizer(source, source.cache)
+	defer sender.Close()
+	if got := sender.ReconcileBounded(now, 1); len(got) != 0 {
+		t.Fatal("insufficient budget consumed the leaf's identity hint")
+	}
+	messages := sender.ContinueReconcile(now, 2)
+	if len(messages) != 2 || messages[0].Kind != "bundle" || messages[1].Kind != "manifest" {
+		t.Fatalf("unsupported Lite bootstrap: %#v", messages)
+	}
+	cache, err := OpenIdentityCache("", DefaultCacheLimits(), source.cache.verify, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := NewDirectory(device.Tenant(), 8, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := NewSynchronizer(directory, cache)
+	defer receiver.Close()
+	// Lose the initial bundle. A same-tenant identity lookup must also return
+	// the complete verified bundle, with no descriptor/chunk negotiation.
+	replies, _, err := receiver.Receive(messages[1], now)
+	if err != nil || len(replies) != 1 || replies[0].Kind != "identity-request" {
+		t.Fatalf("missing identity lookup: %#v, %v", replies, err)
+	}
+	bundles, _, err := sender.Receive(replies[0], now)
+	if err != nil || len(bundles) != 1 || bundles[0].Kind != "bundle" {
+		t.Fatalf("unsupported Lite identity repair: %#v, %v", bundles, err)
+	}
+	if _, err := cache.Put(bundles[0].Bundle, now); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := directory.Accept(*messages[1].Manifest, now); err != nil || !changed {
+		t.Fatalf("leaf could not authenticate repaired route proof: %v", err)
+	}
+	if got := sender.Reconcile(now); len(got) != 1 || got[0].Kind != "manifest" {
+		t.Fatalf("leaf bundle repeated unnecessarily: %#v", got)
+	}
+	for _, principal := range []string{
+		testPrincipal(testTenantUUID, testDeviceCID),
+		testPrincipal(testOtherTenant, device.UUID().String()),
+	} {
+		replies, _, err := sender.Receive(ControlMessage{Kind: "identity-request", Principal: principal}, now)
+		if err != nil || len(replies) != 0 {
+			t.Fatalf("unavailable identity answered: %#v, %v", replies, err)
+		}
+	}
+	if replies, _, err := sender.Receive(ControlMessage{Kind: "identity-request", Principal: device.Principal()}, now.Add(time.Hour)); err != nil || len(replies) != 0 {
+		t.Fatalf("expired identity answered: %#v, %v", replies, err)
+	}
+}

@@ -55,8 +55,8 @@ func dialTestLeaf(ctx context.Context, address string, leaf, router *Credentials
 // This endpoint uses the same Babel engine and stream framing as a leaf, with
 // no kernel interface or forwarding capability. Only the Linux router creates
 // TUNs/FIB entries; replies must cross its production kernel route to this link.
-func runTestLeafEndpoint(ctx context.Context, link *streamNodeLink, leaf, router *Credentials, packets chan<- []byte) error {
-	const routerID babel.RouterID = 0x1000000000042
+func runTestLeafEndpoint(ctx context.Context, link *streamNodeLink, leaf, router *Credentials, packets chan<- []byte, generation uint64) error {
+	routerID := babel.RouterID(0x1000000000042 + generation)
 	engine, err := babel.New(babel.Config{RouterID: routerID, HelloInterval: time.Second, UpdateInterval: 4 * time.Second,
 		AcceptRoute: func(babel.RouterID, netip.Prefix) bool { return false }})
 	if err != nil {
@@ -65,7 +65,7 @@ func runTestLeafEndpoint(ctx context.Context, link *streamNodeLink, leaf, router
 	if err := link.WriteControl(ControlMessage{Kind: "bundle", Bundle: leaf.Certificate.Certificate}); err != nil {
 		return err
 	}
-	var revision uint64
+	revision := generation << 32
 	lastSeq := uint16(0)
 	started := time.Now()
 	step := func(event babel.Event) error {
@@ -81,7 +81,7 @@ func runTestLeafEndpoint(ctx context.Context, link *streamNodeLink, leaf, router
 			effects.Datagrams = append(effects.Datagrams, committed.Datagrams...)
 		}
 		seq := engine.Snapshot().Seqno
-		if revision == 0 || seq != lastSeq {
+		if revision == generation<<32 || seq != lastSeq {
 			revision++
 			now := time.Now()
 			proof, err := SignManifest(Manifest{Version: ManifestVersionRoute, Device: leaf.Device.UUID(), Revision: revision,
@@ -231,18 +231,56 @@ func TestLeafRoutedEndpointIsolatedNamespace(t *testing.T) {
 	}
 	link := newStreamNodeLink(conn)
 	defer link.Close()
-	controlDone := make(chan struct{})
-	go func() {
-		defer close(controlDone)
+	cache, err := OpenIdentityCache("", DefaultCacheLimits(), leaf.Verify, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := NewDirectory(leaf.Device.Tenant(), 32, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routerProof := make(chan struct{}, 1)
+	controlErrors := make(chan error, 2)
+	consumeControls := func(link *streamNodeLink) {
 		for {
-			if _, err := link.ReadControl(); err != nil {
+			message, err := link.ReadControl()
+			if err != nil {
+				return
+			}
+			// Match Lite's production control capabilities. In particular, a
+			// descriptor/chunk message must fail instead of being silently ignored.
+			switch message.Kind {
+			case "bundle":
+				_, err = cache.Put(message.Bundle, time.Now())
+			case "manifest":
+				_, err = directory.Accept(*message.Manifest, time.Now())
+				if err == nil && message.Manifest.Principal == router.Device.Principal() {
+					select {
+					case routerProof <- struct{}{}:
+					default:
+					}
+				}
+			case "identity-request":
+				if message.Principal != leaf.Device.Principal() {
+					err = errors.New("unexpected leaf identity lookup")
+				} else {
+					err = link.WriteControl(ControlMessage{Kind: "bundle", Bundle: leaf.Certificate.Certificate})
+				}
+			default:
+				err = fmt.Errorf("unsupported Lite control message %q", message.Kind)
+			}
+			if err != nil {
+				controlErrors <- err
+				_ = link.Close()
 				return
 			}
 		}
-	}()
+	}
+	controlDone := make(chan struct{})
+	go func() { defer close(controlDone); consumeControls(link) }()
 	packets := make(chan []byte, 8)
 	endpointDone := make(chan error, 1)
-	go func() { endpointDone <- runTestLeafEndpoint(ctx, link, leaf, router, packets) }()
+	go func() { endpointDone <- runTestLeafEndpoint(ctx, link, leaf, router, packets, 0) }()
 	defer func() { _ = link.Close(); <-controlDone; <-endpointDone }()
 	leafPrefix := netip.PrefixFrom(leaf.Device.MeshAddress(), 128)
 	waitFor := func(description string, condition func() bool) {
@@ -267,8 +305,16 @@ func TestLeafRoutedEndpointIsolatedNamespace(t *testing.T) {
 		}
 		return false
 	})
-	if len(node.Snapshot().Links) != 1 {
-		t.Fatal("expected one admitted leaf link")
+	select {
+	case <-routerProof:
+	case err := <-controlErrors:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal("leaf did not authenticate the router's route proof")
+	}
+	snapshotLinks := node.Snapshot().Links
+	if len(snapshotLinks) != 1 || snapshotLinks[0].Transport != "leaf" || snapshotLinks[0].SendQueue == nil {
+		t.Fatalf("missing leaf carrier diagnostics: %#v", snapshotLinks)
 	}
 	if peers := node.ControlHub().Peers(); len(peers) != 0 {
 		t.Fatal("endpoint-only leaf registered as a catalogue peer")
@@ -339,6 +385,46 @@ func TestLeafRoutedEndpointIsolatedNamespace(t *testing.T) {
 			t.Fatal("disconnected leaf kept a usable route")
 		}
 	}
+	// A policy violation must leave the listener and node able to admit a
+	// fresh authenticated session with a newer signed proof and new origin ID.
+	<-controlDone
+	recovery, err := dialTestLeaf(ctx, address, leaf, router)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryLink := newStreamNodeLink(recovery)
+	defer recoveryLink.Close()
+	recoveryControlsDone := make(chan struct{})
+	go func() { defer close(recoveryControlsDone); consumeControls(recoveryLink) }()
+	recoveryDone := make(chan error, 1)
+	go func() { recoveryDone <- runTestLeafEndpoint(ctx, recoveryLink, leaf, router, packets, 1) }()
+	defer func() { _ = recoveryLink.Close(); <-recoveryControlsDone; <-recoveryDone }()
+	waitFor("fresh signed leaf route did not recover", func() bool {
+		for _, route := range node.Snapshot().Routes {
+			if route.Prefix == leafPrefix && !route.Unreachable {
+				return true
+			}
+		}
+		return false
+	})
+	select {
+	case <-routerProof:
+	case err := <-controlErrors:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal("reconnected leaf did not authenticate the router")
+	}
+	if err := recoveryLink.SendIP(4, echo); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case reply := <-packets:
+		if reply[6] != 58 || reply[40] != 129 || !bytes.Equal(reply[48:], echo[48:]) {
+			t.Fatal("invalid recovered ICMPv6 echo reply")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no routed reply after reconnect")
+	}
 	cancel()
 	if err := <-runtimeDone; err != nil {
 		t.Fatal(err)
@@ -360,5 +446,82 @@ func TestLeafRoutedEndpointIsolatedNamespace(t *testing.T) {
 		_ = conn.Close()
 		t.Fatal("shutdown retained leaf listener")
 	}
-	t.Log(fmt.Sprintf("signed leaf /128, UDP %d-byte MTU, ICMPv6, duplicate/source rejection and owned cleanup passed", TunnelMTU))
+	t.Log(fmt.Sprintf("signed leaf /128, UDP %d-byte MTU, ICMPv6, duplicate/source rejection, reconnect and owned cleanup passed", TunnelMTU))
+}
+
+// The runtime must preserve an unexpected listener failure while it cancels
+// and joins the shared routing node and its owned kernel resources.
+type failingLeafTestListener struct {
+	net.Listener
+	failure error
+	failed  chan struct{}
+}
+
+func (l *failingLeafTestListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		select {
+		case <-l.failed:
+			return nil, l.failure
+		default:
+		}
+	}
+	return conn, err
+}
+
+func TestLeafListenerFailureReportsRuntimeError(t *testing.T) {
+	if os.Getenv("WENDY_LOCALMESH_ISOLATED_TEST") != "1" {
+		t.Skip("disposable Linux network namespace with NET_ADMIN and TUN")
+	}
+	var identity TCPIdentity
+	testCredentialsWithPEM(t, func(device meshid.Device, cert, chain, key string) {
+		if device.UUID().String() == testDeviceAID {
+			identity = TCPIdentity{Name: "leaf-error-router", AgentPort: 50052, Certificate: cert, Chain: chain, Key: key}
+		}
+	})
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, tcpConfigName), []byte(`{"leafListen":"127.0.0.1:43024"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("injected leaf listener failure")
+	var listener *failingLeafTestListener
+	listen := func(network, address string) (net.Listener, error) {
+		real, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		listener = &failingLeafTestListener{Listener: real, failure: failure, failed: make(chan struct{})}
+		return listener, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ready := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runConfiguredWithNode(ctx, dir, identity, func(node *Node, _ *TCPConfig) {
+			if node != nil {
+				ready <- struct{}{}
+			}
+		}, listen)
+	}()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("runtime startup: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	close(listener.failed)
+	_ = listener.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, failure) {
+			t.Fatalf("listener failure was lost during node cancellation: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("runtime did not drain after listener failure")
+	}
+	if _, err := netlink.LinkByName(InterfaceName); err == nil {
+		t.Fatal("failed runtime retained mesh host interface")
+	}
 }

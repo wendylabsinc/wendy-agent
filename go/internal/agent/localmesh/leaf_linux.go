@@ -36,6 +36,12 @@ type leafNodeLink struct {
 	self, leaf meshid.Device
 }
 
+func newLeafSynchronizer(directory *Directory, cache *IdentityCache) *Synchronizer {
+	sync := NewSynchronizer(directory, cache)
+	sync.leafBundles = true
+	return sync
+}
+
 func (l *leafNodeLink) ReadControl() (ControlMessage, error) {
 	m, err := l.streamNodeLink.ReadControl()
 	if err != nil {
@@ -151,7 +157,7 @@ func (n *Node) AttachLeafStream(ctx context.Context, peer meshid.Device, conn ne
 	}
 	link := &leafNodeLink{streamNodeLink: newBoundedStreamNodeLink(conn, 8), self: n.Credentials.Device, leaf: peer}
 	defer link.Close()
-	return n.attachLink(ctx, peer, 256, link)
+	return n.attachLink(WithCarrier(ctx, carrierName(ctx, "leaf")), peer, 256, link)
 }
 
 func readLeafPreface(conn net.Conn, self meshid.Device) (meshid.Device, error) {

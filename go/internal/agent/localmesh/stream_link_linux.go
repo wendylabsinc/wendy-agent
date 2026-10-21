@@ -76,7 +76,7 @@ func OpenStreamHello(ctx context.Context, conn net.Conn, self, peer meshid.Devic
 // opt into LeafALPN and enforce their separate receive policy.
 func OpenStreamHelloWithALPN(ctx context.Context, conn net.Conn, self, peer meshid.Device, alpn string) error {
 	if alpn != StreamALPN && alpn != LeafALPN {
-		return errors.New("unsupported mesh stream protocol")
+		return errors.New("unsupported net stream protocol")
 	}
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {

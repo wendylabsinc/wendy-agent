@@ -135,8 +135,10 @@ type pendingManifestRenewal struct {
 type Synchronizer struct {
 	directory *Directory
 	cache     *IdentityCache
-	sent      map[string]bool
-	pending   map[string]SignedManifest
+	// leafBundles selects the negotiated Lite bundle role; routers use descriptors.
+	leafBundles bool
+	sent        map[string]bool
+	pending     map[string]SignedManifest
 	// Warm-cache retries are bound to the exact advertised chain and deadline.
 	pendingRenewals map[string]pendingManifestRenewal
 	certificates    *CertificateExchange
@@ -188,11 +190,20 @@ func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int)
 			s.sent = map[string]bool{}
 		}
 		s.sent[fp] = true
-		out = append(out, ControlMessage{Kind: "certificate", Certificate: DescribeCertificates(w.Principal, chain)})
+		out = append(out, s.identityMessage(w.Principal, chain))
 	}
 	w.Body = append(json.RawMessage(nil), w.Body...)
 	w.Signature = append([]byte(nil), w.Signature...)
 	return append(out, ControlMessage{Kind: "manifest", Manifest: &w}), true
+}
+
+// identityMessage is called only with a current independently verified cache
+// entry. The leaf protocol cannot fetch descriptors or certificate chunks.
+func (s *Synchronizer) identityMessage(principal string, chain [][]byte) ControlMessage {
+	if s.leafBundles {
+		return ControlMessage{Kind: "bundle", Bundle: chain}
+	}
+	return ControlMessage{Kind: "certificate", Certificate: DescribeCertificates(principal, chain)}
 }
 
 func (s *Synchronizer) Reconcile(now time.Time) []ControlMessage {
@@ -262,7 +273,7 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 	case "identity-request":
 		chain, _, ok := s.cache.Get(m.Principal, now)
 		if ok {
-			replies = append(replies, ControlMessage{Kind: "certificate", Certificate: DescribeCertificates(m.Principal, chain)})
+			replies = append(replies, s.identityMessage(m.Principal, chain))
 		}
 	case "bundle":
 		principal, e := s.cache.Put(m.Bundle, now)

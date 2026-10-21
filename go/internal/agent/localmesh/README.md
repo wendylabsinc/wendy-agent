@@ -162,6 +162,10 @@ at most two frames. Raw IPv4 and IP-in-IP sharing tunnels are refused, so this
 connection cannot serve as a transit path or use the built-in Internet-sharing
 data path. Application services can still proxy traffic.
 
+The leaf protocol exchanges complete currently verified certificate bundles,
+including replies to identity lookups. Certificate descriptors and chunk requests
+remain specific to full-router links; Lite does not implement that exchange.
+
 Leaf links do not implement catalogue relay. They are excluded from catalogue
 peer registration; service inventories, repair and freshness proofs use full-router
 neighbours only.

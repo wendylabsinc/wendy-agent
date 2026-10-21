@@ -33,7 +33,7 @@ type PeerLink struct {
 	// Reassembly is a consistent, current hop-local receive snapshot.
 	Reassembly *IPAssemblyStats
 	assembler  *IPAssembler
-	// SendQueue is populated for a BLE byte-stream link when Snapshot is read.
+	// SendQueue is populated for a framed byte-stream link when Snapshot is read.
 	SendQueue *IPQueueStats
 	queue     ipQueueSnapshotter
 }
@@ -49,7 +49,7 @@ func WithCarrier(ctx context.Context, carrier string) context.Context {
 func carrierName(ctx context.Context, fallback string) string {
 	carrier, _ := ctx.Value(carrierContextKey{}).(string)
 	switch carrier {
-	case "ethernet", "infrastructure-wifi", "tcp", "nan", "ble", "quic", "tls-stream":
+	case "ethernet", "infrastructure-wifi", "tcp", "nan", "ble", "quic", "tls-stream", "leaf":
 		return carrier
 	default:
 		return fallback

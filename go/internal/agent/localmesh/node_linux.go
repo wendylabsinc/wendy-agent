@@ -231,7 +231,10 @@ func (n *Node) refresh() {
 		if carrier, ok := p.link.(*quicNodeLink); ok {
 			link.carrier = carrier.sendIP
 		}
-		if stream, ok := p.link.(*streamNodeLink); ok {
+		switch stream := p.link.(type) {
+		case *streamNodeLink:
+			link.queue = stream.ipPackets
+		case *leafNodeLink:
 			link.queue = stream.ipPackets
 		}
 		links = append(links, link)
@@ -372,7 +375,7 @@ func (n *Node) handle(e nodeEvent) error {
 		if _, leaf := e.add.link.(*leafNodeLink); leaf {
 			for _, active := range n.peers {
 				if active.device == e.add.device {
-					return errors.New("leaf already has an active mesh link")
+					return errors.New("leaf already has an active net link")
 				}
 			}
 		}
@@ -383,7 +386,11 @@ func (n *Node) handle(e nodeEvent) error {
 			return err
 		}
 		e.add.tun = tun
-		e.add.sync = NewSynchronizer(n.directory, n.cache)
+		if _, leaf := e.add.link.(*leafNodeLink); leaf {
+			e.add.sync = newLeafSynchronizer(n.directory, n.cache)
+		} else {
+			e.add.sync = NewSynchronizer(n.directory, n.cache)
+		}
 		n.peers[e.add.id] = e.add
 		p := e.add
 		// The endpoint-only leaf protocol has no catalogue capability.

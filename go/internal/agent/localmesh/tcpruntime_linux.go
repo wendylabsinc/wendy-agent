@@ -48,6 +48,10 @@ func RunConfiguredTCPObserved(parent context.Context, configDir string, id TCPId
 // optional radio providers. The observer may start providers and must stop
 // them when it receives nil before the node is closed.
 func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdentity, observe func(*Node, *TCPConfig)) error {
+	return runConfiguredWithNode(parent, configDir, id, observe, net.Listen)
+}
+
+func runConfiguredWithNode(parent context.Context, configDir string, id TCPIdentity, observe func(*Node, *TCPConfig), listen func(string, string) (net.Listener, error)) error {
 	credentials, err := NewCredentials(id.Certificate, id.Chain, id.Key)
 	if err != nil {
 		return err
@@ -66,7 +70,7 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 	defer cancel()
 	var listener net.Listener
 	if cfg.Listen != "" {
-		listener, err = net.Listen("tcp", cfg.Listen)
+		listener, err = listen("tcp", cfg.Listen)
 		if err != nil {
 			return err
 		}
@@ -74,9 +78,9 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 	}
 	var leafListener net.Listener
 	if cfg.LeafListen != "" {
-		leafListener, err = net.Listen("tcp", cfg.LeafListen)
+		leafListener, err = listen("tcp", cfg.LeafListen)
 		if err != nil {
-			return fmt.Errorf("listen for mesh leaves: %w", err)
+			return fmt.Errorf("listen for net leaves: %w", err)
 		}
 		defer leafListener.Close()
 	}
@@ -204,6 +208,9 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 	case <-parent.Done():
 	case err = <-nodeDone:
 		nodeStopped = true
+		if errors.Is(err, context.Canceled) {
+			err = nil
+		}
 	case err = <-leafDone:
 		leafStopped = true
 	}
@@ -220,12 +227,13 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 		err = errors.Join(err, <-leafDone)
 	}
 	if !nodeStopped {
-		err = errors.Join(err, <-nodeDone)
+		// Normal node cancellation must not hide an earlier listener failure
+		// when the independent runtime results are combined.
+		if nodeErr := <-nodeDone; !errors.Is(nodeErr, context.Canceled) {
+			err = errors.Join(err, nodeErr)
+		}
 	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-	return nil
+	return err
 }
 
 func indexOfDevice(devices []meshid.Device, want meshid.Device) int {
