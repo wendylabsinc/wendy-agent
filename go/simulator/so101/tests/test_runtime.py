@@ -91,6 +91,16 @@ def test_bounded_atomic_joint_commands_and_reset(client):
     assert client.get('/api/scene/state').json()['epoch'] == reset['epoch']
 
 
+def test_reported_joint_limits_are_accepted(client):
+    # Viewer sliders send these exact values at their endpoints.
+    joints = client.get('/api/status').json()['joints']
+    for bound in ('min_deg', 'max_deg'):
+        command = {j['name']: j[bound] for j in joints}
+        assert client.post('/api/pose', json={'joints_deg': command}).status_code == 200
+        targets = client.get('/api/status').json()['joints']
+        assert np.allclose([j['target_deg'] for j in targets], [j[bound] for j in joints])
+
+
 def test_control_origin_bounds_and_health(client):
     for headers in [{'Origin': 'https://foreign.example'}, {'Sec-Fetch-Site': 'cross-site'}, {'Host': 'rebound.example'}]:
         assert client.post('/api/reset', json={}, headers=headers).status_code == 403

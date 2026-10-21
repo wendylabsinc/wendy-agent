@@ -12,7 +12,6 @@ import mujoco
 import numpy as np
 
 
-STATE_PERIOD = 1 / 30
 GEOM_TYPES = {int(getattr(mujoco.mjtGeom, "mjGEOM_" + name.upper())): name
               for name in ("plane", "sphere", "capsule", "ellipsoid", "cylinder", "box", "mesh")}
 

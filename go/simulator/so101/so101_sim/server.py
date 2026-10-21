@@ -22,6 +22,10 @@ MODEL_ROOT = ROOT.parent / 'model'
 MODEL_BUNDLE = 'so101-follower-a758567-v1'
 NAMES = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']
 HOME = np.array([0, 0, 0, 0, 0, 0.4])
+# Paths come from this fixed map, never from the request.
+STATIC_ASSETS = {name: ROOT / name for name in (
+    'viewer.js', 'lidar-view.js', 'vendor/three.module.js',
+    'vendor/three.core.js', 'vendor/OrbitControls.js')}
 
 
 class Simulator:
@@ -271,10 +275,12 @@ def pose(request: Pose):
         if name not in NAMES or not math.isfinite(degrees):
             raise HTTPException(422, f'Invalid joint: {name}')
         i = NAMES.index(name)
-        radians = math.radians(degrees)
-        if not sim.limits[i, 0] <= radians <= sim.limits[i, 1]:
+        # Bound in the degrees /api/status reports. Converting a reported
+        # limit back to radians can land one ulp outside the actuator range.
+        low, high = np.rad2deg(sim.limits[i])
+        if not low <= degrees <= high:
             raise HTTPException(422, f'Out of range: {name}')
-        commands.append((i, radians))
+        commands.append((i, float(np.clip(math.radians(degrees), *sim.limits[i]))))
     with sim.lock:
         sim.demo_until = 0
         for i, radians in commands:
@@ -340,8 +346,7 @@ def scene_state():
 
 @app.get('/{asset:path}')
 def asset(asset: str):
-    allowed = {'viewer.js', 'lidar-view.js', 'vendor/three.module.js',
-               'vendor/three.core.js', 'vendor/OrbitControls.js'}
-    if asset not in allowed:
+    path = STATIC_ASSETS.get(asset)
+    if path is None:
         raise HTTPException(404, 'Not found')
-    return FileResponse(ROOT / asset, media_type='text/javascript')
+    return FileResponse(path, media_type='text/javascript')
