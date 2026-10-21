@@ -82,6 +82,12 @@ func NewWithDeps(self meshid.Device, node Node, policy Policy, probe Probe) (*Co
 		uplinkHealth: map[string]*HealthTracker{}, gatewayHealth: map[meshid.Device]*HealthTracker{}}, nil
 }
 
+// cleanupController retains a partially initialized policy without permitting
+// reconciliation or attempting node/DNS mutations that were never initialized.
+func cleanupController(policy Policy) *Controller {
+	return &Controller{policy: policy, closed: true, offerWithdrawn: true}
+}
+
 // SetLogger enables structured DNS transition audit events. Repeated successful
 // reconciliations do not emit events; failures and subsequent recovery do.
 func (c *Controller) SetLogger(logger *zap.Logger) {

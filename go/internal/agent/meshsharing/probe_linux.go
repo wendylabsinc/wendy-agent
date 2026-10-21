@@ -4,6 +4,7 @@ package meshsharing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -54,16 +55,22 @@ func hasPhysicalDefault(routes, iface string) bool {
 	return false
 }
 
+// NewLinux may return a nonnil cleanup-only controller on failure. The caller
+// must retry its Close before creating another policy, even if participation is
+// disabled after the failed initialization.
 func NewLinux(ctx context.Context, credentials *localmesh.Credentials, node Node) (*Controller, error) {
 	policy, err := newLinuxTunnelPolicy(ctx, credentials)
 	if err != nil {
+		if policy != nil {
+			return cleanupController(policy), err
+		}
 		return nil, err
 	}
 	c, err := NewWithDeps(credentials.Device, node, policy, linuxProbe{})
 	if err != nil {
-		_ = policy.Close()
+		return cleanupController(policy), errors.Join(err, policy.Close())
 	}
-	return c, err
+	return c, nil
 }
 
 func command(ctx context.Context, name string, args ...string) (string, error) {

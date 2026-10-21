@@ -154,6 +154,14 @@ func (m *meshSharingManager) run(ctx context.Context, node *localmesh.Node) {
 			var err error
 			controller, err = meshsharing.NewLinux(ctx, node.Credentials, sharingNode{node, m.catalog})
 			if err != nil {
+				if controller != nil {
+					if cleanupErr := m.closeController(controller); cleanupErr != nil {
+						closing = true
+						err = errors.Join(err, cleanupErr)
+					} else {
+						controller = nil
+					}
+				}
 				m.logger.Warn("Wendy Net sharing unavailable", zap.Error(err))
 				m.setState(services.LocalMeshRuntimeStatus{Available: true, State: "error", Detail: err.Error(),
 					AuthenticatedPeers: node.Snapshot().Peers})

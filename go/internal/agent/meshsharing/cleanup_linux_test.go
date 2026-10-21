@@ -136,6 +136,47 @@ func TestCleanupStaleNamespaceProcess(t *testing.T) {
 			t.Fatalf("cleanup changed foreign rules or retained owned rules: %s", out)
 		}
 	}
+	// Fail initialization after base-rule acquisition, then fail its immediate
+	// cleanup too. Disabling participation must not lose the remaining owner.
+	bin := t.TempDir()
+	failure := bin + "/fail-delete"
+	if err := os.WriteFile(failure, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"iptables", "ip6tables"} {
+		real, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := fmt.Sprintf("#!/bin/sh\nfor arg in \"$@\"; do\nif [ \"$arg\" = -D ] && [ -e %q ]; then exit 4; fi\ndone\nexec %q \"$@\"\n", failure, real)
+		if err := os.WriteFile(bin+"/"+tool, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	credentials := controlTestCredentials(t)(controlTestTenant, controlTestClient)
+	// Its ULA is deliberately absent, so lease-listener creation fails.
+	controller, initErr := NewLinux(ctx, credentials, &fakeNode{})
+	if initErr == nil || controller == nil {
+		t.Fatalf("failed setup lost its cleanup owner: controller=%v error=%v", controller, initErr)
+	}
+	if _, err := controller.Step(ctx, Config{}); err == nil {
+		t.Fatal("failed initialization accepted reconciliation")
+	}
+	if err := controller.Close(); err == nil {
+		t.Fatal("partial setup cleanup incorrectly reported success")
+	}
+	if err := os.Remove(failure); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Close(); err != nil {
+		t.Fatalf("failed setup cleanup could not recover: %v", err)
+	}
+	for _, tool := range []string{"iptables", "ip6tables"} {
+		if strings.Contains(run(tool, "-S", "FORWARD"), internetMarker) {
+			t.Fatal("failed setup retained Internet forwarding rules after recovery")
+		}
+	}
 	for _, key := range []string{"net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding"} {
 		if strings.TrimSpace(run("sysctl", "-n", key)) != "1" {
 			t.Fatalf("changed foreign forwarding baseline %s", key)
