@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Forwarding is shared by mesh routing and physical-LAN projections. Closing
@@ -21,6 +22,29 @@ var forwardingSysctl = "/proc/sys/net/ipv4/ip_forward"
 var forwardingMarker = "/run/wendy-lan-forwarding/previous"
 
 const forwardingComment = "wendy-scoped-forwarding-v1"
+
+// CNI invocations run in separate processes. Keep their grant changes and the
+// agent's switch restoration in one critical section. Never replace this inode.
+func withForwardingStateLock(fn func() error) error {
+	if err := os.MkdirAll(filepath.Dir(forwardingMarker), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(forwardingMarker+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
+// A pending restoration means the agent's last user has left, but CNI grants
+// still need forwarding. New agent users cancel it; final successful CNI DEL
+// completes it. Unlike a PID, the exact kernel grant survives agent restart.
+func pendingForwardingPath() string { return forwardingMarker + ".internet" }
 
 func forwardingRules() [][]string {
 	return [][]string{
@@ -56,6 +80,19 @@ func AcquireForwarding(key string) error {
 	if key == "" {
 		return errors.New("empty forwarding consumer")
 	}
+	return withForwardingStateLock(func() error {
+		if err := enableScopedForwarding(); err != nil {
+			return err
+		}
+		if err := os.Remove(pendingForwardingPath()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		forwarding.users[key] = true
+		return nil
+	})
+}
+
+func enableScopedForwarding() error {
 	owned, err := forwardingBaseline()
 	if err != nil {
 		return err
@@ -99,7 +136,6 @@ func AcquireForwarding(key string) error {
 			}
 		}
 	}
-	forwarding.users[key] = true
 	return nil
 }
 
@@ -107,6 +143,13 @@ func restoreForwarding() error {
 	owned, err := forwardingBaseline()
 	if err != nil || !owned {
 		return err
+	}
+	active, err := bridgeInternetForwardingActive()
+	if err != nil {
+		return err
+	}
+	if active {
+		return os.WriteFile(pendingForwardingPath(), []byte("1\n"), 0600)
 	}
 	// Disable first. Removing a fallback while forwarding is still enabled
 	// would briefly expose unrelated CNI or foreign forwarding rules.
@@ -118,12 +161,22 @@ func restoreForwarding() error {
 			return err
 		}
 	}
-	return os.Remove(forwardingMarker)
+	if err := os.Remove(forwardingMarker); err != nil {
+		return err
+	}
+	if err := os.Remove(pendingForwardingPath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func ReleaseForwarding(key string) error {
 	forwarding.Lock()
 	defer forwarding.Unlock()
+	return withForwardingStateLock(func() error { return releaseForwardingLocked(key) })
+}
+
+func releaseForwardingLocked(key string) error {
 	if !forwarding.users[key] {
 		if len(forwarding.users) == 0 {
 			return restoreForwarding()
@@ -148,7 +201,7 @@ func reconcileUnusedForwarding() error {
 	if len(forwarding.users) != 0 {
 		return nil
 	}
-	return restoreForwarding()
+	return withForwardingStateLock(restoreForwarding)
 }
 
 func (a LANServiceAccess) forwardingKey() string {

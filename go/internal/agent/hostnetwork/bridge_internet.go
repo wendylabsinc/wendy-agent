@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"os"
 	"slices"
 	"strings"
 )
@@ -74,6 +75,15 @@ func bridgeInternetRules(owner, bridge string, ips []net.IP) ([][]string, error)
 // RevokeBridgeInternetAccess works without a surviving namespace or address.
 // Delete only this CNI invocation's exact marker; unrelated grants stay intact.
 func RevokeBridgeInternetAccess(owner string) error {
+	return withForwardingStateLock(func() error {
+		if err := revokeBridgeInternetAccess(owner); err != nil {
+			return err
+		}
+		return restoreDeferredBridgeForwarding()
+	})
+}
+
+func revokeBridgeInternetAccess(owner string) error {
 	out, err := meshIPTables("-t", "filter", "-S", BridgeInternetChain)
 	if err != nil {
 		if exitCode(err) == 1 {
@@ -108,7 +118,11 @@ func RevokeBridgeInternetAccess(owner string) error {
 	}
 	return revokeBridgeReplyRules(owner)
 }
-func EnsureBridgeInternetAccess(owner, bridge string, ips []net.IP) (err error) {
+func EnsureBridgeInternetAccess(owner, bridge string, ips []net.IP) error {
+	return withForwardingStateLock(func() error { return ensureBridgeInternetAccess(owner, bridge, ips) })
+}
+
+func ensureBridgeInternetAccess(owner, bridge string, ips []net.IP) (err error) {
 	rules, err := bridgeInternetRules(owner, bridge, ips)
 	if err != nil {
 		return err
@@ -116,7 +130,7 @@ func EnsureBridgeInternetAccess(owner, bridge string, ips []net.IP) (err error) 
 	if err = InitBridgeInternetChain(); err != nil {
 		return err
 	}
-	if err = RevokeBridgeInternetAccess(owner); err != nil {
+	if err = revokeBridgeInternetAccess(owner); err != nil {
 		return err
 	}
 	// Revoke removed any previously recorded ownership. Refuse to adopt an
@@ -137,9 +151,30 @@ func EnsureBridgeInternetAccess(owner, bridge string, ips []net.IP) (err error) 
 	}
 	defer func() {
 		if err != nil {
-			_ = RevokeBridgeInternetAccess(owner)
+			if revokeBridgeInternetAccess(owner) == nil {
+				_ = restoreDeferredBridgeForwarding()
+			}
 		}
 	}()
+	// CNI enabled forwarding earlier while configuring the gateway. The agent
+	// may have restored its baseline since then; enable it again under the
+	// shared lock before publishing the grant.
+	owned, e := forwardingBaseline()
+	if e != nil {
+		return e
+	}
+	if err = enableScopedForwarding(); err != nil {
+		return err
+	}
+	if !owned {
+		if created, e := forwardingBaseline(); e != nil {
+			return e
+		} else if created {
+			if err = os.WriteFile(pendingForwardingPath(), []byte("1\n"), 0600); err != nil {
+				return err
+			}
+		}
+	}
 	for _, rule := range rules {
 		if out, e := meshIPTables(append([]string{"-t", "filter", "-A", BridgeInternetChain}, rule...)...); e != nil {
 			return fmt.Errorf("grant bridge Internet access: %w: %s", e, out)
@@ -155,6 +190,10 @@ func EnsureBridgeInternetAccess(owner, bridge string, ips []net.IP) (err error) 
 	return nil
 }
 func CheckBridgeInternetAccess(owner, bridge string, ips []net.IP) error {
+	return withForwardingStateLock(func() error { return checkBridgeInternetAccess(owner, bridge, ips) })
+}
+
+func checkBridgeInternetAccess(owner, bridge string, ips []net.IP) error {
 	rules, err := bridgeInternetRules(owner, bridge, ips)
 	if err != nil {
 		return err
@@ -196,4 +235,40 @@ func CheckBridgeInternetAccess(owner, bridge string, ips []net.IP) error {
 		}
 	}
 	return nil
+}
+
+func bridgeInternetForwardingActive() (bool, error) {
+	out, err := lanIPTables("-t", "filter", "-S", BridgeInternetChain)
+	if err != nil {
+		if exitCode(err) == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect Internet forwarding consumers: %w: %s", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "-A" || fields[1] != BridgeInternetChain {
+			continue
+		}
+		for i := 0; i+1 < len(fields); i++ {
+			marker := strings.Trim(fields[i+1], "\"")
+			if fields[i] == "--comment" && strings.HasPrefix(marker, "wendy-bridge-internet:") && len(marker) == len("wendy-bridge-internet:")+64 {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func restoreDeferredBridgeForwarding() error {
+	data, err := os.ReadFile(pendingForwardingPath())
+	if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if string(data) != "1\n" {
+		return fmt.Errorf("invalid deferred Internet forwarding restoration")
+	}
+	return restoreForwarding()
 }

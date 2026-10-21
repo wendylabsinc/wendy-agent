@@ -202,3 +202,63 @@ func TestOrphanLANForwardingReleasesReplacedNamespacesAndRetainsFailures(t *test
 		t.Fatal("orphan cleanup leaked forwarding ownership")
 	}
 }
+
+func TestInternetGrantsDeferOnlyOwnedForwardingRestoration(t *testing.T) {
+	forwardingFixture(t, "0")
+	previous := lanIPTables
+	active, inspectFail, acquireFail := true, false, false
+	lanIPTables = func(args ...string) ([]byte, error) {
+		if acquireFail && len(args) > 3 && args[2] == "-N" && args[3] == BridgeInternetChain {
+			return nil, errors.New("acquisition failed")
+		}
+		if len(args) > 3 && args[2] == "-S" && args[3] == BridgeInternetChain {
+			if inspectFail {
+				return nil, errors.New("inspection failed")
+			}
+			if active {
+				return []byte("-A " + BridgeInternetChain + " -m comment --comment " + bridgeInternetMarker("owner") + " -j ACCEPT\n"), nil
+			}
+		}
+		return previous(args...)
+	}
+	if err := AcquireForwarding("mesh"); err != nil {
+		t.Fatal(err)
+	}
+	inspectFail = true
+	if err := ReleaseForwarding("mesh"); err == nil {
+		t.Fatal("inspection failure authorized restoration")
+	}
+	forwardingValue(t, "1")
+	inspectFail = false
+	if err := ReleaseForwarding("mesh"); err != nil {
+		t.Fatal(err)
+	}
+	forwardingValue(t, "1")
+	acquireFail = true
+	if err := AcquireForwarding("new-agent"); err == nil {
+		t.Fatal("acquisition failure was hidden")
+	}
+	if _, err := os.Stat(pendingForwardingPath()); err != nil {
+		t.Fatal("failed acquisition lost deferred restoration", err)
+	}
+	forwardingValue(t, "1")
+	acquireFail = false
+	if err := AcquireForwarding("new-agent"); err != nil {
+		t.Fatal(err)
+	}
+	active = false
+	if err := withForwardingStateLock(restoreDeferredBridgeForwarding); err != nil {
+		t.Fatal(err)
+	}
+	forwardingValue(t, "1")
+	if err := ReleaseForwarding("new-agent"); err != nil {
+		t.Fatal(err)
+	}
+	forwardingValue(t, "0")
+	if err := os.WriteFile(pendingForwardingPath(), []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := withForwardingStateLock(restoreDeferredBridgeForwarding); err == nil {
+		t.Fatal("malformed deferred ownership accepted")
+	}
+}

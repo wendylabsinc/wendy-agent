@@ -117,6 +117,9 @@ func runBridgeInternetNativeAndBorrowedPolicy(t *testing.T, internetFirst bool) 
 	run("iptables", append([]string{"-A", "FORWARD"}, foreign...)...)
 	const owner = "bridge-internet-test/app/eth0"
 	if internetFirst {
+		// The CNI bridge gateway enables the switch before publishing its
+		// Internet grant, even when no agent forwarding consumer exists yet.
+		run("sysctl", "-w", "net.ipv4.ip_forward=1")
 		if err := EnsureBridgeInternetAccess(owner, "biapph", []net.IP{net.ParseIP("10.42.3.2")}); err != nil {
 			t.Fatal(err)
 		}
