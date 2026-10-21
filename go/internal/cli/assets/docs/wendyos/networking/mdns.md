@@ -207,4 +207,6 @@ Discovery uses IPv4 mDNS (`_wendy-net._udp` on UDP port 5353, TXT `protocol=quic
 
 Authenticated Ethernet links have lower cost than infrastructure Wi-Fi, followed by the radio carriers. Interface changes are scanned every five seconds; removing an interface closes its links and permits another enabled carrier to reconnect.
 
+Established TCP sessions can recover from a short carrier outage through another enabled carrier, within their normal connection and certificate lifetime limits. New connections still require an authorized route. Changing saved carrier settings restarts the local routing runtime and may interrupt active connections; it is different from a carrier disappearing while both carriers remain enabled.
+
 LAN discovery broadcasts the enrolled tenant/device principal and device UUID in cleartext to the local network. These are discovery hints, not credentials. Enable these carriers on networks where exposing those identifiers is acceptable; other stations on that network can enumerate the advertisements.

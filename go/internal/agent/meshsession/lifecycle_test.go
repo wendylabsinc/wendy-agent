@@ -156,8 +156,8 @@ func TestPooledAppTeardownRevokesOnlyItsStreams(t *testing.T) {
 	}
 }
 
-func TestRetiredActivePoolSessionRevokedOnCloseAndRouteCut(t *testing.T) {
-	for _, action := range []string{"close", "route"} {
+func TestRetiredActivePoolSessionRevokedOnCloseAndInvalidation(t *testing.T) {
+	for _, action := range []string{"close", "invalidate"} {
 		t.Run(action, func(t *testing.T) {
 			a, b := fixtureCredentials(t)
 			port := lifecycleEcho(t)
@@ -176,7 +176,7 @@ func TestRetiredActivePoolSessionRevokedOnCloseAndRouteCut(t *testing.T) {
 			if action == "close" {
 				client.Close()
 			} else {
-				client.PruneRoutes(localmesh.NodeSnapshot{})
+				client.Invalidate(b.Device)
 			}
 			requireSessionClosed(t, old.conn)
 			requireSessionClosed(t, fresh.conn)
@@ -218,6 +218,12 @@ func TestAppSessionExpiryEnforcedAtBothEnds(t *testing.T) {
 						t.Fatal("warm session not reused")
 					}
 					lifecycleExchange(t, warm)
+					// A carrier interruption must not extend either certificate
+					// path's lifetime after its active transport leaves the cache.
+					client.WithdrawRoute(b.Device)
+					if conn.Context().Err() != nil {
+						t.Fatal("route retirement closed the active stream before expiry")
+					}
 					time.Sleep(time.Until(expires) + 20*time.Millisecond)
 					requireSessionClosed(t, conn)
 					if flow, err := client.Dial(ctx, b.Device, endpoint, port); err == nil {

@@ -1095,7 +1095,7 @@ func main() {
 		}
 		address, err := meshsession.Resolve(snapshot(), peer)
 		if err != nil {
-			appClient.Invalidate(peer)
+			appClient.WithdrawRoute(peer)
 			return nil, err
 		}
 		return appClient.DialWithRetryCheck(dialCtx, peer, address, port, func() error {
@@ -1145,7 +1145,7 @@ func main() {
 		}
 		address, err := meshsession.Resolve(snapshot(), peer)
 		if err != nil {
-			appClient.Invalidate(peer)
+			appClient.WithdrawRoute(peer)
 			return nil, err
 		}
 		return appClient.DialUDP(dialCtx, peer, address, port, options)

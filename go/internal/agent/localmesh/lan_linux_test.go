@@ -140,6 +140,8 @@ func TestLANPeerProcess(t *testing.T) {
 	var node *Node
 	select {
 	case node = <-nodeReady:
+	case err := <-meshDone:
+		t.Fatalf("mesh node setup failed before readiness: %v", err)
 	case <-ctx.Done():
 		t.Fatal("mesh node did not start")
 	}

@@ -142,10 +142,8 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Invalidate closes a cached session as soon as the signed manifest or Babel
-// route to that peer is withdrawn. A QUIC connection can otherwise remain
-// apparently live until its idle timeout, and a restored route would reuse
-// that dead path for every new app stream.
+// Invalidate closes every session for a peer, including active and already
+// retired streams. Use WithdrawRoute for a temporary routing interruption.
 func (c *Client) Invalidate(peer meshid.Device) {
 	if c == nil {
 		return
@@ -158,9 +156,27 @@ func (c *Client) Invalidate(peer meshid.Device) {
 	}
 }
 
+// WithdrawRoute prevents new streams from reusing the peer's cached transport,
+// but lets already authenticated TCP streams survive carrier reconvergence.
+// The routed packet layer still requires a current signed route; this does not
+// authorize forwarding during the outage. Certificate lifetime enforcement and
+// Client.Close continue to terminate established sessions independently.
+// UDP sessions are retired immediately, preserving their existing flow guards.
+func (c *Client) WithdrawRoute(peer meshid.Device) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	conns := c.retirePeerLocked(peer, true)
+	c.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.CloseWithError(0, "wendy net app route withdrawn")
+	}
+}
+
 // PruneRoutes applies one authenticated node snapshot to all cached app
-// sessions. The caller invokes it periodically so a route withdrawal without
-// an app dial still closes a pooled QUIC connection before a later heal.
+// sessions. Missing routes retire cached transports for new streams while
+// preserving active TCP streams. An endpoint mismatch invalidates them outright.
 func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 	if c == nil {
 		return
@@ -185,7 +201,9 @@ func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 	}
 	for peer, endpoint := range peers {
 		address, err := Resolve(snapshot, peer)
-		if err != nil || address != endpoint {
+		if err != nil {
+			stale = append(stale, c.retirePeerLocked(peer, true)...)
+		} else if address != endpoint {
 			stale = append(stale, c.invalidateLocked(peer)...)
 		}
 	}
@@ -195,9 +213,12 @@ func (c *Client) PruneRoutes(snapshot localmesh.NodeSnapshot) {
 	}
 }
 
-// Caller holds c.mu. Close is done after unlocking, including for sessions
-// with active streams: those streams have lost their authorized data path.
+// Caller holds c.mu. Close is done after unlocking.
 func (c *Client) invalidateLocked(peer meshid.Device) []*quic.Conn {
+	return c.retirePeerLocked(peer, false)
+}
+
+func (c *Client) retirePeerLocked(peer meshid.Device, preserveActiveTCP bool) []*quic.Conn {
 	if entry := c.peers[peer]; entry != nil {
 		entry.retired = true
 	}
@@ -206,7 +227,9 @@ func (c *Client) invalidateLocked(peer meshid.Device) []*quic.Conn {
 	for entry := range c.sessions {
 		if entry.peer == peer {
 			entry.retired = true
-			conns = append(conns, entry.conn)
+			if !preserveActiveTCP || entry.active == 0 {
+				conns = append(conns, entry.conn)
+			}
 		}
 	}
 	for entry := range c.udpSessions {
