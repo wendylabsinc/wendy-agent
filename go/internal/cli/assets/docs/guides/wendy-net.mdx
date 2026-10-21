@@ -28,8 +28,10 @@ You can enable more than one connection type. Only the options you supply change
 other saved settings are preserved.
 
 Changing settings restarts local routing and may interrupt existing connections.
-To disable one connection type, set its option to `false`. To stop sharing or borrowing Internet access, set `--share-uplink=false` and
-`--roam=false`. Disable unwanted connection types separately with their flags.
+To disable one connection type, set its option to `false`. To stop all Wendy Net
+participation while retaining the saved connection choices, use
+`--participate=false --roam=false --share-uplink=false`. Sharing and roaming
+require participation, so disable them in the same command if they were enabled.
 
 ## 3. Check the result
 
@@ -128,7 +130,7 @@ Every boolean accepts `true` or `false`; omitted options retain their saved valu
 
 | Option | Purpose |
 | --- | --- |
-| `--participate` | Enable the Internet-sharing policy. Required for roaming or sharing. |
+| `--participate` | Join and relay Wendy Net. Required for roaming or sharing. |
 | `--ethernet` | Find and connect to peers on Ethernet. |
 | `--infrastructure-wifi` | Find and connect to peers on ordinary Wi-Fi networks. |
 | `--nan` | Connect through supported Wi-Fi Aware radios, without an access point. |

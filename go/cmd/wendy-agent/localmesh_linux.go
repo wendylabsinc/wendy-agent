@@ -22,13 +22,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// Recover kernel state before admitting a new carrier lifetime. Keep this
+// boundary separate so lifecycle/status tests do not inspect the host firewall.
+var recoverNetCarrierState = func(ctx context.Context) error {
+	return errors.Join(meshsharing.CleanupStale(ctx), localmesh.CleanupStaleResolver(ctx))
+}
+
 // runConfiguredNetCarriers runs one Babel node for every enabled carrier.
 // Its observer is cleared only after the radio provider has drained its links.
 func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, catalog *meshCatalogManager, vips *mesh.VIPTable, sharing *meshSharingManager, observe func(func() localmesh.NodeSnapshot)) (runErr error) {
 	if err := sharing.Deactivate(); err != nil {
 		return err
 	}
-	if err := errors.Join(meshsharing.CleanupStale(ctx), localmesh.CleanupStaleResolver(ctx)); err != nil {
+	if err := recoverNetCarrierState(ctx); err != nil {
 		return fmt.Errorf("recover Wendy Net Internet sharing: %w", err)
 	}
 	participating, err := runWhileMeshParticipating(ctx, filepath.Join(configDir, "nan-mesh.json"), 2*time.Second, func(active context.Context) error {
