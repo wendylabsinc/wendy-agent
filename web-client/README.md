@@ -219,7 +219,7 @@ remain explicit rather than becoming empty healthy networks.
 The underlying read-only API is
 `WendyLocalMeshAdminService.GetLocalMeshTopology`, with the same tenant-scoped
 operator authorization as the existing mesh administration API. The CLI exposes
-it as `wendy --device HOST:PORT --json device local-mesh topology`.
+it as `wendy --device HOST:PORT --json device wendy-net topology`.
 `--observation` adds a typed result envelope for clients handling partial
 failures. Neither the API nor this view enables the mesh or changes its policy.
 

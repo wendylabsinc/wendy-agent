@@ -318,7 +318,7 @@ export class DesktopService {
     const generation = this.monitorGeneration;
     const request = this.monitorTarget(target).then((address) => this.run(
       this.cli,
-      ["device", "local-mesh", "topology", "--device", address, "--json", "--observation"],
+      ["device", "wendy-net", "topology", "--device", address, "--json", "--observation"],
       { timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
     )).then((output) => {
       if (generation !== this.monitorGeneration) throw new Error("This mesh view is no longer open.");
@@ -343,19 +343,38 @@ export class DesktopService {
       target = deviceTarget(target);
       if (!devices.has(target)) devices.set(target, { id: target, name: name || target, deviceType });
     };
+    if (sources.every((source) => source.status === "rejected")) {
+      // Preserve the view's last inventory and let its observations age stale.
+      // An unavailable inventory does not establish that every device is gone.
+      throw new Error(sources.map((source, index) =>
+        `${index === 0 ? "Local" : "Cloud"} discovery: ${source.reason.message}`,
+      ).join("; "));
+    }
     if (sources[0].status === "fulfilled") {
       const collection = sources[0].value;
-      for (const key of ["lanDevices", "ethernetDevices", "usbDevices"]) {
+      let invalidAddress = false;
+      if (!collection || typeof collection !== "object" || Array.isArray(collection))
+        warnings.push("Local discovery returned an invalid inventory.");
+      else for (const key of ["lanDevices", "ethernetDevices", "usbDevices"]) {
+        if (collection[key] != null && !Array.isArray(collection[key])) {
+          invalidAddress = true;
+          continue;
+        }
         for (const device of collection[key] || []) {
-          if (!device.isWendyDevice) continue;
-          const host = device.hostname || device.ipAddress;
-          if (!host) continue;
-          const address = device.port ? `${host.includes(":") ? `[${host}]` : host}:${device.port}` : host;
-          // Discovery names are labels only. Tenant grouping waits for a
-          // snapshot tied to the independently verified device certificate.
-          add(address, device.displayName || device.name, device.deviceType);
+          // Local advertisements are untrusted. An invalid row must not hide
+          // other local devices or the independent Cloud inventory.
+          if (!device?.isWendyDevice) continue;
+          try {
+            const host = device.hostname || device.ipAddress;
+            if (!host) continue;
+            const address = device.port ? `${host.includes(":") ? `[${host}]` : host}:${device.port}` : host;
+            // Discovery names are labels only. Tenant grouping waits for a
+            // snapshot tied to the independently verified device certificate.
+            add(address, device.displayName || device.name, device.deviceType);
+          } catch { invalidAddress = true; }
         }
       }
+      if (invalidAddress) warnings.push("Local discovery omitted devices with invalid addresses.");
     } else warnings.push("Local discovery: " + sources[0].reason.message);
     if (sources[1].status === "fulfilled") {
       if (!Array.isArray(sources[1].value)) warnings.push("Cloud discovery returned an invalid inventory.");

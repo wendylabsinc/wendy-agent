@@ -96,7 +96,7 @@ test("topology calls use bounded read-only command and retain typed unsupported 
   };
   const result = await service.meshTopology({target: "one.local:50052"});
   assert.equal(result.status, "unsupported");
-  assert.deepEqual(command.args, ["device", "local-mesh", "topology", "--device", "one.local:50052", "--json", "--observation"]);
+  assert.deepEqual(command.args, ["device", "wendy-net", "topology", "--device", "one.local:50052", "--json", "--observation"]);
   assert.equal(command.options.timeout, 15000);
   assert.equal(service.meshSnapshots.size, 0);
   assert.throws(() => service.meshTopology({target: "--device=other"}));
@@ -121,4 +121,23 @@ test("topology monitoring never boots a stopped VM", async () => {
   service.virtualMachines = async () => [{name: "stopped", state: "stopped"}];
   service.run = async () => { throw new Error("must not invoke a device command"); };
   await assert.rejects(service.meshTopology({target: "vm:stopped"}), /not running/);
+});
+
+test("invalid local advertisements preserve valid local and Cloud inventory", async () => {
+  const service = fixture();
+  service.run = async (_file, args) => JSON.stringify(args[0] === "cloud"
+    ? [{id: cloudAsset, selector: cloudSelector, name: "Remote"}]
+    : {lanDevices: [null, {isWendyDevice: true, hostname: "--other"},
+        {isWendyDevice: true, hostname: 42, port: 50052},
+        {isWendyDevice: true, hostname: "one.local", port: 50052}],
+       usbDevices: {unexpected: true}});
+  const result = await service.meshDiscover();
+  assert.deepEqual(result.devices.map((device) => device.id), ["one.local:50052", cloudSelector]);
+  assert.deepEqual(result.warnings, ["Local discovery omitted devices with invalid addresses."]);
+});
+
+test("a total discovery outage fails the refresh instead of replacing prior inventory with an empty graph", async () => {
+  const service = fixture();
+  service.run = async (_file, args) => { throw new Error(args[0] === "cloud" ? "Cloud offline" : "Network unavailable"); };
+  await assert.rejects(service.meshDiscover(), /Local discovery: Network unavailable; Cloud discovery: Cloud offline/);
 });
