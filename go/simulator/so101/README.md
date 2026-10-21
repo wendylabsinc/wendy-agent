@@ -27,8 +27,7 @@ wendy --device vm:arm-sim device update --binary /absolute/path/to/linux-arm64/w
 ```
 
 The standalone viewer and Wendy Desktop provide six bounded joint sliders,
-pause/resume, reset and an eight-second wave. The MCP App uses the same 3D
-scene format in an observer session; use its browser link for joint controls.
+pause/resume, reset and an eight-second wave.
 No walking controls, physical cameras, serial or USB motor backend, real/sim
 switch, or ROS policy interface is provided. The `policyBundle` field in the
 shared v1 profile identifies this fixed model/controller bundle, not a learned
@@ -65,7 +64,7 @@ per VM and is not necessarily 8890. All angles below are degrees.
   `GET /camera.jpg`: current CPU-rendered observer image, not a physical camera.
 
 Browser control requests must have the same origin. The runtime has no CORS
-control bridge, and the gateway observer session does not expose writes.
+control bridge.
 
 ## Verification
 
@@ -78,7 +77,7 @@ PYTHONPATH=. .venv/bin/pytest -q tests
 ```
 
 `.github/workflows/so101-simulator.yml` runs Linux host profile/lifecycle/VM
-backend and gateway tests, plus native amd64/arm64 container physics, API and
+backend and MCP simulator tool tests, plus native amd64/arm64 container physics, API and
 OSMesa rendering tests. These contract tests do not substitute for live Linux
 host VM boot/provisioning validation. See `validation.md` for actual local
 results and any outstanding host checks. Asset attribution and the pinned

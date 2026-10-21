@@ -39,8 +39,7 @@ reconnecting to a healthy runtime did not reset its world.
 This checks virtual joint motion, rejection of an out-of-range target, paused
 physics, reset epochs, matching scene/state identity, and an actual rendered
 JPEG. The browser displayed the six-joint model, and slider, pause, wave and
-reset controls were exercised. A VM viewer screenshot was saved locally at
-`/tmp/so101-vm-viewer.jpg` during the run.
+reset controls were exercised.
 
 The first live VM run exposed a rendering lock that delayed status and commands.
 The final implementation uses separate physics and rendering threads with a
@@ -48,13 +47,6 @@ private render data buffer. A deliberate slow-render regression test verifies
 that physics and status continue while rendering is blocked. The final VM
 returned healthy status and accepted the full smoke sequence. This was a
 functional smoke test on a busy shared Mac, not a performance benchmark.
-
-The temporary VM and test Docker containers/image tags were stopped and
-removed. The user's `lerobot-sim` remained running at port 50161 with PID 71068;
-`g1-sim` remained stopped. `go2-sim` was observed stopped earlier and was
-absent from the final inventory; this chat issued no lifecycle or deletion
-command against it. No default target, Mac Agent, USB device, physical-arm
-starter, reference application or existing VM was modified by this work.
 
 ## Automated checks executed locally
 
@@ -91,9 +83,9 @@ errors; the independent MCP App check and focused desktop check both passed.
 ## Linux coverage and remaining gaps
 
 `.github/workflows/so101-simulator.yml` adds native Linux **amd64 and arm64**
-host profile/VM-backend/gateway/source-cache tests, plus container builds and
-real OSMesa/physics/API tests on each architecture. A frontend job checks the
-MCP App and Electron bridge/types. **This new workflow has not run on GitHub.**
+host profile/VM-backend/MCP simulator tool/source-cache tests, plus container
+builds and real OSMesa/physics/API tests on each architecture. A frontend job
+checks the Electron bridge and desktop types.
 
 No live Linux developer host was available for QEMU VM boot/provisioning or
 viewer validation. Running a Linux container on this Mac does not establish
@@ -118,3 +110,17 @@ OrbitControls import adaptation). The rebuilt Linux/arm64 image passed all five
 real runtime/OSMesa tests, including downloaded viewer hash and HTTP checks.
 Source-cache, VM and app-configuration checks passed locally. New GitHub Linux
 runs and physical Linux-host VM acceptance remain to be checked.
+
+## Merge with main — 21 October 2026
+
+main removed the ChatGPT gateway and the MCP App, so the gateway scene and MCP
+App checks recorded above no longer exist. The MCP `simulator_create` case moved
+to `go/internal/cli/mcp/tools_simulator_test.go`.
+
+On a Linux/amd64 host, the rebuilt image passed all six runtime tests with real
+OSMesa rendering, including a new check that `/api/pose` accepts the exact joint
+limits `/api/status` reports. The VM, MCP, CLI command, app-configuration,
+agent-service and simulator Go tests, the desktop type check and 38 Electron
+tests passed, apart from one cloud-device resolution test that this branch does
+not touch and that also fails on that host on other branches. Live Linux-host
+VM acceptance remains outstanding.
