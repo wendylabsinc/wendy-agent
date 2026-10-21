@@ -123,3 +123,52 @@ func TestLANBrowserRetainsServiceUntilLastPhysicalSourceEnds(t *testing.T) {
 func replaceServiceType(value, old, new string) string {
 	return strings.ReplaceAll(value, old, new)
 }
+
+func TestLANCacheExcludesRouterDiscoveryAcrossRecordPaths(t *testing.T) {
+	for _, routerType := range []string{"_wendy-net._udp", "_WeNdY-NeT._UdP", "_wendy-mesh._tcp", "_WeNdY-MeSh._TcP"} {
+		for _, enumerationOnly := range []bool{false, true} {
+			t.Run(routerType+"/enumeration="+map[bool]string{false: "false", true: "true"}[enumerationOnly], func(t *testing.T) {
+				now := time.Now()
+				iface := lanTestInterface()
+				source := net.ParseIP("192.168.41.22")
+				cache := NewLANCache()
+				router := announcement("Shared", 60, 43023, source.String())
+				for _, rr := range append(router.Answer, router.Extra...) {
+					rr.Header().Name = replaceServiceType(rr.Header().Name, "_http._tcp", routerType)
+					if ptr, ok := rr.(*dns.PTR); ok {
+						ptr.Ptr = replaceServiceType(ptr.Ptr, "_http._tcp", routerType)
+					}
+				}
+				if enumerationOnly {
+					router.Answer = []dns.RR{&dns.PTR{Hdr: dns.RR_Header{Name: "_services._dns-sd._udp.local.", Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 60}, Ptr: routerType + ".local."}}
+				}
+				cache.Observe(iface, source, router, now)
+				if got := cache.Snapshot([]localmesh.PhysicalLANInterface{iface}, now); len(got) != 0 {
+					t.Fatalf("router RRset projected: %+v", got)
+				}
+				if got := cache.Types(iface, now); len(got) != 0 {
+					t.Fatalf("router service queried: %v", got)
+				}
+				// The ordinary app shares the router's A record. Its UDP type
+				// and endpoint must survive the router-service exclusion.
+				app := announcement("Shared", 60, 8123, source.String())
+				for _, rr := range append(app.Answer, app.Extra...) {
+					rr.Header().Name = replaceServiceType(rr.Header().Name, "_http._tcp", "_echo._udp")
+					if ptr, ok := rr.(*dns.PTR); ok {
+						ptr.Ptr = replaceServiceType(ptr.Ptr, "_http._tcp", "_echo._udp")
+					}
+				}
+				// Reuse the already cached router host address explicitly.
+				app.Extra = app.Extra[:2]
+				cache.Observe(iface, source, app, now)
+				got := cache.Snapshot([]localmesh.PhysicalLANInterface{iface}, now)
+				if len(got) != 1 || got[0].Protocol != "udp" || got[0].Port != 8123 || !got[0].Address.Equal(source) {
+					t.Fatalf("ordinary app UDP sharing router host lost: %+v", got)
+				}
+				if types := cache.Types(iface, now); len(types) != 1 || types[0] != "_echo._udp" {
+					t.Fatalf("ordinary app follow-up types: %v", types)
+				}
+			})
+		}
+	}
+}

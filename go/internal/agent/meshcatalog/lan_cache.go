@@ -14,6 +14,16 @@ import (
 
 const maxLANRecords = 1024
 
+// Router discovery is never an app service, including the former TCP name.
+// Keep host address records available: a normal app service may share its host.
+func internalLANServiceType(typ string) bool {
+	switch strings.ToLower(typ) {
+	case "_wendy-net._udp", "_wendy-mesh._tcp":
+		return true
+	}
+	return false
+}
+
 // LANService is an unsigned, link-local DNS-SD observation. It is never
 // admitted to the signed mesh catalog or retransmitted to another node.
 type LANService struct {
@@ -126,7 +136,7 @@ func (c *LANCache) Snapshot(interfaces []localmesh.PhysicalLANInterface, now tim
 			continue
 		}
 		typeName := strings.TrimSuffix(strings.ToLower(ptr.Hdr.Name), ".local.")
-		if !typePattern.MatchString(typeName) || typeName == "_wendy-mesh._tcp" ||
+		if !typePattern.MatchString(typeName) || internalLANServiceType(typeName) ||
 			!strings.HasSuffix(strings.ToLower(ptr.Ptr), "."+typeName+".local.") {
 			continue
 		}
@@ -198,12 +208,12 @@ func (c *LANCache) Types(iface localmesh.PhysicalLANInterface, now time.Time) []
 		name := strings.ToLower(ptr.Hdr.Name)
 		if name == "_services._dns-sd._udp.local." {
 			typ := strings.TrimSuffix(strings.ToLower(ptr.Ptr), ".local.")
-			if typePattern.MatchString(typ) && typ != "_wendy-mesh._tcp" {
+			if typePattern.MatchString(typ) && !internalLANServiceType(typ) {
 				types[typ] = struct{}{}
 			}
 		} else {
 			typ := strings.TrimSuffix(name, ".local.")
-			if typePattern.MatchString(typ) && typ != "_wendy-mesh._tcp" {
+			if typePattern.MatchString(typ) && !internalLANServiceType(typ) {
 				types[typ] = struct{}{}
 			}
 		}
