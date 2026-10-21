@@ -36,7 +36,12 @@ jobs:
       - name: Install CLI system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libusb-1.0-0-dev pkg-config
       - name: Linux host profile, VM backend, MCP simulator tools and source-cache contracts
-        run: go test ./go/internal/cli/vm ./go/internal/cli/commands ./go/internal/cli/mcp ./go/internal/shared/appconfig ./go/simulator/... -count=1 -timeout=180s
+        # Go Tests runs the whole commands package on its own runners. Its cloud
+        # tests depend on localhost and DNS behaviour that differs on these
+        # GitHub-hosted runners, so this job runs only the simulator tests.
+        run: |
+          go test ./go/internal/cli/vm ./go/internal/cli/mcp ./go/internal/shared/appconfig ./go/simulator/... -count=1 -timeout=180s
+          go test ./go/internal/cli/commands -run 'Robot|SO101|Simulator|VMCreate' -count=1 -timeout=180s
       - name: Build the shipped runtime on the native CPU architecture
         run: docker build -t so101-ci go/simulator/so101
       - name: Real physics, API and CPU rendering tests in the shipped image
