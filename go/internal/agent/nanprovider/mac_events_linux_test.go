@@ -87,7 +87,9 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	radioDone := make(chan error, 1)
-	go func() { radioDone <- runRadio(ctx, testDevice(t, 100), make(chan radioPeer, 8), nil, zap.NewNop()) }()
+	go func() {
+		radioDone <- runRadio(ctx, testDevice(t, 100), make(chan radioPeer, 8), nil, nil, zap.NewNop())
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
