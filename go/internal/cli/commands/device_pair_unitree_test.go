@@ -146,7 +146,7 @@ func TestUnitreeManualIPValidationAndSavedReconnect(t *testing.T) {
 	c.forgetErr = errors.New("device offline")
 	m, cmd = unitreePairUpdate(m, unitreeKey("f"))
 	m, _ = unitreePairUpdate(m, cmd())
-	if len(m.paired) != 1 || !strings.Contains(m.message, "Device offline.") || m.busy {
+	if len(m.paired) != 1 || !strings.Contains(m.message, "Unitree request failed: device offline.") || m.busy {
 		t.Fatal("failed forget discarded saved pairing")
 	}
 	c.forgetErr = nil
@@ -257,7 +257,7 @@ func TestUnitreeFailedScansRetainRobotsAndOperationErrors(t *testing.T) {
 	m, _ = unitreePairUpdate(m, m.Init()())
 	c.listErr, c.discoveryErr = errors.New("list unavailable"), errors.New("LAN unavailable")
 	m, _ = unitreePairUpdate(m, m.Init()())
-	if len(m.rows) != 1 || !strings.Contains(m.View(), "List unavailable.") || !strings.Contains(m.View(), "LAN unavailable.") {
+	if len(m.rows) != 1 || !strings.Contains(m.View(), "Saved Unitree pairings: list unavailable.") || !strings.Contains(m.View(), "LAN unavailable.") {
 		t.Fatal("failed scan lost robots or error details")
 	}
 	m, cmd := unitreePairUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
