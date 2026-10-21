@@ -64,3 +64,28 @@ func TestSettingsRejectAmbiguousEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestHostedWebSocketRoutes(t *testing.T) {
+	settings := (&Session{}).settings()
+	settings.CloudGRPC = "api.production.example:443"
+	settings.RelayIssuer = "https://api.production.example"
+	for _, test := range []struct{ target, want string }{
+		{settings.CloudGRPC, "wss://api.production.example/v2/transport/cloud"},
+		{"tunnel.dev.wendy.dev:443", "wss://api.production.example/v2/transport/broker"},
+		{"https://relay.wendy.sh", "wss://api.production.example/v2/transport/broker"},
+	} {
+		got, err := settings.WebSocketURL(test.target)
+		if err != nil || got != test.want {
+			t.Fatalf("%s: got %q, %v; want %q", test.target, got, err, test.want)
+		}
+	}
+	for _, target := range []string{"localhost:443", "169.254.169.254:443", "evil.example:443", "https://relay.wendy.sh?endpoint=evil", "https://user:secret@relay.wendy.sh", "api.dev.wendy.sh:443", "tunnel.dev.wendy.dev:80"} {
+		if got, err := settings.WebSocketURL(target); err == nil {
+			t.Fatalf("accepted %q as %q", target, got)
+		}
+	}
+	settings.RelayIssuer = "http://api.production.example"
+	if _, err := settings.WebSocketURL(settings.CloudGRPC); err == nil {
+		t.Fatal("accepted insecure relay")
+	}
+}

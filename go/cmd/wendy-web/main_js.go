@@ -163,7 +163,7 @@ func (b *bridge) handle(r request) (any, error) {
 		return nil, errors.New("Shell access is disabled in the browser client")
 	}
 	if r.Method == "cloud-connect" {
-		if js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
+		if b.auth.Settings == nil && js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
 			return nil, errors.New("Cloud sessions require the local browser relay")
 		}
 		var p struct {
@@ -184,7 +184,11 @@ func (b *bridge) handle(r request) (any, error) {
 		life, stop := context.WithCancel(context.Background())
 		ctx, cancel := context.WithTimeout(life, 35*time.Second)
 		defer cancel()
-		conn, err := b.auth.ConnectDevice(ctx, p.ID, browserCloudDial, &http.Client{Transport: authProxyTransport{}, Timeout: 15 * time.Second})
+		httpClient := &http.Client{Timeout: 15 * time.Second}
+		if b.auth.Settings == nil {
+			httpClient.Transport = authProxyTransport{}
+		}
+		conn, err := b.auth.ConnectDevice(ctx, p.ID, b.browserCloudDial, httpClient)
 		if err != nil {
 			stop()
 			return nil, err
@@ -201,17 +205,17 @@ func (b *bridge) handle(r request) (any, error) {
 	if r.Method == "cloud-discover" {
 		// The local relay has a fixed TLS-verified upstream. Never send the session
 		// token to a caller-supplied relay URL.
-		if js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
+		if b.auth.Settings == nil && js.Global().Get("location").Get("origin").String() != "http://localhost:5173" {
 			return nil, errors.New("Cloud discovery currently requires the local browser relay")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		cloud := "api.dev.wendy.sh:443"
+		if b.auth.Settings != nil {
+			cloud = b.auth.Settings.CloudGRPC
+		}
 		assets, err := b.auth.Discover(ctx, func(ctx context.Context, _ string) (net.Conn, error) {
-			ws, _, err := websocket.Dial(ctx, "ws://127.0.0.1:8788/cloud", nil)
-			if err != nil {
-				return nil, fmt.Errorf("Browser relay connection failed; check the npm run dev terminal: %w", err)
-			}
-			return websocket.NetConn(ctx, ws, websocket.MessageBinary), nil
+			return b.browserCloudDial(ctx, cloud)
 		})
 		profile := b.auth.Profile()
 		if profile.Subject != "" {
@@ -726,7 +730,18 @@ func (b *bridge) operator(ctx context.Context, o org, fresh bool) (savedRecord, 
 }
 
 // Only Wendy public HTTPS endpoints are eligible for the broker relay.
-func browserCloudDial(ctx context.Context, endpoint string) (net.Conn, error) {
+func (b *bridge) browserCloudDial(ctx context.Context, endpoint string) (net.Conn, error) {
+	if b.auth.Settings != nil {
+		target, err := b.auth.Settings.WebSocketURL(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		ws, _, err := websocket.Dial(ctx, target, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &browserTransportConn{Conn: websocket.NetConn(ctx, ws, websocket.MessageBinary)}, nil
+	}
 	path := "/cloud"
 	if endpoint != "api.dev.wendy.sh:443" {
 		target, err := cloudrelay.BrowserBrokerTarget(endpoint)
@@ -740,4 +755,30 @@ func browserCloudDial(ctx context.Context, endpoint string) (net.Conn, error) {
 		return nil, err
 	}
 	return websocket.NetConn(ctx, ws, websocket.MessageBinary), nil
+}
+
+// The hosted relay caps each binary message at 1 MiB. Preserve the byte stream
+// while bounding individual WebSocket writes, including large gRPC messages.
+type browserTransportConn struct {
+	net.Conn
+	writeMu sync.Mutex
+}
+
+func (c *browserTransportConn) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	total := 0
+	for len(p) > 0 {
+		chunk := p[:min(len(p), 1<<20)]
+		n, err := c.Conn.Write(chunk)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n != len(chunk) {
+			return total, io.ErrShortWrite
+		}
+		p = p[n:]
+	}
+	return total, nil
 }
