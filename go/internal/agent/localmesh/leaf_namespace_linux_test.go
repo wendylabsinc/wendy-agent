@@ -373,6 +373,7 @@ func TestLeafRoutedEndpointIsolatedNamespace(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no routed ICMPv6 echo reply")
 	}
+	testLeafIPv4Tunnel(t, router.Device, leaf.Device, link, packets)
 	// A source spoof passes framing/reassembly but must close this leaf before
 	// reaching the kernel. Its selected route then becomes unreachable.
 	spoof := leafTestPacket(router.Device.MeshAddress(), router.Device.MeshAddress(), 17, 48)
@@ -446,7 +447,7 @@ func TestLeafRoutedEndpointIsolatedNamespace(t *testing.T) {
 		_ = conn.Close()
 		t.Fatal("shutdown retained leaf listener")
 	}
-	t.Log(fmt.Sprintf("signed leaf /128, UDP %d-byte MTU, ICMPv6, duplicate/source rejection, reconnect and owned cleanup passed", TunnelMTU))
+	t.Log(fmt.Sprintf("signed leaf /128, UDP %d-byte MTU, ICMPv6, IPv4-in-IPv6, duplicate/source rejection, reconnect and owned cleanup passed", TunnelMTU))
 }
 
 // The runtime must preserve an unexpected listener failure while it cancels
@@ -523,5 +524,73 @@ func TestLeafListenerFailureReportsRuntimeError(t *testing.T) {
 	}
 	if _, err := netlink.LinkByName(InterfaceName); err == nil {
 		t.Fatal("failed runtime retained mesh host interface")
+	}
+}
+
+// Exercise both leaf packet gates around a real kernel IP-in-IPv6 tunnel.
+// Lease authentication and exact per-tunnel firewall grants are separately
+// exercised by meshsharing's control and namespace tests.
+func testLeafIPv4Tunnel(t *testing.T, router, leaf meshid.Device, link *streamNodeLink, packets <-chan []byte) {
+	t.Helper()
+	tunnel := &netlink.Ip6tnl{LinkAttrs: netlink.LinkAttrs{Name: "leafip4", MTU: 1280},
+		Local: router.MeshAddress().AsSlice(), Remote: leaf.MeshAddress().AsSlice(), Ttl: 64,
+		Flags: uint32(netlink.IP6_TNL_F_IGN_ENCAP_LIMIT)}
+	if err := netlink.LinkAdd(tunnel); err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.LinkDel(tunnel)
+	if err := netlink.LinkSetUp(tunnel); err != nil {
+		t.Fatal(err)
+	}
+	serverIP, borrowerIP := net.IPv4(203, 0, 113, 1), net.IPv4(10, 88, 0, 17)
+	if err := netlink.AddrAdd(tunnel, &netlink.Addr{IPNet: &net.IPNet{IP: serverIP, Mask: net.CIDRMask(32, 32)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RouteAdd(&netlink.Route{LinkIndex: tunnel.Index, Dst: &net.IPNet{IP: borrowerIP, Mask: net.CIDRMask(32, 32)}}); err != nil {
+		t.Fatal(err)
+	}
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: serverIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	body := []byte("leaf-cloud-uplink")
+	packet := leafTestPacket(leaf.MeshAddress(), router.MeshAddress(), 4, 40+20+8+len(body))
+	inner := packet[40:]
+	inner[0], inner[8], inner[9] = 0x45, 64, 17
+	binary.BigEndian.PutUint16(inner[2:4], uint16(len(inner)))
+	copy(inner[12:16], borrowerIP.To4())
+	copy(inner[16:20], serverIP.To4())
+	var sum uint32
+	for offset := 0; offset < 20; offset += 2 {
+		sum += uint32(binary.BigEndian.Uint16(inner[offset:]))
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 65535) + (sum >> 16)
+	}
+	binary.BigEndian.PutUint16(inner[10:12], ^uint16(sum))
+	binary.BigEndian.PutUint16(inner[20:22], 18090)
+	binary.BigEndian.PutUint16(inner[22:24], uint16(udp.LocalAddr().(*net.UDPAddr).Port))
+	binary.BigEndian.PutUint16(inner[24:26], uint16(8+len(body)))
+	copy(inner[28:], body) // IPv4 UDP permits an omitted checksum.
+	if err := link.SendIP(4, packet); err != nil {
+		t.Fatal(err)
+	}
+	_ = udp.SetDeadline(time.Now().Add(3 * time.Second))
+	buffer := make([]byte, 1280)
+	n, source, err := udp.ReadFromUDP(buffer)
+	if err != nil || !source.IP.Equal(borrowerIP) || !bytes.Equal(buffer[:n], body) {
+		t.Fatalf("leaf IPv4 tunnel input: source=%v err=%v", source, err)
+	}
+	if _, err := udp.WriteToUDP(buffer[:n], source); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case reply := <-packets:
+		if len(reply) != len(packet) || reply[6] != 4 || !bytes.Equal(reply[56:60], borrowerIP.To4()) || !bytes.Equal(reply[68:], body) {
+			t.Fatalf("invalid leaf IPv4 tunnel reply: %x", reply)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no leaf IPv4 tunnel reply")
 	}
 }
