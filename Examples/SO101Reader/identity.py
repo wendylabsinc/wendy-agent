@@ -18,6 +18,8 @@ def adapter_metadata(port):
                     try:
                         result[field] = (parent / file).read_text().strip()
                     except OSError:
+                        # Some adapters omit a serial, and sysfs may be unreadable
+                        # in a container; keep the fields that were readable.
                         pass
                 break
     elif sys.platform == "darwin":
@@ -34,6 +36,8 @@ def adapter_metadata(port):
                 found = dict(inherited)
                 for key, value in {"serial_number": node.get("USB Serial Number"),
                                    "vendor_id": node.get("idVendor"), "product_id": node.get("idProduct")}.items():
+                    if isinstance(value, int):
+                        value = f"{value:04x}"  # sysfs spelling, so both hosts report e.g. "1a86"
                     if value is not None:
                         found[key] = value
                 if port in (node.get("IOCalloutDevice"), node.get("IODialinDevice")):
@@ -50,5 +54,6 @@ def adapter_metadata(port):
                     result.update(found, source="macos_ioreg")
                     break
         except (OSError, ValueError, subprocess.SubprocessError):
+            # Missing, slow or unparsable ioreg output leaves source "unavailable".
             pass
     return result

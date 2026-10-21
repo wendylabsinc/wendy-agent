@@ -106,16 +106,23 @@ class SerialTransport:
                 try:
                     termios.tcsetattr(self.fd, termios.TCSANOW, self.original)
                 except (OSError, termios.error):
+                    # An unplugged device has no settings to restore; still close.
                     pass
             # Release TIOCEXCL explicitly (PTY tests may keep another descriptor).
             if self.claimed:
                 try:
                     fcntl.ioctl(self.fd, termios.TIOCNXCL)
                 except OSError:
+                    # Closing the last descriptor clears TIOCEXCL anyway.
                     pass
         finally:
-            os.close(self.fd)
-            self.fd = None
+            fd, self.fd = self.fd, None
+            try:
+                os.close(fd)
+            except OSError:
+                # A vanished device can report EIO, but the descriptor is freed;
+                # failing here would turn a recoverable unplug into worker_failed.
+                pass
 
     def read(self, motor_id, address, count):
         # Construct bytes here, never accept arbitrary packets from callers.
@@ -148,12 +155,12 @@ class SerialTransport:
                         raise ReaderError("disconnected", "Serial device closed")
                     received.extend(data)
                 while len(received) >= 4:
-                    if received[:2] != b"\xff\xff":
+                    length = received[3] + 4
+                    # Like the Feetech SDK, a header followed by an impossible ID
+                    # or length is line noise (e.g. a stray 0xff); resync by one byte.
+                    if received[:2] != b"\xff\xff" or received[2] > 253 or not 6 <= length <= 32:
                         del received[0]
                         continue
-                    length = received[3] + 4
-                    if not 6 <= length <= 32:
-                        raise ReaderError("protocol", "Response length outside bounded frame size")
                     if len(received) < length:
                         break
                     frame = bytes(received[:length])

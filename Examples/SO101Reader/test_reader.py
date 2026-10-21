@@ -98,6 +98,8 @@ class ConfigTests(unittest.TestCase):
                     {"SO101_MOCK_FAILED_IDS": "[1]"}, {"SO101_BAUD": "123456"}]:
             with self.assertRaises((ValueError, TypeError)):
                 Config.load(env)
+        with self.assertRaises(ValueError):
+            Config(host=0).validate()  # JSON number; IPv4Address alone would accept it
 
     def test_optional_calibration_never_blocks_raw(self):
         self.assertEqual(calibration_metadata(None)["state"], "not_configured")
@@ -127,8 +129,8 @@ class IdentityTests(unittest.TestCase):
         with patch("identity.sys.platform", "darwin"), patch("identity.subprocess.run", return_value=reply) as run:
             found = adapter_metadata(port)
             self.assertEqual(found, {"source": "macos_ioreg", "robot_identity_proven": False,
-                                     "serial_number": "fixture-serial", "vendor_id": 6790,
-                                     "product_id": 21971})
+                                     "serial_number": "fixture-serial", "vendor_id": "1a86",
+                                     "product_id": "55d3"})
             self.assertEqual(adapter_metadata("/dev/tty.fixture-target"), found)
             self.assertEqual(adapter_metadata("/dev/cu.missing")["source"], "unavailable")
             self.assertEqual(run.call_args.args[0],
@@ -313,6 +315,23 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(data, b"\xff\xff")
         self.assertEqual(bits, 8)
 
+    def test_stray_header_byte_resyncs(self):
+        def peer():
+            os.read(self.master, 8)
+            os.write(self.master, b"\xff" + frame(1, b"\x09\x03"))
+        thread = threading.Thread(target=peer)
+        thread.start()
+        data, bits = self.transport.read(1, 3, 2)
+        thread.join()
+        self.assertEqual((data, bits), (b"\x09\x03", 0))
+
+    def test_close_error_does_not_escape(self):
+        fd = self.transport.fd
+        with patch("transport.os.close", side_effect=OSError(errno.EIO, "fixture")):
+            self.transport.close()
+        os.close(fd)
+        self.assertIsNone(self.transport.fd)
+
     def test_timeout_and_partial_response(self):
         def peer():
             os.read(self.master, 8)
@@ -461,8 +480,9 @@ class APITests(unittest.TestCase):
         base = f"http://127.0.0.1:{server.server_port}"
         try:
             wait_until(lambda: monitor.current()["observation_ready"])
-            with urllib.request.urlopen(base + "/healthz") as reply:
-                self.assertTrue(json.load(reply)["healthy"])
+            for path in ("/healthz", "/healthz?probe=1"):
+                with urllib.request.urlopen(base + path) as reply:
+                    self.assertTrue(json.load(reply)["healthy"])
             with urllib.request.urlopen(base + "/v1/observations") as reply:
                 self.assertEqual(reply.headers["Cache-Control"], "no-store")
                 body = json.load(reply)

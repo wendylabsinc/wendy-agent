@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
+from urllib.parse import urlsplit
 
 from protocol import MODELS, ReaderError, position
 from identity import adapter_metadata
@@ -99,6 +100,9 @@ class Config:
                 or len(set(self.joints)) != 6):
             raise ValueError("joints must contain six unique nonempty names")
         # Numeric IPv4 makes the bind deterministic and avoids DNS/wildcard surprises.
+        # IPv4Address also accepts integers, which cannot be bound.
+        if not isinstance(self.host, str):
+            raise ValueError("host must be a numeric IPv4 address string")
         ipaddress.IPv4Address(self.host)
         if type(self.http_port) is not int or not 1 <= self.http_port <= 65535:
             raise ValueError("http_port must be 1..65535")
@@ -315,15 +319,17 @@ class ReaderHTTPServer(ThreadingHTTPServer):
 def server_for(config, monitor):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path not in {"/healthz", "/readyz", "/v1/observations"}:
+            # Ignore query strings such as cache-busters; no endpoint takes parameters.
+            path = urlsplit(self.path).path
+            if path not in {"/healthz", "/readyz", "/v1/observations"}:
                 self.send_error(404)
                 return
             body = monitor.current()
             status = 200
-            if self.path == "/healthz":
+            if path == "/healthz":
                 body = {"schema_version": 1, **body["process"]}
                 status = 200 if body["healthy"] else 503
-            elif self.path == "/readyz":
+            elif path == "/readyz":
                 body = {"schema_version": 1, "source": body["source"],
                         "observation_ready": body["observation_ready"], "hardware_ready": body["hardware_ready"],
                         "state": body["connection"]["state"]}

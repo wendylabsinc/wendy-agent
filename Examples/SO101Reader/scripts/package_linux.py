@@ -25,7 +25,7 @@ for name in ("reader.py", "protocol.py", "transport.py", "identity.py", "Dockerf
     shutil.copy2(root / name, dest / name)
 config = json.loads((root / "wendy.linux.json").read_text())
 config["env"].update(SO101_MODE="mock" if args.mock else "physical", SO101_HTTP_PORT=str(args.http_port))
-config["entitlements"][1]["port"] = args.http_port
+next(item for item in config["entitlements"] if item["type"] == "http")["port"] = args.http_port
 config["readiness"]["tcpSocket"]["port"] = args.http_port
 if args.port:
     config["env"]["SO101_PORT"] = args.port
