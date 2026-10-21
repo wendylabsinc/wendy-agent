@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -376,6 +377,55 @@ func TestVMStartWithoutPortPrefersTheSavedPortThenTheNextFreeOne(t *testing.T) {
 	// Shared networking forwards no port, so there is nothing to pick.
 	if preferred, port, err := vmStartHostPort(store, "sim", string(vm.NetShared)); preferred != 0 || port != 0 || err != nil {
 		t.Errorf("shared networking picked %d/%d (%v)", preferred, port, err)
+	}
+}
+
+func TestVMStartWithoutPortOnARunningVMSaysSoInsteadOfMoving(t *testing.T) {
+	// A running VM holds its own forward. Before the port fallback the busy
+	// port failed the start into "already running"; moving past it instead
+	// printed a new address and a power-off hint for a start that then failed.
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	store, err := vm.NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateFrom("sim", strings.NewReader("disk"), 4, 1024, vm.Meta{}); err != nil {
+		t.Fatal(err)
+	}
+	held := freeVMPortSpan(t)
+	if err := store.RecordAgentPort("sim", held); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", held))
+	if err != nil {
+		t.Skipf("could not occupy %d: %v", held, err)
+	}
+	defer ln.Close()
+	saved := vmStatusFn
+	vmStatusFn = func(name string) (vm.Status, error) { return runningVM(name, vm.NetUser, held), nil }
+	t.Cleanup(func() { vmStatusFn = saved })
+	// Fails, so a regression stops in resolveVMSpec instead of launching QEMU.
+	savedQEMU, preparedLaunch := ensureQEMUFn, false
+	ensureQEMUFn = func(context.Context) error {
+		preparedLaunch = true
+		return errors.New("test: no emulator")
+	}
+	t.Cleanup(func() { ensureQEMUFn = savedQEMU })
+
+	for _, detach := range []bool{false, true} {
+		var out strings.Builder
+		cmd := &cobra.Command{}
+		cmd.SetOut(&out)
+		err := runVMStart(cmd, "sim", vmStartOptions{netMode: string(vm.NetUser), hostPort: vm.DefaultAgentPort, detach: detach, autoPort: true})
+		if err == nil || !strings.Contains(err.Error(), `VM "sim" is already running`) {
+			t.Errorf("detach=%t: err = %v, want already running", detach, err)
+		}
+		if preparedLaunch || out.Len() != 0 {
+			t.Errorf("detach=%t: went on to launch (printed %q) on a port it moved to around itself", detach, out.String())
+		}
+	}
+	if meta, _ := store.ReadMeta("sim"); meta.AgentPort != held {
+		t.Errorf("sticky port = %d, want %d kept", meta.AgentPort, held)
 	}
 }
 

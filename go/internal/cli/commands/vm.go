@@ -365,6 +365,13 @@ func runVMStart(cmd *cobra.Command, name string, o vmStartOptions) error {
 		if store, err = vm.NewStore(); err == nil {
 			var port int
 			if preferred, port, err = vmStartHostPort(store, name, o.netMode); err == nil && port != 0 {
+				// The busy port may be this VM's own: a running VM holds its
+				// forward. Moving past it would print a new address for a
+				// start that then fails on the run lock, so ask now -- the
+				// port check would have failed the start here before.
+				if port != preferred && vmIsRunning(name) {
+					return vmAlreadyRunningError(name)
+				}
 				o.hostPort = port
 			}
 		}
@@ -378,10 +385,8 @@ func runVMStart(cmd *cobra.Command, name string, o vmStartOptions) error {
 		// only once the start has failed anyway: a liveness probe on the happy
 		// path would turn a transient reading into a start that silently does
 		// nothing.
-		if s, sErr := vm.NewStore(); sErr == nil {
-			if st, sErr := s.Status(name); sErr == nil && st.Running {
-				return fmt.Errorf("VM %q is already running; reach it with 'wendy vm logs %s' or stop it first", name, name)
-			}
+		if vmIsRunning(name) {
+			return vmAlreadyRunningError(name)
 		}
 		return err
 	}
@@ -419,16 +424,29 @@ func runVMStart(cmd *cobra.Command, name string, o vmStartOptions) error {
 	vmPrintReachability(out, name, spec.Net, spec.Net.AgentPort)
 	fmt.Fprintln(out, "Press Ctrl-A then X to power it off.")
 
+	// Before the boot, not after it: RunForeground returns only when the guest
+	// powers off, and a terminal closed on the console never gets that far. A
+	// pick that moved has already ruled out this VM running elsewhere, and one
+	// that did not records the port the VM preferred anyway.
+	recordVMStartPort(store, name, spec, o)
 	// Hand the terminal to QEMU: the guest console is the point of `vm start`.
 	err = store.RunForeground(cmd.Context(), spec, os.Stdin, out, cmd.ErrOrStderr())
 	if errors.Is(err, vm.ErrAlreadyRunning) {
-		return fmt.Errorf("VM %q is already running; reach it with 'wendy vm logs %s' or stop it first", name, name)
+		return vmAlreadyRunningError(name)
 	}
-	// Only now: RunForeground returns when the guest powers off, and a VM that
-	// was already running elsewhere must not have its sticky port replaced by
-	// the one this start picked around it.
-	recordVMStartPort(store, name, spec, o)
 	return err
+}
+
+// vmIsRunning reports whether name is running, as far as its run lock says.
+// An unreadable store counts as not running: the caller's own error is the
+// better one to show.
+func vmIsRunning(name string) bool {
+	st, err := vmStatusFn(name)
+	return err == nil && st.Running
+}
+
+func vmAlreadyRunningError(name string) error {
+	return fmt.Errorf("VM %q is already running; reach it with 'wendy vm logs %s' or stop it first", name, name)
 }
 
 // recordVMStartPort makes a port this start picked sticky, as
