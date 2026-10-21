@@ -619,10 +619,10 @@ func cameraStreamDiagnostic(err error) error {
 	case streamreason.CameraInUse:
 		device := info.GetMetadata()["device"]
 		if hint := info.GetMetadata()["hint"]; hint != "" {
-			// The agent knows what holds the node -- its own calibrated-frame
-			// helper, on a RealSense -- and "another application" would send
-			// the operator looking for the wrong thing.
-			return fmt.Errorf("camera %s is held on this device and could not be shared. %s. Stop that stream, then retry", device, hint)
+			// The agent knows what is likely holding the node -- on a
+			// RealSense, a vendor-SDK app or its own depth capture -- and the
+			// generic wording would leave the operator guessing.
+			return fmt.Errorf("camera %s is held on this device and could not be shared. %s. Stop whichever is running, then retry", device, hint)
 		}
 		return fmt.Errorf("camera %s is held by another application on this device and could not be shared with it. Stop the app holding it, then retry", device)
 	case streamreason.RequirementUnmet:
@@ -631,13 +631,8 @@ func cameraStreamDiagnostic(err error) error {
 		// gains is the flag to drop, spelled exactly as it is typed.
 		return fmt.Errorf("%s. Drop --require %s to stream without it, or use a camera that provides it (`wendy device camera frames --list`)",
 			status.Convert(err).Message(), info.GetMetadata()["missing"])
-	case streamreason.CalibratedSourceUnavailable:
-		if helper := info.GetMetadata()["helper"]; helper != "" {
-			return fmt.Errorf("%s. Install the %s capture helper on the device (it is not part of the base image)",
-				status.Convert(err).Message(), helper)
-		}
-		return fmt.Errorf("%s", status.Convert(err).Message())
-	case streamreason.FrameTooLarge:
+	case streamreason.CalibratedSourceUnavailable, streamreason.FrameTooLarge:
+		// The agent's sentence already names the source, the cause and the fix.
 		return fmt.Errorf("%s", status.Convert(err).Message())
 	}
 	return err

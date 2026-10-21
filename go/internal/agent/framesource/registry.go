@@ -4,17 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
-
-// isCleanEnd reports whether a record read ended because the producer finished,
-// rather than because something went wrong. A truncated record is not a clean
-// end — see ReadRecord.
-func isCleanEnd(err error) bool { return errors.Is(err, io.EOF) }
 
 // Provider enumerates the sources of one capture technology. Sources is called
 // per listing and per subscribe, so it must be cheap and must not disturb a

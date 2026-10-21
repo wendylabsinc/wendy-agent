@@ -163,8 +163,8 @@ func parseRequirements(values []string) ([]agentpbv2.FrameRequirement, error) {
 // capturing, and a listing cannot say what that is: another consumer may have
 // the camera pinned at a larger mode than its default, and sizing from the
 // default would fail on the first Recv -- the exact failure the limit exists
-// to prevent. The largest frame the agent relays is bounded by the helper
-// wire's record limit, so a joining request accepts up to that.
+// to prevent. The largest frame the agent relays is bounded by
+// framesource.MaxRecordBytes, so a joining request accepts up to that.
 func recvLimitFor(sources []*agentpbv2.CalibratedSource, name string, opts framesource.Options) int {
 	if opts.IsDefault() {
 		return framesource.MaxRecordBytes + recvLimitSlack
@@ -208,7 +208,7 @@ func renderCalibratedSources(w io.Writer, sources []*agentpbv2.CalibratedSource)
 	}
 	if len(sources) == 0 {
 		fmt.Fprintln(w, "No calibrated frame sources on this device.")
-		fmt.Fprintln(w, "An RGB-D camera needs a capture helper the agent can run; a plain webcam has no depth to calibrate.")
+		fmt.Fprintln(w, "Calibrated frames come from a supported RGB-D camera (an Intel RealSense D400); a plain webcam has no depth to calibrate.")
 		return nil
 	}
 	headers := []string{"Source", "Kind", "Camera", "Colour", "Depth", "Provides", "Status"}
@@ -235,9 +235,10 @@ func renderCalibratedSources(w io.Writer, sources []*agentpbv2.CalibratedSource)
 	fmt.Fprint(w, tui.RenderTable(headers, rows))
 	// The reason a source is unavailable is a sentence, not a column: it names
 	// the fix, and truncating it into a table would lose exactly the part an
-	// operator needs.
+	// operator needs. A ready source can carry one too, for depth it switched
+	// off (an unrecognised model, depth units it could not read).
 	for _, s := range sources {
-		if !s.GetAvailable() && s.GetUnavailableReason() != "" {
+		if s.GetUnavailableReason() != "" {
 			fmt.Fprintf(w, "\n%s: %s\n", s.GetSource(), s.GetUnavailableReason())
 		}
 	}

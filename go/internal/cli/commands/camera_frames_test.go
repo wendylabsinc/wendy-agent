@@ -260,7 +260,7 @@ func (s *stubCalibratedStream) Recv() (*agentpbv2.CalibratedFrame, error) {
 // --- the listing ---
 
 func TestRenderCalibratedSources_PrintsTheUnavailableReasonInFull(t *testing.T) {
-	const reason = "Intel(R) RealSense(TM) Depth Camera 435i is attached but the wendy-realsense-source capture helper is not installed"
+	const reason = "factory calibration could not be read: realsense: op 0x10: GET_CUR: UVCIOC_CTRL_QUERY query=0x81 size=1024: input/output error"
 	var out bytes.Buffer
 	err := renderCalibratedSources(&out, []*agentpbv2.CalibratedSource{{
 		Source: "realsense", Kind: "realsense", Description: "D435i",
@@ -276,6 +276,26 @@ func TestRenderCalibratedSources_PrintsTheUnavailableReasonInFull(t *testing.T) 
 	}
 	if !strings.Contains(out.String(), "unavailable") {
 		t.Errorf("listing does not mark the source unavailable:\n%s", out.String())
+	}
+}
+
+// A ready source with its depth switched off says why: the Depth column alone
+// reads "-", which looks like a camera that has no depth sensor.
+func TestRenderCalibratedSources_PrintsWhyAReadySourceHasNoDepth(t *testing.T) {
+	const reason = "the camera's depth units could not be read: depth disabled"
+	var out bytes.Buffer
+	err := renderCalibratedSources(&out, []*agentpbv2.CalibratedSource{{
+		Source: "realsense:1", Kind: "realsense", Description: "D435i",
+		Available: true, UnavailableReason: reason,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), reason) {
+		t.Errorf("listing hides why depth is off:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "unavailable") {
+		t.Errorf("a ready source is marked unavailable:\n%s", out.String())
 	}
 }
 
@@ -306,15 +326,13 @@ func TestCameraStreamDiagnostic_RequirementUnmetNamesTheFlagToDrop(t *testing.T)
 	}
 }
 
-func TestCameraStreamDiagnostic_MissingHelperSaysToInstallIt(t *testing.T) {
-	err := streamreason.New(codes.FailedPrecondition,
-		"calibrated frame source realsense is not available: the helper is not installed",
-		streamreason.CalibratedSourceUnavailable,
-		map[string]string{"source": "realsense", "helper": "wendy-realsense-source"})
+func TestCameraStreamDiagnostic_UnavailableSourceKeepsTheAgentsSentence(t *testing.T) {
+	const msg = "calibrated frame source realsense:1 is not available: factory calibration could not be read: EIO"
+	err := streamreason.New(codes.FailedPrecondition, msg,
+		streamreason.CalibratedSourceUnavailable, map[string]string{"source": "realsense:1"})
 
-	got := cameraStreamDiagnostic(err).Error()
-	if !strings.Contains(got, "wendy-realsense-source") || !strings.Contains(got, "Install") {
-		t.Errorf("diagnostic = %q", got)
+	if got := cameraStreamDiagnostic(err).Error(); got != msg {
+		t.Errorf("diagnostic = %q, want the agent's sentence unchanged", got)
 	}
 }
 
@@ -325,21 +343,22 @@ func TestCameraStreamDiagnostic_LeavesUnknownReasonsAlone(t *testing.T) {
 	}
 }
 
-// When the agent says what holds the camera -- its own calibrated-frame
-// helper, on a RealSense -- the operator must read that, not be sent looking
-// for "another application".
+// When the agent says what likely holds the camera -- on a RealSense, a
+// vendor-SDK app or its own depth capture -- the operator must read that, not
+// the generic "another application".
 func TestCameraStreamDiagnostic_CameraInUsePrintsTheAgentsHint(t *testing.T) {
-	const hint = "This is a RealSense node: a calibrated frame stream holds it for as long as it runs"
+	const hint = "This is a RealSense node, and an app using the vendor SDK (librealsense) claims every node of the camera" +
+		"; this depth node is also held by a calibrated frame stream (`wendy device camera frames`) for as long as one runs"
 	err := streamreason.New(codes.FailedPrecondition,
-		"camera /dev/video4 is already in use by another application on this device. "+hint,
+		"camera /dev/video0 is already in use by another application on this device. "+hint,
 		streamreason.CameraInUse,
-		map[string]string{"device": "/dev/video4", "hint": hint})
+		map[string]string{"device": "/dev/video0", "hint": hint})
 	got := cameraStreamDiagnostic(err).Error()
-	if !strings.Contains(got, "calibrated frame stream") {
+	if !strings.Contains(got, hint) {
 		t.Errorf("diagnostic drops the agent's hint: %q", got)
 	}
 	if strings.Contains(got, "another application") {
-		t.Errorf("diagnostic still blames another application when the agent named its own stream: %q", got)
+		t.Errorf("diagnostic still uses the generic wording when the agent named the holders: %q", got)
 	}
 
 	plain := streamreason.New(codes.FailedPrecondition, "camera /dev/video0 is already in use",
