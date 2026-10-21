@@ -450,3 +450,39 @@ func TestFailedRunningRecoveryPreservesMountedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNilManagerCleanup(t *testing.T) {
+	var m *Manager
+	if err := m.Stop("plain-app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StopPreservingMounts("plain-app"); err != nil {
+		t.Fatal(err)
+	}
+	m.StopAll()
+	m.Close()
+}
+
+func TestPrepareRunningStackKeepsDaemonAndClients(t *testing.T) {
+	bin := t.TempDir()
+	stubBinaries(t, bin)
+	t.Setenv("AVAHI_STUB_LOG", filepath.Join(bin, "calls.log"))
+	m := newStubManager(t)
+	m.ready = func(context.Context, string) error { return nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dir, err := m.Prepare(ctx, "app1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartDaemon(ctx, "app1", "/dev/null", func(context.Context) (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	old := m.instances["app1"]
+	if got, err := m.Prepare(ctx, "app1"); err != nil || got != dir {
+		t.Fatalf("running preparation: %s %v", got, err)
+	}
+	if m.instances["app1"] != old || old.runCtx.Err() != nil || !old.daemonStarted {
+		t.Fatal("running recovery retired a healthy stack")
+	}
+}

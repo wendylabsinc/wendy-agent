@@ -79,6 +79,10 @@ func (c *Client) ensureDBusProxyForStart(ctx context.Context, containerName stri
 // whose persisted spec already mounts the avahi proxy directory. The daemon
 // itself starts after CNI and before the application entrypoint is released.
 func (c *Client) ensureAvahiForStart(ctx context.Context, containerName string, mounts []specs.Mount) (bool, error) {
+	return c.ensureAvahiProxy(ctx, containerName, mounts, true)
+}
+
+func (c *Client) ensureAvahiProxy(ctx context.Context, containerName string, mounts []specs.Mount, newTask bool) (bool, error) {
 	for _, mount := range mounts {
 		if mount.Destination != "/var/run/dbus" {
 			continue
@@ -90,7 +94,15 @@ func (c *Client) ensureAvahiForStart(ctx context.Context, containerName string, 
 		if c.avahiManager == nil {
 			return false, fmt.Errorf("avahi bridge unavailable for %q", containerName)
 		}
-		dir, err := c.avahiManager.PrepareForTask(ctx, containerName)
+		var dir string
+		var err error
+		if newTask {
+			dir, err = c.avahiManager.PrepareForTask(ctx, containerName)
+		} else {
+			// Boot recovery may reach a task whose normal start already owns
+			// a healthy stack. Do not retire its active daemon or client bus.
+			dir, err = c.avahiManager.Prepare(ctx, containerName)
+		}
 		if err != nil {
 			return false, fmt.Errorf("recreating avahi bridge for %q: %w", containerName, err)
 		}
@@ -101,6 +113,83 @@ func (c *Client) ensureAvahiForStart(ctx context.Context, containerName string, 
 		return true, nil
 	}
 	return false, nil
+}
+
+// restoreRunningTaskResources serializes boot recovery with the concrete
+// container's start/stop/delete transaction. The caller's boot snapshot may be
+// stale by the time it gets here, so task status and spec are read under the
+// same keyed lock that owns proxy preparation for a normal start.
+func (c *Client) restoreRunningTaskResources(ctx context.Context, ctr containerdclient.Container) error {
+	ctx = c.withNamespace(ctx)
+	unlock := c.lockNetworkOperation(ctr.ID())
+	defer unlock()
+
+	labels, err := ctr.Labels(ctx)
+	if err != nil {
+		return fmt.Errorf("reading running container labels: %w", err)
+	}
+	if labels[labelKeyStoppedByUser] == "true" {
+		return nil
+	}
+	appID := labels[labelKeyAppID]
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return fmt.Errorf("running container owner: %w", err)
+	}
+	c.mu.Lock()
+	stopping := c.appStopping[appID]
+	c.mu.Unlock()
+	if stopping {
+		return nil
+	}
+	task, err := ctr.Task(ctx, nil)
+	if err != nil {
+		return nil // stop/delete may have won the keyed lock after the snapshot
+	}
+	status, err := task.Status(ctx)
+	if err != nil || status.Status != containerdclient.Running || task.Pid() == 0 {
+		return nil
+	}
+	pid := task.Pid()
+	spec, err := ctr.Spec(ctx)
+	if err != nil {
+		return fmt.Errorf("reading running container spec: %w", err)
+	}
+	if !runningTaskStillCurrent(ctx, ctr, pid) {
+		return nil
+	}
+	if _, err := c.ensureDBusProxyForStart(ctx, ctr.ID(), spec.Mounts); err != nil {
+		return err
+	}
+	prepared, err := c.ensureAvahiProxy(ctx, ctr.ID(), spec.Mounts, false)
+	if err != nil || !prepared {
+		return err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = c.avahiManager.StopPreservingMounts(ctr.ID())
+		}
+	}()
+	// Natural task exit remains possible while private processes are starting.
+	// Never launch the daemon for a stopped or replaced task. Managed lifecycle
+	// replacement cannot interleave because the keyed lock spans cleanup too.
+	if !runningTaskStillCurrent(ctx, ctr, pid) {
+		return nil
+	}
+	if err := c.startAvahiForTask(ctx, ctr.ID(), pid); err != nil {
+		return err
+	}
+	keep = runningTaskStillCurrent(ctx, ctr, pid)
+	return nil
+}
+
+func runningTaskStillCurrent(ctx context.Context, ctr containerdclient.Container, pid uint32) bool {
+	task, err := ctr.Task(ctx, nil)
+	if err != nil || task.Pid() != pid {
+		return false
+	}
+	status, err := task.Status(ctx)
+	return err == nil && status.Status == containerdclient.Running
 }
 
 func (c *Client) restoreDBusProxyForRunningTask(

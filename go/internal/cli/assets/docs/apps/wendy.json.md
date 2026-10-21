@@ -442,7 +442,7 @@ app image. The agent mounts a filtered D-Bus endpoint at `/var/run/dbus` and set
 `DBUS_SYSTEM_BUS_ADDRESS`; it prepares networking and waits for the private
 daemon before releasing the application entrypoint. Missing host binaries,
 missing IPv4 networking or a daemon readiness failure prevents startup. Host
-networking is refused. Mesh apps also need their usual mesh network entitlement
+networking is refused. Net apps also need their usual `mesh` network entitlement
 and isolated network configuration.
 
 Avahi and Bluetooth entitlements cannot be combined in one container because

@@ -4995,26 +4995,8 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 		// already-running task.
 		running := c.containerIsRunning(ctx, ctr)
 		if running {
-			if spec, specErr := ctr.Spec(ctx); specErr != nil {
-				c.logger.Warn("Could not inspect running container start resources",
-					zap.String("id", ctr.ID()), zap.Error(specErr))
-			} else {
-				if _, proxyErr := c.restoreDBusProxyForRunningTask(ctx, ctr.ID(), running, spec.Mounts); proxyErr != nil {
-					c.logger.Error("Could not restore running container D-Bus proxy", zap.String("id", ctr.ID()), zap.Error(proxyErr))
-				}
-				if prepared, avahiErr := c.ensureAvahiForStart(ctx, ctr.ID(), spec.Mounts); avahiErr != nil {
-					c.logger.Error("Could not restore running container Avahi bridge", zap.String("id", ctr.ID()), zap.Error(avahiErr))
-				} else if prepared {
-					if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
-						if err := c.startAvahiForTask(ctx, ctr.ID(), task.Pid()); err != nil {
-							c.logger.Error("Could not restore running container Avahi daemon", zap.String("id", ctr.ID()), zap.Error(err))
-							_ = c.avahiManager.StopPreservingMounts(ctr.ID())
-						}
-					} else {
-						c.logger.Error("Could not load running task for Avahi recovery", zap.String("id", ctr.ID()), zap.Error(taskErr))
-						_ = c.avahiManager.StopPreservingMounts(ctr.ID())
-					}
-				}
+			if err := c.restoreRunningTaskResources(ctx, ctr); err != nil {
+				c.logger.Error("Could not restore running container start resources", zap.String("id", ctr.ID()), zap.Error(err))
 			}
 		}
 

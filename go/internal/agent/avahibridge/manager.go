@@ -583,6 +583,9 @@ func (m *Manager) StopPreservingMounts(containerName string) error {
 }
 
 func (m *Manager) stop(containerName string, preserveDirs bool) error {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	inst, ok := m.instances[containerName]
 	if !ok {
@@ -597,6 +600,9 @@ func (m *Manager) stop(containerName string, preserveDirs bool) error {
 
 // StopAll kills every tracked stack (agent shutdown).
 func (m *Manager) StopAll() {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	names := make([]string, 0, len(m.instances))
 	for name := range m.instances {
@@ -628,6 +634,9 @@ func waitForSocket(ctx context.Context, path string, timeout time.Duration) erro
 // Close leaves directories mounted by surviving tasks in place. A replacement
 // agent recreates socket files inside those same directories.
 func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for name, inst := range m.instances {
