@@ -758,3 +758,23 @@ func TestROS2CommandTree(t *testing.T) {
 		t.Errorf("action send_goal: missing --feedback flag")
 	}
 }
+
+// Review 4339052787: these successful responses carry useful result data.
+func TestReviewROS2SuccessMessagesAndRecordingScopeSurvive(t *testing.T) {
+	warning := "recording the CycloneDDS graph only; -a does not span RMWs"
+	oldJSON := jsonOutput
+	jsonOutput = false
+	defer func() { jsonOutput = oldJSON }()
+	out := captureStderr(t, func() { printROS2RecordingNote(warning) })
+	if !strings.Contains(out, "Note: "+warning) {
+		t.Errorf("lost recorder scope: %q", out)
+	}
+	for _, message := range []string{"parameter speed set to 2", "transitioned to active", "component loaded as /camera", "component 42 unloaded"} {
+		if got := ros2ActionMessage(true, message); got != message {
+			t.Errorf("lost success data: %q", got)
+		}
+	}
+	if got := ros2ActionMessage(false, "private agent failure"); strings.Contains(got, "private agent") {
+		t.Errorf("unmapped failure: %q", got)
+	}
+}
