@@ -114,5 +114,5 @@ func isContainerStreamLog(scope *commonpb.InstrumentationScope, record *logspb.L
 }
 
 func runLogStreamWarning(err error) {
-	cliNotice("%s", usermessage.Sprintf("Notice: native application logs unavailable (%v)", err))
+	cliNotice("%s", usermessage.Sprintf("Native application logs are unavailable. %v", err))
 }

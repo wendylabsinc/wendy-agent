@@ -43,7 +43,7 @@ func lanBrowseOutcome(c *models.DevicesCollection, browseErr error) (warning str
 		return "", nil
 	}
 	if foundWendyTargets(c) {
-		return usermessage.Sprintf("Warning: local network (mDNS) discovery failed: %v; the device list may be incomplete.", browseErr), nil
+		return usermessage.Sprintf("Local network discovery failed. %v The device list may be incomplete.", browseErr), nil
 	}
 	return "", fmt.Errorf("local network (mDNS) discovery failed (%v) and no devices were found. "+
 		"If wendy is running inside a sandbox or an app without Local Network permission, allow local network access "+

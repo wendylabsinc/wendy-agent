@@ -136,7 +136,7 @@ func pushLayersResumingTunnelDrops(ctx context.Context, conn *grpcclient.AgentCo
 			cfg = gzipChunkUploadConfig
 			next, rerr = reconnectAgentAfterRestart(ctx, cur)
 		} else {
-			cliNotice("%s", usermessage.Sprintf("Connection dropped mid-transfer (%v); reconnecting to resume — chunks already staged on the device are skipped (attempt %d/%d)...", err, attempt+1, chunkPushResumeAttempts))
+			cliNotice("%s", usermessage.Sprintf("Connection dropped mid-transfer. %v Reconnecting to resume and skipping data already on the device (attempt %d/%d).", err, attempt+1, chunkPushResumeAttempts))
 			next, rerr = cur.Reconnect(ctx)
 		}
 		if rerr != nil {

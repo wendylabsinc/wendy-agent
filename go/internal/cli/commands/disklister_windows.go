@@ -347,8 +347,8 @@ func (ld *lockedDisk) close() {
 	if !ld.isRemovable {
 		cleanupScript += fmt.Sprintf("; Set-Disk -Number %d -IsOffline $true", ld.diskNum)
 	}
-	if _, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", cleanupScript).CombinedOutput(); err != nil {
-		usermessage.Fprintf(os.Stderr, "Warning: could not take disk %d offline: %v\n", ld.diskNum, err)
+	if output, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", cleanupScript).CombinedOutput(); err != nil {
+		usermessage.Fprintf(os.Stderr, "Warning: could not take disk %d offline: %v\n", ld.diskNum, fmt.Errorf("taking disk offline: %s: %w", strings.TrimSpace(string(output)), err))
 	}
 }
 

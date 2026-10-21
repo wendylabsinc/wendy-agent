@@ -111,7 +111,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	// Otherwise macOS asks about each flashing disk it can't read, and choosing
 	// Eject there releases the disk before the flash is done with it.
 	if releaseClaims, err := t234.SuppressDiskPrompts(); err != nil {
-		fmt.Println(tui.WarningMessage(usermessage.Sprintf("Could not stop macOS disk prompts (%v). If macOS says a disk is not readable, choose Ignore.", err)))
+		fmt.Println(tui.WarningMessage(usermessage.Sprintf("Could not stop macOS disk prompts. %v If macOS says a disk is not readable, choose Ignore.", err)))
 	} else {
 		defer releaseClaims()
 	}
@@ -370,7 +370,7 @@ func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, de
 	detail("downloading agent")
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
-		usermessage.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
+		usermessage.Fprintf(out, "Could not download the Wendy agent. %v Using the agent included in the image.\n", err)
 	} else {
 		detail("agent " + agentVer)
 	}

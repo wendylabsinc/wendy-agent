@@ -78,7 +78,7 @@ func warnDriverAddonsBeforeUpdate(ctx context.Context, conn *grpcclient.AgentCon
 	dl, err := installedDriverAddons(ctx, conn)
 	if err != nil {
 		pf.unreadable = usermessage.Text(err)
-		cliLogln("%s", usermessage.Sprintf("%s", tui.WarningMessage("Could not read the installed driver add-ons: "+usermessage.Text(err))))
+		cliLogln("%s", tui.WarningMessage("Could not read the installed driver add-ons: "+usermessage.Text(err)))
 		return pf
 	}
 	installed := dl.GetInstalled()
@@ -410,7 +410,7 @@ func stageFromDir(ctx context.Context, conn *grpcclient.AgentConnection, install
 	files, err := driverRawsIn(dir)
 	if err != nil {
 		pf.unreadable = usermessage.Text(err)
-		cliLogln("%s", usermessage.Sprintf("%s", tui.WarningMessage("Could not read "+dir+": "+usermessage.Text(err))))
+		cliLogln("%s", tui.WarningMessage("Could not read "+dir+": "+usermessage.Text(err)))
 		return
 	}
 	cliLogln("Staging driver add-ons from %s", tui.Path(dir))

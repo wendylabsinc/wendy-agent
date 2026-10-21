@@ -40,7 +40,7 @@ func runDriversInteractive(ctx context.Context, source driverManifestOptions) er
 			return err
 		}
 		// A registry outage must not prevent removal of an installed add-on.
-		cliLogln("%s", usermessage.Sprintf("%s", tui.WarningMessage(usermessage.Sprintf("Could not list published drivers: %v", err))))
+		cliLogln("%s", tui.WarningMessage(usermessage.Sprintf("Could not list published drivers: %v", err)))
 		cliLogln("Installed drivers can still be removed.")
 		exts = nil
 	}

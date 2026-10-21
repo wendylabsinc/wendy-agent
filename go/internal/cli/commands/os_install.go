@@ -942,14 +942,14 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion, storage)
 		switch {
 		case zerr != nil:
-			usermessage.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
+			usermessage.Printf("Could not fetch the seekable image. %v Flashing the full image.\n", zerr)
 		case berr != nil:
-			usermessage.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", berr)
+			usermessage.Printf("Could not find the saved block map. %v Flashing the full image.\n", berr)
 		default:
 			if derr := downloadBmap(imgInfo.BmapURL, bmapCandidate); derr != nil {
-				usermessage.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+				usermessage.Printf("Could not fetch the block map. %v Flashing the full image.\n", derr)
 			} else if parsed, perr := parseBmap(readFileOrNil(bmapCandidate)); perr != nil {
-				usermessage.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+				usermessage.Printf("The block map is unusable. %v Flashing the full image.\n", perr)
 			} else {
 				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
 				imageSize = parsed.ImageSize
@@ -973,11 +973,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		if !noBmap && imgInfo.BmapURL != "" {
 			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion, storage)
 			if derr != nil {
-				usermessage.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
+				usermessage.Printf("Could not find the saved block map. %v Flashing the full image.\n", derr)
 			} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
-				usermessage.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+				usermessage.Printf("Could not fetch the block map. %v Flashing the full image.\n", derr)
 			} else if parsed, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
-				usermessage.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+				usermessage.Printf("The block map is unusable. %v Flashing the full image.\n", perr)
 			} else if stream.uncompressedSize > 0 && parsed.ImageSize != stream.uncompressedSize {
 				fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
 			} else {

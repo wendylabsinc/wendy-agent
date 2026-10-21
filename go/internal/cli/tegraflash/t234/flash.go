@@ -144,7 +144,7 @@ func (s *Stage2) mediaRefresh(ctx context.Context) func() {
 		}
 		if err := s.pollMedia(ctx); err != nil {
 			s.pollFailed = true
-			usermessage.Fprintf(s.Out, "  warning: %v; the host may not notice the device's next disk\n", err)
+			usermessage.Fprintf(s.Out, "Warning: %v This computer may not notice the device's next disk.\n", err)
 		}
 	}
 }
@@ -270,7 +270,7 @@ func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) (UMSDis
 		if attempt == identityReadAttempts {
 			return UMSDisk{}, fmt.Errorf("reading device identity: %w", readErr)
 		}
-		usermessage.Fprintf(s.Out, "  warning: identity read failed (%v); re-scanning for the %s disk\n", readErr, disk.Vendor)
+		usermessage.Fprintf(s.Out, "Could not read the device identity. %v Scanning again for the %s disk.\n", readErr, disk.Vendor)
 		select {
 		case <-ctx.Done():
 			return UMSDisk{}, ctx.Err()
@@ -482,7 +482,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	if err := s.release(ctx, disk); err != nil {
 		// The flash outcome is already on disk; a failed release only delays
 		// the device's automatic reboot. Report it but don't fail the flash.
-		usermessage.Fprintf(s.Out, "  note: releasing the status disk failed (%v); power-cycle the device manually\n", err)
+		usermessage.Fprintf(s.Out, "Could not release the status disk. %v Turn the device off and on manually.\n", err)
 	}
 
 	img, err := os.Open(tmpPath)
@@ -539,7 +539,7 @@ func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 	var err error
 	for attempt := 1; attempt <= ejectAttempts; attempt++ {
 		if attempt > 1 {
-			usermessage.Fprintf(s.Out, "  eject failed (%v); retrying\n", err)
+			usermessage.Fprintf(s.Out, "Could not eject the disk. %v Retrying.\n", err)
 			s.unmount(ctx, disk)
 			select {
 			case <-ctx.Done():

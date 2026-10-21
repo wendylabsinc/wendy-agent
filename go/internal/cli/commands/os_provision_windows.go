@@ -265,8 +265,8 @@ func ejectDisk(d drive) {
 			"if (-not $d.IsOffline) { Set-Disk -Number %d -IsOffline $true -ErrorAction Stop }",
 		diskNum, diskNum,
 	)
-	_, err = exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
-		usermessage.Fprintf(os.Stderr, "Warning: could not take disk %d offline. It may still be online with assigned drive letters. %v\n", diskNum, err)
+		usermessage.Fprintf(os.Stderr, "Warning: could not take disk %d offline. It may still be online with assigned drive letters. %v\n", diskNum, fmt.Errorf("taking disk offline: %s: %w", strings.TrimSpace(string(out)), err))
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // Compact presentation never changes the complete tool results in the engine
@@ -58,22 +59,22 @@ func toolJSONSummary(data any) string {
 		return fmt.Sprintf("%d items returned", len(value))
 	case map[string]any:
 		if code, _ := value["error_code"].(string); code != "" {
-			return "Tool error: " + toolSummaryLine(toolErrorMessage(value))
+			return "Action failed. " + usermessage.Server(toolErrorMessage(value))
 		}
 		if summary := backgroundJobSummary(value); summary != "" {
 			return summary
 		}
 		if ok, exists := value["success"].(bool); exists && !ok {
 			if detail := toolErrorMessage(value); detail != "" {
-				return "Tool reported a failure · " + toolSummaryLine(detail)
+				return "Action failed. " + usermessage.Server(detail)
 			}
-			return "Tool reported a failure · /tools for details"
+			return "Action failed. " + usermessage.Generic
 		}
 		if err, exists := value["error"]; exists && err != nil && err != "" && err != false {
 			if detail := toolErrorMessage(value); detail != "" {
-				return "Tool reported an error · " + toolSummaryLine(detail)
+				return "Action failed. " + usermessage.Server(detail)
 			}
-			return "Tool reported an error · /tools for details"
+			return "Action failed. " + usermessage.Generic
 		}
 		if jobs, ok := value["jobs"].([]any); ok {
 			if len(jobs) == 1 {
@@ -143,26 +144,15 @@ func backgroundJobSummary(value map[string]any) string {
 			}
 		}
 		if detail != "" {
-			parts = append(parts, detail)
+			parts = append(parts, usermessage.Server(detail))
 		}
 	}
 	return toolSummaryLine(strings.Join(parts, " · "))
 }
 
-// Keep the full error in the transcript, but show its cause in the compact row.
-// MCP errors have a generic wrapper; command failures put stdout/stderr below
-// the exit status, with the final diagnostic usually at the end of that output.
-func toolFailureSummary(text string) string {
-	header, output, _ := strings.Cut(text, "\n")
-	detail := toolFailureDetail(output, strings.HasPrefix(header, "Tool error: command failed:"))
-	if detail == "" {
-		return toolSummaryLine(header)
-	}
-	if header == "Tool error: Wendy MCP tool reported an error" {
-		return toolSummaryLine("Tool error: " + detail)
-	}
-	return toolSummaryLine(header + " · " + detail)
-}
+// /tools reveals the complete requested tool output. The default compact
+// failure summary follows the same approved message boundary as CLI failures.
+func toolFailureSummary(text string) string { return usermessage.Server(text) }
 
 func toolFailureDetail(output string, lastLine bool) string {
 	var data map[string]any

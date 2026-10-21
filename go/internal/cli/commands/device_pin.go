@@ -249,7 +249,7 @@ func unrecordedIdentityWarning(hostname string, keys []string, updateErr error) 
 	for i, key := range keys {
 		quoted[i] = strconv.Quote(key)
 	}
-	return usermessage.Sprintf("wendy: device identity for %s was not recorded: another wendy process holds the config lock (%v)\n", strings.Join(quoted, " and "), updateErr)
+	return usermessage.Sprintf("Device identity for %s was not recorded because another Wendy process holds the configuration lock. %v\n", strings.Join(quoted, " and "), updateErr)
 }
 
 // fallbackAction is what enforceDeviceIdentity's read-only fallback does with

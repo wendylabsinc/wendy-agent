@@ -2,6 +2,7 @@ package chat
 
 import (
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	"strings"
 )
 
@@ -39,7 +40,7 @@ func compactActivity(entries []chatEntry, active bool) (string, []string) {
 			state, _, _ := strings.Cut(entry.text, ":")
 			agents[entry.title] = state
 			if state != "completed" {
-				warnings = append(warnings, "! "+entry.title+" · "+toolSummaryLine(entry.text))
+				warnings = append(warnings, "! "+entry.title+" · "+usermessage.Server(strings.TrimPrefix(entry.text, state+":")))
 			}
 		}
 	}
@@ -80,7 +81,7 @@ func compactActivity(entries []chatEntry, active bool) (string, []string) {
 }
 
 func activityNeedsAttention(summary string) bool {
-	for _, prefix := range []string{"! ", "↳ Tool error:", "↳ Tool reported a failure", "↳ Tool reported an error", "↳ Denied", "↳ Tool was not executed"} {
+	for _, prefix := range []string{"! ", "↳ Action failed.", "↳ Tool error:", "↳ Tool reported a failure", "↳ Tool reported an error", "↳ Denied", "↳ Tool was not executed"} {
 		if strings.HasPrefix(summary, prefix) {
 			return true
 		}

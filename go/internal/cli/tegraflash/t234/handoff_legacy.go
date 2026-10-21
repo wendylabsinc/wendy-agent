@@ -16,7 +16,7 @@ import (
 func (s *Stage2) releaseLegacy(ctx context.Context, disk UMSDisk) error {
 	fmt.Fprintf(s.Out, "  releasing %s (legacy handoff)\n", disk.DevPath)
 	if err := s.RunHelper(ctx, HelperRequest{LegacyEject: true, Writer: WriterOptions{Device: disk.DevPath}}, nil); err != nil {
-		usermessage.Fprintf(s.Out, "  warning: legacy release failed (%v); checking whether the disk disconnected\n", err)
+		usermessage.Fprintf(s.Out, "Could not release the disk. %v Checking whether it disconnected.\n", err)
 	}
 	// A command can fail after it removed the device. Observe the handoff
 	// before the fallback, so it cannot disconnect the next stage's gadget.

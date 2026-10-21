@@ -55,10 +55,13 @@ func TestActivityKeepsEarlierFailuresVisible(t *testing.T) {
 		{kind: "result", title: "Result · device_list", text: `{"devices":[]}`},
 	}
 	content, _ := m.transcriptContent(100)
-	for _, want := range []string{"offline", "Denied", "missing credentials"} {
+	for _, want := range []string{"cloud connect", "Denied", "agent-1", "Something went wrong. Try again."} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("later success hid %q: %s", want, content)
 		}
+	}
+	if strings.Contains(content, "missing credentials") || strings.Contains(content, "Tool error: offline") {
+		t.Fatalf("raw failure details reached compact activity: %s", content)
 	}
 	for _, line := range strings.Split(content, "\n") {
 		if ansi.StringWidth(line) > 100 {

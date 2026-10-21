@@ -264,7 +264,7 @@ func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceN
 	detail("downloading agent")
 	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
-		usermessage.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
+		usermessage.Fprintf(out, "Could not download the Wendy agent. %v Using the agent included in the image.\n", err)
 	} else {
 		detail("agent " + agentVer)
 	}

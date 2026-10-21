@@ -140,11 +140,11 @@ func mountConfigPartition(partDev string) (configMount, error) {
 		path:     tmpDir,
 		elevated: !userWritable(tmpDir),
 		release: func() {
-			if _, err := exec.Command("diskutil", "unmount", tmpDir).CombinedOutput(); err != nil {
+			if out, err := exec.Command("diskutil", "unmount", tmpDir).CombinedOutput(); err != nil {
 				// Leave tmpDir alone: with the volume still mounted there,
 				// RemoveAll would delete the partition's contents, not the
 				// mount point. ejectDisk tears the mount down later anyway.
-				usermessage.Printf("Warning: could not unmount config partition at %s: %v\n", tmpDir, err)
+				usermessage.Printf("Warning: could not unmount config partition at %s: %v\n", tmpDir, fmt.Errorf("unmounting config partition: %s: %w", strings.TrimSpace(string(out)), err))
 				return
 			}
 			if err := os.RemoveAll(tmpDir); err != nil {

@@ -252,7 +252,7 @@ func (s *watchDeployState) ensureLogStream(conn *grpcclient.AgentConnection, app
 			resp, recvErr := stream.Recv()
 			if recvErr != nil {
 				if recvErr != io.EOF && logCtx.Err() == nil {
-					cliNotice("%s", usermessage.Sprintf("Watch log stream ended: %v; it will reconnect after the next deploy", recvErr))
+					cliNotice("%s", usermessage.Sprintf("The log stream stopped. %v It will reconnect after the next deploy.", recvErr))
 				}
 				s.logMu.Lock()
 				if s.logGen == gen {

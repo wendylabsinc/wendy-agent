@@ -33,13 +33,13 @@ func TestToolDetailsAreCompactAndCanBeExpanded(t *testing.T) {
 func TestCompactToolResultsPreserveFailures(t *testing.T) {
 	for _, text := range []string{"Tool error: disconnected\ninternal details", `{"success":false,"error":{"code":"offline"}}`, "User denied permission. Tool was not executed."} {
 		got := compactToolEntry(chatEntry{kind: "result", text: text})
-		if !strings.Contains(got, "error") && !strings.Contains(got, "failure") && !strings.Contains(got, "Denied") {
+		if !strings.Contains(got, "error") && !strings.Contains(got, "failure") && !strings.Contains(got, "Denied") && !strings.Contains(got, "Something went wrong. Try again.") {
 			t.Fatalf("failure presented as a success: %s", got)
 		}
 	}
 }
 
-func TestCompactToolFailuresShowCause(t *testing.T) {
+func TestCompactToolFailuresUseApprovedMessages(t *testing.T) {
 	tests := []struct {
 		name string
 		text string
@@ -48,47 +48,47 @@ func TestCompactToolFailuresShowCause(t *testing.T) {
 		{
 			name: "MCP text fallback",
 			text: "Tool error: Wendy MCP tool reported an error\n[NOT_FOUND] container go2-remote-control is not running\nStart the container first.\n",
-			want: "! Tool error: [NOT_FOUND] container go2-remote-control is not running",
+			want: "! Something went wrong. Try again.",
 		},
 		{
 			name: "MCP structured error",
 			text: "Tool error: Wendy MCP tool reported an error\n{\n  \"error_code\": \"NOT_CONNECTED\",\n  \"message\": \"Connect to a device first\"\n}",
-			want: "! Tool error: [NOT_CONNECTED] Connect to a device first",
+			want: "! Something went wrong. Try again.",
 		},
 		{
 			name: "shell final diagnostic",
 			text: "Tool error: command failed: exit status 1\nConnecting to Woof…\nPermission denied\n\n",
-			want: "! Tool error: command failed: exit status 1 · Permission denied",
+			want: "! Something went wrong. Try again.",
 		},
 		{
 			name: "truncated shell output",
 			text: "Tool error: command failed: exit status 1\nConnection refused\n[Output truncated at 32 KiB.]",
-			want: "! Tool error: command failed: exit status 1 · Connection refused",
+			want: "! Something went wrong. Try again.",
 		},
 		{
 			name: "failure without output",
 			text: "Tool error: command failed: context deadline exceeded\n",
-			want: "! Tool error: command failed: context deadline exceeded",
+			want: "! Something went wrong. Try again.",
 		},
 		{
 			name: "direct structured Wendy failure",
 			text: `{"error_code":"UNSUPPORTED","message":"Container attach is unavailable"}`,
-			want: "↳ Tool error: [UNSUPPORTED] Container attach is unavailable",
+			want: "↳ Action failed. Something went wrong. Try again.",
 		},
 		{
 			name: "nested structured failure",
 			text: `{"success":false,"error":{"code":"offline","message":"Device Woof is offline"}}`,
-			want: "↳ Tool reported a failure · [offline] Device Woof is offline",
+			want: "↳ Action failed. Something went wrong. Try again.",
 		},
 		{
 			name: "structured string failure",
 			text: `{"error":"Device Woof is offline"}`,
-			want: "↳ Tool reported an error · Device Woof is offline",
+			want: "↳ Action failed. Something went wrong. Try again.",
 		},
 		{
 			name: "structured failure message",
 			text: `{"success":false,"message":"Device Woof is offline"}`,
-			want: "↳ Tool reported a failure · Device Woof is offline",
+			want: "↳ Action failed. Something went wrong. Try again.",
 		},
 	}
 	for _, tt := range tests {
@@ -101,10 +101,10 @@ func TestCompactToolFailuresShowCause(t *testing.T) {
 	}
 }
 
-func TestCompactToolFailureCauseIsSanitizedAndBounded(t *testing.T) {
+func TestCompactToolFailuresAreSanitizedAndBounded(t *testing.T) {
 	text := "Tool error: Wendy MCP tool reported an error\n\x1b[31mConnection refused\x1b[0m " + strings.Repeat("details ", 100)
 	got := compactToolEntry(chatEntry{kind: "result", text: text})
-	if !strings.Contains(got, "Connection refused") || strings.ContainsAny(got, "\n\x1b") || ansi.StringWidth(got) > 122 {
+	if !strings.Contains(got, "Something went wrong. Try again.") || strings.Contains(got, "Connection refused") || strings.ContainsAny(got, "\n\x1b") || ansi.StringWidth(got) > 122 {
 		t.Fatalf("unsafe or oversized compact error: %q", got)
 	}
 }
@@ -117,13 +117,13 @@ func TestCompactBackgroundJobsShowState(t *testing.T) {
 	}{
 		{"camera running", `{"job_id":"job-1","kind":"camera_view","state":"running","device":"Woof","pid":42,"output_tail":"private diagnostic"}`, "↳ camera view · running · job-1 · Woof"},
 		{"audio stopped", `{"job_id":"job-2","kind":"audio_listen","state":"stopped"}`, "↳ audio listen · stopped · job-2"},
-		{"audio failed", `{"job_id":"job-2","kind":"audio_listen","state":"failed","error":"exit status 1","output_tail":"Starting playback\nAudio device unavailable\n"}`, "↳ audio listen · failed · job-2 · Audio device unavailable"},
-		{"audio failed without output", `{"job_id":"job-2","kind":"audio_listen","state":"failed","error":"exit status 1"}`, "↳ audio listen · failed · job-2 · exit status 1"},
+		{"audio failed", `{"job_id":"job-2","kind":"audio_listen","state":"failed","error":"exit status 1","output_tail":"Starting playback\nAudio device unavailable\n"}`, "↳ audio listen · failed · job-2 · Something went wrong. Try again."},
+		{"audio failed without output", `{"job_id":"job-2","kind":"audio_listen","state":"failed","error":"exit status 1"}`, "↳ audio listen · failed · job-2 · Something went wrong. Try again."},
 		{"camera exited", `{"job_id":"job-1","kind":"camera_view","state":"exited"}`, "↳ camera view · exited · job-1"},
 		{"job list", `{"jobs":[{"state":"failed"},{"state":"running"},{"state":"stopped"}]}`, "↳ 3 background jobs · 1 running, 1 failed, 1 stopped"},
 		{"one job", `{"jobs":[{"state":"running"}]}`, "↳ 1 background job · 1 running"},
-		{"selected failed job", `{"jobs":[{"job_id":"job-2","kind":"audio_listen","state":"failed","error":"exit status 1","output_tail":"Audio device unavailable\n"}]}`, "↳ audio listen · failed · job-2 · Audio device unavailable"},
-		{"startup failure", "Tool error: audio_listen failed\n{\"job_id\":\"job-2\",\"kind\":\"audio_listen\",\"state\":\"failed\",\"error\":\"exit status 1\"}", "! Tool error: audio_listen failed · audio listen · failed · job-2 · exit status 1"},
+		{"selected failed job", `{"jobs":[{"job_id":"job-2","kind":"audio_listen","state":"failed","error":"exit status 1","output_tail":"Audio device unavailable\n"}]}`, "↳ audio listen · failed · job-2 · Something went wrong. Try again."},
+		{"startup failure", "Tool error: audio_listen failed\n{\"job_id\":\"job-2\",\"kind\":\"audio_listen\",\"state\":\"failed\",\"error\":\"exit status 1\"}", "! Something went wrong. Try again."},
 		{"empty list", `{"jobs":[]}`, "↳ 0 background jobs"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,7 +143,7 @@ func TestCompactBackgroundJobDetailsAreSanitizedAndBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := compactToolEntry(chatEntry{kind: "result", text: string(data)})
-	if !strings.Contains(got, "failed") || !strings.Contains(got, "Decoder failed") || strings.ContainsAny(got, "\n\x1b") || ansi.StringWidth(got) > 122 {
+	if !strings.Contains(got, "failed") || !strings.Contains(got, "Something went wrong. Try again.") || strings.Contains(got, "Decoder failed") || strings.ContainsAny(got, "\n\x1b") || ansi.StringWidth(got) > 122 {
 		t.Fatalf("unsafe or oversized compact job: %q", got)
 	}
 }

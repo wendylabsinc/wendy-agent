@@ -2507,7 +2507,7 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 		return fmt.Errorf("chunk-diff image preparation failed and --chunking=force disables the registry fallback: %w", chunkErr)
 	} else {
 		noteComposeChunkStall(logOutput, chunkErr, uploadCfg)
-		usermessage.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
+		usermessage.Fprintf(logOutput, "Could not prepare the image for a fast deploy. %v Sending the complete image instead.\n", chunkErr)
 		if reporter, ok := streamOutput.(interface{ ReportRegistryFallback(error) }); ok {
 			reporter.ReportRegistryFallback(chunkErr)
 		}

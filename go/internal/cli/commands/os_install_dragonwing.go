@@ -593,7 +593,7 @@ func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf
 		}
 		// Worded for both outcomes: the warning is printed whether or not the
 		// flash that follows it succeeds.
-		warn(usermessage.Sprintf("Could not write the config partition (%v) — it was blanked instead, so the board comes up unprovisioned.", err))
+		warn(usermessage.Sprintf("Could not write the configuration partition. %v It was cleared instead, so the board will start without provisioning.", err))
 		if err := plan.Blank(dragonwingConfigLabel, zerosPath); err != nil {
 			return nil, err
 		}

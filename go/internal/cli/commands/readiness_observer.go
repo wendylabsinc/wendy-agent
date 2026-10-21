@@ -146,7 +146,7 @@ func waitForAttachedReadiness(ctx context.Context, conn *grpcclient.AgentConnect
 	warned := false
 	err = continueReadiness(ctx, ticker.C, deadline.C, probe, running, func(err error) {
 		if !warned {
-			cliLogln("%s", usermessage.Sprintf("Warning: %v; continuing to observe startup.", err))
+			cliLogln("%s", usermessage.Sprintf("Warning: %v Continuing to observe startup.", err))
 			warned = true
 		}
 	})

@@ -352,7 +352,7 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 		if alwaysPickOrg {
 			return OrgResolution{}, fmt.Errorf("fetching organizations: %w", listErr)
 		}
-		usermessage.Printf("Warning: could not fetch organizations (%v). Falling back to certificate org.\n", listErr)
+		usermessage.Printf("Could not fetch organizations. %v Using the organization in your certificate.\n", listErr)
 		certOrgID := int32(0)
 		if len(auth.Certificates) > 0 {
 			certOrgID = int32(auth.Certificates[0].OrganizationID)

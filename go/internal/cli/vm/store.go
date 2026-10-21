@@ -155,8 +155,8 @@ func (s *Store) CreateFromWithRobotProfileContext(ctx context.Context, name stri
 			return
 		}
 		if rmErr := os.RemoveAll(dir); rmErr != nil {
-			usermessage.Fprintf(os.Stderr, "warning: could not clean up %s: %v; "+
-				"remove it before retrying\n", dir, rmErr)
+			usermessage.Fprintf(os.Stderr, "Could not clean up %s. %v "+
+				"Remove it before retrying.\n", dir, rmErr)
 		}
 	}()
 

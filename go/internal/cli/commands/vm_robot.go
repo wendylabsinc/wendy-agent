@@ -598,7 +598,7 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if !isRobotTour(ctx) {
 		cliLogln("%s ready. Sandbox: %s", runtime.name, robotURL(port))
 		if err := browserOpen(robotURL(port)); err != nil {
-			cliLogln("%s", usermessage.Sprintf("Open %s in your browser to view the sandbox (auto-open failed: %v).", robotURL(port), err))
+			cliLogln("%s", usermessage.Sprintf("Open %s in your browser to view the sandbox. It could not be opened automatically. %v", robotURL(port), err))
 		}
 	}
 	return nil

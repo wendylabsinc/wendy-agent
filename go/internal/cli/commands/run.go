@@ -125,7 +125,7 @@ func openContainerStream(ctx context.Context, svc agentpb.WendyContainerServiceC
 		}
 	}
 	if attachErr != nil {
-		cliNotice("%s", usermessage.Sprintf("Notice: stdin not attached (%v)", attachErr))
+		cliNotice("%s", usermessage.Sprintf("Could not attach standard input. %v", attachErr))
 		startStream, startErr := svc.StartContainer(startCtx, &agentpb.StartContainerRequest{
 			AppName: appName,
 		})
@@ -142,7 +142,7 @@ func openContainerStream(ctx context.Context, svc agentpb.WendyContainerServiceC
 				if sendErr := attachStream.Send(&agentpb.AttachContainerRequest{
 					RequestType: &agentpb.AttachContainerRequest_StdinData{StdinData: buf[:n]},
 				}); sendErr != nil {
-					cliNotice("%s", usermessage.Sprintf("Notice: stdin detached (%v)", sendErr))
+					cliNotice("%s", usermessage.Sprintf("Standard input disconnected. %v", sendErr))
 					_ = attachStream.CloseSend()
 					return
 				}
@@ -2506,7 +2506,7 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 			// Surface the chunk-diff error instead of dropping it — it used to be
 			// silently discarded here, leaving no trail for why a deploy suddenly
 			// fell back to the slower path.
-			cliNotice("%s", usermessage.Sprintf("%s", formatRegistryFallbackNotice(err, stats.imageBytes)))
+			cliNotice("%s", formatRegistryFallbackNotice(err, stats.imageBytes))
 			if registryFallbackPlan(stats.imageBytes, isInteractiveTerminal(), opts.yes) == fallbackConfirm {
 				if !confirmFn("Continue with the full registry push?") {
 					return fmt.Errorf("registry-push fallback declined; pass --chunking=off to skip chunk-diff and go straight to a registry push next time, or resolve the chunk-diff failure: %w", err)
@@ -2553,7 +2553,7 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 			cliSuccess("Reused already-built image for the registry push (skipped a redundant rebuild)")
 			pushed = true
 		} else if opts.debug {
-			cliLogln("%s", usermessage.Sprintf("Reusing the already-built image failed (%v); rebuilding instead.", err))
+			cliLogln("%s", usermessage.Sprintf("Could not reuse the existing image. %v Rebuilding it instead.", err))
 		}
 	}
 
@@ -3791,9 +3791,9 @@ func registryFallbackPlan(imageBytes int64, interactive, assumeYes bool) registr
 func formatRegistryFallbackNotice(chunkErr error, imageBytes int64) string {
 	if imageBytes >= largeRegistryFallbackBytes {
 		size := tui.ByteProgress{Current: imageBytes}.String()
-		return usermessage.Sprintf("Fast deploy unavailable (%v). Falling back to a FULL registry push — ~%s will be re-uploaded.", chunkErr, size)
+		return usermessage.Sprintf("Fast deploy is unavailable. %v Falling back to a FULL registry push. About %s will be uploaded again.", chunkErr, size)
 	}
-	return usermessage.Sprintf("Fast deploy unavailable (%v); falling back to registry push.", chunkErr)
+	return usermessage.Sprintf("Fast deploy is unavailable. %v Falling back to registry push.", chunkErr)
 }
 
 // ociReuseHint carries the on-disk location of the OCI-layout image the
@@ -3946,7 +3946,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			// wiped and rebuilt from scratch, which is precisely the legacy cold
 			// behavior. A second failure is a real bug and surfaces. The wipe also
 			// removes state.json, so the native path stays off until re-adoption.
-			cliLogln("%s", usermessage.Sprintf("OCI layout cache unreadable (%v); rebuilding it from scratch", err))
+			cliLogln("%s", usermessage.Sprintf("Could not read the saved image. %v Rebuilding it from scratch.", err))
 			if rmErr := os.RemoveAll(layoutDir); rmErr != nil {
 				return nil, hint, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
 			}

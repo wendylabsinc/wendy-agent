@@ -46,7 +46,7 @@ func runOIDCEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, 
 	agent := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn)
 	hw, err := cloudenroll.ReadHardware(ctx, conn.Conn)
 	if err != nil {
-		usermessage.Fprintf(os.Stderr, "Warning: %v; enrolling without hardware details.\n", err)
+		usermessage.Fprintf(os.Stderr, "Warning: %v Enrolling without hardware details.\n", err)
 	}
 
 	tokenCtx, err := cloudContext(ctx, auth)

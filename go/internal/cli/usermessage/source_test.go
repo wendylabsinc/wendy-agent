@@ -110,7 +110,10 @@ func displayViolations(path, src string) []token.Position {
 							}
 						}
 					}
-					if s.Sel.Name == "Error" || s.Sel.Name == "GetErrorMessage" || s.Sel.Name == "GetMessage" || s.Sel.Name == "Message" {
+					if id, ok := s.X.(*ast.Ident); ok && typedErrors && ((id.Name == "errors" && s.Sel.Name == "New") || (id.Name == "fmt" && s.Sel.Name == "Errorf")) {
+						return true
+					}
+					if s.Sel.Name == "Error" || s.Sel.Name == "CLIMessage" || s.Sel.Name == "GetErrorMessage" || s.Sel.Name == "GetMessage" || s.Sel.Name == "Message" {
 						return true
 					}
 				}
@@ -142,7 +145,7 @@ func displayViolations(path, src string) []token.Position {
 			return true
 		})
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if ret, ok := n.(*ast.ReturnStmt); ok && (fn.Name.Name == "userFacingError" || fn.Name.Name == "userFacingGRPCError") {
+			if ret, ok := n.(*ast.ReturnStmt); ok && (fn.Name.Name == "userFacingError" || fn.Name.Name == "userFacingGRPCError" || fn.Name.Name == "toolFailureSummary" || fn.Name.Name == "renderError" || fn.Name.Name == "plainErrorReport") {
 				for _, expr := range ret.Results {
 					if raw(expr, false) {
 						out = append(out, fs.Position(ret.Pos()))
@@ -175,7 +178,7 @@ func displayViolations(path, src string) []token.Position {
 			case *ast.Ident:
 				name = s.Name
 			}
-			sink := pkg == "fmt" && (strings.HasPrefix(name, "Print") || strings.HasPrefix(name, "Fprint") || name == "Sprintf") || name == "cliNotice" || name == "cliLogln" || name == "cliSuccess" || name == "Render" || name == "WriteString" || name == "WarningMessage" || name == "ErrorMessage" || name == "Note" || name == "appendEntry"
+			sink := pkg == "fmt" && (strings.HasPrefix(name, "Print") || strings.HasPrefix(name, "Fprint") || name == "Sprintf" || name == "Sprint" || name == "Sprintln") || name == "cliNotice" || name == "cliLogln" || name == "cliSuccess" || name == "Render" || name == "WriteString" || name == "WarningMessage" || name == "ErrorMessage" || name == "Note" || name == "appendEntry"
 			mapper := pkg == "usermessage" && (name == "Sprintf" || name == "Printf" || name == "Fprintf")
 			if !sink && !mapper {
 				return true
@@ -203,6 +206,10 @@ func displayViolations(path, src string) []token.Position {
 func TestDisplaySourceCheckCatchesBypasses(t *testing.T) {
 	for _, body := range []string{
 		`var failure error; fmt.Printf("%v",failure)`,
+		`fmt.Println(fmt.Errorf("private detail"))`,
+		`fmt.Println(errors.New("private detail"))`,
+		`fmt.Println(fmt.Sprint(err))`,
+		`fmt.Println(diagnostic.CLIMessage())`,
 		`view.message = failure.Error()`,
 		`fmt.Printf("Failed: %v", err)`,
 		`fmt.Fprintln(os.Stderr, err.Error())`,

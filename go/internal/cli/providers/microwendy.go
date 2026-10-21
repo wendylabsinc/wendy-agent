@@ -1255,7 +1255,7 @@ func connectSerialWithRetry(ctx context.Context, client *liteclient.WendyLiteCli
 			return nil
 		}
 		if attempt < serialConnectMaxAttempts {
-			usermessage.Fprintf(os.Stderr, "connecting to %s failed (%v), retrying (%d/%d)...\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
+			usermessage.Fprintf(os.Stderr, "Could not connect to %s. %v Retrying (%d/%d).\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

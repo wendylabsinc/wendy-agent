@@ -894,7 +894,7 @@ func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string
 
 	product, err := swifttoolchain.FindSwiftProduct(dir)
 	if err != nil {
-		cliLogln("%s", usermessage.Sprintf("Warning: could not detect Swift product name (%v); using %q", err, appID))
+		cliLogln("%s", usermessage.Sprintf("Could not detect the Swift product name. %v Using %q.", err, appID))
 		product = appID
 	}
 

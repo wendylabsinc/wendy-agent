@@ -203,7 +203,7 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 // because it did not answer in time (see discoverExternalDevicesReporting).
 func warnSkippedRuntimes(w io.Writer, skipped []error) {
 	for _, err := range skipped {
-		usermessage.Fprintf(w, "Warning: %v; it is not listed.\n", err)
+		usermessage.Fprintf(w, "Warning: %v It is not listed.\n", err)
 	}
 }
 
