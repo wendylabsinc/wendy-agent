@@ -394,19 +394,7 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 		if err != nil && ctx.Err() == nil && cfg.Logger != nil {
 			cfg.Logger.Debug("LAN mDNS query failed", zap.String("interface", selected.iface.Name), zap.Error(err))
 		}
-		byKey := make(map[string]*mdns.ServiceEntry)
-		var keys []string
-		for _, entry := range entries {
-			asset, _, ok := parseLANEntry(entry, cfg.Credentials.Device)
-			if !ok {
-				continue
-			}
-			key := asset.Principal()
-			if _, exists := byKey[key]; !exists {
-				keys = append(keys, key)
-			}
-			byKey[key] = entry
-		}
+		byKey, keys := lanCandidateEntries(entries, cfg.Credentials.Device, selected.net)
 		for _, candidateKey := range claims.candidates.Order(keys, time.Now()) {
 			entry := byKey[candidateKey]
 			asset, ip, ok := parseLANEntry(entry, cfg.Credentials.Device)
@@ -668,6 +656,26 @@ func lanMDNSService(c *Credentials, selected lanInterface) (*mdns.MDNSService, e
 	txt := []string{"protocol=" + lanProtocol, "principal=" + c.Device.Principal(), "mesh=" + lanMeshHash(c.Device.Tenant())}
 	return mdns.NewMDNSService(instance, lanService, "local.", host, LANPort, []net.IP{selected.ip}, txt)
 }
+
+func lanCandidateEntries(entries []*mdns.ServiceEntry, self meshid.Device, subnet *net.IPNet) (map[string]*mdns.ServiceEntry, []string) {
+	byKey := make(map[string]*mdns.ServiceEntry)
+	var keys []string
+	for _, entry := range entries {
+		asset, ip, ok := parseLANEntry(entry, self)
+		// Filter before deduplication: a later off-subnet advertisement for
+		// the same principal must not hide its usable local address.
+		if !ok || subnet == nil || !subnet.Contains(ip) {
+			continue
+		}
+		key := asset.Principal()
+		if _, exists := byKey[key]; !exists {
+			keys = append(keys, key)
+		}
+		byKey[key] = entry
+	}
+	return byKey, keys
+}
+
 func parseLANEntry(entry *mdns.ServiceEntry, self meshid.Device) (meshid.Device, net.IP, bool) {
 	if entry == nil || entry.Port != LANPort || entry.AddrV4 == nil {
 		return meshid.Device{}, nil, false

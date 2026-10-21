@@ -421,6 +421,28 @@ func TestLANAdvertisementFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestLANCandidateSubnetFilterPrecedesPrincipalDeduplication(t *testing.T) {
+	self, peer := lanDevice(t, 445), lanDevice(t, 460)
+	valid := &mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 0, 2, 6), InfoFields: []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(self.Tenant()), "protocol=" + lanProtocol}}
+	offSubnet := *valid
+	offSubnet.AddrV4 = net.IPv4(198, 51, 100, 9)
+	subnet := &net.IPNet{IP: net.IPv4(192, 0, 2, 0), Mask: net.CIDRMask(24, 32)}
+	for _, entries := range [][]*mdns.ServiceEntry{
+		{valid, &offSubnet},
+		{&offSubnet, valid},
+		{nil, valid, &offSubnet, valid},
+	} {
+		byKey, keys := lanCandidateEntries(entries, self, subnet)
+		if len(keys) != 1 || keys[0] != peer.Principal() || len(byKey) != 1 || byKey[peer.Principal()] != valid {
+			t.Fatalf("off-subnet duplicate hid eligible peer: keys=%v entries=%v", keys, byKey)
+		}
+	}
+	if entries, keys := lanCandidateEntries([]*mdns.ServiceEntry{valid, &offSubnet}, self, nil); len(entries) != 0 || len(keys) != 0 {
+		t.Fatal("interface without a selected subnet retained candidates")
+	}
+}
+
 func lanDevice(t *testing.T, number int) meshid.Device {
 	return testDevice(t, testPrincipal(testTenantUUID, fmt.Sprintf("2b1c0000-0000-4000-8000-%012d", number)))
 }
