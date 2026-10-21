@@ -87,6 +87,8 @@ func TestInvocationAnalyticsProcessDelivery(t *testing.T) {
 		{"bare invocation", "wendy", []string{}, 0},
 		{"help flag", "wendy install", []string{"install", "--help"}, 0},
 		{"version", "wendy", []string{"--version"}, 0},
+		{"verbose version", "wendy", []string{"--version", "--verbose"}, 0},
+		{"JSON version", "wendy", []string{"--version", "--json"}, 0},
 		{"unknown flag", "wendy install", []string{"install", "--unknown-test-flag"}, 2},
 		{"normal command", "wendy analytics status", []string{"analytics", "status"}, 0},
 	} {
