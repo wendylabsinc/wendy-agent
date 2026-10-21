@@ -3,6 +3,8 @@ package localmesh
 import (
 	"bytes"
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,7 +38,7 @@ func TestIPAssemblyExpiryKeepsQUICDataAndControlUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ipAssemblyLifetime+5*time.Second)
 	defer cancel()
 	accept := make(chan *quic.Conn, 1)
 	acceptErr := make(chan error, 1)
@@ -89,10 +91,17 @@ func TestIPAssemblyExpiryKeepsQUICDataAndControlUsable(t *testing.T) {
 	}
 	var assembler IPAssembler
 	_, pieces := assemblyPacket(t, TunnelMTU, 1)
-	assembler.Receive(pieces[0], time.Now().Add(-ipAssemblyLifetime+100*time.Millisecond))
 	result := make(chan []byte, 1)
+	var receiveTimeouts atomic.Int32
 	go func() {
-		d, err := assembler.receiveDatagram(ctx, server.ReceiveDatagram)
+		assembler.Receive(pieces[0], time.Now())
+		d, err := assembler.receiveDatagram(ctx, func(actual context.Context) ([]byte, error) {
+			d, err := server.ReceiveDatagram(actual)
+			if actual != ctx && errors.Is(err, context.DeadlineExceeded) {
+				receiveTimeouts.Add(1)
+			}
+			return d, err
+		})
 		if err != nil {
 			acceptErr <- err
 		} else {
@@ -100,6 +109,9 @@ func TestIPAssemblyExpiryKeepsQUICDataAndControlUsable(t *testing.T) {
 		}
 	}()
 	waitAssemblyExpiry(t, &assembler, ctx)
+	if receiveTimeouts.Load() != 1 {
+		t.Fatal("QUIC receiver did not witness the owned assembly deadline")
+	}
 	// This is the same authenticated QUIC connection, after its owned receive
 	// deadline expired. The reliable control stream remains independently usable.
 	if err := WriteControl(clientStream, ControlMessage{Kind: "bundle", Bundle: a.Certificate.Certificate}); err != nil {

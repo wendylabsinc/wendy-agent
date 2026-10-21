@@ -17,15 +17,22 @@ func TestIPAssemblyExpiryKeepsFramedDataAndControlUsable(t *testing.T) {
 	sender, receiver := newStreamNodeLink(left), newStreamNodeLink(right)
 	defer sender.Close()
 	defer receiver.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ipAssemblyLifetime+5*time.Second)
 	defer cancel()
 	var assembler IPAssembler
 	_, pieces := assemblyPacket(t, TunnelMTU, 1)
-	assembler.Receive(pieces[1], time.Now().Add(-ipAssemblyLifetime+100*time.Millisecond))
 	results := make(chan []byte, 1)
 	errs := make(chan error, 1)
+	var receiveTimeouts atomic.Int32
 	go func() {
-		d, err := assembler.receiveDatagram(ctx, receiver.ReceiveDatagram)
+		assembler.Receive(pieces[1], time.Now())
+		d, err := assembler.receiveDatagram(ctx, func(actual context.Context) ([]byte, error) {
+			d, err := receiver.ReceiveDatagram(actual)
+			if actual != ctx && errors.Is(err, context.DeadlineExceeded) {
+				receiveTimeouts.Add(1)
+			}
+			return d, err
+		})
 		if err != nil {
 			errs <- err
 		} else {
@@ -33,6 +40,9 @@ func TestIPAssemblyExpiryKeepsFramedDataAndControlUsable(t *testing.T) {
 		}
 	}()
 	waitAssemblyExpiry(t, &assembler, ctx)
+	if receiveTimeouts.Load() != 1 {
+		t.Fatal("framed receiver did not witness the owned assembly deadline")
+	}
 	if err := sender.WriteControl(ControlMessage{Kind: "bundle", Bundle: [][]byte{[]byte("still usable")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +93,11 @@ func TestNodeReadLinkExpiresAndSnapshotsWithoutClosingCarrier(t *testing.T) {
 	link := &assemblyReadLink{packets: make(chan []byte, 1)}
 	p := &nodePeer{link: link}
 	_, pieces := assemblyPacket(t, TunnelMTU, 1)
-	p.assembler.Receive(pieces[0], time.Now().Add(-ipAssemblyLifetime+100*time.Millisecond))
+	p.assembler.Receive(pieces[0], time.Now())
 	n := &Node{events: make(chan nodeEvent, 1)}
 	n.view.Store(&NodeSnapshot{Links: []PeerLink{{assembler: &p.assembler}}})
 	first := n.Snapshot()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ipAssemblyLifetime+5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- n.readLink(ctx, p) }()

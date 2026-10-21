@@ -258,13 +258,18 @@ func TestIPAssemblySnapshotConcurrentAndIndependent(t *testing.T) {
 func TestIPAssemblyOwnedReceiveExpiryPreservesParent(t *testing.T) {
 	var a IPAssembler
 	_, d := assemblyPacket(t, TunnelMTU, 1)
-	a.Receive(d[0], time.Now().Add(-ipAssemblyLifetime+20*time.Millisecond))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Use the real lifetime: a short seeded deadline can expire before the
+	// receiver starts, silently skipping the owned-deadline path under load.
+	a.Receive(d[0], time.Now())
+	ctx, cancel := context.WithTimeout(context.Background(), ipAssemblyLifetime+5*time.Second)
 	defer cancel()
 	calls := 0
 	got, err := a.receiveDatagram(ctx, func(actual context.Context) ([]byte, error) {
 		calls++
 		if calls == 1 {
+			if actual == ctx {
+				t.Fatal("receiver did not get an owned assembly deadline")
+			}
 			<-actual.Done()
 			return nil, actual.Err()
 		}
@@ -279,6 +284,35 @@ func TestIPAssemblyOwnedReceiveExpiryPreservesParent(t *testing.T) {
 	cancel()
 	if _, err := a.receiveDatagram(ctx, func(actual context.Context) ([]byte, error) { <-actual.Done(); return nil, actual.Err() }); !errors.Is(err, context.Canceled) {
 		t.Fatal("parent cancellation hidden", err)
+	}
+}
+
+func TestIPAssemblyParentCancellationAndDeadlineStayTerminal(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cancel", true: "deadline"}[deadline], func(t *testing.T) {
+			var a IPAssembler
+			_, pieces := assemblyPacket(t, TunnelMTU, 1)
+			a.Receive(pieces[0], time.Now())
+			ctx, cancel := context.WithCancel(context.Background())
+			want := context.Canceled
+			if deadline {
+				cancel()
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				want = context.DeadlineExceeded
+			}
+			defer cancel()
+			calls := 0
+			_, err := a.receiveDatagram(ctx, func(actual context.Context) ([]byte, error) {
+				calls++
+				cancel()
+				<-actual.Done()
+				return nil, actual.Err()
+			})
+			if !errors.Is(err, want) || calls != 1 {
+				t.Fatalf("parent termination retried: calls=%d err=%v", calls, err)
+			}
+			a.discard()
+		})
 	}
 }
 

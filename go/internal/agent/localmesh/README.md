@@ -124,6 +124,18 @@ ownership before reclaiming a crashed instance's state; foreign state is
 refused intact. IPv6 forwarding has a shared crash journal and scoped firewall
 grant so enabling transit preserves the host's router-advertisement behaviour.
 
+Receive reassembly reserves at most 32 incomplete packets and 42,240 bytes per
+link. Missing halves expire ten seconds after the first accepted piece;
+duplicates do not extend that allowance. A full receiver evicts the oldest
+incomplete packet so fresh traffic can progress. A fixed 1,024-ID serial window
+suppresses retired IDs and stale unknown pieces across sequence wrap, while a
+retained pending packet may still complete after newer traffic advances the
+window. The receive owner expires idle buffers without closing a healthy
+carrier. Per-link `Reassembly` snapshots report received IP fragments/bytes,
+completion, duplicate/stale/invalid pieces, expiry/eviction/discard counts and
+current/peak reservations. These are hop-local receive counters, not app-message
+metrics or proof of delivery.
+
 Internet-sharing overlays, application catalogue gossip, local VIP proxying and
 LAN service projection are integrated by subsequent stages. Their separate
 protocols should not be inferred from this presence directory.
