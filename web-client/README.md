@@ -20,7 +20,7 @@ npm run desktop
 
 This builds the CLI, copies the Go2 runtime source, prepares `node-pty` for
 Electron, and opens the desktop app with Vite on `127.0.0.1:5174`. Node.js 22.13+
-and Go 1.27+ are required to build. Compiling the terminal dependency may also
+and Go 1.27.3+ are required to build. Compiling the terminal dependency may also
 require Xcode Command Line Tools on macOS or a C++ toolchain on Linux/Windows.
 
 To run without a development server, or produce a native application:
@@ -131,7 +131,7 @@ physical storage. Model responses require configured chat credentials.
 
 ## Run locally
 
-Install Node.js 22.13 or newer and Go 1.27 or newer, then run from `web-client`
+Install Node.js 22.13 or newer and Go 1.27.3 or newer, then run from `web-client`
 inside the Wendy repository:
 
 ```sh
