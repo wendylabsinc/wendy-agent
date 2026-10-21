@@ -121,7 +121,7 @@ type Client struct {
 	mu                      sync.Mutex
 	proxyManager            dbusProxyManager // nil if xdg-dbus-proxy is not available
 	outputMu                sync.Mutex
-	outputPIDs              map[string]uint32
+	outputOwners            map[string]*taskOutputOwner
 	recoveredOutput         map[string]*recoveredTaskOutput
 	outputClosed            bool
 	systemAPISocketProvider AppSystemAPISocketProvider
@@ -2276,6 +2276,15 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 	}
 	container := ctrs[0]
+	if container.ID() != appName {
+		// A bare app alias may resolve to its sole service. Take that
+		// container's lifecycle lock before any preparation or output ownership
+		// change, matching recovery and direct service starts. Drop c.mu first:
+		// an operation holding the canonical lock may need the global mutex.
+		c.mu.Unlock()
+		muHeld = false
+		return c.startContainer(ctx, container.ID(), stdin, postStartAgentCommand, restartPolicy)
+	}
 
 	// Name parsing is ambiguous for multi-service containers because '_' is
 	// also legal inside appIDs: "app_talker" parses as a bare appID, which
@@ -2307,6 +2316,10 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
 	isolation := c.getIsolation(appID)
+	// A new attempt supersedes the previous run even if its preparation or
+	// runtime start fails. A delayed old exit must not overwrite did-not-start
+	// diagnostics or close logs opened for this attempt.
+	c.forgetTaskOutput(appName, nil)
 
 	// Resources created under /run disappear across reboot even though
 	// containerd preserves the container and its OCI spec. If this start fails
@@ -2688,7 +2701,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			// appID sidesteps it (found via repeated RemoteCam redeploy cycles).
 			// Best-effort: DEL is itself idempotent/safe against a partial or
 			// absent ADD, so a DEL failure here is logged, not fatal.
-			if delErr := c.CNIDel(ctx, appID, appName, netnsPath); delErr != nil {
+			if delErr := rollbackCNIAdd(ctx, 10*time.Second, func(cleanupCtx context.Context) error {
+				return c.CNIDel(cleanupCtx, appID, appName, netnsPath)
+			}); delErr != nil {
 				c.logger.Warn("CNI DEL rollback after failed ADD also failed (non-fatal)",
 					zap.String(logfields.AppID, appID), zap.Error(delErr))
 			}
@@ -2905,10 +2920,10 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
-	c.trackTaskOutput(appName, task.Pid())
+	outputOwner := c.trackTaskOutput(appName, task.Pid())
 	meshIngressStarted = true
 	nanStartLease.committed = true
-	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, nanTaskAppID, meshIngressRun, stdoutR, stderrR, stdoutW, stderrW)
+	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, nanTaskAppID, meshIngressRun, outputOwner, stdoutR, stderrR, stdoutW, stderrW)
 
 	// Recompute camera-loopback nodes/consumers from truth now that this
 	// container is running: it may have just become an entitled consumer.
@@ -4034,11 +4049,13 @@ func (c *Client) streamOutput(
 	appName string,
 	nanAppID string,
 	meshIngressRun uint64,
+	outputOwner *taskOutputOwner,
 	stdoutR, stderrR *io.PipeReader,
 	stdoutW, stderrW *io.PipeWriter,
 ) {
 	defer close(outputCh)
-	defer c.forgetTaskOutput(appName, task.Pid())
+	// Keep ownership until terminal publication, replacement or deletion so events queued
+	// through an output pump can still validate this run at publication time.
 
 	// Read stdout and stderr concurrently.
 	var wg sync.WaitGroup
@@ -4095,17 +4112,6 @@ func (c *Client) streamOutput(
 			zap.String("app_name", appName),
 			zap.Uint32("exit_code", code),
 		)
-		// Persist why this run ended so a stopped/crashed container can explain
-		// itself later (the task and this live stream are about to disappear).
-		// Not when the host is powering off: StopTasksForHostShutdown ended the
-		// run, and its 137 or 143 would show the app as crashed after the reboot.
-		// Detached context: the RPC ctx may be torn down the instant we return.
-		if !c.hostShutdown.Load() {
-			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			reason := classifyExit(code, taskOOMKilled(recCtx, task))
-			c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
-			cancel()
-		}
 	}
 
 	if taskExited {
@@ -4136,7 +4142,14 @@ func (c *Client) streamOutput(
 	// Wait for readers to finish.
 	wg.Wait()
 
-	outputCh <- services.ContainerOutput{Done: true}
+	if taskExited {
+		c.withTaskOutputOwner(appName, outputOwner, func() {
+			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			c.recordContainerExit(recCtx, appName, int32(code), classifyExit(code, taskOOMKilled(recCtx, task)), exitedAt)
+		})
+	}
+	outputCh <- c.taskOutputDone(appName, outputOwner)
 }
 
 // drainTaskIOThenClose blocks until taskIO's stdio copy goroutines (if any)
@@ -4348,7 +4361,7 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	// /proc/PID/ns/net is valid). After SIGTERM/SIGKILL the netns reference
 	// disappears. CNI DEL is best-effort — failure is logged but does not
 	// block the stop path.
-	if appID, svcName, parseErr := ParseContainerName(containerID); parseErr == nil {
+	if appID, svcName, parseErr := containerOwnerFromLabels(containerID, labels); parseErr == nil {
 		var entitlements []appconfig.Entitlement
 		c.mu.Lock()
 		isolation := c.getIsolation(appID)
@@ -4680,7 +4693,7 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	// the same reason as stopOne above: the cache is only best-effort warmed
 	// at boot, and a miss there must not silently skip CNI DEL / DNS release
 	// / mesh teardown for a container that is actually isolated.
-	appID, svcName, parseErr := ParseContainerName(ctr.ID())
+	appID, svcName, parseErr := containerOwnerFromLabels(ctr.ID(), persistedLabels)
 	var entitlements []appconfig.Entitlement
 	isolation := c.getIsolation(appID)
 	needsBridge := false
@@ -4738,6 +4751,7 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return "", fmt.Errorf("deleting container %q: %w", ctr.ID(), err)
 	}
+	c.forgetTaskOutput(ctr.ID(), nil)
 	if c.proxyManager != nil {
 		if proxyErr := c.proxyManager.Stop(ctr.ID()); proxyErr != nil {
 			c.logger.Warn("Failed to stop D-Bus proxy",
@@ -4929,7 +4943,6 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 				if _, proxyErr := c.restoreDBusProxyForRunningTask(ctx, ctr.ID(), running, spec.Mounts); proxyErr != nil {
 					c.logger.Error("Could not restore running container D-Bus proxy", zap.String("id", ctr.ID()), zap.Error(proxyErr))
 				}
-
 			}
 		}
 
@@ -4954,11 +4967,6 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 
 		if info.Labels[labelKeyStoppedByUser] == "true" {
 			continue // user stopped it on purpose — stay down across reboot
-		}
-		// An agent restart does not stop this task. Restore its authorized
-		// ingress even when its policy forbids restarting it after an exit.
-		if running {
-			c.rehydrateRunningMeshIngress(ctx, ctr, info.Labels)
 		}
 		policy, maxRetries := parseRestartPolicyLabel(info.Labels[labelKeyRestartPolicy])
 		if policy == "no" {

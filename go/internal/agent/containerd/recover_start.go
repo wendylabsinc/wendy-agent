@@ -9,8 +9,6 @@ import (
 	containerdclient "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
-
-	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 // RecoverInterruptedTaskStarts retires tasks whose entrypoints were still held
@@ -44,9 +42,8 @@ func (c *Client) recoverInterruptedTaskStart(ctx context.Context, ctr containerd
 	if err != nil {
 		return err
 	}
-	appID, _, err := ParseContainerName(ctr.ID())
-	if err != nil || appconfig.ValidateAppID(appID) != nil || labels[labelKeyAppID] != appID {
-		return fmt.Errorf("invalid app ownership for interrupted task recovery")
+	if _, _, err := containerOwnerFromLabels(ctr.ID(), labels); err != nil {
+		return err
 	}
 	task, err := ctr.Task(ctx, nil)
 	if errdefs.IsNotFound(err) {

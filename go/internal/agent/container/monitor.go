@@ -681,9 +681,8 @@ func (m *ContainerMonitor) drainOutput(name string, outputCh <-chan services.Con
 			m.logManager.Publish(name, output)
 		}
 	}
-	if m.logManager != nil {
-		m.logManager.Publish(name, services.ContainerOutput{Done: true})
-	}
+	// The producer owns the terminal marker; an old channel closing after
+	// replacement must not end the replacement task's log stream.
 }
 
 // planRestarts reconciles the registered container states against the current

@@ -52,3 +52,18 @@ func TestBootRecoveryCapturesOutputWithoutRestartEligibleApps(t *testing.T) {
 		}
 	}
 }
+
+func TestMonitorOldOutputClosureDoesNotEndReplacementLogs(t *testing.T) {
+	lm := services.NewContainerLogManager(zap.NewNop(), services.NewTelemetryBroadcaster())
+	_, logs := lm.Subscribe("app")
+	m := NewContainerMonitor(zap.NewNop(), &fakeContainerd{}, lm, time.Second)
+	old := make(chan services.ContainerOutput, 1)
+	old <- services.ContainerOutput{Done: true, PublishIfCurrent: func(func()) {}}
+	close(old)
+	m.drainOutput("app", old)
+	select {
+	case output := <-logs:
+		t.Fatalf("old channel closure published a replacement terminal: %+v", output)
+	default:
+	}
+}

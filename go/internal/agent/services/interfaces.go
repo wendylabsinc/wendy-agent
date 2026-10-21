@@ -309,9 +309,13 @@ type RestartStatusProvider interface {
 }
 
 type ContainerOutput struct {
-	Stdout []byte
-	Stderr []byte
-	Done   bool
+	// PublishIfCurrent orders a terminal marker against task replacement at
+	// the producer. Log pumps must preserve it; ContainerLogManager invokes it
+	// around nonblocking publication so a delayed old run cannot end new logs.
+	PublishIfCurrent func(func()) `json:"-"`
+	Stdout           []byte
+	Stderr           []byte
+	Done             bool
 }
 
 type ContainerMetrics struct {

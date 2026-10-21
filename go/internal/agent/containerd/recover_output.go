@@ -16,8 +16,12 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 )
 
+type taskOutputOwner struct {
+	pid uint32
+}
+
 type recoveredTaskOutput struct {
-	pid    uint32
+	owner  *taskOutputOwner
 	io     cio.IO
 	cancel context.CancelFunc
 	once   sync.Once
@@ -33,26 +37,29 @@ func (r *recoveredTaskOutput) close() {
 	})
 }
 
-func (c *Client) trackTaskOutput(name string, pid uint32) {
+func (c *Client) trackTaskOutput(name string, pid uint32) *taskOutputOwner {
 	c.outputMu.Lock()
 	defer c.outputMu.Unlock()
-	if c.outputPIDs == nil {
-		c.outputPIDs = make(map[string]uint32)
+	if c.outputOwners == nil {
+		c.outputOwners = make(map[string]*taskOutputOwner)
 	}
-	c.outputPIDs[name] = pid
+	owner := &taskOutputOwner{pid: pid}
+	c.outputOwners[name] = owner
+	return owner
 }
 
-func (c *Client) forgetTaskOutput(name string, pid uint32) {
+func (c *Client) forgetTaskOutput(name string, owner *taskOutputOwner) {
 	c.outputMu.Lock()
 	defer c.outputMu.Unlock()
-	if c.outputPIDs[name] == pid {
-		delete(c.outputPIDs, name)
+	if owner == nil || c.outputOwners[name] == owner {
+		delete(c.outputOwners, name)
 	}
 }
 
 func (c *Client) closeRecoveredTaskOutput() {
 	c.outputMu.Lock()
 	c.outputClosed = true
+	clear(c.outputOwners)
 	var attached []*recoveredTaskOutput
 	for _, r := range c.recoveredOutput {
 		attached = append(attached, r)
@@ -61,6 +68,30 @@ func (c *Client) closeRecoveredTaskOutput() {
 	for _, r := range attached {
 		r.close()
 	}
+}
+
+// withTaskOutputOwner orders exit side effects against replacement starts.
+// IO drains can finish after the old task was deleted and a replacement began;
+// those callbacks must not label the new run as exited or end its log stream.
+// A distinct owner pointer also protects against eventual OS PID reuse.
+func (c *Client) withTaskOutputOwner(name string, owner *taskOutputOwner, f func()) {
+	unlock := c.lockNetworkOperation(name)
+	defer unlock()
+	c.outputMu.Lock()
+	current := c.outputOwners[name] == owner && !c.outputClosed
+	c.outputMu.Unlock()
+	if current {
+		f()
+	}
+}
+
+func (c *Client) taskOutputDone(name string, owner *taskOutputOwner) services.ContainerOutput {
+	return services.ContainerOutput{Done: true, PublishIfCurrent: func(publish func()) {
+		c.withTaskOutputOwner(name, owner, func() {
+			publish()
+			c.forgetTaskOutput(name, owner)
+		})
+	}}
 }
 
 type recoveredOutputWriter func([]byte)
@@ -83,7 +114,7 @@ func preserveTaskFIFOs(fifos *cio.FIFOSet) *cio.FIFOSet {
 // RecoverRunningTaskOutput attaches one reader to every inherited Wendy task.
 // Normal starts already own their output; repeated boot reconciliation must
 // never compete with that reader. The per-container lifecycle lock serializes
-// attachment with start/stop/delete, while the PID guards late exit callbacks.
+// attachment with start/stop/delete; each run owns a distinct output token.
 func (c *Client) RecoverRunningTaskOutput(ctx context.Context, publish func(string, services.ContainerOutput)) error {
 	ctx = c.withNamespace(ctx)
 	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
@@ -119,7 +150,8 @@ func (c *Client) recoverTaskOutput(ctx context.Context, ctr containerdclient.Con
 	}
 	pid := task.Pid()
 	c.outputMu.Lock()
-	tracked, closed := c.outputPIDs[name] == pid, c.outputClosed
+	owner := c.outputOwners[name]
+	tracked, closed := owner != nil && owner.pid == pid, c.outputClosed
 	c.outputMu.Unlock()
 	if tracked || closed {
 		return nil
@@ -143,7 +175,7 @@ func (c *Client) recoverTaskOutput(ctx context.Context, ctr containerdclient.Con
 		cancel()
 		return err
 	}
-	r := &recoveredTaskOutput{pid: pid, io: attachedTask.IO(), cancel: cancel}
+	r := &recoveredTaskOutput{io: attachedTask.IO(), cancel: cancel}
 	status, err = attachedTask.Status(ctx)
 	if err != nil || status.Status != containerdclient.Running || attachedTask.Pid() != pid {
 		r.close()
@@ -155,13 +187,14 @@ func (c *Client) recoverTaskOutput(ctx context.Context, ctr containerdclient.Con
 		r.close()
 		return nil
 	}
-	if c.outputPIDs == nil {
-		c.outputPIDs = make(map[string]uint32)
+	if c.outputOwners == nil {
+		c.outputOwners = make(map[string]*taskOutputOwner)
 	}
 	if c.recoveredOutput == nil {
 		c.recoveredOutput = make(map[string]*recoveredTaskOutput)
 	}
-	c.outputPIDs[name] = pid
+	r.owner = &taskOutputOwner{pid: pid}
+	c.outputOwners[name] = r.owner
 	c.recoveredOutput[name] = r
 	c.outputMu.Unlock()
 	go func() {
@@ -172,19 +205,23 @@ func (c *Client) recoverTaskOutput(ctx context.Context, ctr containerdclient.Con
 			if r.io != nil {
 				r.io.Wait()
 			}
-			_ = fifos.Close()
-			recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			c.recordContainerExit(recordCtx, name, int32(code), classifyExit(code, taskOOMKilled(recordCtx, task)), exitedAt)
-			recordCancel()
-			publish(name, services.ContainerOutput{Done: true})
+			if fifos != nil {
+				_ = fifos.Close()
+			}
+			c.withTaskOutputOwner(name, r.owner, func() {
+				recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer recordCancel()
+				c.recordContainerExit(recordCtx, name, int32(code), classifyExit(code, taskOOMKilled(recordCtx, task)), exitedAt)
+			})
+			publish(name, c.taskOutputDone(name, r.owner))
 		}
 		r.close()
 		c.outputMu.Lock()
 		if c.recoveredOutput[name] == r {
 			delete(c.recoveredOutput, name)
 		}
-		if c.outputPIDs[name] == r.pid {
-			delete(c.outputPIDs, name)
+		if c.outputOwners[name] == r.owner {
+			delete(c.outputOwners, name)
 		}
 		c.outputMu.Unlock()
 	}()
