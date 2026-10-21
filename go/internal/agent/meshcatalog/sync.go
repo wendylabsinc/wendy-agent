@@ -277,12 +277,19 @@ func (s *Synchronizer) Receive(m Message, now time.Time) (replies []Message, cha
 			return nil, nil, nil
 		}
 		var renewal *pendingServiceRenewal
-		if errors.Is(err, errCertificateMismatch) {
+		var lifetime *serviceCertificateLifetimeError
+		lifetimeMismatch := errors.As(err, &lifetime)
+		if errors.Is(err, errCertificateMismatch) || lifetimeMismatch {
 			var record Record
 			if json.Unmarshal(m.Record.Body, &record) == nil && record.Key.Mesh == s.catalog.mesh {
 				chain, deadline, active := s.certificates.PendingChain(record.Key.Device, now)
 				if active && len(chain.Hashes) > 0 && chain.Hashes[0] == m.Record.Fingerprint {
-					renewal = &pendingServiceRenewal{chain: chain, deadline: deadline}
+					// A reissued peer intermediate can extend effective lifetime while
+					// retaining the exact leaf. Only a different advertised full chain
+					// can repair that typed bound; normal verification still owns trust.
+					if !lifetimeMismatch || !sameServiceChain(lifetime.chain, chain) {
+						renewal = &pendingServiceRenewal{chain: chain, deadline: deadline}
+					}
 				}
 			}
 		}

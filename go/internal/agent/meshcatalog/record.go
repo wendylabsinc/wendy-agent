@@ -41,6 +41,14 @@ var (
 	typePattern            = regexp.MustCompile(`^_[A-Za-z0-9][A-Za-z0-9-]{0,14}\._tcp$`)
 )
 
+// Retain the exact verified chain that produced a lifetime failure. Another
+// actor may renew the shared cache before this link inspects its descriptor.
+type serviceCertificateLifetimeError struct{ chain localmesh.CertificateChain }
+
+func (*serviceCertificateLifetimeError) Error() string {
+	return "wendy net service lease does not match certificate lifetime"
+}
+
 // Key is a service's stable owner scope: the mesh name plus the owning
 // device's full SPIFFE principal. A display name and TXT UUID are never used
 // as identity. Generation increases for both publish and remove.
@@ -165,9 +173,6 @@ func verify(w SignedRecord, cache *localmesh.IdentityCache, now time.Time) (Reco
 	if localmesh.Fingerprint(chain) != w.Fingerprint {
 		return r, "", errCertificateMismatch
 	}
-	if time.UnixMilli(r.Expires).After(id.NotAfter) {
-		return r, "", errors.New("wendy net service origin or lease does not match certificate")
-	}
 	leaf, err := x509.ParseCertificate(chain[0])
 	if err != nil {
 		return r, "", err
@@ -184,6 +189,9 @@ func verify(w SignedRecord, cache *localmesh.IdentityCache, now time.Time) (Reco
 	}
 	if !valid {
 		return r, "", errors.New("invalid wendy net service signature")
+	}
+	if time.UnixMilli(r.Expires).After(id.NotAfter) {
+		return r, "", &serviceCertificateLifetimeError{chain: *localmesh.DescribeCertificates(r.Key.Device, chain).Chain}
 	}
 	h := sha256.Sum256(w.Body)
 	return r, hex.EncodeToString(h[:]), nil
