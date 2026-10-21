@@ -4,6 +4,7 @@ import Foundation
 struct NetworkAccessPreferences {
     private let defaults: UserDefaults
     private static let key = "allowNetworkAccess"
+    private static let promptPendingKey = "networkAccessPromptPending"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -15,10 +16,22 @@ struct NetworkAccessPreferences {
 
     /// Resolve migration before the agent creates state on its first startup.
     /// Return whether a fresh install should show the optional access prompt.
+    /// The prompt stays pending until answered, so a failed start or a quit
+    /// before answering asks again on the next launch.
     func prepareForStartup(existingInstallation: Bool) -> Bool {
-        guard !self.hasChosenNetworkAccess else { return false }
+        guard !self.hasChosenNetworkAccess else {
+            return self.defaults.bool(forKey: Self.promptPendingKey)
+        }
         self.allowsNetworkAccess = existingInstallation
+        if !existingInstallation {
+            self.defaults.set(true, forKey: Self.promptPendingKey)
+        }
         return !existingInstallation
+    }
+
+    /// Records that the user answered the prompt or chose access from the menu.
+    func markPromptAnswered() {
+        self.defaults.removeObject(forKey: Self.promptPendingKey)
     }
 
     static var existingInstallation: Bool {

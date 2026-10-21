@@ -17,11 +17,13 @@ assert(!preferences.allowsNetworkAccess, "migration must preserve explicit revoc
 defaults.removePersistentDomain(forName: suite)
 assert(preferences.prepareForStartup(existingInstallation: false))
 assert(!preferences.allowsNetworkAccess, "fresh install starts locally")
-assert(!preferences.prepareForStartup(existingInstallation: true))
+assert(preferences.prepareForStartup(existingInstallation: true), "an unanswered prompt is asked again")
 assert(!preferences.allowsNetworkAccess, "new state must not be mistaken for an upgrade on restart")
+preferences.markPromptAnswered()
+assert(!preferences.prepareForStartup(existingInstallation: true), "an answered prompt is not repeated")
 preferences.allowsNetworkAccess = true
 assert(!preferences.prepareForStartup(existingInstallation: false))
 assert(preferences.allowsNetworkAccess, "saved opt-in must survive restart")
-print("Passed network-access migration, revocation, fresh install and restart tests")
+print("Passed network-access migration, revocation, fresh install, prompt and restart tests")
 SWIFT
 swift -swift-version 6 "$TEST_DIR/test.swift"

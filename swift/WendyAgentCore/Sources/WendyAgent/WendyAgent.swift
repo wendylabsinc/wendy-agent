@@ -258,6 +258,9 @@ public actor WendyAgent {
     private var mainServerIsMTLS = false
     /// Guards against overlapping plaintext<->mTLS transitions.
     private var switchingMainServer = false
+    /// Set when a provisioning callback arrives while a switch is running, so
+    /// the switch rebuilds once more when it finishes.
+    private var provisioningChangedDuringSwitch = false
     /// How long `switchMainServer` waits before tearing the old server down, to
     /// let the provisioning RPC that triggered the switch flush its response to
     /// the client first (mirrors the Go agent's delayed restart).
@@ -748,7 +751,9 @@ public actor WendyAgent {
     /// Called (via a detached task) after the device is provisioned. Switches the
     /// main server from plaintext to mTLS and re-advertises Bonjour.
     private func handleProvisioned() async {
-        guard case .running = self.status, !self.mainServerIsMTLS else { return }
+        guard case .running = self.status else { return }
+        if self.deferProvisioningChange() { return }
+        guard !self.mainServerIsMTLS else { return }
         self.logger.info("Device provisioned — switching main server to mTLS")
         try? await self.switchMainServer()
     }
@@ -756,9 +761,20 @@ public actor WendyAgent {
     /// Called (via a detached task) after the device is unprovisioned. Switches
     /// the main server from mTLS back to plaintext and re-advertises Bonjour.
     private func handleUnprovisioned() async {
-        guard case .running = self.status, self.mainServerIsMTLS else { return }
+        guard case .running = self.status else { return }
+        if self.deferProvisioningChange() { return }
+        guard self.mainServerIsMTLS else { return }
         self.logger.info("Device unprovisioned — switching main server to plaintext")
         try? await self.switchMainServer()
+    }
+
+    /// A provisioning change that arrives during another switch (for example a
+    /// network access change) is applied once that switch finishes. The running
+    /// switch may already have loaded the old provisioning state.
+    private func deferProvisioningChange() -> Bool {
+        guard self.switchingMainServer else { return false }
+        self.provisioningChangedDuringSwitch = true
+        return true
     }
 
     /// Rebuilds and restarts the main gRPC server (and Bonjour) in whatever mode
@@ -776,7 +792,15 @@ public actor WendyAgent {
             throw WendyAgentError.networkAccessChangeUnavailable
         }
         self.switchingMainServer = true
-        defer { self.switchingMainServer = false }
+        defer {
+            self.switchingMainServer = false
+            if self.provisioningChangedDuringSwitch {
+                self.provisioningChangedDuringSwitch = false
+                // Rebuild once more so the server reloads provisioning state saved
+                // after this switch read it. A stopped agent rejects the switch.
+                Task { try? await self.switchMainServer() }
+            }
+        }
 
         // A cancelled sleep just proceeds to the status re-check below, which is
         // the intended behavior during shutdown.
@@ -798,6 +822,7 @@ public actor WendyAgent {
         let backend = await self.makeLinuxBackend()
         let broadcaster = self.telemetryBroadcaster ?? TelemetryBroadcaster()
 
+        var accessChangeError: (any Error)?
         do {
             try await self.startMainServer(
                 linuxBackend: backend,
@@ -809,10 +834,18 @@ public actor WendyAgent {
                 "Failed to switch main server",
                 metadata: ["error": "\(Self.errorMessage(for: error))"]
             )
-            await self.rollbackStartup()
-            self.clearRuntimeState()
-            self.updateStatus(.failed(Self.errorMessage(for: error)))
-            throw error
+            // A failed access change keeps serving on loopback rather than taking
+            // management, the registry and app supervision down with it.
+            if host != nil,
+                await self.restartLocalMainServer(linuxBackend: backend, broadcaster: broadcaster)
+            {
+                accessChangeError = error
+            } else {
+                await self.rollbackStartup()
+                self.clearRuntimeState()
+                self.updateStatus(.failed(Self.errorMessage(for: error)))
+                throw error
+            }
         }
 
         // Restart the push listener so its scheme (plain HTTP vs mTLS) tracks
@@ -833,10 +866,33 @@ public actor WendyAgent {
         // one held, so supervise from here on but do NOT reconcile.
         self.startAppSupervisor(reconcile: false)
 
+        if let accessChangeError { throw accessChangeError }
         self.logger.info(
             "Main server switched",
             metadata: ["mtls": "\(self.mainServerIsMTLS)"]
         )
+    }
+
+    /// Rebinds the main server to loopback after a failed access change.
+    /// Returns false if the agent stopped meanwhile or loopback also failed.
+    private func restartLocalMainServer(
+        linuxBackend: (any LinuxContainerBackend)?,
+        broadcaster: TelemetryBroadcaster
+    ) async -> Bool {
+        await self.stopBonjour()
+        await self.stopMainServer(cancelActiveConnections: true)
+        guard case .running = self.status else { return false }
+        self.configuration.host = "127.0.0.1"
+        do {
+            try await self.startMainServer(linuxBackend: linuxBackend, broadcaster: broadcaster)
+            return true
+        } catch {
+            self.logger.error(
+                "Failed to restore the local main server",
+                metadata: ["error": "\(Self.errorMessage(for: error))"]
+            )
+            return false
+        }
     }
 
     /// Starts the loopback pull listener (`127.0.0.1:5556`, plain HTTP,

@@ -143,9 +143,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         alert.buttons.first?.keyEquivalent = "\r"
         alert.buttons.last?.keyEquivalent = ""
         NSApplication.shared.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertSecondButtonReturn,
-            let controller = self.statusMenuController
-        {
+        let response = alert.runModal()
+        self.networkAccessPreferences.markPromptAnswered()
+        if response == .alertSecondButtonReturn, let controller = self.statusMenuController {
             self.statusMenuController(controller, didSetNetworkAccessAllowed: true)
         }
     }
@@ -182,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             do {
                 try await self.wendyAgent.setNetworkAccess(allowed: allowed)
                 self.networkAccessPreferences.allowsNetworkAccess = allowed
+                self.networkAccessPreferences.markPromptAnswered()
                 controller.updateNetworkAccess(allowed: allowed)
             } catch {
                 let configuration = await self.wendyAgent.configuration
