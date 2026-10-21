@@ -89,11 +89,17 @@ restart; it is not a certificate identity.
 ## Route admission
 
 Every finite remote route requires a current version-2 manifest signed by the
-destination device. The manifest binds its certificate principal to its exact
-wendy net /128, Babel origin router ID, and origin sequence number. An authenticated
+destination device. The signature covers its device UUID, exact Wendy Net /128,
+Babel origin router ID, and origin sequence number. The receiver verifies it with
+the certificate for the selected same-tenant device principal. An authenticated
 neighbour can relay that proof unchanged, but cannot sign for another device,
 advertise an aggregate, or advance another origin's sequence number. A version-1
 manifest provides directory presence only and never authorizes a route.
+
+Version 2 does not include the full principal in the signature input. If the same
+UUID and signing key are reused across tenants, a proof can be transferred between
+those principals by changing its envelope. Full-principal signature binding is
+required before relying on tenant isolation for identities that reuse both values.
 
 Nodes publish a 60-second lease every 20 seconds, capped at the identity's
 certificate expiry. Receivers reject leases longer than two minutes and issue
@@ -119,10 +125,11 @@ valid lease. Hop-local Babel retractions remain unchanged: they only remove that
 neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
 end-to-end application authentication still apply.
 
-Wendy net links require hello version 2 and ALPN `wendy-local-mesh/2` (QUIC) or
-`wendy-local-mesh-ble/2` (BLE TLS). Old peers cannot join the new routing policy;
-upgrade each connected wendy net network together. This changes the internal wendy net wire
-contract, not public gRPC messages or application-session ALPNs.
+Wendy Net links require hello version 2 and ALPN
+`wendy-local-mesh/2-catalog-1-cert-1` (QUIC) or
+`wendy-local-mesh-ble/2-catalog-1-cert-1` (BLE TLS).
+Upgrade each connected Wendy Net network together. This changes the internal
+Wendy Net wire contract, not public gRPC messages or application-session ALPNs.
 
 Manifest projection and synchronization require the exact currently admitted
 wire signature to verify under the principal's current cached certificate. A

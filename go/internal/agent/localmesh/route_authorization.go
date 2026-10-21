@@ -23,7 +23,7 @@ func (m Manifest) validateRoute(device meshid.Device) error {
 		return nil
 	}
 	if m.Route.Prefix != netip.PrefixFrom(device.MeshAddress(), 128) {
-		return errors.New("route authorization must name the signer's exact mesh /128")
+		return errors.New("route authorization must name the signer's exact net /128")
 	}
 	if m.Route.RouterID == 0 || m.Route.RouterID == ^babel.RouterID(0) {
 		return errors.New("invalid authorized router ID")
