@@ -12,7 +12,7 @@ import (
 func TestUserFacingGRPCErrorMapsTunnelVerdict(t *testing.T) {
 	err := status.Error(codes.Unavailable, `connection error: desc = "transport: authentication handshake failed: cloud tunnel closed by broker: rpc error: code = PermissionDenied desc = user is not a current member of this organization"`)
 	got := userFacingGRPCError(err)
-	if got != "Poll error: you don't have permission to do this. Check your access and try again." {
+	if got != "You don't have permission to do this. Check your access and try again." {
 		t.Fatalf("poll error %q hides the broker's verdict", got)
 	}
 	if strings.Contains(got, "authentication handshake failed") {
