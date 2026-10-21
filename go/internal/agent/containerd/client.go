@@ -2918,10 +2918,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 
 	if hasAvahiEntitlement(entitlements) {
 		avahiStartedForTask = true
-		if isolation != "isolated" {
-			return nil, failPreparedTask(fmt.Errorf("app %q declares the avahi entitlement without an isolated network namespace", appID))
-		}
-		if err := c.startAvahiForTask(ctx, appName, task.Pid()); err != nil {
+		if err := c.startAvahiForTask(ctx, container.ID(), task.Pid()); err != nil {
 			return nil, failPreparedTask(fmt.Errorf("starting avahi bridge for app %q: %w", appID, err))
 		}
 	}
@@ -5011,7 +5008,11 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 					if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
 						if err := c.startAvahiForTask(ctx, ctr.ID(), task.Pid()); err != nil {
 							c.logger.Error("Could not restore running container Avahi daemon", zap.String("id", ctr.ID()), zap.Error(err))
+							_ = c.avahiManager.Stop(ctr.ID())
 						}
+					} else {
+						c.logger.Error("Could not load running task for Avahi recovery", zap.String("id", ctr.ID()), zap.Error(taskErr))
+						_ = c.avahiManager.Stop(ctr.ID())
 					}
 				}
 			}
@@ -5772,7 +5773,18 @@ func (c *Client) startAvahiForTask(ctx context.Context, containerName string, pi
 	if pid == 0 {
 		return fmt.Errorf("no task PID for avahi netns")
 	}
-	nsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
+	netns, err := os.Open(fmt.Sprintf("/proc/%d/ns/net", pid))
+	if err != nil {
+		return fmt.Errorf("anchoring avahi task namespace: %w", err)
+	}
+	defer netns.Close()
+	nsPath := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), netns.Fd())
+	// Check the actual namespace, not the app's group-isolation label:
+	// single-service bridge apps also have a private namespace, while a host
+	// network entitlement can remove one even with isolation="isolated".
+	if err := validateAvahiNamespace(nsPath, "/proc/self/ns/net"); err != nil {
+		return err
+	}
 	addrOK := func(ctx context.Context) (bool, error) {
 		out, err := exec.CommandContext(ctx, "nsenter", "--net="+nsPath,
 			"ip", "-o", "-4", "addr", "show", "up").CombinedOutput()
@@ -5788,6 +5800,21 @@ func (c *Client) startAvahiForTask(ctx context.Context, containerName string, pi
 		return false, nil
 	}
 	return c.avahiManager.StartDaemon(ctx, containerName, nsPath, addrOK)
+}
+
+func validateAvahiNamespace(taskPath, hostPath string) error {
+	taskNS, err := os.Stat(taskPath)
+	if err != nil {
+		return fmt.Errorf("avahi task network namespace: %w", err)
+	}
+	hostNS, err := os.Stat(hostPath)
+	if err != nil {
+		return fmt.Errorf("avahi host network namespace: %w", err)
+	}
+	if os.SameFile(taskNS, hostNS) {
+		return fmt.Errorf("avahi requires a private network namespace")
+	}
+	return nil
 }
 
 // requireDBusProxy enforces the D-Bus sandboxing invariant for WDY-1093: a

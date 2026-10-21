@@ -3201,3 +3201,44 @@ func TestApplyRecordingStreamEnvironment(t *testing.T) {
 		t.Fatal("recording mount must remain read-only")
 	}
 }
+
+func TestApplyEntitlementsAvahiRequiresPrivateProxy(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "avahi-test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAvahi}}}
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+		t.Fatal("Avahi accepted without its prepared proxy")
+	}
+	spec = DefaultSpec("/rootfs", []string{"/bin/sh"})
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{AvahiProxySocketDir: "/run/private/proxy"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range spec.Mounts {
+		if m.Destination != "/var/run/dbus" {
+			continue
+		}
+		if m.Source != "/run/private/proxy" {
+			t.Fatalf("unexpected source: %q", m.Source)
+		}
+		for _, option := range []string{"ro", "nodev", "nosuid", "noexec"} {
+			found := false
+			for _, got := range m.Options {
+				if got == option {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing mount option %s", option)
+			}
+		}
+		return
+	}
+	t.Fatal("missing private D-Bus mount")
+}
+
+func TestApplyEntitlementsAvahiBluetoothConflict(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "avahi-test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAvahi}, {Type: appconfig.EntitlementBluetooth}}}
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{AvahiProxySocketDir: "/run/private/proxy", DBusProxySocketDir: "/run/bluetooth/proxy"}); err == nil {
+		t.Fatal("conflicting bus entitlements accepted")
+	}
+}

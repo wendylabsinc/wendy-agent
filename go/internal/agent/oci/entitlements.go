@@ -120,6 +120,9 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			}
 			applyBluetooth(spec, opts.DBusProxySocketDir)
 		case appconfig.EntitlementAvahi:
+			if opts.AvahiProxySocketDir == "" {
+				return fmt.Errorf("avahi entitlement requires a prepared private D-Bus proxy")
+			}
 			if opts.DBusProxySocketDir != "" {
 				return fmt.Errorf("entitlements bluetooth and avahi both mount /var/run/dbus; declare at most one")
 			}
@@ -1428,7 +1431,7 @@ func applyAvahi(spec *Spec, proxySocketDir string) {
 			Destination: "/var/run/dbus",
 			Source:      proxySocketDir,
 			Type:        "bind",
-			Options:     []string{"rbind", "nosuid", "noexec"},
+			Options:     []string{"rbind", "nosuid", "noexec", "nodev", "ro"},
 		})
 	}
 	spec.Process.Env = append(spec.Process.Env,

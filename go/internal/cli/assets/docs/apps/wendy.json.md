@@ -423,6 +423,40 @@ Bluetooth access.
 { "type": "bluetooth" }
 ```
 
+### `avahi`
+
+Provides a private Avahi DNS-SD service for an app with a private network
+namespace. For example, a single-container app with outbound networking can use:
+
+```json
+{
+  "entitlements": [
+    { "type": "network", "mode": "bridge" },
+    { "type": "avahi" }
+  ]
+}
+```
+
+Install the native Avahi or `avahi-compat` (`dns_sd.h`) client libraries in the
+app image. The agent mounts a filtered D-Bus endpoint at `/var/run/dbus` and sets
+`DBUS_SYSTEM_BUS_ADDRESS`; it prepares networking and waits for the private
+daemon before releasing the application entrypoint. Missing host binaries,
+missing IPv4 networking or a daemon readiness failure prevents startup. Host
+networking is refused. Mesh apps also need their usual mesh network entitlement
+and isolated network configuration.
+
+Avahi and Bluetooth entitlements cannot be combined in one container because
+both use `/var/run/dbus`. The current bridge supports root D-Bus clients, matching
+Wendy's application OCI identity. Applications that drop to a different UID must
+keep their Avahi client in a root process; non-root client authentication through
+this proxy is not supported.
+
+A daemon that exits during an app run is retried with a bounded restart budget.
+If that budget is exhausted, or its private bus/proxy exits, the app continues
+running with DNS-SD unavailable and the agent logs the failure. Restart the app
+to recreate its private service. DNS-SD hostnames and service names are discovery
+metadata, not authenticated device identities.
+
 ### `nan`
 
 Let a trusted app manage its own Wi-Fi Aware discovery and direct connections.

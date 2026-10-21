@@ -3,6 +3,8 @@ package containerd
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -257,5 +259,25 @@ func TestRefreshSerialMountsWithoutIdentityKeepsCompatibleExistingPath(t *testin
 	}
 	if changed {
 		t.Fatal("refreshSerialMountsForStart() changed = true, want unchanged fallback path")
+	}
+}
+
+func TestAvahiRequiresActualPrivateNamespace(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "host")
+	private := filepath.Join(t.TempDir(), "private")
+	if err := os.WriteFile(host, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(private, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAvahiNamespace(host, host); err == nil {
+		t.Fatal("host namespace accepted")
+	}
+	if err := validateAvahiNamespace(private, host); err != nil {
+		t.Fatalf("private bridge namespace rejected: %v", err)
+	}
+	if err := validateAvahiNamespace(private+"-missing", host); err == nil {
+		t.Fatal("missing task namespace accepted")
 	}
 }
