@@ -110,6 +110,13 @@ A "network" type entitlement can have the following values:
 }
 ```
 
+### Wendy Net service access
+
+Use `network` mode `mesh` with `serviceCIDR: "10.99.0.0/16"` and isolated
+networking. Declare incoming TCP or UDP ports explicitly. This enables service
+access, not general outbound Internet access. Follow the
+[service sharing guide](/docs/guides/wendy-net-services) for complete manifests.
+
 ## HTTP
 
 Use `http` to declare a web endpoint for clients to discover. It grants no
@@ -128,22 +135,17 @@ Ordinary detached agent deployments include HTTP URLs in their
 checking application health. See the [full `http` reference](../apps/wendy.json.md#http)
 for discovery and attached-run behavior.
 
-## Wi-Fi Aware (NAN)
+## Wi-Fi Aware
 
-`{ "type": "nan" }` grants direct access to the host `nan0` wpa_supplicant
-control socket. The agent prepares an app-specific NAN data interface and
-exports `WENDY_NAN_SOCKET`, `WENDY_NAN_NDI`, and `WENDY_NAN_CLIENT_DIR`;
-bind the app's local Unix datagram control socket in that shared directory so
-supplicant replies can cross the mount namespace. The app owns its own
-publish/subscribe and NDP handles. Add `{ "type": "network", "mode": "host" }`
-separately when the app sends IP packets over its NDP. This grant does not
-expose the global or station Wi-Fi control sockets. NAN shares one radio-wide
-cluster, so apps must avoid radio-wide start/stop/reset commands. A read-only
-socket mount does not restrict control commands; grant `nan` only to trusted
-apps. A supplicant restart replaces the mounted socket; the agent restarts
-monitored apps to refresh it. Redeploy apps using restart policy `no`. The
-final prepared app release restores the original socket permissions when
-the socket still matches the agent's recorded grant.
+Use `{ "type": "nan" }` only when your app needs to manage Wi-Fi Aware discovery
+and direct connections itself. Ordinary Wendy Net apps do not need this grant.
+For an app that sends IP traffic over those direct connections, also add
+`{ "type": "network", "mode": "host" }`.
+
+This grants direct radio control to a trusted app. Wi-Fi Aware shares the device's
+radio with other apps and Wendy Net, so avoid radio-wide start, stop, or reset
+commands. See the [configuration reference](../apps/wendy.json.md#nan) for the
+app's control socket, interface, and reply-directory settings.
 
 ## Input
 

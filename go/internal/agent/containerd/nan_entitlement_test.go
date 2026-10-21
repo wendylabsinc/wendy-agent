@@ -346,3 +346,56 @@ func TestNANMonitorRetriesPermissionRestoreAfterFinalDelete(t *testing.T) {
 		t.Fatalf("permission restore retried %d times", calls)
 	}
 }
+
+func TestNANValidationRetiresOnlyUnusedPreparation(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		running      bool
+		cleanupFails bool
+	}{
+		{name: "unused preparation"},
+		{name: "running sibling", running: true},
+		{name: "cleanup failure", cleanupFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const appID = "com.example.validate"
+			oldRoot, oldHelper := nanClientRootPath, runNANHelper
+			nanClientRootPath = t.TempDir()
+			var calls [][]string
+			cleanupErr := errors.New("NDI removal failed")
+			runNANHelper = func(_ context.Context, args ...string) error {
+				calls = append(calls, append([]string(nil), args...))
+				if tc.cleanupFails {
+					return cleanupErr
+				}
+				return nil
+			}
+			t.Cleanup(func() { nanClientRootPath, runNANHelper = oldRoot, oldHelper })
+			dir := nanAppClientDir(appID)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			client := nanLifecycleClient(t, appID, tc.running)
+			lease := nanCreateLease{client: client, ctx: client.withNamespace(context.Background()), appID: appID, attempted: true, validating: true}
+			var validationErr error
+			lease.finish(&validationErr)
+			if errors.Is(validationErr, cleanupErr) != tc.cleanupFails {
+				t.Fatalf("validation result = %v", validationErr)
+			}
+			if tc.running {
+				if len(calls) != 0 {
+					t.Fatalf("validation removed a running sibling's NDI: %v", calls)
+				}
+			} else if len(calls) != 1 || len(calls[0]) != 2 || calls[0][0] != "ndi-remove" || calls[0][1] != nanAppNDI(appID) {
+				t.Fatalf("validation NDI retirement = %v", calls)
+			}
+			_, err := os.Stat(dir)
+			if (tc.running || tc.cleanupFails) && err != nil {
+				t.Fatalf("live or failed-cleanup directory was removed: %v", err)
+			}
+			if !tc.running && !tc.cleanupFails && !os.IsNotExist(err) {
+				t.Fatalf("unused validation directory remains: %v", err)
+			}
+		})
+	}
+}

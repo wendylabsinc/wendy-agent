@@ -425,39 +425,37 @@ Bluetooth access.
 
 ### `nan`
 
-Direct, unsupervised Wi-Fi Aware control through the host's `nan0`
-`wpa_supplicant` socket. Declare it only for an app trusted to manage NAN
-publish/subscribe handles and NDP sessions:
+Let a trusted app manage its own Wi-Fi Aware discovery and direct connections.
+Ordinary Wendy Net networking does not need this entitlement. For direct control
+and IP traffic, include both grants:
 
 ```json
-{ "type": "nan" }
-{ "type": "network", "mode": "host" }
+{
+  "entitlements": [
+    { "type": "nan" },
+    { "type": "network", "mode": "host" }
+  ]
+}
 ```
 
-At container creation the agent calls `wendyos-nan start`, creates and raises
-an app-specific NAN data interface, and grants the app access to **only** the
-`nan0` control socket. The app receives `WENDY_NAN_SOCKET`, `WENDY_NAN_NDI`,
-and `WENDY_NAN_CLIENT_DIR`. A Unix datagram control client must bind its local
-socket inside `WENDY_NAN_CLIENT_DIR`: that directory has the same absolute
-path on the host and in the container, allowing wpa_supplicant to send command
-replies and events back. Binding a private container `/tmp` socket cannot work.
-The app must manage its own NAN service
-handles and NDPs. This entitlement does not grant host networking: use the
-separate `network: host` grant to bind and connect over the NDP interface.
-It does not expose the global or station Wi-Fi control sockets.
+The agent prepares a separate Wi-Fi Aware data interface for the app. Your app
+must create and manage its own discovery and connection sessions.
 
-NAN has one radio-wide cluster, so an app shares cluster settings and airtime
-with other NAN users on the host even though its publish/NDP handles and data
-interface are separate. Do not issue `NAN_STOP`, `NAN_START`, or other
-radio-wide resets from the app while others use the radio. The read-only
-mount does not filter control commands or isolate a misbehaving controller;
-grant this entitlement only through trusted device deployments. The socket is a
-single-file bind mount for isolation; a `wpa_supplicant` restart replaces its
-inode. The agent refreshes the mount by restarting apps registered with its
-restart monitor; redeploy apps using restart policy `no` to refresh it. The app NDI is removed on
-app stop/delete; the shared `nan0` remains available to other users. When
-the final prepared app releases its NDI, the agent restores the original
-socket permissions if the socket still belongs to that permission grant.
+| Environment variable | Use |
+| --- | --- |
+| `WENDY_NAN_SOCKET` | Wi-Fi Aware control socket for commands and events. |
+| `WENDY_NAN_NDI` | App-specific data interface for IP traffic. |
+| `WENDY_NAN_CLIENT_DIR` | Shared directory where your control client must bind its reply socket. A private `/tmp` socket cannot receive replies from the host. |
+
+Only the Wi-Fi Aware socket is exposed, not the host's ordinary Wi-Fi controls.
+However, the grant does not filter commands: a read-only mount still allows radio
+control. Grant it only to trusted apps. Do not issue radio-wide start, stop, or
+reset commands while other apps or Wendy Net use the radio.
+
+If the Wi-Fi service restarts, the agent restarts monitored apps to refresh their
+socket access. Redeploy apps with restart policy `no` yourself. Stopping or deleting
+the app removes its private data interface while leaving shared Wi-Fi Aware
+available to other users.
 
 ### `persist`
 
