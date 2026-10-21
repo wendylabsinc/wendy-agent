@@ -88,7 +88,7 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	radioDone := make(chan error, 1)
 	go func() {
-		radioDone <- runRadio(ctx, testDevice(t, 100), make(chan radioPeer, 8), nil, nil, zap.NewNop())
+		radioDone <- runRadio(ctx, testDevice(t, 100), make(chan radioPeer, 8), nil, nil, nanRecovery{}, zap.NewNop(), nil)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -114,7 +114,7 @@ func TestRadioInvalidEventsIssueNoSetupCommands(t *testing.T) {
 		}
 	}
 	presence := func(n uint16) string {
-		return hex.EncodeToString([]byte("wendy-nan:2:" + testDevice(t, n).UUID().String()))
+		return hex.EncodeToString([]byte("wendy-nan:1:" + testDevice(t, n).UUID().String()))
 	}
 	for _, bad := range invalidNANTargets {
 		if strings.ContainsAny(bad, " \t\n") {
