@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
@@ -144,6 +145,11 @@ func leafAdapterAddress(ctx context.Context) (l2addr, error) {
 	adapter, err := selectAdapter(query, bus, "")
 	if err != nil {
 		return l2addr{}, err
+	}
+	// Leaf-only configurations do not run router discovery setup, which
+	// normally powers the controller. Fail setup if BlueZ cannot enable it.
+	if err := bus.Object(bluezName, adapter).CallWithContext(query, "org.freedesktop.DBus.Properties.Set", 0, adapterInterface, "Powered", dbus.MakeVariant(true)).Err; err != nil {
+		return l2addr{}, fmt.Errorf("powering BLE leaf adapter: %w", err)
 	}
 	return adapterL2Address(query, bus, adapter, DefaultPSM)
 }

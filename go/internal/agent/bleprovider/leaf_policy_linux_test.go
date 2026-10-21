@@ -4,8 +4,14 @@ package bleprovider
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/binary"
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +158,113 @@ func TestBLELeafAndRouterShareDialPacing(t *testing.T) {
 	leaf.workers.Wait()
 	if attempted != 1 || router.admitDial(now.Add(globalDialPace)) {
 		t.Fatal("consumers did not share adapter pacing")
+	}
+}
+
+// Exercise the production timestamp/TLS/pin/hello pipeline under a real
+// adapter lease. A failure at each stage must close only that stream and leave
+// capacity available to the router consumer on the next scheduling pass.
+func TestBLELeafAdmissionFailuresReleaseSharedBudget(t *testing.T) {
+	_, router, leaf := resumptionCredentials(t)
+	authority := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("signed-time-response"))
+	}))
+	defer authority.Close()
+	original := http.DefaultTransport
+	http.DefaultTransport = authority.Client().Transport
+	defer func() { http.DefaultTransport = original }()
+	for _, stage := range []string{"timestamp", "TLS", "pin", "hello", "cancel"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			server, client := net.Pipe()
+			defer client.Close()
+			_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+			pinned := leaf.Device
+			if stage == "pin" {
+				pinned = peerFixture
+			}
+			policy := localmesh.NewConnectionPolicy(router.Device, false, localmesh.ConnectionLimits{Outgoing: 2, Attempts: 1, Total: 3})
+			peer := leafCandidate{peer: pinned, config: localmesh.LeafBLEPeer{Device: pinned.UUID().String(), Address: "02:00:00:00:00:01", AddressType: "public"}}
+			node := &localmesh.Node{Credentials: router}
+			var serveErr error
+			r := &leafRuntime{policy: policy, candidates: &localmesh.CandidateQueue{}, peers: []leafCandidate{peer},
+				dial: func(context.Context, localmesh.LeafBLEPeer) (net.Conn, error) { return server, nil },
+				serve: func(ctx context.Context, peer meshid.Device, conn net.Conn) error {
+					serveErr = node.ServeLeafRadio(ctx, peer, conn, authority.URL)
+					return serveErr
+				}}
+			r.startCandidates(ctx, time.Now())
+			defer func() { cancel(); r.workers.Wait() }()
+			var header [8]byte
+			copy(header[:4], "WMT3")
+			binary.BigEndian.PutUint32(header[4:], 1)
+			if stage == "timestamp" {
+				copy(header[:4], "WMT2")
+			}
+			if stage == "cancel" {
+				cancel()
+			} else {
+				if _, err := client.Write(header[:]); err != nil {
+					t.Fatal(err)
+				}
+				if stage != "timestamp" {
+					if _, err := client.Write([]byte{0x30}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := io.ReadFull(client, header[:4]); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := io.CopyN(io.Discard, client, int64(binary.BigEndian.Uint32(header[:4]))); err != nil {
+						t.Fatal(err)
+					}
+					tenant, device := leaf.Device.Tenant().UUID(), leaf.Device.UUID()
+					preface := append(append([]byte("WML3"), tenant[:]...), device[:]...)
+					if _, err := client.Write(preface); err != nil {
+						t.Fatal(err)
+					}
+					config, err := leaf.PeerTLS(router.Device)
+					if err != nil {
+						t.Fatal(err)
+					}
+					config.NextProtos = []string{localmesh.LeafALPN}
+					if stage == "TLS" {
+						config.NextProtos = []string{localmesh.StreamALPN}
+					}
+					secure := tls.Client(client, config)
+					handshakeErr := secure.HandshakeContext(ctx)
+					if stage == "TLS" && handshakeErr == nil {
+						t.Fatal("router ALPN admitted on leaf carrier")
+					}
+					if stage != "TLS" && handshakeErr != nil {
+						t.Fatal(handshakeErr)
+					}
+					if stage == "hello" {
+						if _, err := localmesh.ReadControl(secure); err != nil {
+							t.Fatal(err)
+						}
+						if err := localmesh.WriteControl(secure, localmesh.ControlMessage{Kind: "identity-request", Principal: leaf.Device.Principal()}); err != nil {
+							t.Fatal(err)
+						}
+						_, _ = io.Copy(io.Discard, secure) // Drain the server TLS close.
+					}
+				}
+			}
+			r.workers.Wait()
+			if serveErr == nil || policy.Counts().Total != 0 {
+				t.Fatalf("failed admission retained capacity or succeeded: %v, %+v", serveErr, policy.Counts())
+			}
+			if stage == "pin" && !strings.Contains(serveErr.Error(), "pinned device") {
+				t.Fatalf("did not reach the configured device pin: %v", serveErr)
+			}
+			if stage == "hello" && !strings.Contains(serveErr.Error(), "hello") {
+				t.Fatalf("did not reach hello admission: %v", serveErr)
+			}
+			lease := policy.Reserve("router", peerFixture, true)
+			if lease == nil {
+				t.Fatal("leaf failure prevented the router from using released capacity")
+			}
+			lease.Release()
+		})
 	}
 }

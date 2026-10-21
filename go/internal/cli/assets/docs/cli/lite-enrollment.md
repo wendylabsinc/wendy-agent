@@ -139,7 +139,8 @@ This identity supports signed local mesh routing. USB status reports the PKI
 identity separately from the board's hardware ID, which still binds local resets.
 Older firmware uses `lite-` followed by the hardware ID, such as
 `lite-441bf6804824`. Existing enrollments retain their identity until explicitly
-removed. Remove the old enrollment before enrolling the same board again.
+removed. A pending enrollment also retains its reserved UUID; let it finish or
+remove it before enrolling the same board again.
 
 Use cloud unenrollment when the board is offline or its firmware is corrupt:
 

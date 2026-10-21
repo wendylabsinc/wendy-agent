@@ -157,3 +157,31 @@ func TestLiteEnrollmentAllowsLegacyAndSupportedFirmware(t *testing.T) {
 		})
 	}
 }
+
+type pendingLiteEnrollmentDevice struct{ alreadyEnrolledLiteDevice }
+
+func (*pendingLiteEnrollmentDevice) EnrollmentChallenge(bool) (*litepb.WendyComEnrollmentChallenge, error) {
+	return &litepb.WendyComEnrollmentChallenge{
+		UuidEnrollmentSupported: true,
+		DeviceId:                "44444444-4444-4444-8444-444444444444",
+		TenantId:                "11111111-1111-4111-8111-111111111111",
+	}, nil
+}
+
+func TestLiteEnrollmentPreservesPendingUUIDBeforeSetup(t *testing.T) {
+	old := connectLiteEnrollmentFn
+	t.Cleanup(func() { connectLiteEnrollmentFn = old })
+	device := &pendingLiteEnrollmentDevice{}
+	connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) { return device, nil }
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	// A failed first enrollment may still hold its token and UUID. Stop
+	// before even validating a new name, loading trust or reserving an asset.
+	err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), &config.AuthConfig{}, "\x1b[A", liteEnrollmentOptions{deviceRoots: "/missing.pem"})
+	if err == nil || !strings.Contains(err.Error(), "pending enrollment identity") || !strings.Contains(err.Error(), "wendy device unenroll") {
+		t.Fatalf("missing pending enrollment recovery instructions: %v", err)
+	}
+	if !device.closed {
+		t.Fatal("enrollment connection leaked")
+	}
+}

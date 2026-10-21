@@ -84,8 +84,8 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	if challenge.Enrolled {
-		return errLiteAlreadyEnrolled
+	if err := checkLiteEnrollmentState(challenge); err != nil {
+		return err
 	}
 	trustProfile := liteenroll.TrustProfileFromChallenge(challenge)
 	if opts.deviceRoots != "" {
@@ -120,8 +120,8 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 	if err != nil {
 		return err
 	}
-	if challenge.Enrolled {
-		return errLiteAlreadyEnrolled
+	if err := checkLiteEnrollmentState(challenge); err != nil {
+		return err
 	}
 	// The default TSA's pinned root and verified HTTPS anchor must reach the
 	// board even when it has built-in roots for another timestamp authority.
@@ -194,6 +194,21 @@ func runEnrollLiteDevice(cmd *cobra.Command, target models.ExternalDevice, auth 
 		return fmt.Errorf("asset %s is reserved, but enrollment is not confirmed: %w", asset, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Enrolled %s as asset %s. Broker presence is reported after the board establishes mTLS; check 'wendy cloud discover'.\n", name, asset)
+	return nil
+}
+
+// A pending enrollment still owns a Cloud asset. Replacing its configuration
+// with a new UUID would lose the board's only binding to that reserved asset.
+func checkLiteEnrollmentState(challenge *litepb.WendyComEnrollmentChallenge) error {
+	if challenge == nil {
+		return fmt.Errorf("Wendy Lite returned no enrollment status")
+	}
+	if challenge.Enrolled {
+		return errLiteAlreadyEnrolled
+	}
+	if challenge.GetDeviceId() != "" || challenge.GetTenantId() != "" {
+		return fmt.Errorf("this board still holds a pending enrollment identity; allow enrollment to finish, or connect it over USB and run 'wendy device unenroll' with that USB device selected before enrolling again")
+	}
 	return nil
 }
 
