@@ -279,6 +279,7 @@ func NewRootCmd() *cobra.Command {
 		deviceCmd,
 		newVMCmd(),
 		dataCmd,
+		newJobCmd(),
 		// Cloud
 		cloudCmd,
 		// Settings

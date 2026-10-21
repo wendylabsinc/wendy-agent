@@ -66,6 +66,10 @@ func localOnly() []mcpgo.ToolOption {
 // toolTitles are the human-readable names MCP clients and app directories show
 // for each tool. Every registered tool needs one (TestEveryToolHasTitleAndHints).
 var toolTitles = map[string]string{
+	"job_submit":            "Submit Training Job",
+	"compute_status":        "Inspect Compute Capacity",
+	"job_inspect":           "Inspect Training Job",
+	"job_artifacts_pull":    "Pull Job Artifacts",
 	"app_inspect":           "Inspect App",
 	"auth_login":            "Sign In to Wendy Cloud",
 	"bluetooth_connect":     "Connect Bluetooth Device",

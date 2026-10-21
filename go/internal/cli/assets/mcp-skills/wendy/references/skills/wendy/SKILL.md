@@ -63,7 +63,7 @@ its own permission policy.
 | simulator | `simulator_list`, `simulator_create`, `simulator_start`, `simulator_stop`, `simulator_delete` | Local VMs; `device_connect(device="vm:<name>")` also boots one |
 | hardware | `camera_list`, `camera_controls`, `camera_set_control`, `camera_snapshot`, `bluetooth_scan`, `bluetooth_connect`, `bluetooth_disconnect` | Cameras and Bluetooth |
 | robotics | `ros2_topics`, `ros2_topic_info`, `ros2_topic_sample`, `ros2_topic_hz`, `ros2_lidar_summary` | ROS 2 inspection; see `wendy-robot-deploy` |
-| observability | `app_inspect`, `device_os_logs`, `telemetry_metrics`, `telemetry_traces` | Service state and recorded exits, kernel log (dmesg), metrics, traces |
+| observability | `app_inspect`, `job_inspect`, `job_artifacts_pull`, `compute_status`, `job_submit`, `device_os_logs`, `telemetry_metrics`, `telemetry_traces` | Service state and recorded exits, kernel log (dmesg), metrics, traces |
 | cloud | `cloud_discover`, `cloud_connect`, `cloud_ping`, `cloud_tunnel`, `cloud_tunnel_list`, `cloud_tunnel_close` | Cloud devices, reachability and port forwards |
 
 The server also provides:
@@ -217,6 +217,10 @@ the ports and prerequisites — the debugger wiring lives in that extension, not
 in this CLI.
 
 ## Observability
+
+Use `wendy-training` for host training jobs and the optional training MCP
+catalog: compute checks, durable named steps, cursor-based inspection and
+verified artifact retrieval.
 
 For synchronized sensor capture, event-triggered recordings, model input/output
 records, or custom measurements, use `wendy-data`. Its campaign and episode

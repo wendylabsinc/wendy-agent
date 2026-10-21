@@ -1,0 +1,156 @@
+"""Integration contracts for the same fixed program used by CLI and MCP."""
+
+import json, os, signal, subprocess, sys, tempfile, threading, time, unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).with_name("probe.py")
+
+
+class ProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        (self.root / "status.json").write_text(
+            json.dumps(
+                {
+                    "state": "running",
+                    "stage": "control-train",
+                    "runner_pid": 999999999,
+                    "robot_commands_sent": 0,
+                    "stages": [{"label": "selftest", "returncode": 0}],
+                }
+            )
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def probe(self, **args):
+        p = subprocess.run(
+            [sys.executable, str(SCRIPT), json.dumps({"path": str(self.root), **args})],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        return json.loads(p.stdout.removeprefix("WENDY_JOB "))
+
+    def test_missing_process_is_not_reported_live_and_repeat_is_compact(self):
+        a = self.probe()
+        self.assertEqual(a["process"]["status"], "missing")
+        self.assertEqual(a["reported_state"], "running")
+        self.assertEqual(a["health"], "not_running")
+        b = self.probe(since=a["cursor"])
+        self.assertFalse(b["changed"])
+        self.assertNotIn("progress", b)
+        self.assertLess(len(json.dumps(b)), 360)
+
+    def test_progress_changes_cursor_even_when_stage_does_not_change(self):
+        d = self.root / "control"
+        d.mkdir()
+        (d / "metrics.jsonl").write_text('{"iteration":1,"optimizer_steps_total":8}\n')
+        a = self.probe()
+        (d / "metrics.jsonl").write_text('{"iteration":2,"optimizer_steps_total":16}\n')
+        b = self.probe(since=a["cursor"])
+        self.assertTrue(b["changed"])
+        self.assertEqual(b["progress"]["control"]["iteration"], 2)
+
+    def test_wait_returns_for_progress_change_without_more_client_calls(self):
+        a = self.probe()
+
+        def change():
+            time.sleep(0.15)
+            (self.root / "status.json").write_text(
+                '{"state":"failed","error":"OOM","stage":"control-train"}'
+            )
+
+        t = threading.Thread(target=change)
+        t.start()
+        b = self.probe(since=a["cursor"], wait_seconds=2)
+        t.join()
+        self.assertTrue(b["changed"])
+        self.assertEqual(b["error"], "OOM")
+        self.assertEqual(b["reported_state"], "failed")
+
+    def test_torn_last_metric_record_preserves_last_complete_sample(self):
+        d = self.root / "control"
+        d.mkdir()
+        (d / "metrics.jsonl").write_text('{"iteration":11}\n{"iteration":')
+        a = self.probe()
+        self.assertEqual(a["progress"]["control"]["iteration"], 11)
+        self.assertIn("warnings", a)
+
+    def test_bounded_summary_keeps_full_report_reference(self):
+        data = json.loads((self.root / "status.json").read_text())
+        data["baseline"] = [{"score": n} for n in range(1500)]
+        (self.root / "status.json").write_text(json.dumps(data))
+        a = self.probe()
+        self.assertLess(len(json.dumps(a)), 2048)
+        self.assertEqual(a["report"]["path"], str(self.root / "status.json"))
+        self.assertEqual(len(a["report"]["sha256"]), 64)
+
+    def test_pid_reuse_does_not_claim_identity(self):
+        data = json.loads((self.root / "status.json").read_text())
+        data["runner_pid"] = os.getpid()
+        (self.root / "status.json").write_text(json.dumps(data))
+        a = self.probe()
+        self.assertIn(a["process"]["status"], ["identity_mismatch", "unknown"])
+        self.assertIn(a["health"], ["not_running", "unknown"])
+
+    def test_progress_budget_keeps_latest_samples_and_reports_omissions(self):
+        for index in range(10):
+            directory = self.root / ("step-" + str(index))
+            directory.mkdir()
+            metrics = directory / "metrics.jsonl"
+            metrics.write_text(json.dumps({"iteration": index}) + "\n")
+            os.utime(metrics, (1700000000 + index, 1700000000 + index))
+        result = self.probe()
+        self.assertEqual(len(result["progress"]), 8)
+        self.assertEqual(result["progress_omitted"], 2)
+        self.assertIn("step-9", result["progress"])
+        self.assertNotIn("step-0", result["progress"])
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux process identity contract")
+    def test_linux_runner_pause_and_start_time_are_verified(self):
+        runner = self.root / "runner.py"
+        runner.write_text("import time; time.sleep(30)")
+        started = time.time()
+        child = subprocess.Popen([sys.executable, str(runner)])
+        try:
+            (self.root / "status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "running",
+                        "runner_pid": child.pid,
+                        "started_unix": started,
+                    }
+                )
+            )
+            time.sleep(0.05)
+            a = self.probe()
+            self.assertEqual(a["process"]["status"], "live")
+            self.assertEqual(a["health"], "unknown")
+            os.kill(child.pid, signal.SIGSTOP)
+            time.sleep(0.05)
+            b = self.probe()
+            self.assertEqual(b["process"]["status"], "paused")
+            self.assertEqual(b["health"], "not_running")
+            (self.root / "status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "running",
+                        "runner_pid": child.pid,
+                        "started_unix": started - 100,
+                    }
+                )
+            )
+            c = self.probe()
+            self.assertEqual(c["process"]["status"], "identity_mismatch")
+        finally:
+            os.kill(child.pid, signal.SIGCONT)
+            child.terminate()
+            child.wait(timeout=3)
+
+
+if __name__ == "__main__":
+    unittest.main()

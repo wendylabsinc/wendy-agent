@@ -20,12 +20,26 @@ var toolGroups = map[string][]string{
 		"cloud_enroll_device", "provisioning_start", "provisioning_status", "wifi_list", "wifi_connect", "wifi_disconnect", "wifi_status", "wifi_known_networks"},
 	"hardware":      {"bluetooth_scan", "bluetooth_connect", "bluetooth_disconnect", "camera_list", "camera_controls", "camera_set_control", "camera_snapshot"},
 	"robotics":      {"ros2_topics", "ros2_topic_info", "ros2_topic_sample", "ros2_topic_hz", "ros2_lidar_summary"},
-	"observability": {"telemetry_metrics", "telemetry_traces", "app_inspect", "device_os_logs"},
+	"observability": {"telemetry_metrics", "telemetry_traces", "app_inspect", "device_os_logs", "job_inspect", "job_artifacts_pull", "compute_status", "job_submit"},
 	"simulator":     {"simulator_list", "simulator_create", "simulator_start", "simulator_stop", "simulator_delete"},
 	"cloud":         {"cloud_discover", "cloud_connect", "cloud_tunnel", "cloud_tunnel_list", "cloud_tunnel_close", "cloud_ping"},
 }
 
 var toolGroupNames = []string{"core", "setup", "simulator", "hardware", "robotics", "observability", "cloud", "all"}
+
+// SetToolProfile selects an explicit task catalog without changing authorization.
+// The default keeps the existing core/group discovery contract unchanged.
+func (s *mcpServer) SetToolProfile(profile string) error {
+	if profile != "" && profile != "training" {
+		return fmt.Errorf("unknown tool profile %q; choose training or omit", profile)
+	}
+	s.mu.Lock()
+	s.toolProfile = profile
+	s.mu.Unlock()
+	return nil
+}
+
+var trainingTools = []string{"wendy_status", "auth_login", "device_list", "device_connect", "device_disconnect", "job_inspect", "job_artifacts_pull", "compute_status", "job_submit"}
 
 // SetToolGroups sets the advertised built-in tools. Core is always included.
 // Call before Start; the wendy_tools handler also uses it while serving.
@@ -60,6 +74,9 @@ func (s *mcpServer) selectedToolGroups() []string {
 
 func (s *mcpServer) filterTools(_ context.Context, tools []mcpgo.Tool) []mcpgo.Tool {
 	groups := s.selectedToolGroups()
+	s.mu.RLock()
+	profile := s.toolProfile
+	s.mu.RUnlock()
 	all := slices.Contains(groups, "all")
 	binding := s.bindingPolicy()
 	visible := make([]mcpgo.Tool, 0, len(tools))
@@ -69,6 +86,12 @@ func (s *mcpServer) filterTools(_ context.Context, tools []mcpgo.Tool) []mcpgo.T
 		}
 		if s.relay {
 			if inManifest(tool.Name) {
+				visible = append(visible, tool)
+			}
+			continue
+		}
+		if profile == "training" {
+			if slices.Contains(trainingTools, tool.Name) {
 				visible = append(visible, tool)
 			}
 			continue
