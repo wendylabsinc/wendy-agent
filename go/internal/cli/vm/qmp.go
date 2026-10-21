@@ -57,7 +57,7 @@ func (q *qmpClient) execute(command string, arguments any, result any) error {
 			continue
 		}
 		if reply.Error != nil {
-			return usermessage.Foreign(fmt.Errorf("QEMU %s: %s", command, reply.Error.Desc))
+			return fmt.Errorf("QEMU %s: %w", command, usermessage.Foreign(fmt.Errorf("%s", reply.Error.Desc)))
 		}
 		if reply.Return == nil {
 			return fmt.Errorf("QEMU %s returned no result", command)
@@ -207,7 +207,7 @@ func (s *Store) ensureTCPPortMapping(ctx context.Context, name string, guestPort
 				return nil
 			}
 		}
-		return usermessage.Foreign(fmt.Errorf("could not allocate a loopback forward for VM %q guest TCP port %d: %s", name, guestPort, strings.TrimSpace(lastOutput)))
+		return fmt.Errorf("could not allocate a loopback forward for VM %q guest TCP port %d: %w", name, guestPort, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(lastOutput))))
 	})
 	return port, err
 }
@@ -324,7 +324,7 @@ func (q *qmpClient) ensureTCPPorts(name string, ports []int) error {
 			return err
 		}
 		if !hasTCPForward(info, port) {
-			return usermessage.Foreign(fmt.Errorf("forwarding VM %q TCP port %d to 127.0.0.1:%d failed: %s; free the host port or choose a different application port", name, port, port, strings.TrimSpace(output)))
+			return fmt.Errorf("forwarding VM %q TCP port %d to 127.0.0.1:%d failed: %w; free the host port or choose a different application port", name, port, port, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(output))))
 		}
 	}
 	return nil

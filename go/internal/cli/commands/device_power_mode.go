@@ -111,7 +111,7 @@ func powerModeRPCError(action string, err error) error {
 	case codes.Unimplemented:
 		return fmt.Errorf("%s: this device's agent does not support power modes; update the agent first", action)
 	case codes.Unavailable, codes.InvalidArgument:
-		return usermessage.Foreign(fmt.Errorf("%s: %s", action, status.Convert(err).Message()))
+		return fmt.Errorf("%s: %w", action, usermessage.Foreign(fmt.Errorf("%s", status.Convert(err).Message())))
 	}
 	return fmt.Errorf("%s: %w", action, err)
 }

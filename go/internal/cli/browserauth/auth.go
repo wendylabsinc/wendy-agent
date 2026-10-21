@@ -239,7 +239,7 @@ func (s *Session) exchange(ctx context.Context, form url.Values) (token, error) 
 				nonce = r.Header.Get("DPoP-Nonce")
 				continue
 			}
-			return token{}, usermessage.Foreign(fmt.Errorf("Token exchange failed (%d): %s", r.StatusCode, problem.Error))
+			return token{}, fmt.Errorf("Token exchange failed (%d): %w", r.StatusCode, usermessage.Foreign(fmt.Errorf("%s", problem.Error)))
 		}
 		var t token
 		if e = json.Unmarshal(b, &t); e != nil {
@@ -514,7 +514,7 @@ func requestPKIIdentityCertificate(
 		if resp.StatusCode == http.StatusUnauthorized {
 			detail = "unauthorized (verify the realm-to-tenant mapping and PKI audience)"
 		}
-		return config.CertificateInfo{}, usermessage.Foreign(fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail))
+		return config.CertificateInfo{}, fmt.Errorf("pki-core identity endpoint returned %d: %w", resp.StatusCode, usermessage.Foreign(fmt.Errorf("%s", detail)))
 	}
 	if len(body) > 1<<20 {
 		return config.CertificateInfo{}, fmt.Errorf("pki-core identity response exceeds 1 MiB")

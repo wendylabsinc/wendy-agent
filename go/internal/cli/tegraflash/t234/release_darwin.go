@@ -58,7 +58,7 @@ func ReleaseUSB(serial, port string) error {
 		// Fall back to a plain bus reset; the gadget still sees the state
 		// leave "configured" for a window.
 		if rerr := chosen.Reset(); rerr != nil {
-			return usermessage.Foreign(fmt.Errorf("capturing gadget: %v (reset also failed: %v)", err, rerr))
+			return fmt.Errorf("capturing gadget: %w (reset also failed: %w)", usermessage.Foreign(fmt.Errorf("%v", err)), usermessage.Foreign(fmt.Errorf("%v", rerr)))
 		}
 		return nil
 	}

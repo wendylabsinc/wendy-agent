@@ -1610,8 +1610,7 @@ func bootstrapOCIBuilder(ctx context.Context, builderName string, w io.Writer) e
 		// Plain Ctrl+C is unaffected — that propagates context.Canceled, not
 		// DeadlineExceeded. (Same convention as buildprogress.go:135,173.)
 		if errors.Is(bootstrapCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			return usermessage.Foreign(fmt.Errorf("bootstrapping builder %q timed out after %s (is the Docker daemon healthy?); output so far:\n%s",
-				builderName, ociBuilderBootstrapTimeout, buf.String()))
+			return fmt.Errorf("bootstrapping builder %q timed out after %s (is the Docker daemon healthy?); output so far:\n%w", builderName, ociBuilderBootstrapTimeout, usermessage.Foreign(fmt.Errorf("%s", buf.String())))
 		}
 		return fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, buf.String(), err)
 	}

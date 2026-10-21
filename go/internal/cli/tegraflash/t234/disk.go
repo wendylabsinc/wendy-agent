@@ -305,7 +305,7 @@ func WaitForUMSDiskAt(ctx context.Context, selector LUNSelector, timeout time.Du
 		return UMSDisk{}, false, nil
 	}, func(scanErr error) error {
 		if scanErr != nil {
-			return usermessage.Foreign(fmt.Errorf("timed out waiting for USB storage %q at port %q/session %q (last scan error: %v)\n%s", selector.Vendor, selector.PortPath, selector.Session, scanErr, observedUMSHint(selector.Session)))
+			return fmt.Errorf("timed out waiting for USB storage %q at port %q/session %q (last scan error: %w)\n%s", selector.Vendor, selector.PortPath, selector.Session, usermessage.Foreign(fmt.Errorf("%v", scanErr)), observedUMSHint(selector.Session))
 		}
 		return fmt.Errorf("timed out waiting for USB storage %q at port %q/session %q\n%s", selector.Vendor, selector.PortPath, selector.Session, observedUMSHint(selector.Session))
 	})

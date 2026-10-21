@@ -213,7 +213,7 @@ func unmountDarwinDisk(devPath string, run preparationCommand) error {
 	if errors.Is(forceErr, errCommandTimedOut) {
 		return fmt.Errorf("unmounting %s: %w\n%s", devPath, forceErr, "Close apps using the card, remove and reinsert it, then retry.")
 	}
-	return usermessage.Foreign(fmt.Errorf("unmounting %s: %s\nClose Finder windows, Disk Utility, or any apps using the disk, then retry", devPath, string(forceOut)+string(out)))
+	return fmt.Errorf("unmounting %s: %w\nClose Finder windows, Disk Utility, or any apps using the disk, then retry", devPath, usermessage.Foreign(fmt.Errorf("%s", string(forceOut)+string(out))))
 }
 
 // unmountBeforeWrite releases the disk before the progress bar starts, so a

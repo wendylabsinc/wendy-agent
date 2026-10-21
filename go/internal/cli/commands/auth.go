@@ -439,7 +439,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		return fmt.Errorf("issuing certificate: %w", err)
 	}
 	if issueResp.GetError() != nil {
-		return usermessage.Foreign(fmt.Errorf("certificate issuance error: %s", issueResp.GetError().GetMessage()))
+		return fmt.Errorf("certificate issuance error: %w", usermessage.Foreign(fmt.Errorf("%s", issueResp.GetError().GetMessage())))
 	}
 	cert := issueResp.GetCertificate()
 	if cert == nil {

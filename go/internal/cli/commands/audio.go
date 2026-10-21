@@ -171,7 +171,7 @@ func newAudioSetDefaultCmd() *cobra.Command {
 			}
 
 			if !resp.GetSuccess() {
-				return usermessage.Foreign(fmt.Errorf("failed: %s", resp.GetErrorMessage()))
+				return fmt.Errorf("failed: %w", usermessage.Foreign(fmt.Errorf("%s", resp.GetErrorMessage())))
 			}
 
 			fmt.Printf("Default audio device set to ID %d.\n", deviceID)

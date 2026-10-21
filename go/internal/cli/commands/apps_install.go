@@ -68,7 +68,7 @@ func resolveAppImage(ctx context.Context, base, appID string) (appImageResolutio
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return appImageResolution{}, usermessage.Foreign(fmt.Errorf("AppStore returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+		return appImageResolution{}, fmt.Errorf("AppStore returned status %d: %w", resp.StatusCode, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(string(body)))))
 	}
 
 	var out appImageResolution

@@ -396,7 +396,7 @@ func discoveryRequest(ctx context.Context, p *httpProvider, method, endpoint str
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return nil, usermessage.Foreign(fmt.Errorf("could not prepare the model request: %s", p.safeError(err.Error())))
+		return nil, fmt.Errorf("could not prepare the model request: %w", usermessage.Foreign(fmt.Errorf("%s", p.safeError(err.Error()))))
 	}
 	req.Header.Set("Accept", "application/json")
 	if payload != nil {
@@ -503,7 +503,7 @@ func PullOllamaModel(ctx context.Context, config Config, model string, progress 
 			return fmt.Errorf("Ollama returned an unexpected download update; please retry")
 		}
 		if update.Error != "" {
-			return usermessage.Foreign(fmt.Errorf("Ollama could not download the model: %s", p.safeError(update.Error)))
+			return fmt.Errorf("Ollama could not download the model: %w", usermessage.Foreign(fmt.Errorf("%s", p.safeError(update.Error))))
 		}
 		status := p.safeError(update.Status)
 		if update.Total > 0 {

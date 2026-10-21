@@ -254,7 +254,7 @@ func unmountUMSDisk(d UMSDisk) error {
 // flashing initrd waits for. diskutil eject never disconnects the USB device.
 func ejectUMSDisk(d UMSDisk) error {
 	if out, err := exec.Command("diskutil", "eject", d.DevPath).CombinedOutput(); err != nil {
-		return usermessage.Foreign(fmt.Errorf("diskutil eject %s: %v: %s", d.DevPath, err, strings.TrimSpace(string(out))))
+		return fmt.Errorf("diskutil eject %s: %w: %w", d.DevPath, usermessage.Foreign(fmt.Errorf("%v", err)), usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(string(out)))))
 	}
 	return nil
 }

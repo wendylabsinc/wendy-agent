@@ -142,7 +142,7 @@ func liveUpgradeError(key string, response *http.Response) error {
 			hint = "The WebSocket upgrade was rejected; check the server response and network/proxy settings."
 		}
 	}
-	return usermessage.Foreign(fmt.Errorf("GPT-Live HTTP %d (%s): %s. %s", response.StatusCode, http.StatusText(response.StatusCode), detail, hint))
+	return fmt.Errorf("GPT-Live HTTP %d (%s): %w. %s", response.StatusCode, http.StatusText(response.StatusCode), usermessage.Foreign(fmt.Errorf("%s", detail)), hint)
 }
 
 func (w *liveSocket) Send(ctx context.Context, value any) error {
@@ -325,7 +325,7 @@ func liveError(key, action string, err error) error {
 		return err
 	}
 	provider := httpProvider{config: Config{APIKey: key}}
-	return usermessage.Foreign(fmt.Errorf("%s: %s", action, provider.safeError(err.Error())))
+	return fmt.Errorf("%s: %w", action, usermessage.Foreign(fmt.Errorf("%s", provider.safeError(err.Error()))))
 }
 
 func (s *liveSession) Events() <-chan VoiceEvent { return s.events }

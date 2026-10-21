@@ -354,7 +354,7 @@ func requestPKIIdentityCertificate(
 		if resp.StatusCode == http.StatusUnauthorized {
 			detail = "unauthorized (verify the realm-to-tenant mapping and PKI audience)"
 		}
-		return config.CertificateInfo{}, usermessage.Foreign(fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail))
+		return config.CertificateInfo{}, fmt.Errorf("pki-core identity endpoint returned %d: %w", resp.StatusCode, usermessage.Foreign(fmt.Errorf("%s", detail)))
 	}
 	if len(body) > 1<<20 {
 		return config.CertificateInfo{}, fmt.Errorf("pki-core identity response exceeds 1 MiB")

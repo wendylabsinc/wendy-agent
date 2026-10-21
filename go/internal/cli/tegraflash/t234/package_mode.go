@@ -131,7 +131,7 @@ func prepareUSBMode(sourcePath, tempDir string, supportsSingle bool) (string, US
 	}
 	got, err := readPackageUSBMode(copy)
 	if err != nil || got != USBModeSingle {
-		return "", "", usermessage.Foreign(fmt.Errorf("verifying prepared USB mode: got %q, error %v", got, err))
+		return "", "", fmt.Errorf("verifying prepared USB mode: got %q, error %w", got, usermessage.Foreign(fmt.Errorf("%v", err)))
 	}
 	if err := copy.Close(); err != nil {
 		return "", "", err

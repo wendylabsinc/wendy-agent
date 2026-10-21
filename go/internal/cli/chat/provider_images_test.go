@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 func providerImageFixtures(t *testing.T) []Image {
@@ -274,5 +277,14 @@ func TestProviderImagesCancellationAndUnsupportedRoles(t *testing.T) {
 				t.Fatalf("unsupported role attachments were discarded: %v", err)
 			}
 		})
+	}
+}
+
+func TestImageFailureDisplayKeepsSetupAdviceWithoutForeignBody(t *testing.T) {
+	cause := fmt.Errorf("openai API returned HTTP 400: %w", usermessage.Foreign(errors.New("image rejected: private body data:image/png;base64,AAAA")))
+	err := imageRequestError([]Message{{Role: "user", Images: []Image{{MIMEType: "image/png", Data: "AAAA"}}}}, cause)
+	got := usermessage.Text(err)
+	if strings.Contains(got, "private body") || strings.Contains(got, "data:image") || !strings.Contains(got, "API returned HTTP 400") || !strings.Contains(got, "use /setup") {
+		t.Errorf("unsafe or unhelpful image failure: %q", got)
 	}
 }

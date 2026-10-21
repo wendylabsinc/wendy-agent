@@ -403,7 +403,7 @@ func consumeDriverApply(stream driverApplyRecvStream, name, verb string) error {
 			}
 			return nil
 		case resp.GetFailed() != nil:
-			return usermessage.Foreign(fmt.Errorf("driver %s: %s", name, resp.GetFailed().GetErrorMessage()))
+			return fmt.Errorf("driver %s: %w", name, usermessage.Foreign(fmt.Errorf("%s", resp.GetFailed().GetErrorMessage())))
 		}
 	}
 }

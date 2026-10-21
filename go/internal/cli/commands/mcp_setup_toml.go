@@ -470,7 +470,7 @@ func upsertCodexMCPServer(src []byte, topKey, name, command string, args []strin
 
 	var after map[string]any
 	if _, err := toml.Decode(string(out), &after); err != nil {
-		return nil, usermessage.Foreign(fmt.Errorf("updating [%s.%s] would produce invalid TOML (%v); edit the file by hand", topKey, name, err))
+		return nil, fmt.Errorf("updating [%s.%s] would produce invalid TOML (%w); edit the file by hand", topKey, name, usermessage.Foreign(fmt.Errorf("%v", err)))
 	}
 	ownedKeys := make([]string, len(owned))
 	for i, kv := range owned {

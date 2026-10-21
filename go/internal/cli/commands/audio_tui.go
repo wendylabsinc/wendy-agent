@@ -352,7 +352,7 @@ func (h *audioRPCHandler) SetDefault(device *agentpbv2.AudioDevice) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := h.client.SetDefaultAudioDevice(h.ctx, &agentpbv2.SetDefaultAudioDeviceRequest{DeviceId: device.GetDeviceId()})
 		if err == nil && !resp.GetSuccess() {
-			err = usermessage.Foreign(fmt.Errorf("setting default audio device: %s", resp.GetErrorMessage()))
+			err = fmt.Errorf("setting default audio device: %w", usermessage.Foreign(fmt.Errorf("%s", resp.GetErrorMessage())))
 		}
 		return audioOpResultMsg{
 			action: audioActionSetDefault, deviceID: device.GetDeviceId(), deviceType: device.GetType(), err: err,
@@ -366,7 +366,7 @@ func (h *audioRPCHandler) SetVolume(device *agentpbv2.AudioDevice, volume uint32
 			DeviceId: device.GetDeviceId(), VolumePercent: volume,
 		})
 		if err == nil && !resp.GetSuccess() {
-			err = usermessage.Foreign(fmt.Errorf("setting audio volume: %s", resp.GetErrorMessage()))
+			err = fmt.Errorf("setting audio volume: %w", usermessage.Foreign(fmt.Errorf("%s", resp.GetErrorMessage())))
 		}
 		actual := volume
 		if err == nil && resp.VolumePercent != nil {

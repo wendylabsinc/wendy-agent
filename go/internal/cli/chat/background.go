@@ -141,7 +141,7 @@ func (p *backgroundProcesses) start(ctx context.Context, kind string, target bac
 	}
 	info := p.snapshot(job, true)
 	if info.State == "failed" {
-		return info, usermessage.Foreign(fmt.Errorf("%s exited during startup: %s", kind, info.Error))
+		return info, fmt.Errorf("%s exited during startup: %w", kind, usermessage.Foreign(fmt.Errorf("%s", info.Error)))
 	}
 	return info, nil
 }

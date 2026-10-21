@@ -286,7 +286,7 @@ func completeLegacyLogin(ctx context.Context, cloudDashboard, cloudGRPC string, 
 		return nil, "", err
 	}
 	if issueResp.GetError() != nil {
-		return nil, "", usermessage.Foreign(fmt.Errorf("certificate issuance error: %s", issueResp.GetError().GetMessage()))
+		return nil, "", fmt.Errorf("certificate issuance error: %w", usermessage.Foreign(fmt.Errorf("%s", issueResp.GetError().GetMessage())))
 	}
 	cert := issueResp.GetCertificate()
 	if cert == nil {

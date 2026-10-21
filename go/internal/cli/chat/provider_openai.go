@@ -61,10 +61,13 @@ var imageDataURLPattern = regexp.MustCompile(`(?i)data:image/[a-z0-9.+-]+;base64
 type imageProviderError struct {
 	cause  error
 	detail string
+	steps  []string
 }
 
-func (e *imageProviderError) Error() string { return e.detail }
-func (e *imageProviderError) Unwrap() error { return e.cause }
+func (e *imageProviderError) Error() string               { return e.detail }
+func (e *imageProviderError) Unwrap() error               { return e.cause }
+func (e *imageProviderError) MessageWithoutSteps() string { return e.cause.Error() }
+func (e *imageProviderError) NextSteps() []string         { return append([]string(nil), e.steps...) }
 
 // Images are always sent on the first attempt. Give guidance for servers that
 // reject them, without retrying a text-only request that loses the observation.
@@ -114,7 +117,11 @@ func imageRequestError(messages []Message, err error) error {
 		detail += "; this request includes images: use /setup to choose a vision-capable model and a server that supports image input"
 	}
 	if detail != err.Error() {
-		return &imageProviderError{cause: err, detail: detail}
+		var steps []string
+		if rejected {
+			steps = []string{"This request includes images: use /setup to choose a vision-capable model and a server that supports image input."}
+		}
+		return &imageProviderError{cause: err, detail: detail, steps: steps}
 	}
 	return err
 }
@@ -227,7 +234,7 @@ func (p *httpProvider) streamOpenAI(ctx context.Context, messages []Message, too
 			return fmt.Errorf("invalid JSON in chat event stream")
 		}
 		if event == "error" || (len(chunk.Error) > 0 && string(chunk.Error) != "null") {
-			return usermessage.Foreign(fmt.Errorf("%s stream error: %s", p.config.Provider, p.errorDetail(data)))
+			return fmt.Errorf("%s stream error: %w", p.config.Provider, usermessage.Foreign(fmt.Errorf("%s", p.errorDetail(data))))
 		}
 		recordUsage(ctx, chunk.Usage, false)
 		for _, choice := range chunk.Choices {
@@ -261,7 +268,7 @@ func (p *httpProvider) streamOpenAI(ctx context.Context, messages []Message, too
 			case "content_filter":
 				return fmt.Errorf("model response was stopped by the provider's content filter")
 			default:
-				return usermessage.Foreign(fmt.Errorf("model stopped with unsupported finish reason %q", p.safeError(choice.FinishReason)))
+				return fmt.Errorf("model stopped with unsupported finish reason %w", usermessage.Foreign(fmt.Errorf("%q", p.safeError(choice.FinishReason))))
 			}
 		}
 		return nil

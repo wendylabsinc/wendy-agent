@@ -582,7 +582,7 @@ func newROS2ParamCmd() *cobra.Command {
 				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": ros2ActionMessage(resp.GetSuccess(), resp.GetMessage())})
 			}
 			if !resp.GetSuccess() {
-				return usermessage.Foreign(fmt.Errorf("setting parameter: %s", resp.GetMessage()))
+				return fmt.Errorf("setting parameter: %w", usermessage.Foreign(fmt.Errorf("%s", resp.GetMessage())))
 			}
 			// usermessage: payload — successful action response data.
 			cliSuccess("%s", resp.GetMessage())
@@ -962,7 +962,7 @@ func newROS2LifecycleCmd() *cobra.Command {
 				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": ros2ActionMessage(resp.GetSuccess(), resp.GetMessage())})
 			}
 			if !resp.GetSuccess() {
-				return usermessage.Foreign(fmt.Errorf("transition failed: %s", resp.GetMessage()))
+				return fmt.Errorf("transition failed: %w", usermessage.Foreign(fmt.Errorf("%s", resp.GetMessage())))
 			}
 			// usermessage: payload — successful action response data.
 			cliSuccess("%s", resp.GetMessage())
@@ -1337,7 +1337,7 @@ func newROS2BagRecordCmd() *cobra.Command {
 				return ros2RPCError(err)
 			}
 			if first.GetState() == agentpbv2.RecordROS2BagResponse_STATE_ERROR {
-				return usermessage.Foreign(fmt.Errorf("recording failed: %s", first.GetMessage()))
+				return fmt.Errorf("recording failed: %w", usermessage.Foreign(fmt.Errorf("%s", first.GetMessage())))
 			}
 			topicsDesc := "all topics"
 			if len(args) > 0 {
@@ -1369,7 +1369,7 @@ func newROS2BagRecordCmd() *cobra.Command {
 				select {
 				case msg := <-recvCh:
 					if msg.GetState() == agentpbv2.RecordROS2BagResponse_STATE_ERROR {
-						return usermessage.Foreign(fmt.Errorf("recording failed: %s", msg.GetMessage()))
+						return fmt.Errorf("recording failed: %w", usermessage.Foreign(fmt.Errorf("%s", msg.GetMessage())))
 					}
 					cliSuccess("Recording stopped. Download it with: wendy device ros2 bag download %s", msg.GetBagName())
 				case rerr := <-recvErr:
@@ -1380,7 +1380,7 @@ func newROS2BagRecordCmd() *cobra.Command {
 				return nil
 			case msg := <-recvCh:
 				if msg.GetState() == agentpbv2.RecordROS2BagResponse_STATE_ERROR {
-					return usermessage.Foreign(fmt.Errorf("recording failed: %s", msg.GetMessage()))
+					return fmt.Errorf("recording failed: %w", usermessage.Foreign(fmt.Errorf("%s", msg.GetMessage())))
 				}
 				cliSuccess("Recording finished: %s", msg.GetBagName())
 				return nil

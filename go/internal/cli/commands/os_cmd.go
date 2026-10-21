@@ -509,7 +509,7 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 				return
 			}
 			if failed := resp.GetFailed(); failed != nil {
-				p.Send(tui.SpinnerDoneMsg{Err: usermessage.Foreign(fmt.Errorf("update failed: %s", failed.GetErrorMessage()))})
+				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %w", usermessage.Foreign(fmt.Errorf("%s", failed.GetErrorMessage())))})
 				return
 			}
 		}
@@ -1312,7 +1312,7 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 			return nil
 		}
 		if failed := resp.GetFailed(); failed != nil {
-			return usermessage.Foreign(fmt.Errorf("update failed: %s", failed.GetErrorMessage()))
+			return fmt.Errorf("update failed: %w", usermessage.Foreign(fmt.Errorf("%s", failed.GetErrorMessage())))
 		}
 	}
 }

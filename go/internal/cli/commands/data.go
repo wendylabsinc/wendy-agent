@@ -479,7 +479,7 @@ func newDataInspectCmd() *cobra.Command {
 				}
 			}
 			if len(r.GetVerificationErrors()) > 0 {
-				return usermessage.Foreign(fmt.Errorf("episode verification failed: %s", strings.Join(r.GetVerificationErrors(), "; ")))
+				return fmt.Errorf("episode verification failed: %w", usermessage.Foreign(fmt.Errorf("%s", strings.Join(r.GetVerificationErrors(), "; "))))
 			}
 			return nil
 		})

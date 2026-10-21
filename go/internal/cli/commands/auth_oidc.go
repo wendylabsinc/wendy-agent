@@ -107,7 +107,7 @@ func discoverOIDCIssuer(ctx context.Context, authBase, email string) (string, er
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", usermessage.Foreign(fmt.Errorf("organization discovery returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody))))
+		return "", fmt.Errorf("organization discovery returned %d: %w", resp.StatusCode, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(string(responseBody)))))
 	}
 	var result struct {
 		LoginURL string `json:"loginURL"`
@@ -240,7 +240,7 @@ func discoverOIDC(ctx context.Context, issuer string) (*oidcProviderMetadata, er
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, usermessage.Foreign(fmt.Errorf("discovery at %s returned %d: %s", discoveryURL, resp.StatusCode, strings.TrimSpace(string(body))))
+		return nil, fmt.Errorf("discovery at %s returned %d: %w", discoveryURL, resp.StatusCode, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(string(body)))))
 	}
 
 	var meta oidcProviderMetadata
@@ -259,7 +259,7 @@ func discoverOIDC(ctx context.Context, issuer string) (*oidcProviderMetadata, er
 	// PKCE S256 is mandatory on this authorization server; fail loudly rather
 	// than silently downgrading to a flow it will reject anyway.
 	if len(meta.CodeChallengeMethods) > 0 && !oidcContainsString(meta.CodeChallengeMethods, "S256") {
-		return nil, usermessage.Foreign(fmt.Errorf("realm does not advertise PKCE S256 (got %v)", meta.CodeChallengeMethods))
+		return nil, fmt.Errorf("realm does not advertise PKCE S256 (got %w)", usermessage.Foreign(fmt.Errorf("%v", meta.CodeChallengeMethods)))
 	}
 	return &meta, nil
 }
@@ -465,7 +465,7 @@ func exchangeDPoPToken(
 			defer func() { _ = retry.Body.Close() }()
 			return parseTokenResponse(retry)
 		}
-		return nil, usermessage.Foreign(fmt.Errorf("token endpoint returned 400: %s", strings.TrimSpace(string(body))))
+		return nil, fmt.Errorf("token endpoint returned 400: %w", usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(string(body)))))
 	}
 
 	return parseTokenResponse(resp)
@@ -474,7 +474,7 @@ func exchangeDPoPToken(
 func parseTokenResponse(resp *http.Response) (*oidcTokenResponse, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, usermessage.Foreign(fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+		return nil, fmt.Errorf("token endpoint returned %d: %w", resp.StatusCode, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(string(body)))))
 	}
 	var out oidcTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

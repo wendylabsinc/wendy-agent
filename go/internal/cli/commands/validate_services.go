@@ -29,7 +29,7 @@ func validateServicesBeforeReplace(ctx context.Context, svc agentpb.WendyContain
 			if status.Code(err) == codes.Unimplemented {
 				return nil
 			}
-			refusals = append(refusals, usermessage.Foreign(fmt.Errorf("service %s: %s", name, status.Convert(err).Message())))
+			refusals = append(refusals, fmt.Errorf("service %s: %w", name, usermessage.Foreign(fmt.Errorf("%s", status.Convert(err).Message()))))
 		}
 	}
 	if len(refusals) > 0 {

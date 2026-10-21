@@ -2899,7 +2899,7 @@ func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnectio
 			// the normal cleanup, then return it so `wendy run` exits non-zero
 			// instead of reporting a false success. Use the status message so the
 			// output reads as a container failure, not a CLI crash.
-			runErr = usermessage.Foreign(fmt.Errorf("container run failed: %s", status.Convert(recvErr).Message()))
+			runErr = fmt.Errorf("container run failed: %w", usermessage.Foreign(fmt.Errorf("%s", status.Convert(recvErr).Message())))
 			break
 		}
 		gotFirstResponse = true

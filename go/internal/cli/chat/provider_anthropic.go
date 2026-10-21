@@ -139,7 +139,7 @@ func (p *httpProvider) streamAnthropic(ctx context.Context, messages []Message, 
 			}
 			recordUsage(ctx, &usage, true)
 		case "error":
-			return usermessage.Foreign(fmt.Errorf("anthropic stream error: %s", p.errorDetail(data)))
+			return fmt.Errorf("anthropic stream error: %w", usermessage.Foreign(fmt.Errorf("%s", p.errorDetail(data))))
 		case "content_block_start":
 			if chunk.Index < 0 || chunk.Index >= 1024 || openBlocks[chunk.Index] {
 				return fmt.Errorf("Anthropic returned an invalid content block index")
@@ -208,7 +208,7 @@ func (p *httpProvider) streamAnthropic(ctx context.Context, messages []Message, 
 			case "max_tokens":
 				return fmt.Errorf("model reached its output token limit; increase --max-tokens and retry (no tool calls were executed)")
 			default:
-				return usermessage.Foreign(fmt.Errorf("Anthropic stopped with unsupported reason %q", p.safeError(stopReason)))
+				return fmt.Errorf("Anthropic stopped with unsupported reason %w", usermessage.Foreign(fmt.Errorf("%q", p.safeError(stopReason))))
 			}
 			finished = true
 			return errStreamComplete

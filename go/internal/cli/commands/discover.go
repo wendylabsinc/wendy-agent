@@ -1854,7 +1854,7 @@ func copyToClipboard(text string) error {
 			if detail == "" {
 				detail = err.Error()
 			}
-			errs = append(errs, usermessage.Foreign(fmt.Errorf("%s: %s", c.name, strings.TrimSpace(detail))))
+			errs = append(errs, fmt.Errorf("%s: %w", c.name, usermessage.Foreign(fmt.Errorf("%s", strings.TrimSpace(detail)))))
 			continue
 		}
 		return nil

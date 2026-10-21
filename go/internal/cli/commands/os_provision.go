@@ -117,7 +117,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		return nil, fmt.Errorf("issuing certificate: %w", err)
 	}
 	if issueResp.GetError() != nil {
-		return nil, usermessage.Foreign(fmt.Errorf("certificate issuance failed: %s", issueResp.GetError().GetMessage()))
+		return nil, fmt.Errorf("certificate issuance failed: %w", usermessage.Foreign(fmt.Errorf("%s", issueResp.GetError().GetMessage())))
 	}
 	certObj := issueResp.GetCertificate()
 	if certObj == nil {
