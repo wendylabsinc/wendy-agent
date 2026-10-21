@@ -152,12 +152,9 @@ func (s *ProvisioningService) RenewIfDue(ctx context.Context, now time.Time) (bo
 	if err != nil {
 		return false, err
 	}
-	newLeaf, newChain, err := checkRenewedIdentity(bundle, newKey, principal)
+	newLeaf, newChain, err := checkRenewedIdentity(bundle, newKey, principal, chainPEM, now)
 	if err != nil {
 		return false, err
-	}
-	if newChain == "" {
-		newChain = chainPEM
 	}
 	return true, s.commitRenewal(certPEM, newLeaf, newChain, []byte(newKey))
 }
@@ -184,6 +181,8 @@ func postRenewal(ctx context.Context, endpoint, certPEM, chainPEM, keyPEM, csrPE
 	}
 	client := &http.Client{
 		Timeout: renewRequestTimeout,
+		// Never re-send the CSR or present the leaf to another host.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}, RootCAs: renewRootCAs,
 		}},
@@ -212,17 +211,21 @@ func postRenewal(ctx context.Context, endpoint, certPEM, chainPEM, keyPEM, csrPE
 		}
 		return answer.Certificate, nil
 	case http.StatusAccepted:
-		return "", fmt.Errorf("pki-core requires an operator-approved grant to renew: %s", answer.Detail)
+		return "", fmt.Errorf("pki-core requires an operator-approved grant to renew: %s", answer.Detail[:min(len(answer.Detail), 512)])
 	case http.StatusForbidden:
-		return "", fmt.Errorf("pki-core denied the renewal: %s", answer.Detail)
+		return "", fmt.Errorf("pki-core denied the renewal: %s", answer.Detail[:min(len(answer.Detail), 512)])
 	default:
 		return "", fmt.Errorf("pki-core renew answered HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw[:min(len(raw), 512)])))
 	}
 }
 
 // checkRenewedIdentity splits the bundle and refuses a leaf that is not for
-// newKey, is not ML-DSA-65, or names another principal.
-func checkRenewedIdentity(bundle, newKey, principal string) (leafPEM, chainPEM string, err error) {
+// newKey, is not ML-DSA-65, or names another principal. The returned chain
+// becomes the agent's mTLS trust, so the leaf and every certificate in it must
+// verify to the top of the chain the device already holds (its trust anchor);
+// a renewal can never introduce a new CA. With no chain returned the current
+// one is kept.
+func checkRenewedIdentity(bundle, newKey, principal, currentChainPEM string, now time.Time) (leafPEM, chainPEM string, err error) {
 	var leaf []byte
 	var chain strings.Builder
 	for rest := []byte(bundle); ; {
@@ -255,7 +258,31 @@ func checkRenewedIdentity(bundle, newKey, principal string) (leafPEM, chainPEM s
 	if got, _ := certs.TenantPrincipalFromCert(parsed); got != principal {
 		return "", "", fmt.Errorf("renewed certificate names %q, want %q", got, principal)
 	}
-	return string(leaf), chain.String(), nil
+	current, err := certs.ParseCertsFromPEM([]byte(currentChainPEM))
+	if err != nil || len(current) == 0 {
+		return "", "", fmt.Errorf("device holds no CA chain to check the renewal against: %v", err)
+	}
+	chainPEM = chain.String()
+	if chainPEM == "" {
+		chainPEM = currentChainPEM
+	}
+	issued, err := certs.ParseCertsFromPEM([]byte(chainPEM))
+	if err != nil {
+		return "", "", fmt.Errorf("parsing renewed chain: %w", err)
+	}
+	anchor := []*x509.Certificate{current[len(current)-1]}
+	if err := certs.VerifyPeerCertificateChain(parsed, issued, anchor, x509.ExtKeyUsageClientAuth, now, now); err != nil {
+		return "", "", fmt.Errorf("renewed certificate does not chain to the device's trust anchor: %w", err)
+	}
+	for _, ca := range issued {
+		if ca.Equal(anchor[0]) {
+			continue
+		}
+		if err := certs.VerifyPeerCertificateChain(ca, issued, anchor, x509.ExtKeyUsageClientAuth, now, now); err != nil {
+			return "", "", fmt.Errorf("renewed chain carries %q, which does not chain to the device's trust anchor: %w", ca.Subject.CommonName, err)
+		}
+	}
+	return string(leaf), chainPEM, nil
 }
 
 // commitRenewal persists the renewed identity unless it changed meanwhile
@@ -280,10 +307,15 @@ func (s *ProvisioningService) commitRenewal(previousCertPEM, certPEM, chainPEM s
 	if err := s.saveState(&state); err != nil {
 		return fmt.Errorf("saving renewed certificate: %w", err)
 	}
+	// The certificate is committed: from here the renewal must complete, so a
+	// failed key move is left to finishInterruptedRenewal after the restart
+	// rather than reported as a failure that would start another renewal.
 	if err := WriteDeviceKey(s.configPath, keyPEM); err != nil {
-		return fmt.Errorf("saving renewal key (recovered at next start): %w", err)
+		s.logger.Error("Saving the renewal key failed; it is recovered from the pending key at the next start",
+			zap.String("event", "device_cert_renewal_key_pending"), zap.Error(err))
+	} else {
+		_ = os.Remove(filepath.Join(s.configPath, pendingDeviceKeyFile))
 	}
-	_ = os.Remove(filepath.Join(s.configPath, pendingDeviceKeyFile))
 	for i := range s.keyPEM {
 		s.keyPEM[i] = 0
 	}
@@ -291,10 +323,11 @@ func (s *ProvisioningService) commitRenewal(previousCertPEM, certPEM, chainPEM s
 	return nil
 }
 
-// finishInterruptedRenewal runs from loadState (mu held or not yet shared). A
-// pending key that matches the stored certificate means a renewal committed
-// the certificate but not device-key.pem: adopt it. Any other pending key
-// belongs to a renewal that never committed and is dropped.
+// finishInterruptedRenewal runs from loadState, before the service is shared.
+// A pending key that matches the stored certificate means a renewal committed
+// the certificate but not device-key.pem: adopt it. Any other pending key —
+// a renewal that never committed, or one that outlived an unenrollment — is
+// dropped.
 func (s *ProvisioningService) finishInterruptedRenewal() {
 	path := filepath.Join(s.configPath, pendingDeviceKeyFile)
 	pending, err := os.ReadFile(path)

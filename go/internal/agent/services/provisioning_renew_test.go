@@ -27,6 +27,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/acmeenroll"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 const renewTestPrincipal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/sim"
@@ -343,4 +344,141 @@ func TestACMEProvisioningGeneratesMLDSA65DeviceKey(t *testing.T) {
 	if key, ok := signer.(*mldsa.PrivateKey); !ok || key.PublicKey().Parameters() != mldsa.MLDSA65() {
 		t.Fatalf("ACME device key = %T, want ML-DSA-65", signer)
 	}
+}
+
+// The renewed leaf and chain must chain to the anchor the device already
+// trusts: a renewal never installs a new CA into the agent's mTLS trust.
+func TestRenewalRefusesForeignTrust(t *testing.T) {
+	for name, respond := range map[string]func(ca, foreign renewCA, t *testing.T, w http.ResponseWriter, csr *x509.CertificateRequest){
+		"leaf from another CA": func(_, foreign renewCA, t *testing.T, w http.ResponseWriter, csr *x509.CertificateRequest) {
+			leaf := foreign.issue(t, csr.PublicKey, time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
+			renewJSON(t, w, http.StatusOK, map[string]string{"certificate": leaf + foreign.pem})
+		},
+		"foreign CA appended to a genuine chain": func(ca, foreign renewCA, t *testing.T, w http.ResponseWriter, csr *x509.CertificateRequest) {
+			leaf := ca.issue(t, csr.PublicKey, time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
+			renewJSON(t, w, http.StatusOK, map[string]string{"certificate": leaf + ca.pem + foreign.pem})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ca, foreign := newRenewCA(t), newRenewCA(t)
+			_, endpoint, roots := startFakeRenew(t, func(w http.ResponseWriter, csr *x509.CertificateRequest) {
+				respond(ca, foreign, t, w, csr)
+			})
+			svc, dir, oldLeaf := enrolledForRenewal(t, ca, endpoint, roots)
+			if ok, err := svc.RenewIfDue(context.Background(), time.Now()); ok || err == nil || !strings.Contains(err.Error(), "trust anchor") {
+				t.Fatalf("RenewIfDue = %v, %v; want a trust-anchor refusal", ok, err)
+			}
+			if certPEM, chainPEM, _ := NewProvisioningService(zap.NewNop(), dir).ProvisioningCerts(); certPEM != oldLeaf || chainPEM != ca.pem {
+				t.Fatal("refused renewal changed the stored identity or trust")
+			}
+		})
+	}
+}
+
+func TestRenewalDoesNotFollowRedirects(t *testing.T) {
+	ca := newRenewCA(t)
+	f, endpoint, roots := startFakeRenew(t, func(w http.ResponseWriter, _ *x509.CertificateRequest) {
+		w.Header().Set("Location", "https://elsewhere.invalid/v1/renew")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	})
+	svc, _, _ := enrolledForRenewal(t, ca, endpoint, roots)
+	if _, err := svc.RenewIfDue(context.Background(), time.Now()); err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+		t.Fatalf("err = %v, want the redirect reported", err)
+	}
+	if f.requests.Load() != 1 {
+		t.Fatalf("renew requests = %d, want 1", f.requests.Load())
+	}
+}
+
+// Once the renewed certificate is saved the renewal has happened: a failed key
+// move must not read as a failure (that would start another renewal and
+// overwrite the only matching key); the restart adopts the pending key.
+func TestRenewalCommittedCertificateSurvivesKeyWriteFailure(t *testing.T) {
+	ca := newRenewCA(t)
+	_, endpoint, roots := startFakeRenew(t, renewed(t, ca))
+	svc, dir, _ := enrolledForRenewal(t, ca, endpoint, roots)
+	keyPath := filepath.Join(dir, "device-key.pem")
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(keyPath, 0o700); err != nil { // makes WriteDeviceKey fail
+		t.Fatal(err)
+	}
+	if ok, err := svc.RenewIfDue(context.Background(), time.Now()); !ok || err != nil {
+		t.Fatalf("RenewIfDue = %v, %v; want renewed despite the key write failure", ok, err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	certPEM, _, keyPEM := NewProvisioningService(zap.NewNop(), dir).ProvisioningCerts()
+	if _, err := certs.TLSKeyPair(certPEM, "", string(keyPEM)); err != nil || !isMLDSA65Key(keyPEM) {
+		t.Fatalf("restart did not recover the renewed identity: %v", err)
+	}
+}
+
+// A pending key that outlived an unenrollment is removed at the next start.
+func TestPendingKeyDroppedOnUnenrolledDevice(t *testing.T) {
+	dir := t.TempDir()
+	key, _ := certs.GenerateMLDSAKeyPair()
+	pending := filepath.Join(dir, pendingDeviceKeyFile)
+	if err := os.WriteFile(pending, []byte(key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	NewProvisioningService(zap.NewNop(), dir)
+	if _, err := os.Stat(pending); !os.IsNotExist(err) {
+		t.Fatal("pending key survived on an unenrolled device")
+	}
+}
+
+// A leftover key of the other algorithm is replaced, never enrolled with.
+func TestEnrollmentReplacesLeftoverKeyOfOtherAlgorithm(t *testing.T) {
+	p256, _ := certs.GenerateKeyPair()
+	mldsaKey, _ := certs.GenerateMLDSAKeyPair()
+
+	t.Run("ACME replaces P-256", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := WriteDeviceKey(dir, []byte(p256)); err != nil {
+			t.Fatal(err)
+		}
+		var got []byte
+		stubACMEEnroll(t, func(_ context.Context, _ acmeenroll.Config, _ string, key []byte) (string, string, error) {
+			got = append([]byte(nil), key...)
+			return "leaf", "chain", nil
+		})
+		if _, err := NewProvisioningServiceV2(NewProvisioningService(zap.NewNop(), dir)).StartACMEProvisioning(context.Background(), acmeProvisionRequest()); err != nil {
+			t.Fatal(err)
+		}
+		if !isMLDSA65Key(got) {
+			t.Fatal("ACME enrolled with the leftover P-256 key")
+		}
+	})
+	t.Run("ACME reuses ML-DSA-65", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := WriteDeviceKey(dir, []byte(mldsaKey)); err != nil {
+			t.Fatal(err)
+		}
+		var got []byte
+		stubACMEEnroll(t, func(_ context.Context, _ acmeenroll.Config, _ string, key []byte) (string, string, error) {
+			got = append([]byte(nil), key...)
+			return "leaf", "chain", nil
+		})
+		if _, err := NewProvisioningServiceV2(NewProvisioningService(zap.NewNop(), dir)).StartACMEProvisioning(context.Background(), acmeProvisionRequest()); err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != mldsaKey {
+			t.Fatal("ACME did not reuse its own leftover key")
+		}
+	})
+	t.Run("legacy replaces ML-DSA-65", func(t *testing.T) {
+		svc, dir := newTestProvisioningService(t)
+		if err := WriteDeviceKey(dir, []byte(mldsaKey)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.StartProvisioning(context.Background(), &agentpb.StartProvisioningRequest{OrganizationId: 1, CloudHost: "test.wendy.io", AssetId: 10}); err != nil {
+			t.Fatal(err)
+		}
+		if stored, _ := os.ReadFile(filepath.Join(dir, "device-key.pem")); isMLDSA65Key(stored) {
+			t.Fatal("legacy Cloud enrollment kept the ML-DSA-65 leftover")
+		}
+	})
 }
