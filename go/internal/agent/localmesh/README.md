@@ -126,7 +126,7 @@ An opt-in `"leafListen": "0.0.0.0:43024"` in `local-mesh.json` enables a
 separate listener for Wendy Lite endpoints. It can be enabled alone or alongside
 the other carriers. The leaf always initiates, regardless of UUID ordering.
 The existing TCP/QUIC carrier retains its `WMT1` framing and negotiates the
-version-3 mesh ALPN. No downgrade or fallback between the carriers is attempted.
+router ALPN `wendy-net-router/2`. No downgrade or fallback between the carriers is attempted.
 
 The leaf sends `WML3`, its 16-byte tenant UUID and its 16-byte device UUID.
 This 36-byte preface is untrusted. TLS 1.3 then verifies both enrolled device
@@ -253,13 +253,14 @@ valid lease. Hop-local Babel retractions remain unchanged: they only remove that
 neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
 end-to-end application authentication still apply.
 
-Wendy Net router QUIC links require ALPN `wendy-net-router/2` and hello version
-2 with the explicit IP receive capability described below. BLE TLS streams use
-ALPN `wendy-local-mesh-ble/3-catalog-1-cert-1` and their independent hello version
-3, with no router IP capability.
-The opt-in leaf listener requires `wendy-local-mesh-leaf/3` and `WML3`.
-Upgrade each connected Wendy Net network together. This changes the internal
-Wendy Net wire contract, not public gRPC messages or application-session ALPNs.
+Router QUIC links require hello version 2, ALPN `wendy-net-router/2` and the
+authenticated IP carrier capability described below. BLE TLS uses hello version 3
+and `wendy-local-mesh-ble/3-catalog-1-cert-1` without router IP capabilities.
+The opt-in leaf listener requires
+`wendy-local-mesh-leaf/3` and the `WML3` preface. Old peers cannot join and no
+automatic downgrade is attempted; upgrade each connected Wendy Net network together.
+This changes the internal Wendy Net wire
+contract, not public gRPC messages or application-session ALPNs.
 
 Manifest projection, route authorization and synchronization require the exact
 currently admitted wire signature to verify under the principal's current cached

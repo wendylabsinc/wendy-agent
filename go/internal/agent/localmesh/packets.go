@@ -10,6 +10,7 @@ import (
 const (
 	// Router QUIC negotiates the explicit whole-IP receive capability. Stream
 	// and leaf roles retain their own independent protocol versions/framing.
+	// All roles require signed route origins bound to the complete principal.
 	LinkALPN            = "wendy-net-router/2"
 	LinkProtocolVersion = 2
 	// Leave room for an IPv6 outer header around a minimum-size IPv6 packet.
