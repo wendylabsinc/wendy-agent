@@ -155,7 +155,7 @@ func TestUSBArmScanFailureBlocksStaleBindingAndSanitizes(t *testing.T) {
 	m.refreshRows("")
 	updated, _ := m.Update(m.Init()())
 	m = updated.(armPairModel)
-	if len(m.devices) != 1 || m.scanOK || !strings.Contains(m.View(), "target Agent does not support") {
+	if len(m.devices) != 1 || m.scanOK || !strings.Contains(m.View(), "Target Agent does not support") {
 		t.Fatal("scan failure lost saved display")
 	}
 	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
