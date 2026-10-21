@@ -244,9 +244,8 @@ func (m *LinkManager) ensureWatching(ctx context.Context, link string) {
 			if m.guard.State(link) == LinkDisqualified {
 				m.withdrawDisqualifiedClaim(link)
 			}
-			// A DISCOVER names the camera before it has any address, and its
-			// hostname is often the model. That is worth recording even on a link
-			// we will never serve.
+			// Passive traffic on a shared LAN is not camera evidence. Only
+			// record clients once we are serving this as a camera link.
 			m.noteClient(link, p)
 		})
 		if err != nil && ctx.Err() == nil {
@@ -258,8 +257,8 @@ func (m *LinkManager) ensureWatching(ctx context.Context, link string) {
 	}()
 }
 
-// noteClient records a camera seen asking for an address, so `camera list` can
-// show it as offline-but-known rather than nothing at all.
+// noteClient records clients only on a claimed camera link with a DHCP server.
+// A hostname in a DISCOVER/REQUEST on any other link says nothing about cameras.
 func (m *LinkManager) noteClient(link string, p *Packet) {
 	if p.Type != Discover && p.Type != Request {
 		return
@@ -267,10 +266,18 @@ func (m *LinkManager) noteClient(link string, p *Packet) {
 	if len(p.CHAddr) == 0 || m.reg == nil {
 		return
 	}
+	m.mu.Lock()
+	_, claimed := m.claimed[link]
+	serving := claimed && m.stop[link] != nil
+	m.mu.Unlock()
+	if !serving || m.guard.State(link) != LinkServing {
+		return
+	}
 	if _, err := m.reg.Upsert(Camera{
-		MAC:   p.CHAddr.String(),
-		Model: p.Hostname,
-		Link:  link,
+		MAC:        p.CHAddr.String(),
+		Model:      p.Hostname,
+		Link:       link,
+		DHCPServed: true,
 	}); err != nil {
 		m.logger.Debug("recording dhcp client failed",
 			zap.String("mac", p.CHAddr.String()), zap.Error(err))
@@ -388,10 +395,11 @@ func (m *LinkManager) recordLease(link string, mac net.HardwareAddr, addr net.IP
 		return
 	}
 	cam, err := m.reg.Upsert(Camera{
-		MAC:     mac.String(),
-		Address: addr.String(),
-		Model:   hostname,
-		Link:    link,
+		MAC:        mac.String(),
+		Address:    addr.String(),
+		Model:      hostname,
+		Link:       link,
+		DHCPServed: true,
 	})
 	if err != nil {
 		m.logger.Warn("registering leased camera failed",
