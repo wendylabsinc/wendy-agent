@@ -5,7 +5,6 @@ package nanprovider
 import (
 	"context"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -86,11 +85,11 @@ func (r *radioRecovery) expired(now time.Time) bool {
 // Supplicant uses NAN_NDP_RESPONSE for a counter-proposal confirmation too;
 // specifying our initiator NDI selects ACTION_CONF and the subscription handle.
 func counterResponse(local, subscription, ssi string, v map[string]string) (string, error) {
-	if v["init_ndi"] != local {
+	if !validMAC(local) || v["init_ndi"] != local {
 		return "", fmt.Errorf("counter proposal is not for our initiator NDI")
 	}
-	if _, err := net.ParseMAC(v["peer_nmi"]); err != nil {
-		return "", err
+	if !validMAC(v["peer_nmi"]) {
+		return "", fmt.Errorf("invalid counter peer NMI")
 	}
 	id, err := strconv.Atoi(v["ndp_id"])
 	if err != nil || id < 1 || id > 255 {
@@ -111,6 +110,9 @@ func fields(line string) map[string]string {
 
 // Only paths on our owned NDI are eligible, even if another application uses NAN.
 func ownedNDPs(peer, local, info string) []ndpTuple {
+	if !validMAC(peer) || !validMAC(local) {
+		return nil
+	}
 	var out []ndpTuple
 	for _, line := range strings.Split(info, "\n") {
 		v := fields(line)
@@ -122,7 +124,7 @@ func ownedNDPs(peer, local, info string) []ndpTuple {
 		if addr != local || err != nil || id < 1 || id > 255 {
 			continue
 		}
-		if _, err = net.ParseMAC(v["init_ndi"]); err != nil {
+		if !validMAC(v["init_ndi"]) {
 			continue
 		}
 		out = append(out, ndpTuple{peer, v["init_ndi"], v["ndp_id"]})
@@ -158,7 +160,7 @@ func drainRadioContext(ctx context.Context, control radioCommander, events <-cha
 			return
 		}
 		peer := fields(line)["peer"]
-		if _, err := net.ParseMAC(peer); err != nil || (onlyPeer != "" && onlyPeer != peer) {
+		if !validMAC(peer) || (onlyPeer != "" && onlyPeer != peer) {
 			continue
 		}
 		info, err := control.command("NAN_PEER_INFO " + peer + " ndps")

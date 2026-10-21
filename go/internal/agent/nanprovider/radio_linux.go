@@ -167,9 +167,20 @@ func shouldConnect(nmi string, peer meshid.Device, active map[string]*radioLink)
 	return active[nmi] != nil || len(active) < 3
 }
 
+// NMI and NDI targets are individual six-byte addresses. They are passed
+// verbatim to supplicant's colon-delimited hwaddr_aton control API; zero is
+// its missing-parameter sentinel, not a usable target. Hex case is immaterial.
 func validMAC(raw string) bool {
 	mac, err := net.ParseMAC(raw)
-	return err == nil && len(mac) == 6
+	if err != nil || len(mac) != 6 || !strings.EqualFold(raw, mac.String()) || mac[0]&1 != 0 {
+		return false
+	}
+	for _, octet := range mac {
+		if octet != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func connectedPeer(v map[string]string, local string, active map[string]*radioLink) (radioPeer, bool) {
