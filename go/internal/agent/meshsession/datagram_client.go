@@ -19,7 +19,7 @@ type udpSession struct {
 // DialUDP opens a dedicated authenticated session for one datagram flow. Like
 // TCP sessions, pending setup and active UDP flows are revoked by Invalidate,
 // PruneRoutes and Close. The caller must resolve the current route before dialing.
-func (c *Client) DialUDP(ctx context.Context, peer meshid.Device, address netip.AddrPort, port uint16) (*DatagramFlow, error) {
+func (c *Client) DialUDP(ctx context.Context, peer meshid.Device, address netip.AddrPort, port uint16, options ...UDPOptions) (*DatagramFlow, error) {
 	if c == nil {
 		return nil, net.ErrClosed
 	}
@@ -36,7 +36,15 @@ func (c *Client) DialUDP(ctx context.Context, peer meshid.Device, address netip.
 	}
 	c.udpSessions[entry] = struct{}{}
 	c.mu.Unlock()
-	flow, err := DialUDP(setupCtx, c.credentials, peer, address, port)
+	opts := udpOptions(options)
+	if opts.Manager == nil {
+		if opts.Endpoint != nil {
+			opts.Manager = opts.Endpoint.Manager()
+		} else {
+			opts.Manager = c.udpManager
+		}
+	}
+	flow, err := DialUDP(setupCtx, c.credentials, peer, address, port, opts)
 	c.mu.Lock()
 	valid := err == nil && !c.closed && !entry.retired
 	if !valid {

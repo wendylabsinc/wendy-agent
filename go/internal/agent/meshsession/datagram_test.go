@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"runtime"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 	}
 	defer app.Close()
 	go func() {
-		buf := make([]byte, MaxUDPPayload+1)
+		buf := make([]byte, MaxUDPMessageSize+1)
 		for {
 			n, addr, err := app.ReadFromUDP(buf)
 			if err != nil {
@@ -64,7 +65,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer flow.Close()
-	for _, payload := range [][]byte{[]byte("hello"), bytes.Repeat([]byte{42}, MaxUDPPayload)} {
+	for _, payload := range [][]byte{nil, []byte("hello"), bytes.Repeat([]byte{42}, localEchoMaximum())} {
 		if err := flow.Send(payload); err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +74,7 @@ func TestAuthenticatedUDPFlowEchoAndPortDenial(t *testing.T) {
 			t.Fatalf("UDP echo = %v, %v", got, err)
 		}
 	}
-	if err := flow.Send(bytes.Repeat([]byte{1}, MaxUDPPayload+1)); err == nil {
+	if err := flow.Send(bytes.Repeat([]byte{1}, MaxUDPMessageSize+1)); err == nil {
 		t.Fatal("oversize UDP payload accepted")
 	}
 	if _, err := DialUDP(ctx, a, b.Device, endpoint, port+1); !errors.Is(err, ErrDenied) {
@@ -115,4 +116,13 @@ func (a testUDPAuthorization) WithAuthorizedUDPToken(port uint16, token uint64, 
 	return a.Registry.WithAuthorizedUDPToken(port, token, func(address netip.AddrPort) error {
 		return write(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), address.Port()))
 	})
+}
+
+// Darwin's default UDP maximum is smaller than IPv4's protocol ceiling. Linux
+// integration fixtures cover the full ceiling without changing host settings.
+func localEchoMaximum() int {
+	if runtime.GOOS == "linux" {
+		return MaxUDPMessageSize
+	}
+	return 8192
 }

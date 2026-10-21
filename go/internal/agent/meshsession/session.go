@@ -16,6 +16,7 @@ import (
 
 	quic "github.com/quic-go/quic-go"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -104,7 +105,7 @@ func requestPort(ctx context.Context, conn *quic.Conn, port uint16) (*quic.Strea
 	return requestAppPort(ctx, conn, port, [4]byte{'W', 'A', 'S', '1'})
 }
 
-func requestAppPort(ctx context.Context, conn *quic.Conn, port uint16, magic [4]byte) (*quic.Stream, error) {
+func requestAppPort(ctx context.Context, conn *quic.Conn, port uint16, magic [4]byte, udpMaximum ...*int) (*quic.Stream, error) {
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("wendy net app stream open: %w", err)
@@ -137,23 +138,38 @@ func requestAppPort(ctx context.Context, conn *quic.Conn, port uint16, magic [4]
 		})
 	}
 	defer joinCancellation()
-	var hello [6]byte
+	hello := make([]byte, 6)
 	copy(hello[:4], magic[:])
 	binary.BigEndian.PutUint16(hello[4:], port)
-	if _, err = stream.Write(hello[:]); err != nil {
+	ackSize := 1
+	if magic == udpOpenMagic {
+		hello = udpOpenRequest(port)
+		ackSize = 16
+	}
+	if _, err = stream.Write(hello); err != nil {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
 		return nil, fmt.Errorf("wendy net app port request: %w", err)
 	}
-	var ack [1]byte
-	if _, err = io.ReadFull(stream, ack[:]); err != nil {
+	ack := make([]byte, ackSize)
+	if _, err = io.ReadFull(stream, ack); err != nil {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
+		if magic == udpOpenMagic && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+			return nil, fmt.Errorf("%w: incomplete UDP control ACK", ErrUDPUnsupported)
+		}
 		return nil, fmt.Errorf("wendy net app port ACK: %w", err)
 	}
-	if ack[0] != 1 {
+	if magic == udpOpenMagic {
+		if err := validateUDPAck(ack); err != nil {
+			return nil, err
+		}
+		if len(udpMaximum) > 0 && udpMaximum[0] != nil {
+			*udpMaximum[0] = int(binary.BigEndian.Uint16(ack[6:8]))
+		}
+	} else if ack[0] != 1 {
 		return nil, ErrDenied
 	}
 	joinCancellation()
@@ -168,20 +184,28 @@ func requestAppPort(ctx context.Context, conn *quic.Conn, port uint16, magic [4]
 // Server accepts mutually authenticated app sessions. It rejects a requested
 // port unless the live app registry owns its verified container endpoint.
 type Server struct {
-	credentials *localmesh.Credentials
-	authorizer  Authorizer
-	tickets     *localmesh.TicketStore
-	listener    *quic.Listener
-	packets     net.PacketConn
-	mu          sync.Mutex
-	closed      bool
+	credentials    *localmesh.Credentials
+	authorizer     Authorizer
+	tickets        *localmesh.TicketStore
+	listener       *quic.Listener
+	packets        net.PacketConn
+	mu             sync.Mutex
+	closed         bool
+	udpManager     *udpmessage.Manager
+	ownsUDPManager bool
 }
 
-func NewServer(credentials *localmesh.Credentials, authorizer Authorizer) (*Server, error) {
+func NewServer(credentials *localmesh.Credentials, authorizer Authorizer, managers ...*udpmessage.Manager) (*Server, error) {
 	if credentials == nil || authorizer == nil {
 		return nil, errors.New("missing wendy net app credentials or authorizer")
 	}
-	return &Server{credentials: credentials, authorizer: authorizer, tickets: credentials.ServerTicketStore(ALPN, "app-quic")}, nil
+	manager := udpmessage.NewManager()
+	owns := true
+	if len(managers) > 0 && managers[0] != nil {
+		manager = managers[0]
+		owns = false
+	}
+	return &Server{credentials: credentials, authorizer: authorizer, tickets: credentials.ServerTicketStore(ALPN, "app-quic"), udpManager: manager, ownsUDPManager: owns}, nil
 }
 
 func (s *Server) TLSConfig() *tls.Config {
@@ -259,15 +283,21 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 
 func (s *Server) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	if s.listener != nil {
-		return errors.Join(s.listener.Close(), s.packets.Close())
+	listener, packets := s.listener, s.packets
+	s.mu.Unlock()
+	var err error
+	if listener != nil {
+		err = errors.Join(listener.Close(), packets.Close())
 	}
-	return nil
+	if s.ownsUDPManager {
+		s.udpManager.Close()
+	}
+	return err
 }
 
 func (s *Server) Addr() net.Addr {
@@ -317,7 +347,7 @@ func (s *Server) serve(parent context.Context, conn *quic.Conn) {
 	}
 }
 
-// Raw QUIC datagrams have no flow identifier. A connection can therefore carry
+// UDP message fragments have no destination identifier. A connection can carry
 // pooled TCP streams or exactly one admitted UDP flow, never both. Keep the
 // decision across stream goroutines, including after a control stream closes.
 type sessionProtocol struct {
@@ -356,8 +386,12 @@ func (s *Server) serveStream(parent context.Context, conn *quic.Conn, stream *qu
 		return
 	}
 	port := binary.BigEndian.Uint16(hello[4:])
-	if string(hello[:4]) == "WAU1" {
+	if string(hello[:4]) == "WAU2" {
 		s.serveDatagrams(parent, conn, port, stream, protocol)
+		return
+	}
+	if string(hello[:4]) == "WAU1" {
+		writeUDPAck(stream, 2)
 		return
 	}
 	if string(hello[:4]) != "WAS1" {

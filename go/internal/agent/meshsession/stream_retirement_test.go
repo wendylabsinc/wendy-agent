@@ -199,7 +199,11 @@ func TestRejectedAppStreamsReturnCreditWithoutClosingSharedSession(t *testing.T)
 				if kind == "denied" && !bytes.Equal(data, []byte{0}) {
 					t.Fatalf("denial ACK=%v", data)
 				}
-				if kind != "denied" && len(data) != 0 {
+				if kind == "unsupported-datagram" {
+					if len(data) != 16 || string(data[:4]) != "WUA2" || data[4] != 2 {
+						t.Fatalf("missing incompatible UDP ACK: %v", data)
+					}
+				} else if kind != "denied" && len(data) != 0 {
 					t.Fatalf("malformed request received data: %v", data)
 				}
 				stream.CancelRead(0)

@@ -56,6 +56,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 	"github.com/wendylabsinc/wendy/go/internal/agent/usbgadget"
 	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
@@ -954,6 +955,10 @@ func main() {
 		keyData[i] = 0
 	}
 	alreadyProvisioned := certPEM != "" && keyPEM != ""
+	appUDPMessages := udpmessage.NewManager()
+	defer appUDPMessages.Close()
+	wg.Add(1)
+	go func() { defer wg.Done(); logUDPMessageState(ctx, logger, appUDPMessages) }()
 	var localMeshStart sync.Once
 	var localMeshMu sync.RWMutex
 	var localMeshSnapshot func() localmesh.NodeSnapshot
@@ -985,7 +990,7 @@ func main() {
 			return
 		}
 		localMeshStart.Do(func() {
-			appClient, err := meshsession.NewClient(credentials)
+			appClient, err := meshsession.NewClient(credentials, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app client unavailable", zap.Error(err))
 				return
@@ -1015,7 +1020,7 @@ func main() {
 					}
 				}
 			}()
-			sessionServer, err := meshsession.NewServer(credentials, meshIngress)
+			sessionServer, err := meshsession.NewServer(credentials, meshIngress, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app session unavailable", zap.Error(err))
 			} else {
@@ -1125,9 +1130,11 @@ func main() {
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("wendy net proxy failed to start; wendy net egress disabled", zap.Error(err))
 	}
-	udpProxy, udpErr := mesh.NewUDPProxy(mesh.UDPDialFunc(func(dialCtx context.Context, peer meshid.Device, port uint16) (mesh.UDPFlow, error) {
+	udpProxy, udpErr := mesh.NewUDPProxy(mesh.UDPDialFunc(func(dialCtx context.Context, request mesh.UDPDialRequest) (mesh.UDPFlow, error) {
+		peer, port := request.Peer, request.Port
+		options := meshsession.UDPOptions{Manager: appUDPMessages, Endpoint: request.Endpoint, Done: request.Done, Source: &request.Source}
 		if meshDialer.IsSelf(peer) {
-			return meshsession.DialLocalUDP(dialCtx, meshIngress, port)
+			return meshsession.DialLocalUDP(dialCtx, meshIngress, port, options)
 		}
 		localMeshMu.RLock()
 		snapshot := localMeshSnapshot
@@ -1141,8 +1148,8 @@ func main() {
 			appClient.Invalidate(peer)
 			return nil, err
 		}
-		return appClient.DialUDP(dialCtx, peer, address, port)
-	}), meshIngress, meshVIPs)
+		return appClient.DialUDP(dialCtx, peer, address, port, options)
+	}), meshIngress, meshVIPs, appUDPMessages)
 	if udpErr == nil {
 		udpErr = udpProxy.Start(fmt.Sprintf(":%d", mesh.UDPProxyPort))
 	}

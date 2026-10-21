@@ -117,3 +117,95 @@ func TestUDPClaimPinsContainerEndpoint(t *testing.T) {
 		t.Fatal("UDP grant survived revocation")
 	}
 }
+
+func TestUDPLeaseNotificationsAndCombinedLocalAdmission(t *testing.T) {
+	r := NewRegistry()
+	ip, dst := netip.MustParseAddr("10.79.42.2"), netip.MustParseAddr("10.99.0.1")
+	claim := func() {
+		t.Helper()
+		if err := r.ClaimSource("source", "app", ip.String(), "10.99.0.0/16", 7); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.ClaimUDPForApp("destination", "app", 7777, "10.3.0.2", 8888); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim()
+	source, udp := r.SourceToken(ip, dst, 7), r.UDPToken(7777)
+	sd, ud := r.SourceDone(ip, dst, 7, source), r.UDPDone(7777, udp)
+	select {
+	case <-sd:
+		t.Fatal("new source already revoked")
+	default:
+	}
+	select {
+	case <-ud:
+		t.Fatal("new destination already revoked")
+	default:
+	}
+	entered, finish, sendDone, releaseDone := make(chan struct{}), make(chan struct{}), make(chan error, 1), make(chan struct{})
+	go func() {
+		sendDone <- r.WithAuthorizedLocalUDP(ip, dst, 7, source, 7777, udp, func(target netip.AddrPort) error {
+			if target.String() != "10.3.0.2:8888" {
+				return errors.New("wrong target")
+			}
+			close(entered)
+			<-finish
+			return nil
+		})
+	}()
+	<-entered
+	go func() { r.Release("source"); close(releaseDone) }()
+	select {
+	case <-releaseDone:
+		t.Fatal("release crossed combined admission")
+	case <-time.After(20 * time.Millisecond):
+	}
+	// A queued writer cannot deadlock another combined admission: there is no
+	// outer registry read lock for it to retain while waiting for this writer.
+	later := make(chan error, 1)
+	go func() {
+		later <- r.WithAuthorizedLocalUDP(ip, dst, 7, source, 7777, udp, func(netip.AddrPort) error { return nil })
+	}()
+	close(finish)
+	if err := <-sendDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-releaseDone:
+	case <-time.After(time.Second):
+		t.Fatal("release deadlocked")
+	}
+	select {
+	case err := <-later:
+		if !errors.Is(err, ErrPortDenied) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("combined admission nested read locks")
+	}
+	select {
+	case <-sd:
+	default:
+		t.Fatal("source lease not notified")
+	}
+	select {
+	case <-ud:
+		t.Fatal("independent destination lease revoked")
+	default:
+	}
+	r.Release("destination")
+	select {
+	case <-ud:
+	default:
+		t.Fatal("destination lease not notified")
+	}
+	claim()
+	if r.SourceToken(ip, dst, 7) == source || r.UDPToken(7777) == udp {
+		t.Fatal("replacement reused incarnation")
+	}
+	called := false
+	if err := r.WithAuthorizedLocalUDP(ip, dst, 7, source, 7777, udp, func(netip.AddrPort) error { called = true; return nil }); !errors.Is(err, ErrPortDenied) || called {
+		t.Fatal("old combined tokens accepted")
+	}
+}

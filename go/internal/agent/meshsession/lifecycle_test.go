@@ -44,7 +44,7 @@ func lifecycleServer(t *testing.T, creds *localmesh.Credentials, auth Authorizer
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cancel(); listener.Close() })
+	t.Cleanup(func() { cancel(); listener.Close(); server.Close() })
 	go func() {
 		for {
 			conn, err := listener.Accept(ctx)

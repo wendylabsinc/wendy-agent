@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
 	"os"
@@ -28,7 +29,7 @@ type echoUDPFlow struct {
 
 func (f *echoUDPFlow) Send(data []byte) error {
 	if f.t != nil {
-		f.t.Logf("QUIC datagram send %q", data)
+		f.t.Logf("QUIC message send bytes=%d", len(data))
 	}
 	if f.onSend != nil {
 		f.onSend(data)
@@ -40,7 +41,7 @@ func (f *echoUDPFlow) Receive(ctx context.Context) ([]byte, error) {
 	select {
 	case data := <-f.replies:
 		if f.t != nil {
-			f.t.Logf("QUIC datagram reply %q", data)
+			f.t.Logf("QUIC message reply bytes=%d", len(data))
 		}
 		return data, nil
 	case <-ctx.Done():
@@ -68,6 +69,8 @@ func (s namespaceSource) SourceToken(ip, dst netip.Addr, ifindex int) uint64 {
 	}
 	return 0
 }
+
+func (s namespaceSource) SourceDone(netip.Addr, netip.Addr, int, uint64) <-chan struct{} { return nil }
 
 func (s namespaceSource) WithSourceToken(ip, dst netip.Addr, ifindex int, token uint64, send func() error) error {
 	if token == 0 || s.SourceToken(ip, dst, ifindex) != token {
@@ -139,16 +142,21 @@ func testUDPProxyRedirectNamespace(t *testing.T, targetPort uint16) {
 	}
 	var sourceToken atomic.Uint64
 	sourceToken.Store(1)
-	p, err := NewUDPProxy(UDPDialFunc(func(_ context.Context, peer meshid.Device, port uint16) (UDPFlow, error) {
+	p, err := NewUDPProxy(UDPDialFunc(func(_ context.Context, request UDPDialRequest) (UDPFlow, error) {
+		peer, port := request.Peer, request.Port
 		t.Logf("UDP dial peer=%s port=%d", peer, port)
 		if peer != device || port != targetPort {
 			return nil, fmt.Errorf("denied port")
 		}
-		return &echoUDPFlow{replies: make(chan []byte, 32), t: t, onSend: func(data []byte) {
+		flow := &echoUDPFlow{replies: make(chan []byte, 32), t: t, onSend: func(data []byte) {
 			if string(data) == "revoke-source" {
 				sourceToken.Store(0)
 			}
-		}}, nil
+		}}
+		if err := request.Endpoint.SetTransport(1000, true, flow.Send); err != nil {
+			return nil, err
+		}
+		return flow, nil
 	}), namespaceSource{netip.MustParseAddr("10.79.42.2"), dst, iface.Index, t, &sourceToken}, vips)
 	if err != nil {
 		t.Fatal(err)
@@ -232,10 +240,19 @@ print('VIP_TUPLE_ISOLATION_OK',flush=True)
 # Verify both send and reply paths preserve every byte at the payload bound,
 # including odd lengths. Packet vectors cover checksum-zero encoding.
 for client in (s,other):
-    for payload in (b'x', b'hello', b'\x87'*1000):
+    for payload in (b'', b'x', b'hello', b'\x87'*1000, b'\x87'*1001, b'\x87'*1472):
         client.sendto(payload,('10.99.0.1',7777))
-        data,addr=client.recvfrom(1024)
+        data,addr=client.recvfrom(65535)
         assert data==payload and addr==('10.99.0.1',7777),(len(payload),len(data),addr)
+# Full-ceiling application messages require the fixture application's own
+# deliberate fragmentation policy. The preceding ordinary 1472 test leaves
+# default socket policy unchanged; no interface MTU is lowered.
+    client.setsockopt(socket.IPPROTO_IP,10,0) # IP_MTU_DISCOVER=DONT
+    for size in (8192,65507):
+        payload=bytes((i%251 for i in range(size)))
+        client.sendto(payload,('10.99.0.1',7777))
+        data,addr=client.recvfrom(65535)
+        assert data==payload and addr==('10.99.0.1',7777),(size,len(data),addr)
 print('VIP_MAX_PAYLOAD_BOTH_DIRECTIONS_OK',flush=True)
 # For the 7777 case this tuple and payload calculate to UDP checksum zero.
 # The checked 0xffff wire representation must still reach a real UDP socket.
@@ -296,10 +313,36 @@ print('SOURCE_REVOCATION_OK',flush=True)
 		}
 	}
 
+	// The raw UDP sender must not retain copies of unrelated local UDP.
+	unrelated, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := net.DialUDP("udp4", nil, unrelated.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = writer.Write([]byte("unrelated raw receive copy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unrelated.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err = unrelated.ReadFromUDP(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
+	unrelated.Close()
+	var receiveErr error
+	if err := p.replies.raw.Control(func(fd uintptr) { _, _, receiveErr = unix.Recvfrom(int(fd), make([]byte, 65535), unix.MSG_DONTWAIT) }); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(receiveErr, unix.EAGAIN) {
+		t.Fatalf("send-only raw socket received unrelated UDP: %v", receiveErr)
+	}
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.replies.Send([]byte("closed"), netip.AddrPortFrom(dst, targetPort), netip.MustParseAddrPort("10.79.42.2:50059")); !errors.Is(err, net.ErrClosed) {
+	if err := p.replies.Send([]byte("closed"), netip.AddrPortFrom(dst, targetPort), netip.MustParseAddrPort("10.79.42.2:50059"), iface.Index); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("proxy close did not retire its raw reply socket: %v", err)
 	}
 

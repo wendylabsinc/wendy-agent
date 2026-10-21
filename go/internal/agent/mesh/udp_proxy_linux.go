@@ -13,36 +13,10 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshsession"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"golang.org/x/sys/unix"
 )
-
-const UDPProxyPort = 50059
-const udpFlowLimit = 256
-const udpQueueLimit = 32
-const udpFlowIdle = 30 * time.Second
-const udpDialTimeout = 40 * time.Second
-
-type UDPFlow interface {
-	Send([]byte) error
-	Receive(context.Context) ([]byte, error)
-	Close() error
-}
-
-type UDPDialer interface {
-	DialUDP(context.Context, meshid.Device, uint16) (UDPFlow, error)
-}
-
-type UDPDialFunc func(context.Context, meshid.Device, uint16) (UDPFlow, error)
-
-func (f UDPDialFunc) DialUDP(ctx context.Context, peer meshid.Device, port uint16) (UDPFlow, error) {
-	return f(ctx, peer, port)
-}
-
-type UDPSourcePolicy interface {
-	SourceToken(netip.Addr, netip.Addr, int) uint64
-	WithSourceToken(netip.Addr, netip.Addr, int, uint64, func() error) error
-}
 
 type udpKey struct {
 	source, destination netip.AddrPort
@@ -50,29 +24,39 @@ type udpKey struct {
 	token               uint64
 }
 type udpProxyFlow struct {
-	queue  chan []byte
-	cancel context.CancelFunc
+	endpoint *udpmessage.Endpoint
+	activity chan struct{}
+	cancel   context.CancelFunc
 }
 
 // UDPProxy accepts only source addresses owned by running mesh-mode apps and
 // original destinations inside their service CIDR. One QUIC connection per
 // source/destination tuple preserves independent reply mappings.
 type UDPProxy struct {
-	vips    *VIPTable
-	dialer  UDPDialer
-	sources UDPSourcePolicy
-	mu      sync.Mutex
-	flows   map[udpKey]*udpProxyFlow
-	conn    *net.UDPConn
-	closed  bool
-	replies *udpReplySender
+	vips        *VIPTable
+	dialer      UDPDialer
+	sources     UDPSourcePolicy
+	mu          sync.Mutex
+	flows       map[udpKey]*udpProxyFlow
+	conn        *net.UDPConn
+	closed      bool
+	replies     *udpReplySender
+	manager     *udpmessage.Manager
+	ownsManager bool
+	wg          sync.WaitGroup
 }
 
-func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy, vips *VIPTable) (*UDPProxy, error) {
+func NewUDPProxy(dialer UDPDialer, sources UDPSourcePolicy, vips *VIPTable, managers ...*udpmessage.Manager) (*UDPProxy, error) {
 	if dialer == nil || sources == nil || vips == nil {
 		return nil, errors.New("missing UDP net dialer or app source registry")
 	}
-	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow)}, nil
+	manager := udpmessage.NewManager()
+	owns := true
+	if len(managers) > 0 && managers[0] != nil {
+		manager = managers[0]
+		owns = false
+	}
+	return &UDPProxy{vips: vips, dialer: dialer, sources: sources, flows: make(map[udpKey]*udpProxyFlow), manager: manager, ownsManager: owns}, nil
 }
 
 func (p *UDPProxy) Start(addr string) error {
@@ -134,8 +118,8 @@ func (p *UDPProxy) Addr() net.Addr {
 
 func (p *UDPProxy) Close() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.closed {
+		p.mu.Unlock()
 		return nil
 	}
 	p.closed = true
@@ -149,18 +133,23 @@ func (p *UDPProxy) Close() error {
 	if p.replies != nil {
 		errs = append(errs, p.replies.Close())
 	}
+	p.mu.Unlock()
+	p.wg.Wait()
+	if p.ownsManager {
+		p.manager.Close()
+	}
 	return errors.Join(errs...)
 }
 
 func (p *UDPProxy) readLoop() {
-	data := make([]byte, meshsession.MaxUDPPayload+1)
+	data := make([]byte, meshsession.MaxUDPMessageSize+1)
 	oob := make([]byte, 256)
 	for {
-		n, oobn, _, source, err := p.conn.ReadMsgUDP(data, oob)
+		n, oobn, flags, source, err := p.conn.ReadMsgUDP(data, oob)
 		if err != nil {
 			return
 		}
-		if n == 0 || n > meshsession.MaxUDPPayload || source == nil {
+		if flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || n > meshsession.MaxUDPMessageSize || source == nil {
 			continue
 		}
 		destination, ifindex, err := originalUDPMetadata(oob[:oobn])
@@ -207,6 +196,7 @@ func originalUDPMetadata(oob []byte) (netip.AddrPort, int, error) {
 func (p *UDPProxy) handlePacket(key udpKey, payload []byte) {
 	key.token = p.sources.SourceToken(key.source.Addr(), key.destination.Addr(), key.ifindex)
 	if key.token == 0 {
+		p.manager.RecordDenied()
 		return
 	}
 	peer, err := p.vips.Device(key.destination.Addr())
@@ -225,12 +215,23 @@ func (p *UDPProxy) handlePacket(key udpKey, payload []byte) {
 			return
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		flow = &udpProxyFlow{queue: make(chan []byte, udpQueueLimit), cancel: cancel}
+		guard := udpmessage.Guard(func(send func() error) error {
+			return p.sources.WithSourceToken(key.source.Addr(), key.destination.Addr(), key.ifindex, key.token, send)
+		})
+		endpoint, err := p.manager.Open(peer, guard)
+		if err != nil {
+			cancel()
+			p.mu.Unlock()
+			return
+		}
+		flow = &udpProxyFlow{endpoint: endpoint, activity: make(chan struct{}, 1), cancel: cancel}
 		p.flows[key] = flow
-		go p.runFlow(ctx, key, peer, flow)
+		p.wg.Add(1)
+		go func() { defer p.wg.Done(); p.runFlow(ctx, key, peer, flow) }()
 	}
+	_ = flow.endpoint.Send(payload)
 	select {
-	case flow.queue <- append([]byte(nil), payload...):
+	case flow.activity <- struct{}{}:
 	default:
 	}
 	p.mu.Unlock()
@@ -239,6 +240,7 @@ func (p *UDPProxy) handlePacket(key udpKey, payload []byte) {
 func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, flow *udpProxyFlow) {
 	defer func() {
 		flow.cancel()
+		flow.endpoint.Close()
 		p.mu.Lock()
 		if p.flows[key] == flow {
 			delete(p.flows, key)
@@ -250,13 +252,23 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 	// 20 seconds while the hop is healthy. Keep setup bounded independently
 	// of the per-flow idle timeout.
 	dialCtx, cancel := context.WithTimeout(ctx, udpDialTimeout)
-	remote, err := p.dialer.DialUDP(dialCtx, peer, key.destination.Port())
+	sourceDone := p.sources.SourceDone(key.source.Addr(), key.destination.Addr(), key.ifindex, key.token)
+	go func() {
+		select {
+		case <-sourceDone:
+			flow.cancel()
+		case <-flow.endpoint.Done():
+			flow.cancel()
+		case <-ctx.Done():
+		}
+	}()
+	remote, err := p.dialer.DialUDP(dialCtx, UDPDialRequest{Peer: peer, Port: key.destination.Port(), Endpoint: flow.endpoint, Done: sourceDone, Source: meshsession.UDPSourceClaim{IP: key.source.Addr(), VIP: key.destination.Addr(), IfIndex: key.ifindex, Token: key.token}})
 	cancel()
 	if err != nil {
 		return
 	}
-	defer remote.Close()
 	failed := make(chan struct{})
+	defer func() { flow.cancel(); _ = remote.Close(); <-failed }()
 	go func() {
 		defer close(failed)
 		for {
@@ -264,8 +276,8 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 			if err != nil {
 				return
 			}
-			if err := p.sources.WithSourceToken(key.source.Addr(), key.destination.Addr(), key.ifindex, key.token, func() error {
-				return p.replies.Send(data, key.destination, key.source)
+			if err := flow.endpoint.Deliver(func() error {
+				return p.replies.Send(data, key.destination, key.source, key.ifindex)
 			}); err != nil {
 				return
 			}
@@ -281,10 +293,7 @@ func (p *UDPProxy) runFlow(ctx context.Context, key udpKey, peer meshid.Device, 
 			return
 		case <-idle.C:
 			return
-		case data := <-flow.queue:
-			if err := p.sources.WithSourceToken(key.source.Addr(), key.destination.Addr(), key.ifindex, key.token, func() error { return remote.Send(data) }); err != nil {
-				return
-			}
+		case <-flow.activity:
 			if !idle.Stop() {
 				select {
 				case <-idle.C:

@@ -12,6 +12,7 @@ import (
 
 	quic "github.com/quic-go/quic-go"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/udpmessage"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -29,16 +30,18 @@ const (
 // Client whenever credentials or trust change; Close stops the pool at agent
 // shutdown.
 type Client struct {
-	credentials  *localmesh.Credentials
-	mu           sync.Mutex
-	peers        map[meshid.Device]*pooledSession
-	sessions     map[*pooledSession]struct{} // includes retired sessions with active streams
-	udpSessions  map[*udpSession]struct{}    // dedicated datagram sessions, including pending setup
-	closed       bool
-	stop         chan struct{}
-	done         chan struct{}
-	dial         func(context.Context, netip.AddrPort, *tls.Config, *quic.Config) (*quic.Conn, error)
-	portACKLimit time.Duration // test override; zero uses pooledPortACKLimit
+	credentials    *localmesh.Credentials
+	udpManager     *udpmessage.Manager
+	ownsUDPManager bool
+	mu             sync.Mutex
+	peers          map[meshid.Device]*pooledSession
+	sessions       map[*pooledSession]struct{} // includes retired sessions with active streams
+	udpSessions    map[*udpSession]struct{}    // dedicated datagram sessions, including pending setup
+	closed         bool
+	stop           chan struct{}
+	done           chan struct{}
+	dial           func(context.Context, netip.AddrPort, *tls.Config, *quic.Config) (*quic.Conn, error)
+	portACKLimit   time.Duration // test override; zero uses pooledPortACKLimit
 }
 
 type pooledSession struct {
@@ -54,7 +57,7 @@ type pooledSession struct {
 	retired bool
 }
 
-func NewClient(credentials *localmesh.Credentials) (*Client, error) {
+func NewClient(credentials *localmesh.Credentials, managers ...*udpmessage.Manager) (*Client, error) {
 	if credentials == nil {
 		return nil, errors.New("missing wendy net app credentials")
 	}
@@ -62,6 +65,12 @@ func NewClient(credentials *localmesh.Credentials) (*Client, error) {
 		dial: func(ctx context.Context, endpoint netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
 			return quic.DialAddr(ctx, endpoint.String(), tlsConfig, config)
 		}}
+	c.udpManager = udpmessage.NewManager()
+	c.ownsUDPManager = true
+	if len(managers) > 0 && managers[0] != nil {
+		c.udpManager = managers[0]
+		c.ownsUDPManager = false
+	}
 	go c.reap()
 	return c, nil
 }
@@ -127,6 +136,9 @@ func (c *Client) Close() error {
 		_ = conn.CloseWithError(0, "wendy net app client stopped")
 	}
 	<-c.done
+	if c.ownsUDPManager {
+		c.udpManager.Close()
+	}
 	return nil
 }
 

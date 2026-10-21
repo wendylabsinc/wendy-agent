@@ -24,7 +24,7 @@ func TestAppQUICLearnsDelayedPathAndQuiesces(t *testing.T) {
 	appDone := make(chan struct{})
 	go func() {
 		defer close(appDone)
-		buf := make([]byte, MaxUDPPayload)
+		buf := make([]byte, MaxUDPMessageSize)
 		for {
 			n, peer, err := app.ReadFromUDP(buf)
 			if err != nil {

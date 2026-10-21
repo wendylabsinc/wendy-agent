@@ -12,13 +12,13 @@ import (
 func TestUDPReplyPacketWireVectors(t *testing.T) {
 	source := netip.MustParseAddrPort("10.99.0.1:7777")
 	destination := netip.MustParseAddrPort("10.79.42.2:41000")
-	// Independently calculated IPv4 and UDP pseudo-header checksums; the
+	// Independently calculated UDP pseudo-header checksum; the
 	// odd-length payload must pad only the checksum, never the wire packet.
 	packet, err := udpReplyPacket([]byte("hello"), source, destination)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const golden = "45000021000040004011fc170a6300010a4f2a021e61a028000dbec368656c6c6f"
+	const golden = "1e61a028000dbec368656c6c6f"
 	if hex.EncodeToString(packet) != golden {
 		t.Fatalf("packet=%x", packet)
 	}
@@ -28,12 +28,12 @@ func TestUDPReplyPacketWireVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if packet[26] != 0xff || packet[27] != 0xff {
-		t.Fatalf("zero checksum encoding=%x", packet[26:28])
+	if packet[6] != 0xff || packet[7] != 0xff {
+		t.Fatalf("zero checksum encoding=%x", packet[6:8])
 	}
-	packet, err = udpReplyPacket(bytes.Repeat([]byte{0x87}, meshsession.MaxUDPPayload), source, destination)
-	if err != nil || len(packet) != 1028 || packet[6] != 0x40 || packet[7] != 0 {
-		t.Fatalf("bounded nonfragmenting packet: %d %v", len(packet), err)
+	packet, err = udpReplyPacket(bytes.Repeat([]byte{0x87}, meshsession.MaxUDPMessageSize), source, destination)
+	if err != nil || len(packet) != 65515 {
+		t.Fatalf("maximum UDP datagram: %d %v", len(packet), err)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestUDPReplyPacketRejectsInvalidTuplesAndPayloads(t *testing.T) {
 			t.Fatalf("accepted destination %s", address)
 		}
 	}
-	for _, payload := range [][]byte{nil, make([]byte, meshsession.MaxUDPPayload+1)} {
+	for _, payload := range [][]byte{make([]byte, meshsession.MaxUDPMessageSize+1)} {
 		if _, err := udpReplyPacket(payload, valid, valid); err == nil {
 			t.Fatalf("accepted payload length %d", len(payload))
 		}

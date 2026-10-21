@@ -325,8 +325,14 @@ host port are independent. Only a running app's explicitly published UDP
 ports accept peer traffic. UDP DNS-SD announcements require a matching UDP
 mapping and use service types ending in `._udp`.
 
-UDP currently carries payloads of 1–1000 bytes; empty or larger datagrams
-are dropped. Delivery remains unreliable, so applications handle retries.
+UDP preserves each IPv4 message from zero through 65,507 bytes. Messages
+travel in chunks of at most 1,000 bytes and are delivered only when complete.
+Loss, congestion, capacity limits or a 30-second message deadline can drop a
+whole message; delivery remains unreliable, so applications handle retries.
+Large local messages may require the application to allow IPv4 fragmentation
+on its own socket. Wendy Net does not change application DF policy or lower
+the container interface MTU. Devices must support the same UDP message
+protocol version; incompatible peers are rejected explicitly.
 A source/destination tuple expires after 30 seconds without an app request;
 its next request establishes a fresh authenticated flow. New flows on slow
 links can take longer to establish than exchanges on an existing socket.

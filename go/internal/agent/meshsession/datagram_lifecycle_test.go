@@ -26,7 +26,7 @@ func udpLifecycleApp(t *testing.T, r *meshingress.Registry, owner string) uint16
 		t.Fatal(err)
 	}
 	go func() {
-		buf := make([]byte, MaxUDPPayload+1)
+		buf := make([]byte, MaxUDPMessageSize+1)
 		for {
 			n, from, err := app.ReadFromUDP(buf)
 			if err != nil {
@@ -291,14 +291,7 @@ func TestUDPReplyFailureClosesDedicatedConnection(t *testing.T) {
 	if err := r.ClaimUDPForApp("app", "app", port, "10.3.0.2", port); err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		buf := make([]byte, 16)
-		if _, from, err := app.ReadFromUDP(buf); err == nil {
-			// An oversized local reply terminates this flow; its remote receiver
-			// must wake immediately rather than waiting for a second idle timeout.
-			app.WriteToUDP(make([]byte, MaxUDPPayload+1), from)
-		}
-	}()
+
 	endpoint := lifecycleServer(t, b, testUDPAuthorization{r}, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -307,6 +300,7 @@ func TestUDPReplyFailureClosesDedicatedConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer flow.Close()
+	_ = app.Close()
 	if err := flow.Send([]byte("request")); err != nil {
 		t.Fatal(err)
 	}

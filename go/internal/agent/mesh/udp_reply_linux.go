@@ -27,13 +27,20 @@ func newUDPReplySender() (*udpReplySender, error) {
 	lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
 		var sockErr error
 		err := raw.Control(func(fd uintptr) {
-			sockErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_HDRINCL, 1)
+			sockErr = errors.Join(
+				unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1),
+				unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DONT),
+				// IPPROTO_UDP raw sockets receive copies unless filtered. Drop all
+				// receive traffic; this socket must never own a UDP listener.
+				unix.SetsockoptSockFprog(int(fd), unix.SOL_SOCKET, unix.SO_ATTACH_FILTER,
+					&unix.SockFprog{Len: 1, Filter: &unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: 0}}),
+			)
 		})
 		return errors.Join(err, sockErr)
 	}}
-	// IPPROTO_RAW is send-only on Linux. IP_HDRINCL makes the fixed source
-	// address and port explicit without binding a receive socket at the VIP.
-	pc, err := lc.ListenPacket(context.Background(), "ip4:255", "0.0.0.0")
+	// Without IP_HDRINCL the kernel supplies IPv4 IDs and fragments at the
+	// local route MTU. IP_PKTINFO supplies the authorized source and bridge.
+	pc, err := lc.ListenPacket(context.Background(), "ip4:17", "0.0.0.0")
 	if err != nil {
 		return nil, fmt.Errorf("opening net UDP reply sender: %w", err)
 	}
@@ -50,9 +57,12 @@ func newUDPReplySender() (*udpReplySender, error) {
 // MSG_DONTWAIT bounds the syscall even under socket pressure; congestion and
 // closure are returned honestly rather than waiting while holding admission.
 // RawConn protects the file descriptor against concurrent close and reuse.
-func (s *udpReplySender) Send(payload []byte, source, destination netip.AddrPort) error {
+func (s *udpReplySender) Send(payload []byte, source, destination netip.AddrPort, ifindex int) error {
 	if s == nil {
 		return net.ErrClosed
+	}
+	if ifindex <= 0 {
+		return errors.New("invalid UDP reply interface")
 	}
 	packet, err := udpReplyPacket(payload, source, destination)
 	if err != nil {
@@ -60,7 +70,7 @@ func (s *udpReplySender) Send(payload []byte, source, destination netip.AddrPort
 	}
 	var sendErr error
 	err = s.raw.Control(func(fd uintptr) {
-		sendErr = unix.Sendto(int(fd), packet, unix.MSG_DONTWAIT, &unix.SockaddrInet4{Addr: destination.Addr().As4()})
+		_, sendErr = unix.SendmsgN(int(fd), packet, unix.PktInfo4(&unix.Inet4Pktinfo{Ifindex: int32(ifindex), Spec_dst: source.Addr().As4()}), &unix.SockaddrInet4{Addr: destination.Addr().As4()}, unix.MSG_DONTWAIT)
 	})
 	if err = errors.Join(err, sendErr); err != nil {
 		return fmt.Errorf("sending net UDP reply: %w", err)

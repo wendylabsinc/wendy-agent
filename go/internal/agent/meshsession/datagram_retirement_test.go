@@ -2,7 +2,6 @@ package meshsession
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"io"
 	"net/netip"
@@ -66,14 +65,13 @@ func TestDeniedUDPControlsPreserveACKAndReturnStreamCredit(t *testing.T) {
 			t.Fatalf("UDP control %d leaked credit: %v", i, err)
 		}
 		stream.SetDeadline(time.Now().Add(time.Second))
-		hello := []byte{'W', 'A', 'U', '1', 0, 0}
-		binary.BigEndian.PutUint16(hello[4:], 12345)
+		hello := udpOpenRequest(12345)
 		if _, err := stream.Write(hello); err != nil {
 			t.Fatal(err)
 		}
-		var ack [1]byte
-		if _, err := io.ReadFull(stream, ack[:]); err != nil || ack[0] != 0 {
-			t.Fatalf("UDP denial ACK=%d error=%v", ack[0], err)
+		var ack [16]byte
+		if _, err := io.ReadFull(stream, ack[:]); err != nil || ack[4] != 0 {
+			t.Fatalf("UDP denial ACK=%v error=%v", ack, err)
 		}
 		stream.CancelRead(1)
 		stream.CancelWrite(1)

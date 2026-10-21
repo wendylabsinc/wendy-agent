@@ -29,6 +29,7 @@ type Registry struct {
 	udpAppByPort   map[uint16]string
 	udpByOwner     map[string]map[uint16]struct{}
 	udpTokenByPort map[uint16]uint64
+	udpDoneByPort  map[uint16]chan struct{}
 	udpNext        uint64
 	sources        map[netip.Addr]sourceClaim
 	sourceByOwner  map[string]netip.Addr
@@ -41,6 +42,7 @@ type sourceClaim struct {
 	cidr    netip.Prefix
 	ifindex int
 	token   uint64
+	done    chan struct{}
 }
 
 // ClaimSource attributes a live isolated mesh app's CNI address and granted
@@ -62,15 +64,18 @@ func (r *Registry) ClaimSource(containerID, appID, rawIP, rawCIDR string, ifinde
 	if prior := r.sources[ip]; prior.owner != "" && prior.owner != containerID {
 		return ErrPortDenied
 	}
-	if old := r.sourceByOwner[containerID]; old.IsValid() && old != ip {
-		delete(r.sources, old)
+	if old := r.sourceByOwner[containerID]; old.IsValid() {
+		if prior := r.sources[old]; prior.owner == containerID {
+			close(prior.done)
+			delete(r.sources, old)
+		}
 	}
 	if r.sources == nil {
 		r.sources = make(map[netip.Addr]sourceClaim)
 		r.sourceByOwner = make(map[string]netip.Addr)
 	}
 	r.sourceNext++
-	r.sources[ip] = sourceClaim{containerID, appID, cidr.Masked(), ifindex, r.sourceNext}
+	r.sources[ip] = sourceClaim{containerID, appID, cidr.Masked(), ifindex, r.sourceNext, make(chan struct{})}
 	r.sourceByOwner[containerID] = ip
 	return nil
 }
@@ -246,12 +251,17 @@ func (r *Registry) ClaimUDPForApp(containerID, appID string, port uint16, contai
 		r.udpAppByPort = make(map[uint16]string)
 		r.udpByOwner = make(map[string]map[uint16]struct{})
 		r.udpTokenByPort = make(map[uint16]uint64)
+		r.udpDoneByPort = make(map[uint16]chan struct{})
 	}
 	if r.udpByOwner[containerID] == nil {
 		r.udpByOwner[containerID] = make(map[uint16]struct{})
 	}
 	r.udpByPort[port], r.udpAppByPort[port] = containerID, appID
 	r.udpTargets[port] = target
+	if prior := r.udpDoneByPort[port]; prior != nil {
+		close(prior)
+	}
+	r.udpDoneByPort[port] = make(chan struct{})
 	r.udpNext++
 	r.udpTokenByPort[port] = r.udpNext
 	r.udpByOwner[containerID][port] = struct{}{}
@@ -410,6 +420,7 @@ func (r *Registry) Release(containerID string) {
 	r.mu.Lock()
 	if ip := r.sourceByOwner[containerID]; ip.IsValid() {
 		if r.sources[ip].owner == containerID {
+			close(r.sources[ip].done)
 			delete(r.sources, ip)
 		}
 		delete(r.sourceByOwner, containerID)
@@ -424,6 +435,8 @@ func (r *Registry) Release(containerID string) {
 	delete(r.byOwner, containerID)
 	for port := range r.udpByOwner[containerID] {
 		if r.udpByPort[port] == containerID {
+			close(r.udpDoneByPort[port])
+			delete(r.udpDoneByPort, port)
 			delete(r.udpByPort, port)
 			delete(r.udpTargets, port)
 			delete(r.udpAppByPort, port)
@@ -441,4 +454,47 @@ func (r *Registry) Release(containerID string) {
 	for flow := range flows {
 		_ = flow.Close()
 	}
+}
+
+var revokedUDP = func() <-chan struct{} { c := make(chan struct{}); close(c); return c }()
+
+// SourceDone and UDPDone are incarnation notifications, not authorization.
+// Callers must still use the matching token guard for every bounded send.
+func (r *Registry) SourceDone(ip, dst netip.Addr, ifindex int, token uint64) <-chan struct{} {
+	if r == nil || token == 0 {
+		return revokedUDP
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	claim := r.sources[ip]
+	if claim.token != token || claim.owner == "" || claim.ifindex != ifindex || !claim.cidr.Contains(dst) {
+		return revokedUDP
+	}
+	return claim.done
+}
+func (r *Registry) UDPDone(port uint16, token uint64) <-chan struct{} {
+	if r == nil || token == 0 {
+		return revokedUDP
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.udpByPort[port] == "" || r.udpTokenByPort[port] != token {
+		return revokedUDP
+	}
+	return r.udpDoneByPort[port]
+}
+
+// WithAuthorizedLocalUDP validates both ends under one admission read lock.
+// Nesting WithSourceToken and WithAuthorizedUDPToken can deadlock a queued writer.
+func (r *Registry) WithAuthorizedLocalUDP(ip, dst netip.Addr, ifindex int, sourceToken uint64, port uint16, token uint64, send func(netip.AddrPort) error) error {
+	if r == nil || sourceToken == 0 || token == 0 || send == nil {
+		return ErrPortDenied
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	claim := r.sources[ip]
+	if claim.owner == "" || claim.token != sourceToken || claim.ifindex != ifindex || !claim.cidr.Contains(dst) || r.udpByPort[port] == "" || r.udpTokenByPort[port] != token || !r.udpTargets[port].IsValid() {
+		return ErrPortDenied
+	}
+	return send(r.udpTargets[port])
 }
