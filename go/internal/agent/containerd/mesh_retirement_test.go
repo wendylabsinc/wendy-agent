@@ -25,6 +25,7 @@ type meshRetirementFixture struct {
 	store              *disk.Store
 	client             *Client
 	calls              []string
+	requireProof       bool
 }
 
 func newMeshRetirementFixture(t *testing.T, service string) *meshRetirementFixture {
@@ -33,7 +34,7 @@ func newMeshRetirementFixture(t *testing.T, service string) *meshRetirementFixtu
 	oldDir := cniNetnsBindDir
 	cniNetnsBindDir = t.TempDir()
 	t.Cleanup(func() { cniNetnsBindDir = oldDir })
-	f := &meshRetirementFixture{app: "com.example.retirement", ip: "10.41.2.2"}
+	f := &meshRetirementFixture{app: "com.example.retirement", ip: "10.41.2.2", requireProof: true}
 	f.container = ContainerName(f.app, service)
 	data, _ := json.Marshal(map[string]string{f.app: "10.41.2.0/28"})
 	if err := os.WriteFile(cniSubnetRegistryPath, data, 0600); err != nil {
@@ -67,8 +68,10 @@ func newMeshRetirementFixture(t *testing.T, service string) *meshRetirementFixtu
 		if len(f.store.GetByID(f.container, "eth0")) != 1 {
 			t.Fatal("allocation released before security rules")
 		}
-		if _, err := os.Stat(networkSandboxResultPath(f.container)); err != nil {
-			t.Fatal("CNI proof removed before security rules")
+		if f.requireProof {
+			if _, err := os.Stat(networkSandboxResultPath(f.container)); err != nil {
+				t.Fatal("CNI proof removed before security rules")
+			}
 		}
 		if f.client.meshIngress.Allowed(29182) {
 			t.Fatal("admission survived rule retirement")

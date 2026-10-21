@@ -2725,14 +2725,12 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 						c.destroyNetworkSandbox(context.WithoutCancel(ctx), appName)
 						_ = c.persistNetworkNamespace(context.WithoutCancel(ctx), container, "", identity, "")
 					} else {
-						if err := c.teardownMeshEgress(entitlements, appName, appID, ip); err != nil {
+						if err := c.rollbackPreparedNetwork(ctx, appName, containerLabels, ip, func(cleanupCtx context.Context) error {
+							return c.CNIDel(cleanupCtx, appID, appName, netnsPath)
+						}); err != nil {
 							c.logger.Error("App network rollback deferred; allocation remains pinned", zap.String("container_id", appName), zap.Error(err))
 							cleanupNetns()
 							return
-						}
-						_ = c.CNIDel(context.WithoutCancel(ctx), appID, appName, netnsPath)
-						if needsGatewayDNS(isolation, entitlements) {
-							c.releaseMeshDNS(appName, appID)
 						}
 						cleanupNetns()
 					}
