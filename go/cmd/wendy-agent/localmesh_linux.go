@@ -23,7 +23,7 @@ import (
 // Its observer is cleared only after the radio provider has drained its links.
 func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmesh.TCPIdentity, logger *zap.Logger, catalog *meshCatalogManager, vips *mesh.VIPTable, observe func(func() localmesh.NodeSnapshot)) error {
 	path := filepath.Join(configDir, "local-mesh.json")
-	initial, err := os.ReadFile(path)
+	initial, err := localmesh.ReadTCPConfigFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -42,7 +42,7 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				current, err := os.ReadFile(path)
+				current, err := localmesh.ReadTCPConfigFile(path)
 				if err != nil || !bytes.Equal(current, initial) {
 					cancelRun()
 					return
@@ -65,7 +65,7 @@ func runConfiguredNetCarriers(ctx context.Context, configDir string, id localmes
 		}
 		observe(node.Snapshot)
 		if err := catalog.Activate(runCtx, node.Credentials, node.Snapshot, vips, node.ControlHub()); err != nil {
-			logger.Error("mesh service catalog unavailable", zap.Error(err))
+			logger.Error("net service catalog unavailable", zap.Error(err))
 		}
 		if !cfg.NAN && !cfg.BLE {
 			return

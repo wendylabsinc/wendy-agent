@@ -53,6 +53,9 @@ func TestTCPConfigRequiresOwnedProtectedFile(t *testing.T) {
 			if _, err := LoadTCPConfig(path, self); err == nil {
 				t.Fatal("unsafe configuration was accepted")
 			}
+			if _, err := ReadTCPConfigFile(path); err == nil {
+				t.Fatal("unsafe watch snapshot was accepted")
+			}
 		})
 	}
 }

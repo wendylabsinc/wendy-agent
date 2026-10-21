@@ -45,11 +45,11 @@ type TCPIdentity struct {
 // Devices returns the parsed peers of a config loaded for self.
 func (c *TCPConfig) Devices() []meshid.Device { return c.devices }
 
-func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
+// ReadTCPConfigFile reads a bounded snapshot using the configuration loader's
+// opener. On Linux this also rejects symlinks and special or unprotected files,
+// so watchers cannot block on FIFOs or bypass the privileged loader's checks.
+func ReadTCPConfigFile(path string) ([]byte, error) {
 	f, err := openTCPConfig(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +60,17 @@ func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
 	}
 	if len(data) == 0 || len(data) > 65536 {
 		return nil, errors.New("wendy net config size out of range")
+	}
+	return data, nil
+}
+
+func LoadTCPConfig(path string, self meshid.Device) (*TCPConfig, error) {
+	data, err := ReadTCPConfigFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()

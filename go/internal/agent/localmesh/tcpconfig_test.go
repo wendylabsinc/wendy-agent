@@ -1,10 +1,33 @@
 package localmesh
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestReadTCPConfigFileSnapshotBounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local-mesh.json")
+	if _, err := ReadTCPConfigFile(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing snapshot must retain its cause: %v", err)
+	}
+	for _, size := range []int{0, 65536, 65537} {
+		want := bytes.Repeat([]byte{'x'}, size)
+		if err := os.WriteFile(path, want, 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadTCPConfigFile(path)
+		if size == 65536 {
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("maximum bounded snapshot: bytes=%d err=%v", len(got), err)
+			}
+		} else if err == nil {
+			t.Fatalf("accepted snapshot size %d", size)
+		}
+	}
+}
 
 // TestTCPConfigRequiresReciprocalConcretePeers: a configured peer is named by
 // device UUID, in this device's own tenant, once, with a concrete address.
