@@ -117,12 +117,13 @@ an untrusted connection filter; QUIC mTLS still pins the complete principal.
 Separate named-mesh certificate authorization is not implemented.
 
 LAN discovery uses `_wendy-net._udp.local.` with TXT fields `protocol=quic-v1`,
-`principal=<SPIFFE URI>`, `mesh=<16 lowercase hex characters>` and `version=1`. The existing SRV
-port, host and address records are unchanged. Versionless advertisements retain
-their legacy v1 meaning. Readers reject unsupported or malformed explicit
-versions and duplicate keys, comparing keys without regard to case as required
-by DNS-SD; unknown additional TXT keys are allowed. The
-additive version field is compatible with older readers that ignore it.
+`principal=<SPIFFE URI>`, `mesh=<16 lowercase hex characters>` and `version=1`.
+SRV port, host and address records retain the native UDP contract. Versionless
+advertisements still require the native UDP service and `protocol=quic-v1`;
+the former TCP service is incompatible. Readers reject unsupported or malformed
+explicit versions and duplicate keys, comparing keys without regard to case as
+required by DNS-SD; unknown additional TXT keys are allowed. The additive
+version field is compatible with native UDP readers that ignore it.
 
 Synchronized Wi-Fi Aware discovery keeps service name `wendy.mesh.v1`. Its SSI
 is binary, with all offsets below measured in bytes:

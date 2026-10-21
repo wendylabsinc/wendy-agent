@@ -4,6 +4,7 @@ package localmesh
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/mdns"
@@ -13,13 +14,13 @@ import (
 
 func TestLANDiscoveryVersionCompatibility(t *testing.T) {
 	self, peer := lanDevice(t, 445), lanDevice(t, 460)
-	base := []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(self.Tenant())}
+	base := []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(self.Tenant()), "protocol=" + lanProtocol}
 	for _, tt := range []struct {
 		name  string
 		extra []string
 		want  bool
 	}{
-		{"legacy", nil, true},
+		{"versionless native UDP", nil, true},
 		{"v1", []string{"version=1"}, true},
 		{"v1 with extension", []string{"version=1", "future=opaque"}, true},
 		{"mixed case v1", []string{"VeRsIoN=1"}, true},
@@ -37,11 +38,20 @@ func TestLANDiscoveryVersionCompatibility(t *testing.T) {
 		{"conflicting", []string{"version=1", "version=2"}, false},
 		{"malformed", []string{"version"}, false},
 		{"missing mesh", []string{"version=1"}, false},
+		{"missing protocol", []string{"version=1"}, false},
+		{"wrong protocol", []string{"version=1"}, false},
+		{"mixed case protocol duplicate", []string{"PrOtOcOl=" + lanProtocol}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			info := append(append([]string(nil), base...), tt.extra...)
 			if tt.name == "missing mesh" {
-				info = []string{base[0], "version=1"}
+				info = []string{base[0], base[2], "version=1"}
+			}
+			if tt.name == "missing protocol" {
+				info = []string{base[0], base[1], "version=1"}
+			}
+			if tt.name == "wrong protocol" {
+				info = []string{base[0], base[1], "protocol=tcp", "version=1"}
 			}
 			entry := &mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 168, 2, 3), InfoFields: info}
 			got, _, ok := parseLANEntry(entry, self)
@@ -51,7 +61,7 @@ func TestLANDiscoveryVersionCompatibility(t *testing.T) {
 		})
 	}
 	entry := &mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 168, 2, 3), InfoFields: []string{
-		"PrInCiPaL=" + peer.Principal(), "MESH=" + lanMeshHash(self.Tenant()), "VERSION=1",
+		"PrInCiPaL=" + peer.Principal(), "MESH=" + lanMeshHash(self.Tenant()), "PrOtOcOl=" + lanProtocol, "VERSION=1",
 	}}
 	if got, _, ok := parseLANEntry(entry, self); !ok || got != peer {
 		t.Fatalf("valid case-insensitive TXT keys rejected: %v %v", got, ok)
@@ -64,6 +74,9 @@ func TestLANDiscoveryPublishedDNSRoundTrip(t *testing.T) {
 	zone, err := lanMDNSService(&Credentials{Device: peer}, selected)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if lanService != "_wendy-net._udp" {
+		t.Fatalf("wrong native UDP discovery service: %s", lanService)
 	}
 	question := dns.Question{Name: lanService + ".local.", Qtype: dns.TypePTR, Qclass: dns.ClassINET}
 	message := &dns.Msg{Answer: zone.Records(question)}
@@ -81,23 +94,42 @@ func TestLANDiscoveryPublishedDNSRoundTrip(t *testing.T) {
 	}
 	fields := map[string]string{}
 	for _, txt := range entries[0].InfoFields {
-		if len(txt) >= 8 && txt[:8] == "version=" {
-			fields["version"] = txt[8:]
+		key, value, ok := strings.Cut(txt, "=")
+		if ok {
+			fields[strings.ToLower(key)] = value
 		}
 	}
-	if fields["version"] != "1" {
-		t.Fatalf("version missing from DNS TXT: %v", entries[0].InfoFields)
+	if fields["version"] != "1" || fields["protocol"] != lanProtocol {
+		t.Fatalf("native protocol/version missing from DNS TXT: %v", entries[0].InfoFields)
 	}
 	if got, ip, ok := parseLANEntry(entries[0], self); !ok || got != peer || !ip.Equal(selected.ip) {
 		t.Fatalf("published discovery was rejected: %v %v %v", got, ip, ok)
 	}
-	// Updated advertisements still have exactly the principal/mesh values
-	// expected by old readers. The additive version field does not alter them.
-	legacy := *entries[0]
-	legacy.InfoFields = legacy.InfoFields[:2]
-	if got, _, ok := parseLANEntry(&legacy, self); !ok || got != peer {
-		t.Fatal("legacy principal/mesh contract changed")
+	// Versionless means the same native UDP contract with only the optional
+	// discovery version absent. The mandatory protocol must survive.
+	versionless := *entries[0]
+	versionless.InfoFields = nil
+	for _, txt := range entries[0].InfoFields {
+		key, _, _ := strings.Cut(txt, "=")
+		if !strings.EqualFold(key, "version") {
+			versionless.InfoFields = append(versionless.InfoFields, txt)
+		}
 	}
+	if got, _, ok := parseLANEntry(&versionless, self); !ok || got != peer {
+		t.Fatal("versionless native UDP contract changed")
+	}
+	missingProtocol := versionless
+	missingProtocol.InfoFields = nil
+	for _, txt := range versionless.InfoFields {
+		key, _, _ := strings.Cut(txt, "=")
+		if !strings.EqualFold(key, "protocol") {
+			missingProtocol.InfoFields = append(missingProtocol.InfoFields, txt)
+		}
+	}
+	if _, _, ok := parseLANEntry(&missingProtocol, self); ok {
+		t.Fatal("missing native UDP protocol accepted")
+	}
+
 }
 
 func TestLANMeshHintUnchangedVector(t *testing.T) {
