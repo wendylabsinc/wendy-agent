@@ -200,10 +200,11 @@ Ethernet or ordinary Wi-Fi network. Run this on each device you want to connect:
 ```sh
 wendy device wendy-net configure --participate=true --ethernet=true --infrastructure-wifi=true
 wendy device wendy-net status
+wendy device wendy-net topology
 ```
 
-Add `--device <device>` to select a particular device. Check the authenticated peer count;
-saving settings alone does not confirm connectivity. Omitted
+Add `--device <device>` to select a particular device. Check topology for
+connected peers; saving settings alone does not confirm connectivity. Omitted
 flags preserve saved choices. Set a flag to `false` to disable that connection
 type. Changing saved settings restarts local routing and can interrupt traffic.
 
