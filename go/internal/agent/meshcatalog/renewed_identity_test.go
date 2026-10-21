@@ -10,6 +10,9 @@ import (
 
 func TestRenewedIdentityDoesNotProjectOrRelayPreviousCertificateRecord(t *testing.T) {
 	old, renewed := newFixture(t), newFixture(t)
+	// Both caches use the same observation time even if certificate generation
+	// crosses the fixture clock's one-second boundary.
+	old.now = renewed.now
 	allowOld := true
 	verifyCurrent := func(chain [][]byte, now time.Time) (localmesh.Identity, error) {
 		if id, err := renewed.creds[p534].Verify(chain, now); err == nil {
