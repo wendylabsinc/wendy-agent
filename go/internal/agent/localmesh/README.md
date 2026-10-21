@@ -67,9 +67,10 @@ replay receipt. Queued exports use that exact wire and its matching current
 certificate chain together. Unchanged leaves reuse only the signature verdict;
 current chain trust and expiry are still checked on every read.
 A warm receiver may still hold a previous key while fetching an explicitly
-advertised replacement chain. Only that active same-neighbour, different-leaf
-exchange can defer a signature failure or a manifest lifetime beyond the old
-cached chain; the bounded pending wire keeps the exact descriptor and its first
+advertised replacement chain. Only that active same-neighbour exchange can
+defer a signature failure for a different leaf, or a manifest lifetime beyond
+a different exact cached chain (including renewed issuers behind the same
+leaf). The bounded pending wire keeps the exact descriptor and its first
 deadline, retaining the original monotonic fetch allowance independently of the
 signed absolute expiry. Replacement or timeout discards it,
 and successful chain completion still requires normal signature, lease and

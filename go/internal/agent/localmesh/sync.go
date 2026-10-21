@@ -277,8 +277,9 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 		if errors.Is(e, ErrStaleManifest) || errors.Is(e, ErrExpiredManifest) {
 			return nil, nil, nil
 		}
-		renewalMismatch := errors.Is(e, ErrInvalidManifestSignature) || errors.Is(e, ErrManifestOutlivesCertificate)
-		if renewalMismatch && s.deferPendingRenewal(*m.Manifest, now) {
+		signatureMismatch := errors.Is(e, ErrInvalidManifestSignature)
+		lifetimeMismatch := errors.Is(e, ErrManifestOutlivesCertificate)
+		if (signatureMismatch || lifetimeMismatch) && s.deferPendingRenewal(*m.Manifest, now, lifetimeMismatch) {
 			return nil, nil, nil
 		}
 		if errors.Is(e, ErrIdentityNeeded) {
@@ -343,9 +344,11 @@ func (s *Synchronizer) ContinueCertificates(now time.Time) ([]ControlMessage, []
 	return s.certificateResult(messages, completed, err, now)
 }
 
-// deferPendingRenewal retains no authority: a signature or lifetime mismatch waits only
-// for this link's active, different-leaf descriptor, then must verify normally.
-func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool {
+// deferPendingRenewal retains no authority. A signature mismatch needs a
+// different leaf; a lifetime mismatch can also await a renewed issuer behind
+// the same leaf. Both require this link's active exact changed descriptor and
+// must verify normally after completion.
+func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time, lifetimeMismatch bool) bool {
 	description, deadline, ok := s.certificates.PendingChain(w.Principal, now)
 	if !ok {
 		return false
@@ -358,7 +361,11 @@ func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool
 	}
 	pending := pendingManifestRenewal{chain: description, expires: minTime(deadline, time.UnixMilli(manifest.Expires)), fetchUntil: deadline}
 	chain, _, ok := s.cache.Get(w.Principal, now)
-	if !ok || certificateHash(chain[0]) == pending.chain.Hashes[0] {
+	if !ok {
+		return false
+	}
+	differentLeaf := certificateHash(chain[0]) != pending.chain.Hashes[0]
+	if !differentLeaf && (!lifetimeMismatch || matchesCertificateDescription(chain, pending.chain)) {
 		return false
 	}
 	if _, exists := s.pending[w.Principal]; !exists && len(s.pending) >= 128 {
