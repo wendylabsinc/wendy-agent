@@ -68,10 +68,13 @@ certificate chain together. Unchanged leaves reuse only the signature verdict;
 current chain trust and expiry are still checked on every read.
 A warm receiver may still hold a previous key while fetching an explicitly
 advertised replacement chain. Only that active same-neighbour, different-leaf
-exchange can defer a signature failure; the bounded pending wire keeps the
-exact descriptor and its first deadline. Replacement or timeout discards it,
+exchange can defer a signature failure or a manifest lifetime beyond the old
+cached chain; the bounded pending wire keeps the exact descriptor and its first
+deadline, retaining the original monotonic fetch allowance independently of the
+signed absolute expiry. Replacement or timeout discards it,
 and successful chain completion still requires normal signature, lease and
-replay verification. Invalid signatures outside that transition remain fatal.
+replay verification. Invalid signatures and overlong certificate lifetimes
+outside that transition, or after replacement verification, remain fatal.
 
 ## Control and payload flow
 

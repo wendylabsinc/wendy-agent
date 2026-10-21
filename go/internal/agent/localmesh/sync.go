@@ -111,6 +111,14 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 	return m, nil
 }
 
+// The original fetch allowance must retain its monotonic clock component even
+// when the earlier signed expiry has only an absolute wall-clock timestamp.
+type pendingManifestRenewal struct {
+	chain      CertificateChain
+	expires    time.Time
+	fetchUntil time.Time
+}
+
 // Synchronizer is per-link, single-caller, and does not own networking. Changed
 // records are broadcast immediately by its caller; periodic Reconcile repairs
 // loss/reconnect. Bounded chain descriptions replace unsolicited bundles;
@@ -122,7 +130,7 @@ type Synchronizer struct {
 	sent      map[string]bool
 	pending   map[string]SignedManifest
 	// Warm-cache retries are bound to the exact advertised chain and deadline.
-	pendingRenewals map[string]pendingCertificateChain
+	pendingRenewals map[string]pendingManifestRenewal
 	certificates    *CertificateExchange
 	// A repair pass resumes after the last admitted principal, rather than
 	// repeatedly filling a bounded neighbour queue with its sorted prefix.
@@ -131,7 +139,7 @@ type Synchronizer struct {
 }
 
 func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
-	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingCertificateChain{}, certificates: NewCertificateExchange(c, d.tenant)}
+	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingManifestRenewal{}, certificates: NewCertificateExchange(c, d.tenant)}
 }
 
 // SeedKnownBundles uses only the sender's per-peer record of completed writes.
@@ -226,8 +234,8 @@ func (s *Synchronizer) reconcileBatch(records []SignedManifest, now time.Time, s
 }
 
 // Receive returns replies plus independently verified changed records to relay.
-// Invalid signatures/identities are fatal except for a bounded retry while an
-// exact advertised renewed chain is in flight. Unverified data grants no trust.
+// Invalid signatures or lifetimes are fatal except for a bounded retry while
+// an exact advertised renewed chain is in flight. Unverified data grants no trust.
 func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []ControlMessage, changed []SignedManifest, err error) {
 	s.prunePendingRenewals(now)
 	switch m.Kind {
@@ -269,7 +277,8 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 		if errors.Is(e, ErrStaleManifest) || errors.Is(e, ErrExpiredManifest) {
 			return nil, nil, nil
 		}
-		if errors.Is(e, ErrInvalidManifestSignature) && s.deferPendingRenewal(*m.Manifest, now) {
+		renewalMismatch := errors.Is(e, ErrInvalidManifestSignature) || errors.Is(e, ErrManifestOutlivesCertificate)
+		if renewalMismatch && s.deferPendingRenewal(*m.Manifest, now) {
 			return nil, nil, nil
 		}
 		if errors.Is(e, ErrIdentityNeeded) {
@@ -307,7 +316,7 @@ func (s *Synchronizer) certificateResult(messages []*CertificateMessage, complet
 		if pending, ok := s.pendingRenewals[principal]; ok {
 			delete(s.pendingRenewals, principal)
 			chain, _, valid := s.cache.Get(principal, now)
-			if !pending.expires.After(now) || !valid || !matchesCertificateDescription(chain, pending.chain) {
+			if !pending.fetchUntil.After(now) || !pending.expires.After(now) || !valid || !matchesCertificateDescription(chain, pending.chain) {
 				delete(s.pending, principal)
 				continue
 			}
@@ -334,7 +343,7 @@ func (s *Synchronizer) ContinueCertificates(now time.Time) ([]ControlMessage, []
 	return s.certificateResult(messages, completed, err, now)
 }
 
-// deferPendingRenewal retains no authority: a signature failure can wait only
+// deferPendingRenewal retains no authority: a signature or lifetime mismatch waits only
 // for this link's active, different-leaf descriptor, then must verify normally.
 func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool {
 	description, deadline, ok := s.certificates.PendingChain(w.Principal, now)
@@ -342,12 +351,12 @@ func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool
 		return false
 	}
 	// Accept already parsed and validated this body before reporting the
-	// signature failure. Bound retained state by that signed expiry too.
+	// renewal mismatch. Bound retained state by that signed expiry too.
 	var manifest Manifest
 	if json.Unmarshal(w.Body, &manifest) != nil {
 		return false
 	}
-	pending := pendingCertificateChain{chain: description, expires: minTime(deadline, time.UnixMilli(manifest.Expires))}
+	pending := pendingManifestRenewal{chain: description, expires: minTime(deadline, time.UnixMilli(manifest.Expires)), fetchUntil: deadline}
 	chain, _, ok := s.cache.Get(w.Principal, now)
 	if !ok || certificateHash(chain[0]) == pending.chain.Hashes[0] {
 		return false
@@ -357,6 +366,7 @@ func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool
 	}
 	if old, exists := s.pendingRenewals[w.Principal]; exists {
 		pending.expires = minTime(pending.expires, old.expires)
+		pending.fetchUntil = minTime(pending.fetchUntil, old.fetchUntil)
 	}
 	s.pending[w.Principal] = cloneSignedManifest(w)
 	s.pendingRenewals[w.Principal] = pending
@@ -366,7 +376,7 @@ func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool
 func (s *Synchronizer) prunePendingRenewals(now time.Time) {
 	for principal, pending := range s.pendingRenewals {
 		active, _, ok := s.certificates.PendingChain(principal, now)
-		if !pending.expires.After(now) || !ok || !sameCertificateDescription(pending.chain, active) {
+		if !pending.fetchUntil.After(now) || !pending.expires.After(now) || !ok || !sameCertificateDescription(pending.chain, active) {
 			delete(s.pending, principal)
 			delete(s.pendingRenewals, principal)
 		}

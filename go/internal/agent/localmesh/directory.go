@@ -57,6 +57,10 @@ var ErrStaleManifest = errors.New("stale wendy net manifest")
 // or unauthorized manifests; certificate renewal may need an in-flight leaf.
 var ErrInvalidManifestSignature = errors.New("invalid manifest signature")
 
+// ErrManifestOutlivesCertificate can await an explicitly advertised renewed
+// leaf, but normal admission still enforces the verified replacement lifetime.
+var ErrManifestOutlivesCertificate = errors.New("manifest outlives certificate")
+
 func (m Manifest) validate(now time.Time) error {
 	issued, expires := time.UnixMilli(m.Issued), time.UnixMilli(m.Expires)
 	if !expires.After(now) {
@@ -218,7 +222,7 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 		return false, errors.New("manifest identity mismatch")
 	}
 	if time.UnixMilli(m.Expires).After(id.NotAfter) {
-		return false, errors.New("manifest outlives certificate")
+		return false, ErrManifestOutlivesCertificate
 	}
 	leaf, err := x509.ParseCertificate(chain[0])
 	if err != nil {
