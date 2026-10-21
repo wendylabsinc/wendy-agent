@@ -1674,6 +1674,7 @@ func (c *Client) createContainer(ctx context.Context, req *agentpb.CreateContain
 					if err := c.retireMeshNetwork(containerName, oldLabels, c.serviceIPs[appID][serviceName]); err != nil {
 						return fmt.Errorf("retiring previous app network: %w", err)
 					}
+					c.forgetRetiredMeshIP(oldLabels)
 					retiredMesh = true
 				}
 				c.purgePersistedNetworkSandbox(ctx, existing, oldLabels, oldSpec)
@@ -2371,6 +2372,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		if err := c.retireMeshNetwork(appName, containerLabels, previousIP); err != nil {
 			return nil, fmt.Errorf("retiring previous app network before start: %w", err)
 		}
+		c.mu.Lock()
+		c.forgetRetiredMeshIP(containerLabels)
+		c.mu.Unlock()
 		// Host/shared namespaces are never eligible, even if stale process
 		// memory claims a sandbox exists for this name.
 		c.destroyNetworkSandbox(ctx, appName)
@@ -2635,6 +2639,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 						cleanupNetns()
 						return
 					}
+					c.mu.Lock()
+					c.forgetRetiredMeshIP(containerLabels)
+					c.mu.Unlock()
 					_ = c.CNIDel(context.WithoutCancel(ctx), appID, appName, netnsPath)
 					if needsGatewayDNS(isolation, entitlements) {
 						c.releaseMeshDNS(appName, appID)
@@ -4198,6 +4205,9 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	if err := c.retireMeshNetwork(containerID, labels, previousIP); err != nil {
 		return fmt.Errorf("retiring stopped app network: %w", err)
 	}
+	c.mu.Lock()
+	c.forgetRetiredMeshIP(labels)
+	c.mu.Unlock()
 	spec, _ := container.Spec(ctx)
 	desiredNetworkIdentity, _ := networkIdentityFromLabels(labels)
 	releasedSandbox := c.destroyNetworkSandbox(ctx, containerID)
@@ -4374,16 +4384,6 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	// Per-app state is only released once the whole group is stopped; siblings
 	// still need it.
 	if wholeApp {
-		// Re-acquire mutex for map cleanup. Both reads and writes of these maps
-		// are protected by c.mu to prevent data races with concurrent callers
-		// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
-		// clearPrimaryPID under the lock; other per-app metadata is kept alive until
-		// after the late sweep so that appIsolation is still readable by any
-		// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
-		c.mu.Lock()
-		c.clearPrimaryPID(appID)
-		c.mu.Unlock()
-
 		// Re-enumerate to catch any containers that appeared after
 		// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
 		// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
@@ -4405,7 +4405,11 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	// appStopping) until this section completes (SOC2-CC6, NIST-AC-3, NIST-SI-16,
 	// ISO27001-A.8, SOC2-CC8/ISO27001-A.12 unbounded-growth prevention).
 	c.mu.Lock()
-	if wholeApp {
+	// A failed retirement must retain its cached ownership for the retry.
+	// Dropping the whole group here would turn a missing-lease refusal into
+	// apparently fresh state on the next stop, and discard live siblings' data.
+	if wholeApp && len(errs) == 0 {
+		c.clearPrimaryPID(appID)
 		delete(c.appServices, appID)
 		delete(c.appIsolation, appID)
 		delete(c.serviceIPs, appID)
@@ -4534,6 +4538,7 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	if err := c.retireMeshNetwork(ctr.ID(), persistedLabels, c.serviceIPs[owner][service]); err != nil {
 		return "", fmt.Errorf("retiring deleted app network: %w", err)
 	}
+	c.forgetRetiredMeshIP(persistedLabels)
 	persistedSpec, _ := ctr.Spec(ctx)
 	releasedSandbox := c.destroyNetworkSandbox(ctx, ctr.ID())
 	if !releasedSandbox {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containernetworking/plugins/plugins/ipam/host-local/backend/disk"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -105,11 +106,15 @@ func TestMeshProofRetirementUsesPinnedExactOwnerBeforeDEL(t *testing.T) {
 				t.Fatalf("proof not retired: %v", err)
 			}
 			// Only the caller's subsequent CNI DEL may release the allocation. A
-			// stop followed by delete is safe even with a stale in-memory IP cache.
+			// stop followed by delete is safe once its retired cache is cleared.
 			if err := f.store.ReleaseByID(f.container, "eth0"); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.client.retireMeshNetwork(f.container, f.labels, f.ip); err != nil {
+			f.client.forgetRetiredMeshIP(f.labels)
+			if cached := f.client.serviceIPs[f.app][service]; cached != "" {
+				t.Fatalf("retired IP remains cached: %q", cached)
+			}
+			if err := f.client.retireMeshNetwork(f.container, f.labels, f.client.serviceIPs[f.app][service]); err != nil {
 				t.Fatal(err)
 			}
 			if len(f.calls) != 3 || len(f.store.GetByID(sibling, "eth0")) != 1 {
@@ -218,6 +223,9 @@ func TestDeleteRefusesToDiscardContainerWhenRuleRetirementFails(t *testing.T) {
 	if len(f.store.GetByID(f.container, "eth0")) != 1 {
 		t.Fatal("failed delete freed address")
 	}
+	if f.client.serviceIPs[f.app][""] != f.ip {
+		t.Fatal("failed delete discarded cached retry ownership")
+	}
 }
 
 type retirementUnknownTaskForTest struct{ retirementContainerForTest }
@@ -239,5 +247,87 @@ func TestDeleteUnknownTaskKeepsAllocationPinned(t *testing.T) {
 	}
 	if len(f.calls) != 3 {
 		t.Fatalf("exact rules were not retired before checking task: %v", f.calls)
+	}
+	if f.client.serviceIPs[f.app][""] != "" {
+		t.Fatal("successful rule retirement retained a stale cached address")
+	}
+}
+
+func TestMeshRetirementRejectsCachedAddressWithMissingOwnership(t *testing.T) {
+	f := newMeshRetirementFixture(t, "")
+	if err := f.store.ReleaseByID(f.container, "eth0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(networkSandboxResultPath(f.container)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.retireMeshNetwork(f.container, f.labels, f.ip); err == nil {
+		t.Fatal("missing ownership was treated as an already-retired live address")
+	}
+	if len(f.calls) != 0 || f.client.serviceIPs[f.app][""] != f.ip {
+		t.Fatal("unproven retirement changed rules or discarded retry state")
+	}
+	if f.client.meshIngress.Allowed(29182) {
+		t.Fatal("unproven retirement retained ingress admission")
+	}
+}
+
+// A real containerd client over its supported store seam exercises the entire
+// StopContainer group epilogue without a daemon or any host network changes.
+type retirementContainerStore struct {
+	containers.Store
+	container containers.Container
+}
+
+func (s retirementContainerStore) Get(context.Context, string) (containers.Container, error) {
+	return s.container, nil
+}
+func (s retirementContainerStore) List(context.Context, ...string) ([]containers.Container, error) {
+	return []containers.Container{s.container}, nil
+}
+
+func TestWholeAppStopRetainsOwnershipAfterRetirementRefusal(t *testing.T) {
+	for _, mode := range []string{"missing-ownership", "firewall-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newMeshRetirementFixture(t, "")
+			backend, err := containerd.New("", containerd.WithServices(containerd.WithContainerStore(retirementContainerStore{
+				container: containers.Container{ID: f.container, Labels: f.labels},
+			})))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			f.client.client = backend
+			f.client.namespace = "default"
+			f.client.appIsolation = map[string]string{f.app: "isolated"}
+			f.client.primaryPIDs = map[string]uint32{f.app: 123}
+			f.client.appServices = map[string]map[string]*appconfig.ServiceConfig{f.app: {"api": {}}}
+			if mode == "missing-ownership" {
+				// Both pieces of persisted proof vanished while the cache still
+				// records this live address. Every retry must continue to refuse.
+				if err := f.store.ReleaseByID(f.container, "eth0"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(networkSandboxResultPath(f.container)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				removeMeshEgressRule = func(string, string) error { return errors.New("firewall busy") }
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				if err := f.client.StopContainer(context.Background(), f.app); err == nil {
+					t.Fatal("whole-app stop accepted missing live ownership")
+				}
+				if f.client.serviceIPs[f.app][""] != f.ip || f.client.appIsolation[f.app] != "isolated" || f.client.primaryPIDs[f.app] != 123 || len(f.client.appServices[f.app]) != 1 {
+					t.Fatal("failed group stop discarded retry or live sibling state")
+				}
+				if f.client.appStopping[f.app] {
+					t.Fatal("failed group stop blocked a subsequent retry")
+				}
+			}
+			if mode == "missing-ownership" && len(f.calls) != 0 || f.client.meshIngress.Allowed(29182) {
+				t.Fatal("unproven whole-app stop changed rules or retained admission")
+			}
+		})
 	}
 }

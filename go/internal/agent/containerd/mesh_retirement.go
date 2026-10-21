@@ -74,6 +74,9 @@ func meshRetirementIP(containerID, appID, cachedIP string) (string, error) {
 	}
 	ips := store.GetByID(containerID, "eth0")
 	if len(ips) == 0 {
+		if cachedIP != "" {
+			return "", fmt.Errorf("net app %q has a cached address without IPAM ownership", containerID)
+		}
 		if _, err := os.Stat(networkSandboxResultPath(containerID)); !errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("net app %q has CNI proof without IPAM ownership", containerID)
 		}
@@ -120,4 +123,14 @@ func (c *Client) retireMeshNetwork(containerID string, labels map[string]string,
 		return err
 	}
 	return c.teardownMeshEgress(entitlements, containerID, appID, ip)
+}
+
+// forgetRetiredMeshIP drops the cache only after checked rule retirement has
+// succeeded. Callers hold c.mu and their concrete container lifecycle lock.
+// This makes stop followed by delete idempotent without mistaking a cached
+// live address whose lease vanished for an already-retired allocation.
+func (c *Client) forgetRetiredMeshIP(labels map[string]string) {
+	if _, meshApp := findMeshEntitlement(parseEntitlementsFromAnnotations(labels)); meshApp {
+		delete(c.serviceIPs[labels[labelKeyAppID]], labels[labelKeyServiceName])
+	}
 }
