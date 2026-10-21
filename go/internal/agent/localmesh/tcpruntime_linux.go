@@ -125,13 +125,6 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 					}
 					defer conn.Close()
 					if writeTCPPreface(conn, credentials.Device) == nil {
-						lease.Identify(peer)
-						lease.ObserveReady(func() { queue.Succeeded(peer.Principal()) })
-						defer func() {
-							if lease.WasReady() && !lease.Retired() && ctx.Err() == nil {
-								queue.Failed(peer.Principal(), time.Now())
-							}
-						}()
 						_ = attachTCP(WithConnectionLease(ctx, lease), node, credentials, peer, conn, false)
 					}
 				}()
@@ -179,6 +172,12 @@ func RunConfiguredWithNode(parent context.Context, configDir string, id TCPIdent
 						if _, ok := allowed[peer.Principal()]; !ok {
 							return
 						}
+						lease.ObserveReady(func() { queue.Succeeded(peer.Principal()) })
+						defer func() {
+							if lease.WasReady() && !lease.Retired() && ctx.Err() == nil {
+								queue.Failed(peer.Principal(), time.Now())
+							}
+						}()
 						_ = attachTCP(WithConnectionLease(ctx, lease), node, credentials, peer, conn, true)
 					}()
 				default:
@@ -263,6 +262,11 @@ func attachTCP(ctx context.Context, node *Node, credentials *Credentials, peer m
 	return attachTCPWithCost(ctx, node, credentials, peer, tcp, server, 256)
 }
 func attachTCPWithCost(ctx context.Context, node *Node, credentials *Credentials, peer meshid.Device, tcp net.Conn, server bool, cost uint16) error {
+	// The caller selected an eligible peer from its preface or discovery.
+	// Associate that scheduling hint before QUIC I/O so an inbound handshake
+	// can suppress a crossed outgoing attempt. TLS still pins the full peer.
+	lease, _ := ctx.Value(connectionLeaseKey{}).(*ConnectionLease)
+	lease.Identify(peer)
 	pc, err := NewTCPPacketConn(tcp)
 	if err != nil {
 		return err

@@ -258,6 +258,45 @@ func TestAllowRadioReasonNamesVetoBranch(t *testing.T) {
 	}
 }
 
+func TestRadioDiversityUsesOnlyCandidatesForItsOwnTransport(t *testing.T) {
+	now := time.Unix(1000, 0)
+	peer, candidate := selectionDevice(1), selectionDevice(2)
+	snapshot := NodeSnapshot{Links: []PeerLink{{Device: peer, Cost: 512}, {Device: peer, Cost: 4096}}}
+	p := NewPeerSelection(func() NodeSnapshot { return snapshot })
+	p.now = func() time.Time { return now }
+	p.Seen(candidate, RadioNAN)
+	if !p.AllowRadio(peer, RadioBLE) {
+		t.Fatal("NAN-only discovery displaced an authenticated BLE fallback")
+	}
+	p.Seen(candidate, RadioBLE)
+	if p.AllowRadio(peer, RadioBLE) || !p.AllowRadio(peer, RadioNAN) {
+		t.Fatal("BLE candidate must free only the redundant BLE slot")
+	}
+	p.Failed(candidate, RadioBLE)
+	p.Seen(candidate, RadioBLE)
+	if !p.AllowRadio(peer, RadioBLE) {
+		t.Fatal("repeated discovery overrode a failed BLE candidate's cooldown")
+	}
+	now = now.Add(FailedConnectPenalty + time.Second)
+	if p.AllowRadio(peer, RadioBLE) {
+		t.Fatal("live BLE candidate did not become eligible after cooldown")
+	}
+	now = now.Add(time.Minute)
+	if !p.AllowRadio(peer, RadioBLE) {
+		t.Fatal("expired BLE discovery displaced an authenticated fallback")
+	}
+	p.Seen(candidate, RadioBLE)
+	snapshot.Links = snapshot.Links[1:]
+	if !p.AllowRadio(peer, RadioBLE) {
+		t.Fatal("discovery displaced the peer's sole authenticated path")
+	}
+	// A candidate already reached on another carrier needs no new radio slot.
+	snapshot.Links = append(snapshot.Links, PeerLink{Device: peer, Cost: 512}, PeerLink{Device: candidate, Cost: 64})
+	if !p.AllowRadio(peer, RadioBLE) {
+		t.Fatal("an already connected candidate displaced a useful fallback")
+	}
+}
+
 func selectionDevice(number int) meshid.Device {
 	tenant, _ := meshid.ParseTenant(testTenantUUID)
 	device, _ := meshid.ParseDevice(tenant, fmt.Sprintf("00000000-0000-4000-8000-%012x", number))

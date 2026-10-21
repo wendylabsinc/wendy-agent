@@ -146,7 +146,7 @@ func (p *PeerSelection) AllowLAN(asset meshid.Device, cost uint16) bool {
 
 // AllowRadio preserves preferences between carriers reaching the same peer.
 // Each provider independently limits outgoing attempts, outgoing connections
-// and total connections. Unrelated neighbours never share a radio budget.
+// and total connections. Other carriers do not consume that provider's budget.
 func (p *PeerSelection) AllowRadio(asset meshid.Device, medium RadioMedium) bool {
 	allow, _ := p.AllowRadioReason(asset, medium)
 	return allow
@@ -192,7 +192,10 @@ func (p *PeerSelection) AllowRadioReason(asset meshid.Device, medium RadioMedium
 			delete(p.seen, key)
 			continue
 		}
-		if key.asset != asset && !connected[key.asset] && !now.Before(hint.failedUntil) {
+		// Only a candidate for this transport can use the slot we free.
+		// In particular, unverified NAN presence must not displace a BLE
+		// fallback: the transports have independent connection budgets.
+		if key.medium == medium && key.asset != asset && !connected[key.asset] && !now.Before(hint.failedUntil) {
 			return false, fmt.Sprintf("second-radio-fresh-candidate(principal=%s)", key.asset.Principal())
 		}
 	}

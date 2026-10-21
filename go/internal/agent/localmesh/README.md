@@ -98,6 +98,9 @@ firmware events do not select an arbitrary path for teardown.
 A cheaper LAN link still replaces a slower link only to the same principal;
 LAN does not consume radio capacity. The shared carrier preference can retain
 NAN when shedding duplicate BLE links, independently of connection limits.
+Only a fresh candidate for BLE can displace a redundant BLE link; NAN-only
+presence cannot use the freed Bluetooth slot. Failed or expired candidates and
+devices already reached on another carrier do not displace the fallback.
 
 Before changing kernel networking state, the router checks actual IPv6 policy
 routing and TUN APIs. Setup failures identify the failed operation and relevant
