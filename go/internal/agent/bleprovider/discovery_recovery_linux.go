@@ -36,7 +36,7 @@ func (r *runtime) reportDiscoveryHealth(ctx context.Context, err error) {
 
 func (r *runtime) publishDiscoveryHealth(ctx context.Context) {
 	err := errors.Join(r.scanErr, r.reportErr)
-	if ctx.Err() != nil || (err == nil && r.discoveryErr == nil) {
+	if ctx.Err() != nil {
 		return
 	}
 	r.discoveryErr = err

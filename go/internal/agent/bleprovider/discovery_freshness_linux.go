@@ -69,12 +69,14 @@ func (f *advertisementFreshness) observe(path dbus.ObjectPath, props map[string]
 		}
 		return
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if !mayDial(adv.DeviceHint, f.self) {
-		delete(f.seen, path)
+		// Withdraw text correlation too: a later name-only report must not
+		// revive the tenant component from before this binary identity.
+		f.forget(path)
 		return
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.recordLocked(path, adv, at, false)
 }
 

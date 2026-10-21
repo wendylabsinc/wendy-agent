@@ -351,3 +351,27 @@ func TestLocalNameStalePairAndConcurrentReports(t *testing.T) {
 		t.Fatal("concurrent tracker lost final report")
 	}
 }
+
+func TestBlueZIneligibleBinaryClearsTextCorrelation(t *testing.T) {
+	f := newAdvertisementFreshness("/org/bluez/hci0", ServiceUUID(testTenant), "field", selfFixture)
+	path, objects := reportObjects("AA_BB_CC_DD_EE_01")
+	tenant, name := nameFields(lowDevice, "field")
+	at := time.Unix(1000, 0)
+	f.observeReport("AA:BB:CC:DD:EE:01", "public", append(bytes.Clone(tenant), name...), at)
+	if peers, _ := f.candidates(objects, at); len(peers) != 1 {
+		t.Fatal("missing initial text candidate")
+	}
+	// The newer binary identity is not dialable. A later name alone must not
+	// join the tenant component from before that binary announcement.
+	adv, _ := NewAdvertisement(peerDevice, "field", DefaultPSM)
+	raw, _ := adv.MarshalBinary()
+	f.observe(path, map[string]dbus.Variant{"ServiceData": dbus.MakeVariant(map[string]dbus.Variant{ServiceUUID(testTenant): dbus.MakeVariant(raw)})}, at.Add(time.Second))
+	f.observeReport("AA:BB:CC:DD:EE:01", "public", name, at.Add(2*time.Second))
+	if peers, _ := f.candidates(objects, at.Add(2*time.Second)); len(peers) != 0 {
+		t.Fatalf("old text tenant component survived binary withdrawal: %+v", peers)
+	}
+	f.observeReport("AA:BB:CC:DD:EE:01", "public", tenant, at.Add(2500*time.Millisecond))
+	if peers, _ := f.candidates(objects, at.Add(2500*time.Millisecond)); len(peers) != 1 {
+		t.Fatal("fresh text pair did not recover")
+	}
+}

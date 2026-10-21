@@ -251,3 +251,49 @@ func FuzzManagementAdvertisement(f *testing.F) {
 		}
 	})
 }
+
+// Run publishes the setup result before starting the receiver. Its first reopen
+// can succeed without an intervening failure event; recovery must still replace
+// the initial degraded status.
+func TestManagementImmediateOpenRecoveryClearsInitialHealth(t *testing.T) {
+	initialErr := errors.New("initial report source unavailable")
+	var statuses []localmesh.CarrierStatus
+	r := &runtime{reportErr: initialErr, cfg: Config{Status: func(s localmesh.CarrierStatus) { statuses = append(statuses, s) }}}
+	r.publishDiscoveryHealth(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader := &scriptedManagementReader{read: func(ctx context.Context) ([]byte, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	status := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runManagementReports(ctx, 0, newAdvertisementFreshness("/org/bluez/hci0", ServiceUUID(testTenant), "field", selfFixture), nil,
+			func() (managementReportReader, error) { return reader, nil }, status)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("recovered source did not stop")
+		}
+	}()
+	select {
+	case err := <-status:
+		r.reportErr = err
+		r.publishDiscoveryHealth(ctx)
+	case <-time.After(time.Second):
+		t.Fatal("immediate recovery not reported")
+	}
+	if len(statuses) != 2 || !statuses[1].Ready || statuses[1].Err != nil {
+		t.Fatalf("initial source failure remained published after recovery: %+v", statuses)
+	}
+}
+
+func TestDiscoveryPublishesInitialHealthyStatus(t *testing.T) {
+	var statuses []localmesh.CarrierStatus
+	r := &runtime{cfg: Config{Status: func(s localmesh.CarrierStatus) { statuses = append(statuses, s) }}}
+	r.publishDiscoveryHealth(context.Background())
+	if len(statuses) != 1 || !statuses[0].Ready || statuses[0].Err != nil {
+		t.Fatalf("healthy setup was not published: %+v", statuses)
+	}
+}

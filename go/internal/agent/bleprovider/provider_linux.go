@@ -350,9 +350,7 @@ func Run(ctx context.Context, cfg Config) error {
 	var loops sync.WaitGroup
 	loopErrors := make(chan error, 4)
 	// Publish setup completion before the loops can report a discovery failure.
-	if cfg.Status != nil {
-		cfg.Status(localmesh.CarrierStatus{Ready: true, Err: reportErr})
-	}
+	r.publishDiscoveryHealth(runCtx)
 	loops.Add(4)
 	go func() {
 		defer loops.Done()
