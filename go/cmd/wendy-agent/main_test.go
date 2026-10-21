@@ -1,7 +1,14 @@
 package main
 
 import (
+	"fmt"
+	"io"
+	"os"
+	"runtime"
 	"testing"
+
+	wendy "github.com/wendylabsinc/wendy-go"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 
 	"go.uber.org/zap/zaptest"
 )
@@ -52,5 +59,40 @@ func TestEnvBytesRejectsBelowMinimum(t *testing.T) {
 	// An unset variable is not a misconfiguration; it is the default.
 	if got := envBytes(logger, "WENDY_TEST_BYTES_UNSET", fallback, 1); got != fallback {
 		t.Fatalf("an unset variable gave %d, want the %d default", got, fallback)
+	}
+}
+
+func TestAgentVersionUtility(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"plain", []string{"--version"}, version.Version + "\n"},
+		{"short", []string{"-v"}, version.Version + "\n"},
+		{"verbose", []string{"--version", "--verbose"}, fmt.Sprintf("Agent: %s\nCore: %s\nGo: %s\n", version.Version, wendy.CoreVersion(), runtime.Version())},
+		{"short verbose", []string{"-v", "--verbose"}, fmt.Sprintf("Agent: %s\nCore: %s\nGo: %s\n", version.Version, wendy.CoreVersion(), runtime.Version())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			original := os.Stdout
+			os.Stdout = w
+			defer func() { os.Stdout = original }()
+			handled, code := handleUtilityCommand(tc.args)
+			os.Stdout = original
+			w.Close()
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !handled || code != 0 || string(out) != tc.want {
+				t.Fatalf("handled=%v, code=%d, output=%q; want true, 0, %q", handled, code, out, tc.want)
+			}
+		})
 	}
 }
