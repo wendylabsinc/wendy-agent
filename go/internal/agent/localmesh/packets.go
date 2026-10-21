@@ -24,8 +24,9 @@ const (
 	fragmentHeader = 9 // kind, packet ID, total size, offset
 )
 
-// EncodeIP fragments one complete IP packet into bounded QUIC datagrams. IDs
-// are scoped to a fresh authenticated QUIC connection; no cross-link state.
+// EncodeIP fragments one complete IP packet into bounded link datagrams. IDs
+// advance once per complete packet on each fresh authenticated link (including
+// framed carriers), using uint32 serial order across wrap; no cross-link state.
 func EncodeIP(id uint32, packet []byte) ([][]byte, error) {
 	if !validIP(packet) {
 		return nil, errors.New("invalid tunnel IP packet")

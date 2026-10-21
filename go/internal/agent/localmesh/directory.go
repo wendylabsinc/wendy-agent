@@ -120,9 +120,10 @@ func SignManifest(m Manifest, chain [][]byte, signer crypto.Signer, now time.Tim
 var ErrIdentityNeeded = errors.New("wendy net identity bundle needed")
 
 type directoryEntry struct {
-	manifest Manifest
-	wire     SignedManifest
-	hash     string
+	manifest  Manifest
+	wire      SignedManifest
+	hash      string
+	signature manifestSignatureBinding
 	// Tombstones and superseded versions live for a full maximum lease from
 	// admission, so removing a short-lived update cannot resurrect an older one.
 	retainUntil time.Time
@@ -182,8 +183,8 @@ func NewDirectory(tenant meshid.Tenant, limit int, cache *IdentityCache) (*Direc
 // Accept validates the advertising device's own verified identity, never the
 // relaying neighbour: a manifest is admitted because its signer is the device
 // named in it, and that device was admitted by the authenticated link. Return
-// true only for a new version: duplicate delivery never renews its signed
-// absolute expiry.
+// true for a new version or a replacement of an invalid old signature by a
+// current key. Duplicate delivery and re-signing never renew the signed expiry.
 func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	if len(w.Body) > MaxManifestBytes || len(w.Signature) > 1024 || w.Principal == "" || len(w.Principal) > maxPrincipalBytes {
 		return false, errors.New("oversized manifest envelope")
@@ -219,19 +220,10 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	input, _ := signingInput(leaf.PublicKey, w.Body)
-	valid := false
-	switch key := leaf.PublicKey.(type) {
-	case ed25519.PublicKey:
-		valid = ed25519.Verify(key, input, w.Signature)
-	case *ecdsa.PublicKey:
-		valid = ecdsa.VerifyASN1(key, input, w.Signature)
-	case *rsa.PublicKey:
-		valid = rsa.VerifyPKCS1v15(key, crypto.SHA256, input, w.Signature) == nil
-	}
-	if !valid {
+	if !validManifestSignature(w, leaf) {
 		return false, errors.New("invalid manifest signature")
 	}
+	binding := manifestSignatureBinding{leafHash: certificateHash(chain[0]), valid: true}
 	hash := manifestHash(w.Body)
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -259,13 +251,22 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 			if hash != old.hash {
 				return false, errors.New("conflicting manifest revision")
 			}
+			// An identical body can be re-signed by a renewed key. Replace only
+			// an old signature that no longer verifies with the current leaf;
+			// do not renew the lease, retention or durable replay receipt.
+			if !old.signature.matches(binding.leafHash, func() bool { return validManifestSignature(old.wire, leaf) }) {
+				old.wire = cloneSignedManifest(w)
+				old.signature = binding
+				d.entries[device.Principal()] = old
+				return true, nil
+			}
+			d.entries[device.Principal()] = old
 			return false, nil
 		}
 	} else if len(d.entries) >= d.limit {
 		return false, errors.New("directory capacity reached")
 	}
-	w.Body = append(json.RawMessage(nil), w.Body...)
-	w.Signature = append([]byte(nil), w.Signature...)
+	w = cloneSignedManifest(w)
 	next := make(map[string]DirectoryReceipt, len(d.history)+1)
 	for principal, r := range d.history {
 		if r.Until.After(now) {
@@ -287,8 +288,82 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 		}
 	}
 	d.history = next
-	d.entries[device.Principal()] = directoryEntry{m, w, hash, now.Add(MaxLease + 5*time.Second)}
+	d.entries[device.Principal()] = directoryEntry{manifest: m, wire: w, hash: hash, signature: binding, retainUntil: now.Add(MaxLease + 5*time.Second)}
 	return true, nil
+}
+
+// validManifestSignature is shared by admission and renewal revalidation so
+// both always use the same signature preimage and supported key algorithms.
+func validManifestSignature(w SignedManifest, leaf *x509.Certificate) bool {
+	input, _ := signingInput(leaf.PublicKey, w.Body)
+	switch key := leaf.PublicKey.(type) {
+	case ed25519.PublicKey:
+		return ed25519.Verify(key, input, w.Signature)
+	case *ecdsa.PublicKey:
+		return ecdsa.VerifyASN1(key, input, w.Signature)
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(key, crypto.SHA256, input, w.Signature) == nil
+	}
+	return false
+}
+
+// A directory entry owns immutable wire bytes. Its bounded memo applies only
+// to that exact signature and leaf. Current chain trust and expiry are checked
+// before reuse; a renewed leaf needs one signature check, even for the same key.
+type manifestSignatureBinding struct {
+	leafHash string
+	valid    bool
+}
+
+func (b *manifestSignatureBinding) matches(leafHash string, verify func() bool) bool {
+	if b.leafHash != leafHash {
+		b.leafHash, b.valid = leafHash, verify()
+	}
+	return b.valid
+}
+
+func cloneSignedManifest(w SignedManifest) SignedManifest {
+	w.Body = append(json.RawMessage(nil), w.Body...)
+	w.Signature = append([]byte(nil), w.Signature...)
+	return w
+}
+
+// CurrentRecordChain returns an owned current trusted chain only for the exact
+// latest admitted wire (including its signature), while its signed lease and
+// current certificate lifetime still permit export. It includes withdrawals.
+// The chain is the one used for signature validation, so callers must use this
+// result for a paired descriptor instead of looking the principal up again.
+// It is a current validity snapshot, not a reservation against later renewal.
+func (d *Directory) CurrentRecordChain(w SignedManifest, now time.Time) ([][]byte, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.entries[w.Principal]
+	if !ok || !bytes.Equal(w.Body, e.wire.Body) || !bytes.Equal(w.Signature, e.wire.Signature) {
+		return nil, false
+	}
+	return d.currentEntryChain(w.Principal, e, now)
+}
+
+// currentEntryChain requires d.mu and updates only the entry's signature memo.
+// It never removes a replay floor, extends a lease, or renews retention.
+func (d *Directory) currentEntryChain(principal string, e directoryEntry, now time.Time) ([][]byte, bool) {
+	expires := time.UnixMilli(e.manifest.Expires)
+	if !expires.After(now) {
+		return nil, false
+	}
+	chain, id, ok := d.cache.Get(principal, now)
+	if !ok || id.Device.Principal() != principal || expires.After(id.NotAfter) {
+		return nil, false
+	}
+	valid := e.signature.matches(certificateHash(chain[0]), func() bool {
+		leaf, err := x509.ParseCertificate(chain[0])
+		return err == nil && validManifestSignature(e.wire, leaf)
+	})
+	d.entries[principal] = e
+	if !valid {
+		return nil, false
+	}
+	return chain, true
 }
 
 func manifestHash(body []byte) string {
@@ -302,12 +377,12 @@ func (d *Directory) Snapshot(now time.Time) []Manifest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := []Manifest{}
-	for _, e := range d.entries {
+	for principal, e := range d.entries {
 		m := e.manifest
 		if m.Withdraw || !time.UnixMilli(m.Expires).After(now) {
 			continue
 		}
-		if _, _, ok := d.cache.Get(e.wire.Principal, now); !ok {
+		if _, ok := d.currentEntryChain(principal, e, now); !ok {
 			continue
 		}
 		out = append(out, m)
@@ -322,8 +397,8 @@ func (d *Directory) Records(now time.Time) []SignedManifest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := []SignedManifest{}
-	for _, e := range d.entries {
-		if !time.UnixMilli(e.manifest.Expires).After(now) {
+	for principal, e := range d.entries {
+		if _, ok := d.currentEntryChain(principal, e, now); !ok {
 			continue
 		}
 		w := e.wire

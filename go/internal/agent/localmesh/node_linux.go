@@ -540,6 +540,50 @@ func (n *Node) verifyPeerCertificates(peer meshid.Device, certs []*x509.Certific
 	return nil
 }
 
+// writeControls validates queued manifests again at the final node export
+// boundary. Renewal or supersession while a previous write blocks must not
+// send an obsolete signature or tear down a healthy neighbour link.
+func (n *Node) writeControls(ctx context.Context, p *nodePeer) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case m := <-p.control:
+			if m.Kind == "certificate" && m.Certificate != nil && m.Certificate.Chain != nil {
+				// Chain hints can wait behind a slow write across renewal too.
+				// Keep content-addressed requests/chunks independent, but name
+				// only the principal's current trusted chain in a new hint.
+				if n.cache == nil {
+					continue
+				}
+				principal := m.Certificate.Chain.Principal
+				chain, _, ok := n.cache.Get(principal, time.Now())
+				if !ok {
+					continue
+				}
+				m.Certificate = DescribeCertificates(principal, chain)
+				if m.Certificate == nil {
+					continue
+				}
+			}
+			if m.Kind == "manifest" {
+				if m.Manifest == nil || n.directory == nil {
+					continue
+				}
+				if _, ok := n.directory.CurrentRecordChain(*m.Manifest, time.Now()); !ok {
+					continue
+				}
+			}
+			if err := p.link.WriteControl(m); err != nil {
+				return err
+			}
+			if m.Kind == "bundle" {
+				n.bundleHints.Written(p.device, m.Bundle, time.Now())
+			}
+		}
+	}
+}
+
 func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, link nodeLink) error {
 	if cost == 0 || cost == ^uint16(0) {
 		return errors.New("invalid wendy net link cost")
@@ -561,21 +605,7 @@ func (n *Node) attachLink(ctx context.Context, peer meshid.Device, cost uint16, 
 	var wg sync.WaitGroup
 	done := make(chan error, 4)
 	worker := func(f func() error) { wg.Add(1); go func() { defer wg.Done(); done <- f() }() }
-	worker(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m := <-p.control:
-				if err := link.WriteControl(m); err != nil {
-					return err
-				}
-				if m.Kind == "bundle" {
-					n.bundleHints.Written(p.device, m.Bundle, time.Now())
-				}
-			}
-		}
-	})
+	worker(func() error { return n.writeControls(ctx, p) })
 	worker(func() error {
 		for {
 			m, err := link.ReadControl()

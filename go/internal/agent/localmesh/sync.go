@@ -151,7 +151,7 @@ func (s *Synchronizer) Record(w SignedManifest, now time.Time) []ControlMessage 
 // The bundle hint is consumed only if the complete record fits. A caller must
 // reserve this many queue slots before sending the returned messages.
 func (s *Synchronizer) recordBounded(w SignedManifest, now time.Time, slots int) ([]ControlMessage, bool) {
-	chain, _, ok := s.cache.Get(w.Principal, now)
+	chain, ok := s.directory.CurrentRecordChain(w, now)
 	if !ok {
 		return nil, true
 	}

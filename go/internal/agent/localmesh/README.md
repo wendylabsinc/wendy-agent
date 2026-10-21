@@ -57,6 +57,16 @@ origin. The later signed-router-announcement stage supplies that protection.
 Babel feasibility, split horizon, loop prevention and bounded packet decoding
 apply independently.
 
+Manifest projection and synchronization require the exact currently admitted
+wire signature to verify under the principal's current cached certificate. A
+same-principal key renewal cannot lend trust to a signature made with the old
+key. Same-key renewal can retain a valid signature, subject to the current
+chain lifetime and the original signed lease. Re-signing an identical body with
+a new key can replace an invalid old signature without renewing its lease or
+replay receipt. Queued exports use that exact wire and its matching current
+certificate chain together. Unchanged leaves reuse only the signature verdict;
+current chain trust and expiry are still checked on every read.
+
 ## Control and payload flow
 
 Router QUIC uses ALPN `wendy-net-router/2` and hello version 2. Its authenticated
