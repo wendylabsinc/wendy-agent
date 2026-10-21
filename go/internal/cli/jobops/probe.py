@@ -217,23 +217,26 @@ def main():
         raise ValueError("root directory is not a job")
     since = request.get("since", "")
     wait = request.get("wait_seconds", 0)
+    until_terminal = request.get("until_terminal", False)
+    if not isinstance(until_terminal, bool):
+        raise ValueError("until_terminal must be boolean")
     if not isinstance(since, str) or len(since) > 128:
         raise ValueError("invalid cursor")
     if isinstance(wait, bool) or not isinstance(wait, int) or not 0 <= wait <= 30:
         raise ValueError("wait_seconds must be an integer from 0 to 30")
-    if wait and not since:
+    if wait and not since and not until_terminal:
         raise ValueError("wait_seconds requires since")
     deadline = time.monotonic() + wait
     while True:
         out = snapshot(root, str(request.get("target", ""))[:4096])
         if (
-            out["cursor"] != since
+            (not until_terminal and out["cursor"] != since)
             or time.monotonic() >= deadline
             or out["reported_state"] in ["completed", "failed", "stopped", "cancelled"]
         ):
             break
         time.sleep(min(0.25, max(0, deadline - time.monotonic())))
-    if out["cursor"] == since:
+    if out["cursor"] == since and not until_terminal:
         out = {
             k: out[k]
             for k in [

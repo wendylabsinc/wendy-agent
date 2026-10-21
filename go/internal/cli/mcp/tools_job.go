@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"path/filepath"
@@ -16,13 +15,17 @@ func (s *mcpServer) registerJobTools(srv *server.MCPServer) {
 	opts = append(opts, readOnly()...)
 	opts = append(opts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("job_inspect", opts...), s.handleJobInspect)
-	submit := []mcpgo.ToolOption{mcpgo.WithDescription("Start a named durable host job from a bounded step specification. Stores metadata/logs under working_directory/.wendy/jobs/name and runs requested argv with host-agent permissions. Records exits/timeouts and optionally verifies source hashes before launch. Workload commands may write elsewhere. Identical name/spec retries reuse the original job; a different spec never restarts it. This executes workloads: choose the target and runtime explicitly. Receipt means started, not successful."), mcpgo.WithObject("spec", mcpgo.Required(), mcpgo.Properties(map[string]any{
+	submit := []mcpgo.ToolOption{mcpgo.WithDescription("Start a named durable host job. Supply exactly one of spec_path (local JSON file) or spec (inline). Runs argv with host-agent permissions; commands may write elsewhere. Identical retries reuse the job; different specs never restart it. Optional wait_seconds waits for terminal evidence without cancelling on expiry. Optional artifact_files and artifact_destination retrieve verified reports locally after terminal evidence; later errors preserve the receipt. Receipt alone is not success."), mcpgo.WithString("spec_path", mcpgo.Description("Absolute local JSON spec path on the MCP server machine, not a remote path")), mcpgo.WithInteger("wait_seconds", mcpgo.Min(0), mcpgo.Max(30), mcpgo.Description("Wait up to 30 seconds for terminal evidence; omitted: 0 (receipt only)")), mcpgo.WithObject("spec", mcpgo.Properties(map[string]any{
 		"name":              map[string]any{"type": "string", "description": "Unique job name; lowercase letters, digits, underscore or hyphen"},
 		"working_directory": map[string]any{"type": "string", "description": "Absolute existing remote source directory"},
 		"steps":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "required": []string{"name", "argv", "timeout_seconds"}, "additionalProperties": false, "properties": map[string]any{"name": map[string]any{"type": "string"}, "argv": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}, "description": "Executable and args, no shell expansion. {job_dir} and {step_dir} expand to owned output paths."}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400}}}},
 		"source_hashes":     map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Optional relative source/checkpoint paths mapped to expected SHA-256"},
 	}))}
 	submit = append(submit, mutating()...)
+	submit = append(submit,
+		mcpgo.WithArray("artifact_files", mcpgo.WithStringItems(), mcpgo.Description("Optional selected relative reports to retrieve after a terminal observation; requires wait_seconds and artifact_destination. Same 64-file/16-MiB limits as job_artifacts_pull.")),
+		mcpgo.WithString("artifact_destination", mcpgo.Description("Absolute local report directory. Collection failures preserve the receipt; running jobs return artifacts_pending.")),
+	)
 	submit = append(submit, idempotent()...)
 	submit = append(submit, openWorld()...)
 	submitTool := mcpgo.NewTool("job_submit", submit...)
@@ -69,6 +72,7 @@ func (s *mcpServer) handleJobInspect(ctx context.Context, req mcpgo.CallToolRequ
 	if err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
+
 	if err = jobops.ValidateInspect(jobPath, jobops.InspectOptions{Since: since, WaitSeconds: wait}); err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
@@ -130,28 +134,54 @@ func jobJSON(value map[string]any) *mcpgo.CallToolResult {
 }
 
 func (s *mcpServer) handleJobSubmit(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	raw, exists := req.GetArguments()["spec"]
-	if !exists {
-		return errResult(errCodeInvalidArgument, "spec is required"), nil
+	raw, inline := req.GetArguments()["spec"]
+	file, fromFile := req.GetArguments()["spec_path"]
+	if inline == fromFile {
+		return errResult(errCodeInvalidArgument, "supply exactly one of spec or spec_path"), nil
 	}
-	encoded, err := json.Marshal(raw)
+	wait, err := ros2Int(req, "wait_seconds", 0, 0, 30)
 	if err != nil {
-		return errResult(errCodeInvalidArgument, "invalid spec"), nil
-	}
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	var spec jobops.Spec
-	if err = decoder.Decode(&spec); err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
-	if err = jobops.ValidateSpec(spec); err != nil {
+	opts := jobops.SubmitOptions{WaitSeconds: wait}
+	if value, exists := req.GetArguments()["artifact_files"]; exists {
+		encoded, e := json.Marshal(value)
+		if e != nil || json.Unmarshal(encoded, &opts.ArtifactFiles) != nil || len(opts.ArtifactFiles) == 0 {
+			return errResult(errCodeInvalidArgument, "artifact_files must be a nonempty string array"), nil
+		}
+	}
+	if value, exists := req.GetArguments()["artifact_destination"]; exists {
+		var ok bool
+		opts.ArtifactDestination, ok = value.(string)
+		if !ok {
+			return errResult(errCodeInvalidArgument, "artifact_destination must be a string"), nil
+		}
+	}
+	if err = jobops.ValidateSubmitOptions(opts); err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
+	}
+	var spec jobops.Spec
+	if fromFile {
+		name, ok := file.(string)
+		if !ok || !filepath.IsAbs(name) {
+			return errResult(errCodeInvalidArgument, "spec_path must be an absolute local path"), nil
+		}
+		spec, err = jobops.LoadSpec(name)
+	} else {
+		var encoded []byte
+		encoded, err = json.Marshal(raw)
+		if err == nil {
+			spec, err = jobops.ParseSpec(encoded)
+		}
+	}
+	if err != nil {
 		return errResult(errCodeInvalidArgument, err.Error()), nil
 	}
 	conn, _, target := s.connectionSnapshot()
 	if conn == nil {
 		return errNotConnected(), nil
 	}
-	receipt, err := jobops.Submit(ctx, conn, spec)
+	receipt, err := jobops.SubmitWorkflow(ctx, conn, spec, opts)
 	if err != nil {
 		return errResult(errCodeInternal, err.Error()), nil
 	}

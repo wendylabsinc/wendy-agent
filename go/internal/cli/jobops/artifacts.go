@@ -28,17 +28,14 @@ func Pull(ctx context.Context, conn *grpcclient.AgentConnection, jobPath, destin
 	if !path.IsAbs(jobPath) || path.Clean(jobPath) == "/" || len(jobPath) > 4096 || strings.ContainsRune(jobPath, 0) {
 		return nil, fmt.Errorf("job_path must be an absolute job directory")
 	}
-	if len(files) < 1 || len(files) > 64 || destination == "" {
-		return nil, fmt.Errorf("select one to 64 files and a destination")
+	if err := validateArtifactFiles(files); err != nil || destination == "" {
+		return nil, fmt.Errorf("select one to 64 safe relative files and a destination")
 	}
 	if conn == nil || !conn.IsMTLS {
 		return nil, fmt.Errorf("artifact retrieval requires an authenticated device connection")
 	}
 	seen := map[string]bool{}
 	for _, name := range files {
-		if name == "." || strings.HasPrefix(strings.Split(name, "/")[0], ".wendy-artifacts-") || len(name) > 1024 || !filepath.IsLocal(name) || strings.Contains(name, "\\") || path.Clean(name) != name || seen[name] {
-			return nil, fmt.Errorf("files must be unique safe relative paths")
-		}
 		seen[name] = true
 	}
 	destination, err := filepath.Abs(destination)
@@ -193,4 +190,18 @@ func Pull(ctx context.Context, conn *grpcclient.AgentConnection, jobPath, destin
 	}
 	hash := sha256.Sum256(encoded)
 	return map[string]any{"complete": true, "verified_files": len(rows), "unchanged_files": skipped, "transferred_bytes": transferred, "manifest_path": filepath.Join(destination, name), "manifest_sha256": hex.EncodeToString(hash[:])}, nil
+}
+
+func validateArtifactFiles(files []string) error {
+	if len(files) < 1 || len(files) > 64 {
+		return fmt.Errorf("select one to 64 files")
+	}
+	seen := map[string]bool{}
+	for _, name := range files {
+		if name == "." || strings.HasPrefix(strings.Split(name, "/")[0], ".wendy-artifacts-") || len(name) > 1024 || !filepath.IsLocal(name) || strings.Contains(name, "\\") || path.Clean(name) != name || seen[name] {
+			return fmt.Errorf("files must be unique safe relative paths")
+		}
+		seen[name] = true
+	}
+	return nil
 }

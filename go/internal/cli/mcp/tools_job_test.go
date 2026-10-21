@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -88,5 +90,32 @@ func TestWorkflowResultHasOneParseableJSONRepresentation(t *testing.T) {
 	}
 	if len(encoded) > 220 || strings.Count(string(encoded), "reported_state") != 1 {
 		t.Fatalf("workflow observation duplicated: %s", encoded)
+	}
+}
+
+func TestSubmitFileReferenceValidatesBeforeDeviceAccess(t *testing.T) {
+	s := New(&config.Config{}, nil)
+	for _, args := range []map[string]any{
+		{}, {"spec": map[string]any{}, "spec_path": "/tmp/spec.json"},
+		{"spec_path": "relative.json"}, {"spec_path": 3},
+		{"spec_path": "/tmp/spec.json", "wait_seconds": 31},
+		{"spec": map[string]any{}, "wait_seconds": 0.5},
+		{"spec_path": "/tmp/spec.json", "artifact_files": []string{"status.json"}},
+		{"spec_path": "/tmp/spec.json", "wait_seconds": 1, "artifact_files": []string{"../escape"}, "artifact_destination": "/tmp/results"},
+		{"spec_path": "/tmp/spec.json", "wait_seconds": 1, "artifact_files": []any{3}, "artifact_destination": "/tmp/results"},
+		{"spec_path": "/tmp/spec.json", "wait_seconds": 1, "artifact_destination": 3},
+	} {
+		r, err := s.handleJobSubmit(context.Background(), callToolReq("job_submit", args))
+		encoded, _ := json.Marshal(r)
+		if err != nil || !r.IsError || strings.Contains(string(encoded), "NOT_CONNECTED") {
+			t.Fatalf("invalid request reached connection: %v %s", err, encoded)
+		}
+	}
+	name := filepath.Join(t.TempDir(), "spec.json")
+	os.WriteFile(name, []byte(`{"name":"test","working_directory":"/tmp/source","steps":[{"name":"check","argv":["python3"],"timeout_seconds":1}]}`), 0600)
+	r, err := s.handleJobSubmit(context.Background(), callToolReq("job_submit", map[string]any{"spec_path": name, "wait_seconds": 1}))
+	encoded, _ := json.Marshal(r)
+	if err != nil || !strings.Contains(string(encoded), "NOT_CONNECTED") {
+		t.Fatalf("valid file did not reach connection check: %v %s", err, encoded)
 	}
 }

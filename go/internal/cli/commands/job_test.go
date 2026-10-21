@@ -36,4 +36,24 @@ func TestJobCommandsDocumentAgentFacingFlags(t *testing.T) {
 	if !strings.Contains(out.String(), "--file") || !strings.Contains(out.String(), "--output") {
 		t.Fatal(out.String())
 	}
+	c = newJobCmd()
+	out.Reset()
+	c.SetOut(&out)
+	c.SetArgs([]string{"submit", "--help"})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--wait", "--artifact", "--output"} {
+		if !strings.Contains(out.String(), flag) {
+			t.Fatal(out.String())
+		}
+	}
+}
+
+func TestJobSubmitRejectsBadCollectionBeforeReadingSpecOrConnecting(t *testing.T) {
+	c := newJobCmd()
+	c.SetArgs([]string{"submit", "does-not-exist.json", "--artifact", "../escape", "--output", "/tmp/results", "--wait", "1"})
+	if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "safe relative paths") {
+		t.Fatalf("invalid collection reached file/device access: %v", err)
+	}
 }

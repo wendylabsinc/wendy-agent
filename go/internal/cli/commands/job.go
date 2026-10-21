@@ -3,15 +3,13 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/jobops"
 )
 
 func newJobCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "job", Short: "Inspect existing host training jobs without changing them", GroupID: "manage"}
+	cmd := &cobra.Command{Use: "job", Short: "Submit bounded host jobs, inspect progress and retrieve verified reports", GroupID: "manage"}
 	var since string
 	var wait int
 	inspect := &cobra.Command{Use: "inspect <absolute-job-directory>", Short: "Return bounded progress, process identity, freshness and an evidence reference", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -77,23 +75,19 @@ func newComputeStatusCmd() *cobra.Command {
 }
 
 func newJobSubmitCmd() *cobra.Command {
-	return &cobra.Command{Use: "submit <spec.json>", Short: "Start a named durable job; an identical retry returns the original receipt", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		f, err := os.Open(args[0])
-		if err != nil {
+	var wait int
+	var files []string
+	var output string
+	cmd := &cobra.Command{Use: "submit <spec.json>", Short: "Start a named durable job; an identical retry returns the original receipt", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if wait < 0 || wait > 30 {
+			return fmt.Errorf("wait must be 0..30")
+		}
+		opts := jobops.SubmitOptions{WaitSeconds: wait, ArtifactFiles: files, ArtifactDestination: output}
+		if err := jobops.ValidateSubmitOptions(opts); err != nil {
 			return err
 		}
-		defer f.Close()
-		decoder := json.NewDecoder(io.LimitReader(f, 120001))
-		decoder.DisallowUnknownFields()
-		var spec jobops.Spec
-		if err = decoder.Decode(&spec); err != nil {
-			return fmt.Errorf("invalid job spec: %w", err)
-		}
-		var extra any
-		if decoder.Decode(&extra) != io.EOF {
-			return fmt.Errorf("job spec must contain exactly one JSON object")
-		}
-		if err = jobops.ValidateSpec(spec); err != nil {
+		spec, err := jobops.LoadSpec(args[0])
+		if err != nil {
 			return err
 		}
 		conn, err := connectToAgent(cmd.Context(), monitoringOptions(true)...)
@@ -101,10 +95,14 @@ func newJobSubmitCmd() *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		receipt, err := jobops.Submit(cmd.Context(), conn, spec)
+		receipt, err := jobops.SubmitWorkflow(cmd.Context(), conn, spec, opts)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(receipt)
 	}}
+	cmd.Flags().IntVar(&wait, "wait", 0, "Wait up to 30 seconds for terminal evidence; expiry does not cancel the job")
+	cmd.Flags().StringArrayVar(&files, "artifact", nil, "Selected relative report to retrieve after terminal evidence; repeat, requires --wait and --output")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Absolute local artifact directory; collection errors retain the confirmed job receipt")
+	return cmd
 }

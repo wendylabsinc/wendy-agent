@@ -29,7 +29,22 @@ permissions. The default catalog remains available for general device work.
    files whose hashes match. Bytes stay out of agent context. Maximum 64 files,
    16 MiB transferred; request fewer files when needed. Destination is absolute.
 
-For a new job explicitly requested by the user, call `job_submit(spec=...)`.
+For a new job explicitly requested by the user, call
+`job_submit(spec_path="/absolute/local/spec.json", wait_seconds=30)`.
+The file is local to the MCP server; its working directory and argv refer to
+the connected remote host. Prefer this reference over reading and copying the
+JSON through model context. Inline `spec=...` is also supported; supply exactly
+one. The optional wait returns terminal evidence or a current snapshot after
+at most 30 seconds. Expiry never cancels the job. Inspect ongoing jobs afterward;
+an observation error preserves the confirmed receipt and leaves completion unknown.
+For short jobs, pass `artifact_files=["status.json", "evaluate/result.json"]`
+and an absolute local `artifact_destination` in that same call. Reports are
+collected only after a terminal observation, with the same limits and digest
+checks as `job_artifacts_pull`. A still-running job returns `artifacts_pending`;
+an `artifact_error` preserves job identity and does not imply training failed.
+An identical retry reuses the job and skips unchanged reports. This avoids
+separate model turns for submission, polling and collection. Use explicit
+artifact retrieval for ongoing jobs and larger selected report sets.
 The spec has `name`, absolute `working_directory`, and 1–32 `steps`. Each step
 has a unique `name`, `argv` and `timeout_seconds` (1–86400). Optional
 `source_hashes` verify relative source/checkpoint files before launch. Use the
@@ -45,4 +60,6 @@ Never submit physical robot actions without specific user authorization.
 
 CLI equivalents: `wendy job inspect <path> --since <cursor> --wait 30`,
 `wendy job artifacts pull <path> --file status.json --output <local-dir>`,
-and `wendy job submit spec.json`. Use the global `--device` selector.
+and `wendy job submit spec.json --wait 30`. Use the global `--device` selector.
+Add `--artifact status.json --artifact evaluate/result.json --output /local/reports`
+to collect selected reports in the submission command after terminal evidence.

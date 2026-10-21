@@ -21,10 +21,11 @@ import (
 
 type host struct {
 	agentpb.UnimplementedWendyShellServiceServer
-	calls   atomic.Int32
-	noExit  bool
-	corrupt bool
-	env     []string
+	calls       atomic.Int32
+	noExit      bool
+	corrupt     bool
+	failInspect bool
+	env         []string
 }
 
 func (h *host) HostShell(stream grpc.BidiStreamingServer[agentpb.HostShellRequest, agentpb.HostShellResponse]) error {
@@ -36,6 +37,9 @@ func (h *host) HostShell(stream grpc.BidiStreamingServer[agentpb.HostShellReques
 	args := r.GetStart().GetCommand()
 	if len(args) != 4 || args[0] != "python3" || args[1] != "-c" {
 		return stream.Send(&agentpb.HostShellResponse{ResponseType: &agentpb.HostShellResponse_ExitCode{ExitCode: 99}})
+	}
+	if h.failInspect && strings.Contains(args[3], `"until_terminal"`) {
+		return stream.Send(&agentpb.HostShellResponse{ResponseType: &agentpb.HostShellResponse_ExitCode{ExitCode: 3}})
 	}
 	// Exercise the real embedded read-only program through the public gRPC seam.
 	cmd := exec.CommandContext(stream.Context(), args[0], args[1:]...)

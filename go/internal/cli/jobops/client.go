@@ -21,9 +21,10 @@ var program string
 
 // InspectOptions bounds how long an agent waits for a changed job snapshot.
 type InspectOptions struct {
-	Since       string
-	WaitSeconds int
-	Target      string
+	Since         string
+	WaitSeconds   int
+	Target        string
+	UntilTerminal bool
 }
 
 // Inspect returns recorded progress plus independently checked process identity.
@@ -43,7 +44,7 @@ func Inspect(ctx context.Context, conn *grpcclient.AgentConnection, jobPath stri
 			target = conn.Host
 		}
 	}
-	args, _ := json.Marshal(map[string]any{"path": jobPath, "since": opts.Since, "wait_seconds": opts.WaitSeconds, "target": target})
+	args, _ := json.Marshal(map[string]any{"path": jobPath, "since": opts.Since, "wait_seconds": opts.WaitSeconds, "target": target, "until_terminal": opts.UntilTerminal})
 	return execute(ctx, conn, program, args, 32768, time.Duration(opts.WaitSeconds+10)*time.Second)
 }
 
@@ -118,7 +119,7 @@ func ValidateInspect(jobPath string, opts InspectOptions) error {
 	if !path.IsAbs(jobPath) || path.Clean(jobPath) == "/" || len(jobPath) > 4096 || strings.ContainsRune(jobPath, 0) {
 		return fmt.Errorf("job_path must be an absolute job directory")
 	}
-	if opts.WaitSeconds < 0 || opts.WaitSeconds > 30 || len(opts.Since) > 128 || (opts.WaitSeconds > 0 && opts.Since == "") {
+	if opts.WaitSeconds < 0 || opts.WaitSeconds > 30 || len(opts.Since) > 128 || (opts.WaitSeconds > 0 && opts.Since == "" && !opts.UntilTerminal) {
 		return fmt.Errorf("wait_seconds must be 0..30 and requires a since cursor")
 	}
 
