@@ -1,9 +1,9 @@
-# ESP32 mesh leaves over BLE
+# Wendy Lite leaves over BLE
 
 The optional BLE leaf provider connects Linux routers to enrolled Wendy Lite
 endpoints without requiring those endpoints to join a Wi-Fi access point.
 It is separate from the existing router-to-router BLE provider. TCP leaves and
-other mesh carriers remain available.
+other net carriers remain available.
 
 Add `leafBLEPeers` and `leafTimeURL` to the router's existing `local-mesh.json`:
 
@@ -26,7 +26,7 @@ and permission to open LE L2CAP sockets.
 
 The ESP32 build must select `WENDY_MESH_BLE`, reserve at least two NimBLE CoC
 channels, and use the same PSM. Its `WENDY_MESH_ROUTER_DEVICE` pins the router's
-enrolled UUID. The default mesh PSM is 129; WendyCom management uses 128.
+enrolled UUID. The default net PSM is 129; WendyCom management uses 128.
 Bluetooth addresses locate peers; they do not authorize identities.
 
 The Linux router dials the ESP32's L2CAP listener but remains the TLS server.
@@ -43,7 +43,7 @@ links to check that a peer actually authenticated. Automatic discovery and
 rotating Bluetooth addresses are not supported. The leaf retains its existing
 125-second cold-boot replay quarantine and five-minute fresh-time limit.
 
-This is a BLE carrier for Wendy's IP mesh, not the Bluetooth SIG Mesh protocol.
+This is a BLE carrier for Wendy Net, not the Bluetooth SIG Mesh protocol.
 Wendy Lite also supports a separate direct ESP-NOW link between two ESP32-S3
 endpoints. Linux does not transmit ESP-NOW frames in this implementation.
 Lite still advertises only its own IPv6 /128 and does not forward packets for
@@ -55,5 +55,5 @@ signed-leaf checks. The ARM64 agent builds. On 2026-10-18, an ESP32-S3 DevKit
 with 8 MB PSRAM authenticated over BLE to a Linux ARM64 router with no Wi-Fi
 credentials on the leaf. The router verified the leaf's signed route leases,
 and the leaf activated its IPv6 interface after the replay barrier. The operator
-confirmed the BLE mesh worked. ESP-NOW between physical boards and sustained
+confirmed the BLE link worked. ESP-NOW between physical boards and sustained
 radio throughput remain untested.

@@ -135,12 +135,14 @@ This requires the coordinated firmware and broker update in
 ## Remove an old enrollment
 
 Firmware that advertises UUID enrollment support receives a fresh device UUID.
-This identity supports signed local mesh routing. USB status reports the PKI
+This identity supports signed local net routing. USB status reports the PKI
 identity separately from the board's hardware ID, which still binds local resets.
 Older firmware uses `lite-` followed by the hardware ID, such as
 `lite-441bf6804824`. Existing enrollments retain their identity until explicitly
 removed. A pending enrollment also retains its reserved UUID; let it finish or
-remove it before enrolling the same board again.
+remove it before enrolling the same board again. USB unenrollment requires an
+operator session for the board's configured tenant, including recovery after
+cloud-only removal.
 
 Use cloud unenrollment when the board is offline or its firmware is corrupt:
 
