@@ -3,7 +3,9 @@ package localmesh
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
@@ -170,5 +172,82 @@ func TestManifestGossipQueueBudgetDoesNotConsumeAnnouncement(t *testing.T) {
 	got := s.ContinueReconcile(now, 1)
 	if len(got) != 1 || got[0].Gossip == nil || got[0].Gossip.Op != "have" {
 		t.Fatal("dropped unqueued announcement", got)
+	}
+}
+
+func TestManifestGossipExpiredUnverifiedBodyDoesNotCreateReceipt(t *testing.T) {
+	d, chain, key, device, now := directoryFixture(t)
+	w, err := SignManifest(routeManifest(device, now), chain, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expiry is rejected before authentication. Even this bad signature must not
+	// become a shared receipt or prevent an independent supplier from being tried.
+	w.Signature[0] ^= 1
+	body, _ := json.Marshal(w)
+	later := now.Add(2 * time.Minute)
+	source := netgossip.NewPool().NewSession(netgossip.Manifest)
+	have := source.Offer(body, later.Add(MaxLease), later)
+	pool := netgossip.NewPool()
+	receiver := NewSynchronizer(d, d.cache, pool)
+	defer receiver.Close()
+	want, _, err := receiver.Receive(ControlMessage{Kind: "gossip", Gossip: have}, later)
+	if err != nil || len(want) != 1 {
+		t.Fatal(want, err)
+	}
+	data, _, err := source.Receive(*want[0].Gossip, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := receiver.Receive(ControlMessage{Kind: "gossip", Gossip: data}, later); err != nil || len(changed) != 0 {
+		t.Fatal(changed, err)
+	}
+	alternate := pool.NewSession(netgossip.Manifest)
+	defer alternate.Close()
+	if next, _, err := alternate.Receive(*have, later); err != nil || next == nil {
+		t.Fatal("unverified expired manifest became a shared receipt", next, err)
+	}
+	if len(d.Records(later)) != 0 {
+		t.Fatal("unverified artifact entered the directory")
+	}
+}
+
+func TestManifestGossipRecoversEvictedPayloadAndRechecksTrust(t *testing.T) {
+	d, chain, key, device, now := directoryFixture(t)
+	w, err := SignManifest(routeManifest(device, now), chain, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Accept(w, now); err != nil {
+		t.Fatal(err)
+	}
+	pool := netgossip.NewPool()
+	source := NewSynchronizer(d, d.cache, pool)
+	defer source.Close()
+	have := source.Record(w, now)[0]
+	// Fill the shared byte cache with newer objects, preserving the old receipt.
+	filler := pool.NewSession(netgossip.Service)
+	defer filler.Close()
+	for i := range 220 {
+		b := bytes.Repeat([]byte{byte(i)}, netgossip.MaxObject)
+		filler.Offer(b, now.Add(time.Minute), now.Add(time.Duration(i+1)*time.Millisecond))
+	}
+	request, _, err := netgossip.NewPool().NewSession(netgossip.Manifest).Receive(*have.Gossip, now)
+	if err != nil || request == nil {
+		t.Fatal(request, err)
+	}
+	replies, _, err := source.Receive(ControlMessage{Kind: "gossip", Gossip: request}, now)
+	if err != nil || len(replies) != 1 || replies[0].Gossip.Op != "data" {
+		t.Fatal("evicted body was not recovered from its directory key", replies, err)
+	}
+	body, _ := json.Marshal(w)
+	if !bytes.Equal(replies[0].Gossip.Data, body) {
+		t.Fatal("recovery changed the signed envelope")
+	}
+	d.cache.verify = func([][]byte, time.Time) (Identity, error) { return Identity{}, errors.New("trust removed") }
+	request.Request++
+	replies, _, err = source.Receive(ControlMessage{Kind: "gossip", Gossip: request}, now)
+	if err != nil || len(replies) != 1 || replies[0].Gossip.Op != "unavailable" {
+		t.Fatal("recovered bytes bypassed current trust", replies, err)
 	}
 }

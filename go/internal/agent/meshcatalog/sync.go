@@ -239,8 +239,8 @@ func (s *Synchronizer) snapshotRecords(now time.Time) []SignedRecord {
 }
 
 // PendingIdentity reports whether a record from this peer still awaits its
-// signed origin's certificate chain. A snapshot is not safe to project until
-// all records sent before its completion marker have been verified.
+// signed origin's certificate chain. Each record is admitted only after
+// verification; projection additionally requires its independent origin proof.
 func (s *Synchronizer) PendingIdentity() bool { return len(s.pending) != 0 }
 func (s *Synchronizer) PendingAnnouncements(now time.Time) bool {
 	return s.PendingIdentity() || (s.gossip != nil && s.gossip.Pending(now))
@@ -291,8 +291,11 @@ func (s *Synchronizer) receive(m Message, now time.Time) (replies []Message, cha
 	case "record":
 		s.prunePending(now)
 		ok, err := s.catalog.Accept(*m.Record, now)
-		if s.gossip != nil && (err == nil || errors.Is(err, ErrStale) || errors.Is(err, ErrExpired)) {
+		if s.gossip != nil && (err == nil || errors.Is(err, ErrStale)) {
 			s.resolveService(*m.Record, now, err == nil)
+		}
+		if s.gossip != nil && errors.Is(err, ErrExpired) {
+			s.discardService(*m.Record)
 		}
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrStale) {
 			return nil, nil, nil
@@ -475,6 +478,7 @@ func (s *Synchronizer) prunePending(now time.Time) {
 		for _, entry := range records {
 			var record Record
 			if json.Unmarshal(entry.wire.Body, &record) != nil || !time.UnixMilli(record.Expires).After(now) {
+				if s.gossip!=nil { s.discardService(entry.wire) }
 				continue
 			}
 			if entry.renewal != nil {

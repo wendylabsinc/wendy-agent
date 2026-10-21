@@ -314,8 +314,11 @@ func (s *Synchronizer) receive(m ControlMessage, now time.Time) (replies []Contr
 			return nil, nil, errors.New("missing manifest")
 		}
 		ok, e := s.directory.Accept(*m.Manifest, now)
-		if s.gossip != nil && (e == nil || errors.Is(e, ErrStaleManifest) || errors.Is(e, ErrExpiredManifest)) {
+		if s.gossip != nil && (e == nil || errors.Is(e, ErrStaleManifest)) {
 			s.resolveManifest(*m.Manifest, now, e == nil)
+		}
+		if s.gossip != nil && errors.Is(e, ErrExpiredManifest) {
+			s.discardManifest(*m.Manifest)
 		}
 		// Reordering across relays and leases expiring in transit are normal,
 		// not grounds to disconnect an authenticated neighbour.
@@ -333,7 +336,7 @@ func (s *Synchronizer) receive(m ControlMessage, now time.Time) (replies []Contr
 			// the periodic reconciliation repeats any manifest we cannot hold.
 			if _, exists := s.pending[m.Manifest.Principal]; exists || len(s.pending) < 128 {
 				if old, exists := s.pending[m.Manifest.Principal]; exists && s.gossip != nil {
-					s.resolveManifest(old, now, false)
+					s.discardManifest(old)
 				}
 				s.pending[m.Manifest.Principal] = cloneSignedManifest(*m.Manifest)
 			}
@@ -393,7 +396,7 @@ func (s *Synchronizer) ContinueCertificates(now time.Time, slots ...int) ([]Cont
 		for principal, w := range s.pending {
 			var m Manifest
 			if json.Unmarshal(w.Body, &m) != nil || !time.UnixMilli(m.Expires).After(now) {
-				s.resolveManifest(w, now, false)
+				s.discardManifest(w)
 				delete(s.pending, principal)
 			}
 		}

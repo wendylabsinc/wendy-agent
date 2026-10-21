@@ -93,6 +93,7 @@ func message(op string, id ID, request uint64) *Message {
 
 type object struct {
 	data          []byte
+	load          func(time.Time) []byte
 	expires, used time.Time
 }
 type fetch struct {
@@ -170,7 +171,9 @@ func (p *Pool) remember(id ID, data []byte, expires, now time.Time) {
 		return
 	}
 	p.prune(now)
+	var load func(time.Time) []byte
 	if old, ok := p.objects[id]; ok {
+		load = old.load
 		p.bytes -= len(old.data)
 		delete(p.objects, id)
 	}
@@ -199,31 +202,56 @@ func (p *Pool) remember(id ID, data []byte, expires, now time.Time) {
 			delete(p.objects, oldest)
 		}
 	}
-	p.objects[id] = object{append([]byte(nil), data...), expires, now}
+	p.objects[id] = object{data: append([]byte(nil), data...), load: load, expires: expires, used: now}
 	p.bytes += len(data)
 	delete(p.pending, id)
 }
 
 // Offer is called only for an independently verified local/relayed object.
-func (s *Session) Offer(data []byte, expires, now time.Time) *Message {
+// An optional loader recovers evicted bytes by their authoritative store key.
+// It must not retain the payload or scan the store; Lookup verifies its digest.
+func (s *Session) Offer(data []byte, expires, now time.Time, loaders ...func(time.Time) []byte) *Message {
 	if s.closed || len(data) == 0 || len(data) > MaxObject || !expires.After(now) {
 		return nil
 	}
 	id := Identify(s.kind, data)
 	s.pool.mu.Lock()
 	s.pool.remember(id, data, expires, now)
+	if len(loaders) > 0 {
+		o := s.pool.objects[id]
+		o.load = loaders[0]
+		s.pool.objects[id] = o
+	}
 	s.pool.mu.Unlock()
 	return message("have", id, 0)
 }
 
-// Lookup lets an adapter recheck current identity availability before serving
-// bytes retained by the pool. A payload eviction is reported as unavailable.
+// Lookup recovers only an already verified receipt, never an unknown digest.
+// Store access runs outside the pool mutex and costs at most one keyed lookup
+// and one envelope hash. Missing or superseded authoritative bodies are ignored.
 func (s *Session) Lookup(id ID, now time.Time) []byte {
 	p := s.pool
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.prune(now)
-	return append([]byte(nil), p.objects[id].data...)
+	o, ok := p.objects[id]
+	p.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	if len(o.data) > 0 {
+		return append([]byte(nil), o.data...)
+	}
+	if o.load == nil {
+		return nil
+	}
+	data := o.load(now)
+	if len(data) == 0 || len(data) > MaxObject || Identify(id.Type, data) != id {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.remember(id, data, o.expires, now)
+	return data
 }
 
 func Unavailable(request Message) *Message {
@@ -242,6 +270,25 @@ func (s *Session) Resolve(data []byte, expires, now time.Time, accepted bool) {
 	} else {
 		s.pool.remember(id, nil, now.Add(IdleTimeout), now)
 	}
+}
+
+// Discard releases unverified bytes without creating a shared receipt. The
+// supplier is retried only after a fresh HAVE; alternate suppliers remain free.
+func (s *Session) Discard(data []byte) {
+	id := Identify(s.kind, data)
+	p := s.pool
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if f := p.pending[id]; f != nil && f.owner == s.owner {
+		delete(f.suppliers, s.owner)
+		f.owner, f.request = 0, 0
+		f.data, f.total, f.received = nil, 0, false
+		if len(f.suppliers) == 0 {
+			delete(p.pending, id)
+		}
+	}
+	delete(s.seen, id)
+	delete(s.unavailable, id)
 }
 
 func (s *Session) claim(id ID, now time.Time) *Message {
@@ -333,7 +380,7 @@ func (s *Session) Receive(m Message, now time.Time) (*Message, []byte, error) {
 		p.serving++
 		return s.chunk(), nil, nil
 	case "unavailable":
-		if f := p.pending[id]; f != nil && f.owner == s.owner && f.request == m.Request {
+		if f := p.pending[id]; f != nil && f.owner == s.owner && f.request == m.Request && !f.received {
 			delete(f.suppliers, s.owner)
 			s.unavailable[id] = true
 			f.owner = 0

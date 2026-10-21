@@ -549,7 +549,10 @@ per object to 64, active downloads/uploads to 16 each, and active transfers per
 session to four. Envelopes are at most 40 KiB and cached payloads at most 8 MiB.
 Evicting payload bytes retains the verified receipt until signed expiry, so a
 new HAVE does not redownload an already admitted object. A serving router can
-recover evicted bytes from its authoritative directory/catalogue. Advertised
+recover evicted bytes with a keyed authoritative-store lookup retained in its
+bounded verified receipt. Unknown requests never scan the directory/catalogue.
+Authenticated stale bodies receive short suppression receipts; expired or
+unverified certificate-wait bodies release their claim without a shared receipt. Advertised
 hints expire after two minutes. No cache is seeded from durable generation
 receipts when the actual body is absent after restart.
 
@@ -588,8 +591,11 @@ with urgent device control. Babel datagrams retain the carrier's existing path.
 Every neighbour exchanges its current certificate inventory and a HAVE-only
 service snapshot. Accepted origin signatures are preserved on relay. The
 existing 15-second repair scan re-advertises current digests; it does not push
-full records. Snapshot completion waits for advertised records to resolve,
-including signatures waiting for certificate repair. Failed queue admission
+full records. Advertised records remain pending until their origin checks
+complete, including signatures waiting for certificate repair. Projection
+requires the independent origin-signed freshness proof, which installs durable
+generation floors before readiness; a slow or newly joined neighbour does not
+hide services already proven fresh. Failed queue admission
 does not consume a send stamp. Certificate cache misses can be repaired through
 other neighbours with bounded, coalesced requests. Directory, authenticated
 handshake and catalogue paths share the same public certificate-element pool.

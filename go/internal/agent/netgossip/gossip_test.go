@@ -332,3 +332,104 @@ func TestInvalidSupplierCannotPoisonDigestForAlternate(t *testing.T) {
 		t.Fatal(string(body), err)
 	}
 }
+
+func TestEvictedPayloadRecoveryIsKeyedAndDigestChecked(t *testing.T) {
+	now := time.Now()
+	p := NewPool()
+	s := p.NewSession(Service)
+	body := []byte("verified service")
+	calls := 0
+	replacement := false
+	have := s.Offer(body, now.Add(time.Minute), now, func(time.Time) []byte {
+		calls++
+		// Loaders must execute outside the pool lock.
+		peer := p.NewSession(Manifest)
+		peer.Close()
+		if replacement {
+			return []byte("new generation")
+		}
+		return body
+	})
+	evict := func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		o := p.objects[have.ID()]
+		p.bytes -= len(o.data)
+		o.data = nil
+		p.objects[have.ID()] = o
+	}
+	evict()
+	for i := range 100 {
+		if got := s.Lookup(Identify(Service, fmt.Appendf(nil, "unknown %d", i)), now); got != nil {
+			t.Fatal("unknown artifact found")
+		}
+	}
+	if calls != 0 {
+		t.Fatal("unknown requests performed store work", calls)
+	}
+	if got := s.Lookup(have.ID(), now); !bytes.Equal(got, body) || calls != 1 {
+		t.Fatal("failed keyed recovery", string(got), calls)
+	}
+	if got := s.Lookup(have.ID(), now); !bytes.Equal(got, body) || calls != 1 {
+		t.Fatal("recovered payload was not cached")
+	}
+	evict()
+	replacement = true
+	if got := s.Lookup(have.ID(), now); got != nil {
+		t.Fatal("served a different generation under the old digest")
+	}
+	if got := s.Lookup(have.ID(), now.Add(time.Minute)); got != nil {
+		t.Fatal("recovered an expired artifact")
+	}
+}
+
+func TestUnavailableAfterCompleteDataDoesNotReleaseVerificationClaim(t *testing.T) {
+	now := time.Now()
+	source := NewPool().NewSession(Manifest)
+	body := []byte("signed manifest")
+	have := source.Offer(body, now.Add(time.Minute), now)
+	pool := NewPool()
+	first, other := pool.NewSession(Manifest), pool.NewSession(Manifest)
+	want, _, _ := first.Receive(*have, now)
+	other.Receive(*have, now)
+	data, _, _ := source.Receive(*want, now)
+	if _, got, err := first.Receive(*data, now); err != nil || !bytes.Equal(got, body) {
+		t.Fatal(got, err)
+	}
+	first.Receive(*Unavailable(*want), now)
+	if next := other.Poll(now); len(next) != 0 {
+		t.Fatal("completed download lost verification ownership", next)
+	}
+	first.Resolve(body, now.Add(time.Minute), now, true)
+	if other.Pending(now) {
+		t.Fatal("verification did not complete the shared claim")
+	}
+}
+
+func TestDiscardDoesNotAuthenticateOrSuppressAlternate(t *testing.T) {
+	now := time.Now()
+	body := []byte("unverified expired body")
+	source := NewPool().NewSession(Service)
+	have := source.Offer(body, now.Add(time.Minute), now)
+	pool := NewPool()
+	first, other := pool.NewSession(Service), pool.NewSession(Service)
+	want, _, _ := first.Receive(*have, now)
+	other.Receive(*have, now)
+	data, _, _ := source.Receive(*want, now)
+	first.Receive(*data, now)
+	first.Discard(body)
+	if _, known := pool.objects[have.ID()]; known {
+		t.Fatal("discarded bytes created a receipt")
+	}
+	if got := first.Poll(now); len(got) != 0 {
+		t.Fatal("retried discarded supplier without a fresh HAVE")
+	}
+	next := other.Poll(now)
+	if len(next) != 1 {
+		t.Fatal("discarded bytes suppressed alternate supplier", next)
+	}
+	reply, _, _ := source.Receive(*next[0], now)
+	if _, got, err := other.Receive(*reply, now); err != nil || !bytes.Equal(got, body) {
+		t.Fatal("alternate remained stuck after discard", got, err)
+	}
+}

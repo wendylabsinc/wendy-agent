@@ -20,7 +20,10 @@ func (s *Synchronizer) offerManifest(w SignedManifest, now time.Time) []ControlM
 	if err != nil {
 		return nil
 	}
-	m := s.gossip.Offer(data, time.UnixMilli(manifest.Expires), now)
+	directory, principal := s.directory, w.Principal
+	m := s.gossip.Offer(data, time.UnixMilli(manifest.Expires), now, func(at time.Time) []byte {
+		return directory.manifestPayload(principal, at)
+	})
 	if m == nil {
 		return nil
 	}
@@ -50,18 +53,6 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time, slots ...int) ([
 	}
 	if m.Gossip.Op == "want" {
 		payload := s.gossip.Lookup(m.Gossip.ID(), now)
-		if len(payload) == 0 {
-			// The bounded byte cache may have evicted this payload, while the
-			// authoritative store still has it. A receipt alone is never a body.
-			for _, candidate := range s.directory.Records(now) {
-				b, _ := json.Marshal(candidate)
-				if netgossip.Identify(netgossip.Manifest, b) == m.Gossip.ID() {
-					s.offerManifest(candidate, now)
-					payload = b
-					break
-				}
-			}
-		}
 		if len(payload) > 0 {
 			var w SignedManifest
 			if err := json.Unmarshal(payload, &w); err != nil {
@@ -97,4 +88,22 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time, slots ...int) ([
 	}
 	out, changed, err := s.receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
 	return append(replies, out...), changed, err
+}
+
+// manifestPayload is a constant-time lookup for a previously advertised record.
+// The pool checks the exact digest so a replacement cannot serve different bytes.
+func (d *Directory) manifestPayload(principal string, now time.Time) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.entries[principal]
+	if !ok || e.expired || !e.activeUntil.After(now) || !time.UnixMilli(e.manifest.Expires).After(now) || !time.UnixMilli(e.manifest.Expires).After(d.wallHighWater) {
+		return nil
+	}
+	data, _ := json.Marshal(e.wire)
+	return data
+}
+
+func (s *Synchronizer) discardManifest(w SignedManifest) {
+	data, _ := json.Marshal(w)
+	s.gossip.Discard(data)
 }

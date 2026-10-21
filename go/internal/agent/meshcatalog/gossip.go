@@ -20,7 +20,10 @@ func (s *Synchronizer) offerService(w SignedRecord, now time.Time) []Message {
 	if err != nil {
 		return nil
 	}
-	m := s.gossip.Offer(data, time.UnixMilli(record.Expires), now)
+	catalog, key := s.catalog, record.Key
+	m := s.gossip.Offer(data, time.UnixMilli(record.Expires), now, func(at time.Time) []byte {
+		return catalog.servicePayload(key, at)
+	})
 	if m == nil {
 		return nil
 	}
@@ -47,18 +50,6 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 	}
 	if m.Gossip.Op == "want" {
 		payload := s.gossip.Lookup(m.Gossip.ID(), now)
-		if len(payload) == 0 {
-			// The bounded byte cache may have evicted this payload, while the
-			// authoritative store still has it. A receipt alone is never a body.
-			for _, candidate := range s.catalog.Records(now) {
-				b, _ := json.Marshal(candidate)
-				if netgossip.Identify(netgossip.Service, b) == m.Gossip.ID() {
-					s.offerService(candidate, now)
-					payload = b
-					break
-				}
-			}
-		}
 		if len(payload) > 0 {
 			var w SignedRecord
 			var r Record
@@ -93,4 +84,21 @@ func (s *Synchronizer) Receive(m Message, now time.Time, slots ...int) ([]Messag
 	}
 	out, changed, err := s.receive(Message{Kind: "record", Record: &w}, now)
 	return append(replies, out...), changed, err
+}
+
+// servicePayload recovers one current record without an attacker-driven scan.
+func (c *Catalog) servicePayload(key Key, now time.Time) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok || !time.UnixMilli(e.record.Expires).After(now) {
+		return nil
+	}
+	data, _ := json.Marshal(e.wire)
+	return data
+}
+
+func (s *Synchronizer) discardService(w SignedRecord) {
+	data, _ := json.Marshal(w)
+	s.gossip.Discard(data)
 }

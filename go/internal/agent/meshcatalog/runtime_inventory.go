@@ -18,22 +18,20 @@ const maxInventoryQueueFrames = 16
 const maxInventoryQueueBytes = 128 << 10
 
 type catalogPeer struct {
-	id               babel.LinkID
-	device           meshid.Device
-	syncer           *Synchronizer
-	inventory        receivedInventory
-	initial          []inventoryMessage
-	records          []SignedRecord
-	completed        bool
-	receivedSnapshot bool
-	snapshotReady    bool
-	pendingSince     time.Time
-	started          time.Time
-	out              chan []byte
-	queued           atomic.Int64
-	replies          [][]byte
-	replyBytes       int
-	cancel           context.CancelFunc
+	id           babel.LinkID
+	device       meshid.Device
+	syncer       *Synchronizer
+	inventory    receivedInventory
+	initial      []inventoryMessage
+	records      []SignedRecord
+	completed    bool
+	pendingSince time.Time
+	started      time.Time
+	out          chan []byte
+	queued       atomic.Int64
+	replies      [][]byte
+	replyBytes   int
+	cancel       context.CancelFunc
 }
 
 func (r *Runtime) syncPeers(ctx context.Context) {
