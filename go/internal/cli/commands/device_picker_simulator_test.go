@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -329,16 +330,46 @@ func TestStartNamesTheVMOnlyWhenThereIsSomethingToStart(t *testing.T) {
 	t.Cleanup(func() { vmStatusFn = saved })
 
 	item := tui.PickerItem{Name: "sim", Value: &simulatorChoice{Name: "sim"}}
-	if flash, name := startSimulatorRow(item); name != "sim" || !strings.Contains(flash, "Starting sim") {
-		t.Errorf("stopped VM: flash=%q name=%q", flash, name)
+	if flash, isErr, name := startSimulatorRow(item); name != "sim" || isErr || !strings.Contains(flash, "Starting sim") {
+		t.Errorf("stopped VM: flash=%q isErr=%t name=%q", flash, isErr, name)
 	}
 	running = true
-	if flash, name := startSimulatorRow(item); name != "" || !strings.Contains(flash, "already running") {
-		t.Errorf("running VM: flash=%q name=%q", flash, name)
+	if flash, isErr, name := startSimulatorRow(item); name != "" || isErr || !strings.Contains(flash, "already running") {
+		t.Errorf("running VM: flash=%q isErr=%t name=%q", flash, isErr, name)
 	}
 	create := tui.PickerItem{Name: "Simulator", Value: &simulatorChoice{Name: "sim", Create: true}}
-	if flash, name := startSimulatorRow(create); name != "" || !strings.Contains(flash, "press c") {
-		t.Errorf("placeholder row: flash=%q name=%q", flash, name)
+	if flash, isErr, name := startSimulatorRow(create); name != "" || isErr || !strings.Contains(flash, "press c") {
+		t.Errorf("placeholder row: flash=%q isErr=%t name=%q", flash, isErr, name)
+	}
+
+	// A status that cannot be read is an error, not a status line.
+	vmStatusFn = func(string) (vm.Status, error) { return vm.Status{}, errors.New("store unreadable") }
+	if flash, isErr, name := startSimulatorRow(item); name != "" || !isErr || flash != "store unreadable" {
+		t.Errorf("unreadable status: flash=%q isErr=%t name=%q", flash, isErr, name)
+	}
+}
+
+func TestStartWithoutDetachSupportSaysHowInsteadOfLeaving(t *testing.T) {
+	// On Windows only a foreground start works. Leaving the view to attempt a
+	// detached one tore discover down for an error; 'c' shows the commands.
+	savedStatus, savedDetach := vmStatusFn, vmDetachSupportedFn
+	vmStatusFn = func(name string) (vm.Status, error) { return stoppedVM(name, ""), nil }
+	vmDetachSupportedFn = func() bool { return false }
+	t.Cleanup(func() { vmStatusFn, vmDetachSupportedFn = savedStatus, savedDetach })
+
+	item := tui.PickerItem{Name: "sim", Value: &simulatorChoice{Name: "sim"}}
+	if flash, isErr, name := startSimulatorRow(item); name != "" || isErr || !strings.Contains(flash, "'wendy vm start sim'") {
+		t.Errorf("flash=%q isErr=%t name=%q, want the foreground commands and no start", flash, isErr, name)
+	}
+
+	m := newTestDiscoverTabsModel(0, 0)
+	m, _ = discoverTabTo(t, m, devicePickerSimulatorTab)
+	updated, _ := m.Update(discoverTabsSimulatorMsg{msg: simulatorVMsMsg{vms: []vm.Status{stoppedVM("sim", "")}}})
+	m = updated.(discoverTabsModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(discoverTabsModel)
+	if m.action != devicePickerNoAction || m.startVMName != "" {
+		t.Fatalf("s without detach support left discover: action=%v name=%q", m.action, m.startVMName)
 	}
 }
 

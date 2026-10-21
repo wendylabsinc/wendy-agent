@@ -76,13 +76,13 @@ func newSimulatorPickerModel(ctx context.Context) simulatorPickerModel {
 		*create = true
 		return fmt.Sprintf("Creating %s...", nextSimulatorName(*vms)), true
 	}
-	m.picker.OnStartItem = func(item tui.PickerItem) (string, bool) {
-		flash, name := startSimulatorRow(item)
+	m.picker.OnStartItem = func(item tui.PickerItem) (string, bool, bool) {
+		flash, isErr, name := startSimulatorRow(item)
 		if name == "" {
-			return flash, false
+			return flash, isErr, false
 		}
 		*start = name
-		return flash, true
+		return flash, false, true
 	}
 	return m
 }
@@ -101,22 +101,27 @@ var vmStatusFn = func(name string) (vm.Status, error) {
 // startSimulatorRow powers 's'. It only decides whether there is anything to
 // start and names the VM: the boot itself runs after the picker has quit. A
 // running VM is left alone rather than re-provisioned behind the user's back.
-func startSimulatorRow(item tui.PickerItem) (flash, name string) {
+func startSimulatorRow(item tui.PickerItem) (flash string, isErr bool, name string) {
 	choice, _ := item.Value.(*simulatorChoice)
 	switch {
 	case choice == nil:
-		return "", ""
+		return "", false, ""
 	case choice.Create:
-		return "No simulator yet — press c to create one.", ""
+		return "No simulator yet — press c to create one.", false, ""
 	}
 	st, err := vmStatusFn(choice.Name)
 	if err != nil {
-		return err.Error(), ""
+		return err.Error(), true, ""
 	}
 	if st.Running {
-		return fmt.Sprintf("%s is already running.", choice.Name), ""
+		return fmt.Sprintf("%s is already running.", choice.Name), false, ""
 	}
-	return fmt.Sprintf("Starting %s...", choice.Name), choice.Name
+	if !vmDetachSupportedFn() {
+		// Only a foreground start works here, and it needs a terminal of its
+		// own: say how, as 'c' does, rather than leave the view to fail.
+		return simulatorForegroundHint(choice.Name, false), false, ""
+	}
+	return fmt.Sprintf("Starting %s...", choice.Name), false, choice.Name
 }
 
 // stopSimulatorRow powers 'x', the key `wendy device apps` stops with. Stop

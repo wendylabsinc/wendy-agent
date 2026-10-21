@@ -248,7 +248,7 @@ type PickerModel struct {
 	// Returning quit=true closes the picker, which starting a VM must do: the
 	// boot and the robot build draw their own progress, and two Bubble Tea
 	// programs cannot share a terminal. If nil, 's' is ignored.
-	OnStartItem func(item PickerItem) (flash string, quit bool)
+	OnStartItem func(item PickerItem) (flash string, isError, quit bool)
 
 	// OnStopItem runs asynchronously when the user presses 'x'. It must not
 	// mutate the model, and should honor its owner's cancellation context.
@@ -428,6 +428,9 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				m.quitting = true
 				return m, tea.Quit
+			default:
+				// The question's line is free again.
+				m.refreshTable()
 			}
 			return m, nil
 		}
@@ -476,9 +479,10 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.OnStartItem != nil {
 				visible := m.visibleItems()
 				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
-					flash, quit := m.OnStartItem(visible[idx])
+					flash, isError, quit := m.OnStartItem(visible[idx])
 					m.flashMessage = flash
-					m.flashIsError = false
+					m.flashIsError = isError
+					m.refreshTable()
 					if quit {
 						return m, tea.Quit
 					}
@@ -523,6 +527,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if question := m.RemoveConfirmation(item); question != "" {
 							m.confirmItem, m.confirmText = &item, question
 							m.flashMessage = ""
+							m.refreshTable()
 							return m, nil
 						}
 					}
@@ -757,7 +762,7 @@ func (m PickerModel) View() string {
 		sb.WriteString(m.viewLine("  Stopping "+m.stoppingName+"… (waiting for guest shutdown)") + "\n")
 	}
 	if m.confirmItem != nil {
-		sb.WriteString(m.viewLine(pickerConfirm.Render("  "+m.confirmText)) + "\n")
+		sb.WriteString(m.viewLine(pickerConfirm.Render(WrapHint("  "+m.confirmText, m.width))) + "\n")
 	} else if m.flashMessage != "" {
 		style := lipgloss.NewStyle().Foreground(ColorPrimary)
 		if m.flashIsError {
@@ -1237,8 +1242,14 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 	if hintHeight := PickerHintHeight(visible, m.width, "  "); height > 0 && hintHeight > 0 {
 		height = max(1, height-hintHeight-2)
 	}
-	if height > 0 && m.flashMessage != "" {
-		height = max(1, height-lipgloss.Height(WrapHint("  "+m.flashMessage, m.width)))
+	// The status line under the table: a pending [y/N] question takes the
+	// flash's place, so it needs the same room.
+	status := m.flashMessage
+	if m.confirmItem != nil {
+		status = m.confirmText
+	}
+	if height > 0 && status != "" {
+		height = max(1, height-lipgloss.Height(WrapHint("  "+status, m.width)))
 	}
 	m.table.SetHeight(PickerTableHeight(len(rows), height))
 }

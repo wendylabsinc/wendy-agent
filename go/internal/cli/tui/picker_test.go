@@ -32,12 +32,13 @@ func TestPickerFailedDefaultSavePreservesMarker(t *testing.T) {
 
 func TestPickerWrappedFlashResizesTableAfterActions(t *testing.T) {
 	message := strings.Repeat("Follow the setup instructions and keep the terminal open. ", 4) + "Use WSL2 for managed robots."
-	for _, action := range []string{"copy", "create", "enroll", "stop"} {
+	for _, action := range []string{"copy", "create", "enroll", "start", "stop"} {
 		t.Run(action, func(t *testing.T) {
 			m := NewPickerWithTitle("Simulators")
 			m.OnCopyItem = func(PickerItem) string { return message }
 			m.OnCreateItem = func() (string, bool) { return message, false }
 			m.OnEnrollItem = func(PickerItem) (string, bool) { return message, false }
+			m.OnStartItem = func(PickerItem) (string, bool, bool) { return message, false, false }
 			m.OnStopItem = func(PickerItem) (string, bool) { return message, false }
 			var items []PickerItem
 			for i := range 30 {
@@ -59,6 +60,8 @@ func TestPickerWrappedFlashResizesTableAfterActions(t *testing.T) {
 				key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}
 			case "enroll":
 				key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+			case "start":
+				key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}}
 			case "stop":
 				update(key)
 				cmd := update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
@@ -171,12 +174,12 @@ func TestPickerStopRunsOutsideUpdateAndRemainsResponsive(t *testing.T) {
 func TestPickerStartQuitsOnlyWhenTheCallbackAsks(t *testing.T) {
 	m := NewPickerWithTitle("Simulators")
 	var started []string
-	m.OnStartItem = func(item PickerItem) (string, bool) {
+	m.OnStartItem = func(item PickerItem) (string, bool, bool) {
 		started = append(started, item.Name)
 		if item.Name == "alpha" {
-			return "alpha is already running.", false
+			return "alpha is already running.", false, false
 		}
-		return "Starting beta...", true
+		return "Starting beta...", false, true
 	}
 	u, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha"}, {Name: "beta"}}})
 	m = u.(PickerModel)
@@ -255,6 +258,61 @@ func TestPickerRemoveAsksFirstAndDefaultsToNo(t *testing.T) {
 	}
 }
 
+func TestPickerRemoveQuestionFitsTheWindow(t *testing.T) {
+	// The question takes the flash's line under the table. Without room kept
+	// for it, a full alt-screen view grew a line and lost its title.
+	question := "Remove robot-dog-simulator-2 and its disk? Its snapshots and console logs go with it. [y/N]"
+	m := NewPickerWithTitle("Simulators")
+	m.OnRemoveItem = func(PickerItem) (string, bool, *PickerItem) { return "", false, nil }
+	m.RemoveConfirmation = func(PickerItem) string { return question }
+	var items []PickerItem
+	for i := range 30 {
+		items = append(items, PickerItem{Name: fmt.Sprintf("sim-%02d", i)})
+	}
+	update := func(msg tea.Msg) {
+		updated, _ := m.Update(msg)
+		m = updated.(PickerModel)
+	}
+	update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	update(PickerSetMsg{Items: items})
+	update(PickerDoneMsg{})
+	initialHeight := m.table.Height()
+
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if m.table.Height() >= initialHeight {
+		t.Fatal("the question did not take its lines from the table")
+	}
+	view := ansi.Strip(m.View())
+	if lipgloss.Height(view) > 20 || !strings.HasPrefix(view, "Simulators") {
+		t.Fatalf("question pushed the view past the window:\n%s", view)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(view), " "), question) {
+		t.Fatalf("question cut off:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > 60 {
+			t.Errorf("line is %d wide: %q", ansi.StringWidth(line), line)
+		}
+	}
+
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.table.Height() != initialHeight {
+		t.Fatalf("answering no left the table at %d rows, want %d back", m.table.Height(), initialHeight)
+	}
+}
+
+func TestPickerStartCanReportAnError(t *testing.T) {
+	m := NewPickerWithTitle("Simulators")
+	m.OnStartItem = func(PickerItem) (string, bool, bool) { return "store unreadable", true, false }
+	u, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha"}}})
+	m = u.(PickerModel)
+	u, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = u.(PickerModel)
+	if m.flashMessage != "store unreadable" || !m.flashIsError {
+		t.Fatalf("flash=%q isError=%t, want the failure shown as an error", m.flashMessage, m.flashIsError)
+	}
+}
+
 func TestPickerKeyHintsWrapUnderTheTitleWithoutLosingAKey(t *testing.T) {
 	// The hints shared the title's line and were cropped to the window, so a
 	// picker with every action showed "... c create, s" at 100 columns.
@@ -265,7 +323,7 @@ func TestPickerKeyHintsWrapUnderTheTitleWithoutLosingAKey(t *testing.T) {
 		m.OnSetDefault = func(PickerItem) (string, error) { return "", nil }
 		m.OnUnsetDefault = func() (string, error) { return "", nil }
 		m.OnCreateItem = func() (string, bool) { return "", false }
-		m.OnStartItem = func(PickerItem) (string, bool) { return "", false }
+		m.OnStartItem = func(PickerItem) (string, bool, bool) { return "", false, false }
 		m.OnStopItem = func(PickerItem) (string, bool) { return "", false }
 		m.OnRemoveItem = func(PickerItem) (string, bool, *PickerItem) { return "", false, nil }
 		u, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
@@ -316,7 +374,7 @@ func TestPickerKeyHintsGiveUpTableRows(t *testing.T) {
 	m := NewPickerWithTitle("Select")
 	m.OnSetDefault = func(PickerItem) (string, error) { return "", nil }
 	m.OnUnsetDefault = func() (string, error) { return "", nil }
-	m.OnStartItem = func(PickerItem) (string, bool) { return "", false }
+	m.OnStartItem = func(PickerItem) (string, bool, bool) { return "", false, false }
 	m.OnStopItem = func(PickerItem) (string, bool) { return "", false }
 	items := make([]PickerItem, 40)
 	for i := range items {
