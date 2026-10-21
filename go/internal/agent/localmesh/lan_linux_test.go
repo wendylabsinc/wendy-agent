@@ -346,3 +346,93 @@ func lanIdentityDevice(t *testing.T, identity TCPIdentity) meshid.Device {
 	}
 	return c.Device
 }
+
+func TestLANInterfaceKeyTracksSubnetAndName(t *testing.T) {
+	original := lanInterface{iface: net.Interface{Index: 1, Name: "eth0"}, ip: net.IPv4(10, 0, 0, 1), net: &net.IPNet{IP: net.IPv4(10, 0, 0, 1), Mask: net.CIDRMask(24, 32)}, cost: EthernetLinkCost}
+	changed := original
+	changed.net = &net.IPNet{IP: original.ip, Mask: net.CIDRMask(16, 32)}
+	if original.key() == changed.key() {
+		t.Fatal("subnet change would retain stale discovery filters")
+	}
+	changed = original
+	changed.iface.Name = "renamed0"
+	if original.key() == changed.key() {
+		t.Fatal("interface rename would retain stale device binding")
+	}
+}
+
+type lanObservedListener struct {
+	net.Listener
+	accepted chan struct{}
+}
+
+func (l lanObservedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		close(l.accepted)
+	}
+	return conn, err
+}
+
+func TestLANWorkerFailureClosesPendingConnections(t *testing.T) {
+	for _, failure := range []string{"responder", "listener", "cancel"} {
+		t.Run(failure, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			mdnsConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mdnsConn.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			accepted := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				// The invalid device binding makes queries fail immediately;
+				// these tests exercise listener/responder ownership directly.
+				selected := lanInterface{iface: net.Interface{Name: "no-such-lan"}, ip: net.IPv4(127, 0, 0, 1)}
+				done <- serveLANInterface(ctx, LANConfig{Credentials: &Credentials{Device: lanDevice(t, 460)}}, selected, &lanClaims{active: make(map[lanClaim]bool)}, lanObservedListener{listener, accepted}, mdnsConn, nil)
+			}()
+			conn, err := net.Dial("tcp4", listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			select {
+			case <-accepted:
+			case <-time.After(time.Second):
+				t.Fatal("connection not accepted")
+			}
+			// Leave the unauthenticated TCP preface pending while the
+			// interface exits. It must not wait for the five-second deadline.
+			switch failure {
+			case "responder":
+				mdnsConn.Close()
+			case "listener":
+				listener.Close()
+			case "cancel":
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if failure != "cancel" && err == nil {
+					t.Fatal("worker failure was hidden")
+				}
+				if failure == "cancel" && err != nil {
+					t.Fatalf("cancellation returned a worker failure: %v", err)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				t.Fatal("worker did not release its pending connection")
+			}
+			conn.SetReadDeadline(time.Now().Add(time.Second))
+			if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
+				t.Fatalf("pending connection was not closed: %v", err)
+			}
+		})
+	}
+}

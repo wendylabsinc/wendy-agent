@@ -85,7 +85,7 @@ func (c *lanClaims) release(asset meshid.Device, cost uint16) {
 }
 
 func (i lanInterface) key() string {
-	return fmt.Sprintf("%d/%s/%d", i.iface.Index, i.ip.String(), i.cost)
+	return fmt.Sprintf("%d/%s/%s/%s/%d", i.iface.Index, i.iface.Name, i.ip.String(), i.net, i.cost)
 }
 
 // RunLAN watches eligible interfaces, so adding/removing an Ethernet cable or
@@ -272,14 +272,32 @@ func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, 
 		return fmt.Errorf("LAN %s mDNS: %w", selected.iface.Name, err)
 	}
 	defer mdnsConn.Close()
-	mdnsDone := make(chan error, 1)
-	go func() { mdnsDone <- serveLANMDNS(ctx, selected, mdnsConn, service) }()
+	return serveLANInterface(ctx, cfg, selected, claims, listener, mdnsConn, service)
+}
+
+// Every exit, including a failed listener or responder, must stop attached
+// links before waiting for them so the interface scanner can restart us.
+func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterface, claims *lanClaims, listener net.Listener, mdnsConn *net.UDPConn, service *mdns.MDNSService) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	mdnsDone := make(chan struct{})
+	var mdnsErr error
+	go func() {
+		defer close(mdnsDone)
+		mdnsErr = serveLANMDNS(ctx, selected, mdnsConn, service)
+	}()
+	defer func() {
+		cancel()
+		mdnsConn.Close()
+		<-mdnsDone
+	}()
 	if cfg.Logger != nil {
-		cfg.Logger.Info("LAN mesh interface ready", zap.String("interface", selected.iface.Name), zap.String("address", address), zap.Uint16("cost", selected.cost))
+		cfg.Logger.Info("LAN mesh interface ready", zap.String("interface", selected.iface.Name), zap.String("address", listener.Addr().String()), zap.Uint16("cost", selected.cost))
 	}
 	var wg sync.WaitGroup
 	acceptDone := make(chan struct{})
 	defer func() {
+		cancel()
 		listener.Close()
 		<-acceptDone
 		wg.Wait()
@@ -299,6 +317,8 @@ func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, 
 					defer wg.Done()
 					defer func() { <-sem }()
 					defer conn.Close()
+					stop := context.AfterFunc(ctx, func() { conn.Close() })
+					defer stop()
 					id, err := readTCPPreface(conn, cfg.Credentials.Device.Tenant())
 					asset := meshid.NewDevice(cfg.Credentials.Device.Tenant(), id)
 					if err != nil || meshid.Compare(asset, cfg.Credentials.Device) >= 0 || !cfg.allow(asset, selected.cost) || !claims.claim(asset, selected.cost) {
@@ -312,14 +332,20 @@ func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, 
 			}
 		}
 	}()
-	go func() {
-		<-ctx.Done()
-		listener.Close()
-	}()
+	stopListener := context.AfterFunc(ctx, func() { listener.Close() })
+	defer stopListener()
 	for ctx.Err() == nil {
 		select {
-		case err := <-mdnsDone:
-			return fmt.Errorf("LAN mDNS responder stopped: %w", err)
+		case <-mdnsDone:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("LAN mDNS responder stopped: %w", mdnsErr)
+		case <-acceptDone:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return errors.New("LAN TCP listener stopped")
 		default:
 		}
 		entries, err := queryLAN(ctx, selected)
@@ -351,6 +377,8 @@ func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, 
 					return
 				}
 				defer conn.Close()
+				stop := context.AfterFunc(ctx, func() { conn.Close() })
+				defer stop()
 				if writeTCPPreface(conn, cfg.Credentials.Device) == nil {
 					if err := attachLAN(ctx, cfg, selected, asset, conn, false); err != nil && ctx.Err() == nil && cfg.Logger != nil {
 						cfg.Logger.Debug("LAN mesh peer link ended", zap.String("device", asset.Principal()), zap.Error(err))
@@ -361,6 +389,16 @@ func runLANInterface(ctx context.Context, cfg LANConfig, selected lanInterface, 
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-mdnsDone:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("LAN mDNS responder stopped: %w", mdnsErr)
+		case <-acceptDone:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return errors.New("LAN TCP listener stopped")
 		case <-time.After(3 * time.Second):
 		}
 	}
@@ -400,10 +438,8 @@ func listenLANMDNS(ctx context.Context, selected lanInterface) (*net.UDPConn, er
 }
 
 func serveLANMDNS(ctx context.Context, selected lanInterface, conn *net.UDPConn, zone *mdns.MDNSService) error {
-	go func() {
-		<-ctx.Done()
-		conn.Close()
-	}()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	buf := make([]byte, 4096)
 	for {
 		n, from, err := conn.ReadFromUDP(buf)
@@ -459,6 +495,8 @@ func queryLAN(ctx context.Context, selected lanInterface) ([]*mdns.ServiceEntry,
 	}
 	defer pc.Close()
 	conn := pc.(*net.UDPConn)
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	if err := ipv4.NewPacketConn(conn).SetMulticastTTL(255); err != nil {
 		return nil, err
 	}

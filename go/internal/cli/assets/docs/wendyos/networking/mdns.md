@@ -190,3 +190,21 @@ type MDNSService struct {
 | `wendyosdevice` | Device UUID (preferred over `id` when present) | `769dc651-4eb2-49f3-b9f6-3e473f15694a` |
 | `tls` | `"true"` when the device is provisioned and requires mTLS (port 50052) | `true` |
 | `wired` | Comma-separated IPv4 addresses of the device's connected Ethernet ports (at most 8); absent when none. Used only to choose a route, never to trust a device | `192.168.2.50` |
+
+
+## Wendy Net LAN peer discovery
+
+Enrolled WendyOS devices can discover Wendy Net peers independently over physical Ethernet and connected infrastructure Wi-Fi. Enable the carriers on each device using the CLI:
+
+```sh
+wendy device wendy-net configure --ethernet=true --infrastructure-wifi=true
+wendy device wendy-net status
+```
+
+Omitted flags preserve saved settings. Set either flag to `false` to disable that carrier. Changing these settings requires an authenticated user in the device's tenant. Check the reported runtime state after saving; saved configuration alone does not establish peer connectivity.
+
+Discovery uses IPv4 mDNS (`_wendy-mesh._tcp` on UDP 5353), followed by a TCP connection on port 43023 carrying QUIC with mutual TLS. Enabled interfaces need usable IPv4 addresses and local multicast connectivity. Virtual bridges, veth devices, access-point Wi-Fi interfaces and IPv4 link-local addresses are excluded. Every admitted peer must authenticate the exact enrolled device principal in the same tenant. An advertisement alone cannot authorize a connection.
+
+Authenticated Ethernet links have lower cost than infrastructure Wi-Fi, followed by the radio carriers. Interface changes are scanned every five seconds; removing an interface closes its links and permits another enabled carrier to reconnect.
+
+LAN discovery broadcasts the enrolled tenant/device principal and device UUID in cleartext to the local network. These are discovery hints, not credentials. Enable these carriers on networks where exposing those identifiers is acceptable; other stations on that network can enumerate the advertisements.
