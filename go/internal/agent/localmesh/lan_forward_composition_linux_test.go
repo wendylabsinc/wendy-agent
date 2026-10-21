@@ -55,7 +55,8 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 		name, forward string
 		policyFirst   bool
 		lanOnly       bool
-	}{{"forward0-chain-first", "0", false, false}, {"forward0-policy-first", "0", true, false}, {"forward1", "1", false, false}, {"forward0-LAN-only", "0", false, true}} {
+		foreignFirst  bool
+	}{{"forward0-chain-first", "0", false, false, false}, {"forward0-policy-first", "0", true, false, false}, {"forward1", "1", false, false, false}, {"forward1-foreign-first", "1", false, false, true}, {"forward0-LAN-only", "0", false, true, false}} {
 		t.Run(c.name, func(t *testing.T) {
 			run := func(name string, args ...string) string {
 				t.Helper()
@@ -85,6 +86,13 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 			run("sysctl", "-w", "net.ipv4.ip_forward="+c.forward)
 			run("iptables", "-P", "FORWARD", "ACCEPT")
 			run("iptables", "-A", "FORWARD", "-s", "198.18.0.1/32", "-m", "comment", "--comment", "foreign-test-rule", "-j", "DROP")
+			foreignAccept := func() {
+				run("iptables", "-A", "FORWARD", "-s", "10.42.2.2/32", "-d", "192.168.41.22/32", "-p", "tcp", "--dport", "8081", "-m", "comment", "--comment", "foreign-lan-fallback", "-j", "ACCEPT")
+				run("iptables", "-A", "FORWARD", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-m", "comment", "--comment", "foreign-lan-replies", "-j", "ACCEPT")
+			}
+			if c.foreignFirst {
+				foreignAccept()
+			}
 			run("ip", "netns", "exec", "lf-spoof", "ip", "addr", "add", "10.42.2.2/32", "dev", "lfshn")
 			run("ip", "netns", "exec", "lf-spoof", "ip", "route", "add", "192.168.41.0/24", "via", "192.168.42.1")
 			for _, iface := range []string{"all", "lfsh"} {
@@ -148,6 +156,48 @@ func TestLANForwardPolicyComposition(t *testing.T) {
 				}
 			}
 			assertAllowed()
+			if c.forward == "1" {
+				if !c.foreignFirst {
+					foreignAccept()
+				}
+				if body, err := probe("lf-app", "http://192.168.41.22:8081/"); err == nil {
+					t.Fatalf("foreign forwarding bypassed sibling-port deny: %s\n%s", body, run("iptables-save", "-c"))
+				}
+				// Retain the original route-change reproducer in this complete
+				// forwarding lifecycle fixture. Restore its spoof setup afterwards.
+				func() {
+					run("ip", "-n", "lf-spoof", "addr", "del", a.AppIP+"/32", "dev", "lfshn")
+					defer run("ip", "-n", "lf-spoof", "addr", "add", a.AppIP+"/32", "dev", "lfshn")
+					run("ip", "-n", "lf-spoof", "addr", "add", a.Destination+"/32", "dev", "lo")
+					defer run("ip", "-n", "lf-spoof", "addr", "del", a.Destination+"/32", "dev", "lo")
+					run("ip", "-n", "lf-spoof", "route", "add", "10.42.2.0/28", "via", "192.168.42.1")
+					defer run("ip", "-n", "lf-spoof", "route", "del", "10.42.2.0/28", "via", "192.168.42.1")
+					server := exec.Command("ip", "netns", "exec", "lf-spoof", os.Args[0], "-test.run=^TestLANForwardEndpoint$")
+					server.Env = append(os.Environ(), "WENDY_LAN_ENDPOINT=peer")
+					if err := server.Start(); err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = server.Process.Kill(); _ = server.Wait() }()
+					time.Sleep(300 * time.Millisecond)
+					run("ip", "route", "add", a.Destination+"/32", "via", "192.168.42.22", "dev", "lfsh")
+					defer run("ip", "route", "del", a.Destination+"/32", "via", "192.168.42.22", "dev", "lfsh")
+					if !strings.Contains(run("ip", "link", "show", "lflh"), "UP") || !strings.Contains(run("ip", "route", "get", a.Destination), "dev lfsh") {
+						t.Fatal("route-change control did not retain the observed link and select alternate egress")
+					}
+					if body, err := exec.Command("curl", "-fsS", "--noproxy", "*", "--max-time", "2", "http://192.168.41.22:8081/").CombinedOutput(); err != nil || string(body) != "LAN_BACKEND_OK" {
+						t.Fatalf("alternate backend positive control failed: %v %s", err, body)
+					}
+					if body, err := probe("lf-app", "http://192.168.41.22:8081/"); err == nil {
+						t.Fatalf("undeclared sibling port reachable after host route change: %s\n%s", body, run("iptables-save", "-c"))
+					}
+					for _, line := range strings.Split(run("iptables-save", "-c"), "\n") {
+						if strings.Contains(line, "foreign-lan-fallback") && !strings.HasPrefix(line, "[0:") {
+							t.Fatalf("denied service reached foreign ACCEPT: %s", line)
+						}
+					}
+				}()
+				assertAllowed()
+			}
 			grantCounter := func() string {
 				for _, line := range strings.Split(run("iptables-save", "-c"), "\n") {
 					if strings.Contains(line, "-A WENDY-LAN ") && strings.Contains(line, "-i lfah ") && strings.Contains(line, "--dport 8080 -j ACCEPT") {

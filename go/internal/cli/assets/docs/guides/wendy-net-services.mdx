@@ -8,7 +8,7 @@ advertises a service using normal mDNS/DNS-SD, the discovery protocol used by
 Bonjour and Avahi. Wendy Net carries admitted service information between devices;
 apps browse it through their own network interface.
 
-Start with enrolled devices in the same organization and a working Wendy Net connection.
+Start by [connecting the devices](/docs/guides/wendy-net) and checking their peers.
 Use current Linux WendyOS images with full Wendy Net support.
 
 ## 1. Give the publishing app Wendy Net access
@@ -112,6 +112,19 @@ Service discovery can cross intermediate Wendy Net devices without a direct
 connection to the publishing device. Discovery is not an application health
 check: verify an actual request to the discovered server.
 
+## Services on the physical LAN
+
+When Ethernet or ordinary Wi-Fi is enabled for Wendy Net, entitled apps can also
+see eligible IPv4 services announced on those directly connected networks.
+Enable `--ethernet` or `--infrastructure-wifi` in the device's
+[Wendy Net settings](/docs/guides/wendy-net).
+These are local-network advertisements, not authenticated Wendy Net publications,
+and they are not relayed onward across the net.
+
+Access is limited to the advertised endpoint and port; discovering one service
+does not give an app unrestricted LAN access. Names are discovery labels rather
+than authentication. Use the service's own authentication where it needs it.
+
 ## Troubleshoot discovery
 
 1. Check the Wendy Net connection and running agent on both devices.
@@ -121,6 +134,11 @@ check: verify an actual request to the discovered server.
 4. Check the declared port mapping. Publishing TCP does not authorize UDP.
 5. Resolve from the client app and test the returned endpoint, rather than an
    address copied from another device.
+
+If only physical-LAN services are missing, check `wendy device logs`. Discovery
+retries automatically after a temporary browser failure. If the log says LAN
+projection was disabled because old access rules could not be removed, resolve
+that cleanup error and restart the agent before trying again.
 
 Stopping the publisher, withdrawing its announcement, or losing its route removes
 the service after the relevant discovery and lease updates. After a partition or
