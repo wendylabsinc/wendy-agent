@@ -1,4 +1,4 @@
-# Bluetooth discovery announcements for wendy net
+# Bluetooth discovery announcements for Wendy Net
 
 Advertisements are unauthenticated discovery hints. The service identifier is
 the complete tenant UUID; this format does not conceal tenant membership from
@@ -29,7 +29,7 @@ The optional BlueZ `TxPower` property requests advertising-set power and is not
 an instruction to include a TX-power AD field.
 
 The former unversioned ten-byte layout is rejected. This discovery version is
-independent of the wendy net session protocol and ALPN version.
+independent of the Wendy Net session protocol and ALPN version.
 
 ## Local-name representation, version zero
 
@@ -96,7 +96,7 @@ a later complete scan response. Conflicting names are rejected.
 
 Valid binary advertisements take precedence while fresh. Malformed or unknown
 binary data for our service invalidates the observation without falling back
-to text in that report. Unrelated services cannot refresh the wendy net observation.
+to text in that report. Unrelated services cannot refresh the Wendy Net observation.
 State is bounded to 256 complete and 256 partial observations. Live complete
 observations remain in place when full; new radio addresses wait until older
 observations expire. Current BlueZ
