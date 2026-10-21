@@ -10,6 +10,8 @@ import (
 // fails before the entrypoint starts. Retained ordinary bridge sandboxes use
 // their own destruction path. The caller holds the container lifecycle lock.
 // Kernel-rule failure leaves allocation, proof and cache intact for retry.
+// A failed CNI release can have partial effects; keep the cache and re-prove
+// allocator ownership on retry instead of assuming its lease still exists.
 func (c *Client) rollbackPreparedNetwork(ctx context.Context, containerID string, labels map[string]string, ip string, releaseCNI func(context.Context) error) error {
 	appID, _, err := containerOwnerFromLabels(containerID, labels)
 	if err != nil {

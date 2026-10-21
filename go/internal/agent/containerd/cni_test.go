@@ -1,7 +1,11 @@
 package containerd
 
 import (
+	"context"
+	"errors"
+
 	"encoding/json"
+	"go.uber.org/zap"
 	"os"
 	"strings"
 	"testing"
@@ -225,5 +229,35 @@ func TestBridgeCheckRequiresDefaultRouteProof(t *testing.T) {
 				t.Fatalf("CHECK route proof error=%v", err)
 			}
 		})
+	}
+}
+
+func TestCheckedCNIDelReportsRealCanceledExecution(t *testing.T) {
+	withTempSubnetRegistry(t)
+	c := &Client{logger: zap.NewNop()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Exercise the actual pinned self-exec command's Run failure, without
+	// launching a second test binary as though it were a CNI multiplexer.
+	err := c.cniDelChecked(ctx, "com.example.checked", "com.example.checked", "/proc/123/ns/net")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("checked canceled DEL = %v", err)
+	}
+	if err := c.CNIDel(ctx, "com.example.checked", "com.example.checked", "/proc/123/ns/net"); err != nil {
+		t.Fatalf("existing best-effort DEL changed behavior: %v", err)
+	}
+}
+
+func TestCheckedCNIDelReportsInvalidOwnershipAndSubnetState(t *testing.T) {
+	withTempSubnetRegistry(t)
+	c := &Client{logger: zap.NewNop()}
+	if err := c.cniDelChecked(context.Background(), "../other-app", "app", "/proc/123/ns/net"); err == nil {
+		t.Fatal("checked DEL accepted invalid app ownership")
+	}
+	if err := os.WriteFile(cniSubnetRegistryPath, []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.cniDelChecked(context.Background(), "com.example.checked", "com.example.checked", "/proc/123/ns/net"); err == nil {
+		t.Fatal("checked DEL ignored corrupt subnet state")
 	}
 }

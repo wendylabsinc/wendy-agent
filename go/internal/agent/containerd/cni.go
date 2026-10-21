@@ -594,37 +594,41 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 	return os.Rename(tmpName, path)
 }
 
-// CNIDel calls the vendored CNI bridge plugin DEL to release a container's
-// IP. Errors are logged as warnings but not returned — DEL is best-effort.
-// See CNIAdd for the self-exec rationale (no third-party binary, no digest
-// pin needed).
+// CNIDel releases a container's CNI state on existing best-effort lifecycle
+// paths. Failed-start rollback uses cniDelChecked so it can retain retry metadata
+// and report an incomplete release. Both paths share validation and execution.
 func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath string) error {
-	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
-		c.logger.Warn("CNI DEL skipped: invalid inputs", zap.Error(err))
-		return nil
+	if err := c.cniDelChecked(ctx, appID, containerID, netnsPath); err != nil {
+		c.logger.Warn("CNI DEL failed (non-fatal)",
+			zap.String("app_id", appID), zap.String("container_id", containerID), zap.Error(err))
 	}
-	// NUL guard: defence-in-depth at the exec boundary (SOC2-CC6, NIST-SC-7).
+	return nil
+}
+
+// cniDelChecked reports validation, subnet and subprocess errors. A failed DEL
+// can have partial effects, including an already released IPAM lease; callers
+// must preserve retry metadata and re-prove ownership instead of assuming the
+// allocation remains pinned. See CNIAdd for the pinned self-exec dispatch.
+func (c *Client) cniDelChecked(ctx context.Context, appID, containerID, netnsPath string) error {
+	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
+		return fmt.Errorf("invalid CNI DEL inputs: %w", err)
+	}
 	if strings.ContainsRune(containerID, '\x00') || strings.ContainsRune(netnsPath, '\x00') {
-		c.logger.Warn("CNI DEL skipped: NUL byte in input", zap.String("container_id", containerID))
-		return nil
+		return fmt.Errorf("CNI DEL input contains a NUL byte")
 	}
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
-		c.logger.Warn("CNI DEL skipped: subnet allocation failed", zap.Error(err))
-		return nil
+		return fmt.Errorf("allocating CNI DEL subnet: %w", err)
 	}
 	cfgJSON := buildBridgeCNIConfig(appID, subnet, false)
 
 	cmd := exec.CommandContext(ctx, selfExePath)
 	cmd.Args = []string{"bridge"} // argv0 the multiplexer dispatches on; see CNIAdd
-	cmd.Dir = "/"                 // prevent relative-path resolution from an attacker-controlled cwd
+	cmd.Dir = "/"                 // never resolve paths relative to an app-controlled working directory
 	cmd.Stdin = strings.NewReader(cfgJSON)
+	// Keep the pinned CNI multiplexer and minimal, explicit plugin environment.
+	// The bridge plugin also needs the fixed system PATH for iptables.
 	cmd.Env = []string{
-		// Explicit minimal environment — never inherit the agent's environment
-		// (SOC2-CC6, NIST-SC-7). CNI_PATH restricted to CNIBinDir (symlinks back
-		// to this agent binary only). PATH additionally includes the standard
-		// system sbin/bin directories — see the matching comment in CNIAdd for
-		// why (the vendored bridge plugin shells out to "iptables").
 		"PATH=" + CNIBinDir + cniSystemPathDirs,
 		"CNI_COMMAND=DEL",
 		"CNI_CONTAINERID=" + containerID,
@@ -632,11 +636,8 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		"CNI_IFNAME=eth0",
 		"CNI_PATH=" + CNIBinDir,
 	}
-	if runErr := cmd.Run(); runErr != nil {
-		c.logger.Warn("CNI DEL failed (non-fatal)",
-			zap.String("app_id", appID),
-			zap.String("container_id", containerID),
-			zap.Error(runErr))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("CNI DEL for container %q: %w", containerID, err)
 	}
 	return nil
 }

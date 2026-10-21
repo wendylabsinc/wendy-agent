@@ -178,3 +178,67 @@ func TestPreparedNetworkRollbackBeforeProofPersistence(t *testing.T) {
 		t.Fatal("partial preparation leaked ownership")
 	}
 }
+
+func TestPreparedNetworkRollbackReportsActualCanceledDEL(t *testing.T) {
+	f := newMeshRetirementFixture(t, "")
+	err := f.client.rollbackPreparedNetwork(context.Background(), f.container, f.labels, f.ip, func(cleanupCtx context.Context) error {
+		canceled, cancel := context.WithCancel(cleanupCtx)
+		cancel()
+		return f.client.cniDelChecked(canceled, f.app, f.container, "/proc/123/ns/net")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("actual CNI subprocess failure disappeared: %v", err)
+	}
+	if len(f.store.GetByID(f.container, "eth0")) != 1 || f.client.serviceIPs[f.app][""] != f.ip {
+		t.Fatal("DEL that never launched discarded retry ownership")
+	}
+	if _, err := os.Stat(networkSandboxResultPath(f.container)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("successful kernel retirement must not resurrect its old proof")
+	}
+	f.requireProof = false
+	if err := f.client.rollbackPreparedNetwork(context.Background(), f.container, f.labels, f.ip, func(context.Context) error {
+		return f.store.ReleaseByID(f.container, "eth0")
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPreparedNetworkPartialDELQuarantinesStaleCacheWithoutStealingReusedIP(t *testing.T) {
+	f := newMeshRetirementFixture(t, "")
+	partialFailure := errors.New("CNI DEL failed after releasing IPAM")
+	err := f.client.rollbackPreparedNetwork(context.Background(), f.container, f.labels, f.ip, func(context.Context) error {
+		if err := f.store.ReleaseByID(f.container, "eth0"); err != nil {
+			t.Fatal(err)
+		}
+		return partialFailure
+	})
+	if !errors.Is(err, partialFailure) || f.client.serviceIPs[f.app][""] != f.ip {
+		t.Fatalf("partial DEL lost its failure or retry cache: %v", err)
+	}
+	if _, err := os.Stat(networkSandboxResultPath(f.container)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("partial DEL reintroduced retired proof")
+	}
+	sibling := ContainerName(f.app, "replacement-owner")
+	if ok, err := f.store.Reserve(sibling, "eth0", net.ParseIP(f.ip), "0"); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if err := f.client.meshIngress.ClaimUDPForApp(sibling, f.app, 29183, f.ip, 28083); err != nil {
+		t.Fatal(err)
+	}
+	siblingToken := f.client.meshIngress.UDPToken(29183)
+	previousCalls := len(f.calls)
+	released := false
+	err = f.client.rollbackPreparedNetwork(context.Background(), f.container, f.labels, f.ip, func(context.Context) error {
+		released = true
+		return nil
+	})
+	if err == nil || released || len(f.calls) != previousCalls {
+		t.Fatal("stale cached address authorized further kernel/CNI teardown")
+	}
+	if len(f.store.GetByID(sibling, "eth0")) != 1 || f.client.meshIngress.UDPToken(29183) != siblingToken {
+		t.Fatal("retry touched the new address owner")
+	}
+	if f.client.serviceIPs[f.app][""] != f.ip {
+		t.Fatal("ambiguous partial cleanup silently discarded quarantine evidence")
+	}
+}

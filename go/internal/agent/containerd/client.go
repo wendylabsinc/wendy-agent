@@ -2702,7 +2702,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 			// Best-effort: DEL is itself idempotent/safe against a partial or
 			// absent ADD, so a DEL failure here is logged, not fatal.
 			if delErr := rollbackCNIAdd(ctx, 10*time.Second, func(cleanupCtx context.Context) error {
-				return c.CNIDel(cleanupCtx, appID, appName, netnsPath)
+				return c.cniDelChecked(cleanupCtx, appID, appName, netnsPath)
 			}); delErr != nil {
 				c.logger.Warn("CNI DEL rollback after failed ADD also failed (non-fatal)",
 					zap.String(logfields.AppID, appID), zap.Error(delErr))
@@ -2722,13 +2722,17 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 					// A registered sandbox is still provisional until the runtime
 					// releases the entrypoint. Retire its persisted join path too.
 					if keepNetns {
-						c.destroyNetworkSandbox(context.WithoutCancel(ctx), appName)
-						_ = c.persistNetworkNamespace(context.WithoutCancel(ctx), container, "", identity, "")
+						if err := rollbackCNIAdd(ctx, 10*time.Second, func(cleanupCtx context.Context) error {
+							c.destroyNetworkSandbox(cleanupCtx, appName)
+							return c.persistNetworkNamespace(cleanupCtx, container, "", identity, "")
+						}); err != nil {
+							c.logger.Warn("Could not finish prepared bridge sandbox rollback", zap.String("container_id", appName), zap.Error(err))
+						}
 					} else {
 						if err := c.rollbackPreparedNetwork(ctx, appName, containerLabels, ip, func(cleanupCtx context.Context) error {
-							return c.CNIDel(cleanupCtx, appID, appName, netnsPath)
+							return c.cniDelChecked(cleanupCtx, appID, appName, netnsPath)
 						}); err != nil {
-							c.logger.Error("App network rollback deferred; allocation remains pinned", zap.String("container_id", appName), zap.Error(err))
+							c.logger.Error("App network rollback incomplete; retry ownership must be verified", zap.String("container_id", appName), zap.Error(err))
 							cleanupNetns()
 							return
 						}
