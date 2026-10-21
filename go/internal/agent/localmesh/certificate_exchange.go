@@ -105,6 +105,44 @@ func (e *CertificateExchange) Close() {
 // Pending reports bounded chain assembly owned by this protocol actor.
 func (e *CertificateExchange) Pending() bool { return len(e.pending) != 0 }
 
+// PendingChain returns an owned exact descriptor and its absolute fetch
+// deadline only while this neighbour's exchange is actively fetching it.
+// It grants no trust; any retained payload must still pass normal verification
+// after completion. A caller retaining a payload must keep its original
+// deadline even if repeated descriptions later refresh the exchange's hint.
+func (e *CertificateExchange) PendingChain(principal string, now time.Time) (CertificateChain, time.Time, bool) {
+	p, ok := e.pending[principal]
+	if e.closed || !ok || !p.expires.After(now) {
+		return CertificateChain{}, time.Time{}, false
+	}
+	p.chain.Hashes = append([]string(nil), p.chain.Hashes...)
+	return p.chain, p.expires, true
+}
+
+func sameCertificateDescription(a, b CertificateChain) bool {
+	if a.Principal != b.Principal || len(a.Hashes) != len(b.Hashes) {
+		return false
+	}
+	for i := range a.Hashes {
+		if a.Hashes[i] != b.Hashes[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesCertificateDescription(chain [][]byte, d CertificateChain) bool {
+	if len(chain) != len(d.Hashes) {
+		return false
+	}
+	for i := range chain {
+		if certificateHash(chain[i]) != d.Hashes[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *CertificateExchange) Describe(principal string, now time.Time) *CertificateMessage {
 	if e.closed {
 		return nil

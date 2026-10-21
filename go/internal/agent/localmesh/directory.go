@@ -53,6 +53,10 @@ type SignedManifest struct {
 var ErrExpiredManifest = errors.New("expired wendy net manifest")
 var ErrStaleManifest = errors.New("stale wendy net manifest")
 
+// ErrInvalidManifestSignature distinguishes a failed signature from malformed
+// or unauthorized manifests; certificate renewal may need an in-flight leaf.
+var ErrInvalidManifestSignature = errors.New("invalid manifest signature")
+
 func (m Manifest) validate(now time.Time) error {
 	issued, expires := time.UnixMilli(m.Issued), time.UnixMilli(m.Expires)
 	if !expires.After(now) {
@@ -221,7 +225,7 @@ func (d *Directory) Accept(w SignedManifest, now time.Time) (bool, error) {
 		return false, err
 	}
 	if !validManifestSignature(w, leaf) {
-		return false, errors.New("invalid manifest signature")
+		return false, ErrInvalidManifestSignature
 	}
 	binding := manifestSignatureBinding{leafHash: certificateHash(chain[0]), valid: true}
 	hash := manifestHash(w.Body)

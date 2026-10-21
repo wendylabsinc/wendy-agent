@@ -117,11 +117,13 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 // certificate bytes are fetched individually only when missing. A bounded
 // number of manifests wait for independently verified identity completion.
 type Synchronizer struct {
-	directory    *Directory
-	cache        *IdentityCache
-	sent         map[string]bool
-	pending      map[string]SignedManifest
-	certificates *CertificateExchange
+	directory *Directory
+	cache     *IdentityCache
+	sent      map[string]bool
+	pending   map[string]SignedManifest
+	// Warm-cache retries are bound to the exact advertised chain and deadline.
+	pendingRenewals map[string]pendingCertificateChain
+	certificates    *CertificateExchange
 	// A repair pass resumes after the last admitted principal, rather than
 	// repeatedly filling a bounded neighbour queue with its sorted prefix.
 	reconcileAfter     string
@@ -129,7 +131,7 @@ type Synchronizer struct {
 }
 
 func NewSynchronizer(d *Directory, c *IdentityCache) *Synchronizer {
-	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, certificates: NewCertificateExchange(c, d.tenant)}
+	return &Synchronizer{directory: d, cache: c, sent: map[string]bool{}, pending: map[string]SignedManifest{}, pendingRenewals: map[string]pendingCertificateChain{}, certificates: NewCertificateExchange(c, d.tenant)}
 }
 
 // SeedKnownBundles uses only the sender's per-peer record of completed writes.
@@ -224,12 +226,20 @@ func (s *Synchronizer) reconcileBatch(records []SignedManifest, now time.Time, s
 }
 
 // Receive returns replies plus independently verified changed records to relay.
-// Invalid signatures/identities are fatal to this link, not admitted as hints.
+// Invalid signatures/identities are fatal except for a bounded retry while an
+// exact advertised renewed chain is in flight. Unverified data grants no trust.
 func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []ControlMessage, changed []SignedManifest, err error) {
+	s.prunePendingRenewals(now)
 	switch m.Kind {
 	case "certificate":
 		if m.Certificate == nil {
 			return nil, nil, errors.New("missing certificate message")
+		}
+		if c := m.Certificate.Chain; c != nil {
+			if pending, ok := s.pendingRenewals[c.Principal]; ok && !sameCertificateDescription(pending.chain, *c) {
+				delete(s.pending, c.Principal)
+				delete(s.pendingRenewals, c.Principal)
+			}
 		}
 		replies, completed, err := s.certificates.Receive(*m.Certificate, now)
 		return s.certificateResult(replies, completed, err, now)
@@ -243,7 +253,9 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 		if e != nil {
 			return nil, nil, e
 		}
-		if w, ok := s.pending[principal]; ok {
+		// A warm retry belongs to its advertised certificate exchange, never
+		// to an unrelated whole-bundle response for the same principal.
+		if w, ok := s.pending[principal]; ok && s.pendingRenewals[principal].chain.Principal == "" {
 			delete(s.pending, principal)
 			return s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
 		}
@@ -257,12 +269,15 @@ func (s *Synchronizer) Receive(m ControlMessage, now time.Time) (replies []Contr
 		if errors.Is(e, ErrStaleManifest) || errors.Is(e, ErrExpiredManifest) {
 			return nil, nil, nil
 		}
+		if errors.Is(e, ErrInvalidManifestSignature) && s.deferPendingRenewal(*m.Manifest, now) {
+			return nil, nil, nil
+		}
 		if errors.Is(e, ErrIdentityNeeded) {
 			// Do not disconnect a valid neighbour if many hints are stale after
 			// a receiver restart. The request repairs its identity cache, and
 			// the periodic reconciliation repeats any manifest we cannot hold.
 			if _, exists := s.pending[m.Manifest.Principal]; exists || len(s.pending) < 128 {
-				s.pending[m.Manifest.Principal] = *m.Manifest
+				s.pending[m.Manifest.Principal] = cloneSignedManifest(*m.Manifest)
 			}
 			return []ControlMessage{{Kind: "identity-request", Principal: m.Manifest.Principal}}, nil, nil
 		}
@@ -285,23 +300,77 @@ func (s *Synchronizer) certificateResult(messages []*CertificateMessage, complet
 	for _, m := range messages {
 		replies = append(replies, ControlMessage{Kind: "certificate", Certificate: m})
 	}
+	// Detach all completed retries before invoking Receive again: Poll can
+	// complete several principals at once and removes all their active hints.
+	var retry []SignedManifest
 	for _, principal := range completed {
+		if pending, ok := s.pendingRenewals[principal]; ok {
+			delete(s.pendingRenewals, principal)
+			chain, _, valid := s.cache.Get(principal, now)
+			if !pending.expires.After(now) || !valid || !matchesCertificateDescription(chain, pending.chain) {
+				delete(s.pending, principal)
+				continue
+			}
+		}
 		if w, ok := s.pending[principal]; ok {
 			delete(s.pending, principal)
-			out, admitted, err := s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
-			if err != nil {
-				return nil, nil, err
-			}
-			replies = append(replies, out...)
-			changed = append(changed, admitted...)
+			retry = append(retry, w)
 		}
+	}
+	for _, w := range retry {
+		out, admitted, err := s.Receive(ControlMessage{Kind: "manifest", Manifest: &w}, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		replies = append(replies, out...)
+		changed = append(changed, admitted...)
 	}
 	return replies, changed, nil
 }
 
 func (s *Synchronizer) ContinueCertificates(now time.Time) ([]ControlMessage, []SignedManifest, error) {
+	s.prunePendingRenewals(now)
 	messages, completed, err := s.certificates.Poll(now)
 	return s.certificateResult(messages, completed, err, now)
+}
+
+// deferPendingRenewal retains no authority: a signature failure can wait only
+// for this link's active, different-leaf descriptor, then must verify normally.
+func (s *Synchronizer) deferPendingRenewal(w SignedManifest, now time.Time) bool {
+	description, deadline, ok := s.certificates.PendingChain(w.Principal, now)
+	if !ok {
+		return false
+	}
+	// Accept already parsed and validated this body before reporting the
+	// signature failure. Bound retained state by that signed expiry too.
+	var manifest Manifest
+	if json.Unmarshal(w.Body, &manifest) != nil {
+		return false
+	}
+	pending := pendingCertificateChain{chain: description, expires: minTime(deadline, time.UnixMilli(manifest.Expires))}
+	chain, _, ok := s.cache.Get(w.Principal, now)
+	if !ok || certificateHash(chain[0]) == pending.chain.Hashes[0] {
+		return false
+	}
+	if _, exists := s.pending[w.Principal]; !exists && len(s.pending) >= 128 {
+		return true // bounded loss; periodic reconciliation can retry later
+	}
+	if old, exists := s.pendingRenewals[w.Principal]; exists {
+		pending.expires = minTime(pending.expires, old.expires)
+	}
+	s.pending[w.Principal] = cloneSignedManifest(w)
+	s.pendingRenewals[w.Principal] = pending
+	return true
+}
+
+func (s *Synchronizer) prunePendingRenewals(now time.Time) {
+	for principal, pending := range s.pendingRenewals {
+		active, _, ok := s.certificates.PendingChain(principal, now)
+		if !pending.expires.After(now) || !ok || !sameCertificateDescription(pending.chain, active) {
+			delete(s.pending, principal)
+			delete(s.pendingRenewals, principal)
+		}
+	}
 }
 
 func (s *Synchronizer) Close() { s.certificates.Close() }

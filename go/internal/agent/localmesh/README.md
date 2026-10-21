@@ -66,6 +66,12 @@ a new key can replace an invalid old signature without renewing its lease or
 replay receipt. Queued exports use that exact wire and its matching current
 certificate chain together. Unchanged leaves reuse only the signature verdict;
 current chain trust and expiry are still checked on every read.
+A warm receiver may still hold a previous key while fetching an explicitly
+advertised replacement chain. Only that active same-neighbour, different-leaf
+exchange can defer a signature failure; the bounded pending wire keeps the
+exact descriptor and its first deadline. Replacement or timeout discards it,
+and successful chain completion still requires normal signature, lease and
+replay verification. Invalid signatures outside that transition remain fatal.
 
 ## Control and payload flow
 
