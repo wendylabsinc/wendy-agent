@@ -385,7 +385,7 @@ func TestExplicitCertificateRefreshAcceptsShortPolicyLifetime(t *testing.T) {
 func TestOIDCCertificateRefreshCheckpointsEveryRotation(t *testing.T) {
 	for _, cloudSubject := range []string{"", "different-operator"} {
 		t.Run("cloud subject "+cloudSubject, func(t *testing.T) {
-			checkpoints := 0
+			checkpoints := new(atomic.Int32)
 			opts := reissueTestOptions{cloudSubject: cloudSubject, beforeRequest: func(r *http.Request) {
 				if r.URL.Path != "/jwks" && r.URL.Path != "/v1/identity/certificate" {
 					return
@@ -399,7 +399,7 @@ func TestOIDCCertificateRefreshCheckpointsEveryRotation(t *testing.T) {
 					t.Errorf("continued to %s before saving first rotation", r.URL.Path)
 				}
 				requireDefaultCloudAuthRefreshLock(t)
-				checkpoints++
+				checkpoints.Add(1)
 			}}
 			auth, tokens, issues := reissueTestSession(t, 200, testOperatorTenant, time.Now(), time.Now().Add(10*time.Minute), opts)
 			held := auth.Certificates[0].PemCertificate
@@ -424,8 +424,8 @@ func TestOIDCCertificateRefreshCheckpointsEveryRotation(t *testing.T) {
 			if cfg.Auth[0].Certificates[0].PemCertificate != held {
 				t.Fatal("rotation checkpoint published uncommitted certificate custody")
 			}
-			if checkpoints != 2 || tokens.Load() != 2 || issues.Load() != 1 {
-				t.Fatalf("checkpoint/token/issue counts=%d/%d/%d", checkpoints, tokens.Load(), issues.Load())
+			if checkpoints.Load() != 2 || tokens.Load() != 2 || issues.Load() != 1 {
+				t.Fatalf("checkpoint/token/issue counts=%d/%d/%d", checkpoints.Load(), tokens.Load(), issues.Load())
 			}
 		})
 	}

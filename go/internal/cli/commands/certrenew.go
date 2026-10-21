@@ -45,10 +45,9 @@ import (
 // as an explicit denial, so they are reported as themselves rather than
 // retried.
 const (
-	// renewLeadTime is how much remaining validity triggers a renewal attempt.
-	// It has to exceed the round trip plus any clock skew between CLI and
-	// pki-core, or the renew arrives after the leaf it is renewing has expired
-	// and takes the grant branch.
+	// renewLeadTime caps the renewal window. Shorter-lived certificates use
+	// one third of their signed lifetime instead, leaving a useful period
+	// before the next attempt. Renewal must still arrive before expiry.
 	renewLeadTime = 15 * time.Minute
 
 	// renewEndpointEnv names pki-core's renew frontend, e.g.

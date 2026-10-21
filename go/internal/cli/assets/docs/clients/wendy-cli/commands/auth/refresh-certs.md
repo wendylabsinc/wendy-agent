@@ -70,8 +70,10 @@ mints, so no renew host is ever derived from one.
 ## It also runs by itself
 
 The CLI renews ahead of expiry without being asked: when an auth session is
-resolved and its certificate has less than 15 minutes of validity left, the
-renewal happens before the connection is attempted. Existing X.509 renewal
+resolved and its certificate enters its renewal margin, renewal happens before
+the connection is attempted. The margin is the smaller of 15 minutes and one
+third of the certificate's signed lifetime, so a 10-minute certificate starts
+renewing with less than 3 minutes 20 seconds left. Existing X.509 renewal
 still runs first and requires the old certificate to be valid.
 
 For an OIDC operator session, if renewal cannot replace the certificate, the CLI
@@ -82,14 +84,21 @@ including refusals and failed connection retries. The explicit command remains
 available.
 
 A replacement must match the tenant, operator and CSR key and have more than
-15 minutes remaining. The CLI permits its issuance time to be up to 60 seconds
+its own renewal margin remaining. These validation rules also apply to explicit
+`wendy auth refresh-certs`, including the operator-subject pin and clock-skew
+check. The CLI permits its issuance time to be up to 60 seconds
 ahead of this computer's clock, without extending its expiry. A held certificate
 further in the future reports a clock error without spending a refresh token.
 
 PKI and network failures preserve a still-valid certificate. Auth refusing the
 sign-in session requires `wendy auth login`; PKI refusals alone do not. Rotated
-refresh tokens are saved even if certificate issuance fails, and a failed save
-stops the command.
+refresh tokens are saved immediately after each rotation, before further
+validation or issuance, and a failed save stops the command.
+
+Saved selectors for a non-current context may keep using their still-valid
+certificate quietly, but no longer re-issue it silently. Once it expires, switch
+to that context explicitly. A Cloud gRPC unauthenticated response no longer
+offers sign-in for OIDC contexts; only Auth refusing the sign-in session does.
 
 ## What renewal will not do
 
