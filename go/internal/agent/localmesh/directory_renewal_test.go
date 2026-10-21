@@ -90,7 +90,7 @@ func TestDirectoryRenewedKeyCannotAuthorizeOldManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{Version: 1, Device: old.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(old.Device, now)
 	w, err := SignManifest(m, old.Certificate.Certificate, old.Signer, now)
 	if err != nil {
 		t.Fatal(err)
@@ -98,8 +98,8 @@ func TestDirectoryRenewedKeyCannotAuthorizeOldManifest(t *testing.T) {
 	if changed, err := d.Accept(w, now); err != nil || !changed {
 		t.Fatal(changed, err)
 	}
-	if len(d.Snapshot(now)) != 1 || len(d.Records(now)) != 1 {
-		t.Fatal("initial manifest absent")
+	if len(d.Snapshot(now)) != 1 || len(d.Records(now)) != 1 || !d.RouteAuthorizations(now)[*m.Route] {
+		t.Fatal("initial manifest or signed route absent")
 	}
 	allowOld = false
 	if _, err = cache.Put(renewed.Certificate.Certificate, now); err != nil {
@@ -110,6 +110,9 @@ func TestDirectoryRenewedKeyCannotAuthorizeOldManifest(t *testing.T) {
 	}
 	if len(d.Records(now)) != 0 {
 		t.Error("old signature remains in Records after issuer retirement")
+	}
+	if len(d.RouteAuthorizations(now)) != 0 {
+		t.Error("renewed key lends authority to the old signed route")
 	}
 	s := NewSynchronizer(d, cache)
 	defer s.Close()
@@ -153,7 +156,8 @@ func TestDirectoryRenewalResignRecoveryPreservesReplayAndLease(t *testing.T) {
 			if err = d.SetPersistence(nil, func([]DirectoryReceipt) error { saves++; return nil }, now); err != nil {
 				t.Fatal(err)
 			}
-			m := Manifest{Version: 1, Device: old.Device.UUID(), Revision: 7, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+			m := routeManifest(old.Device, now)
+			m.Revision = 7
 			wire, err := SignManifest(m, old.Certificate.Certificate, old.Signer, now)
 			if err != nil {
 				t.Fatal(err)
@@ -170,6 +174,9 @@ func TestDirectoryRenewalResignRecoveryPreservesReplayAndLease(t *testing.T) {
 			if sameKey && projected != 1 || !sameKey && projected != 0 {
 				t.Fatalf("current key projection=%d sameKey=%v", projected, sameKey)
 			}
+			if authorized := d.RouteAuthorizations(now.Add(time.Second))[*m.Route]; authorized != sameKey {
+				t.Fatalf("current key route authorization=%v sameKey=%v", authorized, sameKey)
+			}
 			resigned, err := SignManifest(m, renewed.Certificate.Certificate, renewed.Signer, now.Add(time.Second))
 			if err != nil {
 				t.Fatal(err)
@@ -179,6 +186,9 @@ func TestDirectoryRenewalResignRecoveryPreservesReplayAndLease(t *testing.T) {
 				t.Fatalf("resign recovery changed=%v sameKey=%v err=%v", changed, sameKey, err)
 			}
 			after := d.entries[wire.Principal]
+			if !d.RouteAuthorizations(now.Add(time.Second))[*m.Route] {
+				t.Fatal("renewed signature did not recover its exact signed route")
+			}
 			if after.manifest != before.manifest || !after.retainUntil.Equal(before.retainUntil) || d.history[wire.Principal] != receipt || saves != 1 {
 				t.Fatal("re-sign extended lease/retention or changed durable receipt")
 			}
@@ -217,8 +227,8 @@ func TestDirectoryRenewalResignRecoveryPreservesReplayAndLease(t *testing.T) {
 			}
 			receiver := NewSynchronizer(cold, coldCache)
 			defer receiver.Close()
-			if changed := exchangeDirectoryMessages(t, sender, receiver, messages, now.Add(time.Second)); len(changed) != 1 || len(cold.Snapshot(now.Add(time.Second))) != 1 {
-				t.Fatal("renewed signature did not reach cold receiver")
+			if changed := exchangeDirectoryMessages(t, sender, receiver, messages, now.Add(time.Second)); len(changed) != 1 || len(cold.Snapshot(now.Add(time.Second))) != 1 || !cold.RouteAuthorizations(now.Add(time.Second))[*m.Route] {
+				t.Fatal("renewed signature and exact signed route did not reach cold receiver")
 			}
 			if len(d.Snapshot(now.Add(time.Minute))) != 0 || len(d.Records(now.Add(time.Minute))) != 0 {
 				t.Fatal("renewal extended signed expiry")
@@ -261,7 +271,7 @@ func TestManifestSignatureBindingChecksEachLeafOnlyOnce(t *testing.T) {
 	old := newManifestTestAuthority(t, now).issue(t, now, nil, now.Add(time.Hour))
 	sameKey := newManifestTestAuthority(t, now).issue(t, now, old.Signer.(*ecdsa.PrivateKey), now.Add(2*time.Hour))
 	rotated := newManifestTestAuthority(t, now).issue(t, now, nil, now.Add(3*time.Hour))
-	w, err := SignManifest(Manifest{Version: 1, Device: old.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, old.Certificate.Certificate, old.Signer, now)
+	w, err := SignManifest(routeManifest(old.Device, now), old.Certificate.Certificate, old.Signer, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +337,9 @@ func TestDirectoryCurrentTrustAndCertificateLifetimePrecedeSignatureMemo(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := SignManifest(Manifest{Version: 1, Device: creds.Device.UUID(), Revision: 2, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052, Withdraw: true}, creds.Certificate.Certificate, creds.Signer, now)
+	m := routeManifest(creds.Device, now)
+	m.Revision, m.Withdraw = 2, true
+	w, err := SignManifest(m, creds.Certificate.Certificate, creds.Signer, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +387,7 @@ func TestDirectoryConcurrentRenewalExportsMatchingSignatureAndChain(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := SignManifest(Manifest{Version: 1, Device: old.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, old.Certificate.Certificate, old.Signer, now)
+	w, err := SignManifest(routeManifest(old.Device, now), old.Certificate.Certificate, old.Signer, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +425,9 @@ func TestDirectoryConcurrentRenewalExportsMatchingSignatureAndChain(t *testing.T
 
 func TestDirectorySignatureMemoOwnsAdmittedAndExportedWire(t *testing.T) {
 	d, chain, key, device, now := directoryFixture(t)
-	w, err := SignManifest(Manifest{Version: 1, Device: device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052, Name: "original"}, chain, key, now)
+	m := routeManifest(device, now)
+	m.Name = "original"
+	w, err := SignManifest(m, chain, key, now)
 	if err != nil {
 		t.Fatal(err)
 	}

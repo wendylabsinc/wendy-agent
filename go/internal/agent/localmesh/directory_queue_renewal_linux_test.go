@@ -56,7 +56,7 @@ func TestQueuedManifestRenewalDropsOldWireAndKeepsLinkUsable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{Version: 1, Device: old.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}
+	m := routeManifest(old.Device, now)
 	wire, err := SignManifest(m, old.Certificate.Certificate, old.Signer, now)
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestQueuedSameKeyRenewalUsesCurrentFetchableDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, err := SignManifest(Manifest{Version: 1, Device: old.Device.UUID(), Revision: 1, Issued: now.UnixMilli(), Expires: now.Add(time.Minute).UnixMilli(), AgentPort: 50052}, old.Certificate.Certificate, old.Signer, now)
+	wire, err := SignManifest(routeManifest(old.Device, now), old.Certificate.Certificate, old.Signer, now)
 	if err != nil {
 		t.Fatal(err)
 	}
