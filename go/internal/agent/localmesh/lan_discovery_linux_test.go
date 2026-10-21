@@ -22,6 +22,12 @@ func TestLANDiscoveryVersionCompatibility(t *testing.T) {
 		{"legacy", nil, true},
 		{"v1", []string{"version=1"}, true},
 		{"v1 with extension", []string{"version=1", "future=opaque"}, true},
+		{"mixed case v1", []string{"VeRsIoN=1"}, true},
+		{"uppercase future", []string{"VERSION=2"}, false},
+		{"mixed case duplicate", []string{"version=1", "Version=1"}, false},
+		{"mixed case conflicting", []string{"version=1", "Version=2"}, false},
+		{"mixed case principal duplicate", []string{"PRINCIPAL=" + peer.Principal()}, false},
+		{"mixed case mesh duplicate", []string{"Mesh=" + lanMeshHash(self.Tenant())}, false},
 		{"empty", []string{"version="}, false},
 		{"future", []string{"version=2"}, false},
 		{"zero", []string{"version=0"}, false},
@@ -43,6 +49,12 @@ func TestLANDiscoveryVersionCompatibility(t *testing.T) {
 				t.Fatalf("accepted=%v identity=%v, want accepted=%v", ok, got, tt.want)
 			}
 		})
+	}
+	entry := &mdns.ServiceEntry{Port: LANPort, AddrV4: net.IPv4(192, 168, 2, 3), InfoFields: []string{
+		"PrInCiPaL=" + peer.Principal(), "MESH=" + lanMeshHash(self.Tenant()), "VERSION=1",
+	}}
+	if got, _, ok := parseLANEntry(entry, self); !ok || got != peer {
+		t.Fatalf("valid case-insensitive TXT keys rejected: %v %v", got, ok)
 	}
 }
 

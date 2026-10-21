@@ -692,6 +692,10 @@ func parseLANEntry(entry *mdns.ServiceEntry, self meshid.Device) (meshid.Device,
 	fields := make(map[string]string, len(entry.InfoFields))
 	for _, field := range entry.InfoFields {
 		key, value, ok := strings.Cut(field, "=")
+		// DNS-SD TXT keys are case-insensitive (RFC 6763, section 6.4).
+		// Normalize before checking versions and duplicates so a differently
+		// cased version cannot be mistaken for a versionless advertisement.
+		key = strings.ToLower(key)
 		if _, duplicate := fields[key]; !ok || key == "" || duplicate {
 			return meshid.Device{}, nil, false
 		}

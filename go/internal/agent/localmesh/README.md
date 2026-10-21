@@ -120,7 +120,8 @@ LAN discovery uses `_wendy-net._udp.local.` with TXT fields `protocol=quic-v1`,
 `principal=<SPIFFE URI>`, `mesh=<16 lowercase hex characters>` and `version=1`. The existing SRV
 port, host and address records are unchanged. Versionless advertisements retain
 their legacy v1 meaning. Readers reject unsupported or malformed explicit
-versions and duplicate keys; unknown additional TXT keys are allowed. The
+versions and duplicate keys, comparing keys without regard to case as required
+by DNS-SD; unknown additional TXT keys are allowed. The
 additive version field is compatible with older readers that ignore it.
 
 Synchronized Wi-Fi Aware discovery keeps service name `wendy.mesh.v1`. Its SSI
