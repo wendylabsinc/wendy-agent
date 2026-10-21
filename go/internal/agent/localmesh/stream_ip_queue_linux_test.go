@@ -1055,3 +1055,24 @@ func TestStreamIPQueueRefusedFastTCPPrefixKeepsBulkTail(t *testing.T) {
 		t.Fatalf("refused prefix discarded admitted traffic: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestStreamIPQueueRefusedLargerTCPPrefixKeepsTail(t *testing.T) {
+	q := newStreamIPSendQueue()
+	now := time.Now()
+	if !q.enqueue(1, queueTestTCP(500, 1, 2260), now) || !q.enqueue(2, queueTestIP(TunnelMTU, 2), now) {
+		t.Fatal("bulk packets not admitted")
+	}
+	for source := byte(3); q.snapshot().Bytes+streamIPFramedBytes(streamFastIPMax) <= streamIPMinByteBudget; source++ {
+		if !q.enqueue(uint32(source), queueTestIP(streamFastIPMax, source), now) {
+			t.Fatal("fixture fast packet not admitted")
+		}
+	}
+	before := q.snapshot()
+	if q.enqueue(1000, queueTestTCP(TunnelMTU, 1, 1000), now) {
+		t.Fatal("prefix exceeded capacity available to its flow")
+	}
+	after := q.snapshot()
+	if after.Bytes != before.Bytes || after.Packets != before.Packets || after.DroppedCapacity != before.DroppedCapacity+1 {
+		t.Fatalf("refused larger prefix discarded admitted traffic: before=%+v after=%+v", before, after)
+	}
+}

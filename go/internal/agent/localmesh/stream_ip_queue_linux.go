@@ -207,15 +207,30 @@ func (q *streamIPSendQueue) victim(incoming streamIPPacket) int {
 	needFastSpace := incoming.fast && q.fastBytes()+incoming.bytes > q.fastByteBudget()
 	// TCP retransmissions can arrive after a later segment. Preserve the
 	// earliest logical prefix in that flow, including when it arrives later.
+	// Verify that removing the flow's later segments can admit the prefix
+	// before discarding any: a larger retransmission may still not fit.
+	victim, reclaim, reclaimFast := -1, 0, 0
 	for i := len(q.pending) - 1; i >= 0; i-- {
-		// Evicting bulk cannot relieve a full fast lane. Keep admitted data
-		// when the smaller prefix would still be refused after its eviction.
-		if needFastSpace && !q.pending[i].fast {
+		p := q.pending[i]
+		if !tcpQueuedBefore(incoming.data, p.data) {
 			continue
 		}
-		if tcpQueuedBefore(incoming.data, q.pending[i].data) {
-			return i
+		reclaim += p.bytes
+		if p.fast {
+			reclaimFast += p.bytes
 		}
+		// Evicting bulk cannot relieve a full fast lane.
+		if victim < 0 && (!needFastSpace || p.fast) {
+			victim = i
+		}
+	}
+	if victim >= 0 && q.stats.Bytes+incoming.bytes-reclaim <= q.byteBudget() &&
+		q.sourceBytes(incoming.source)+incoming.bytes-reclaim <= q.sourceByteBudget() &&
+		(!incoming.fast || q.fastBytes()+incoming.bytes-reclaimFast <= q.fastByteBudget()) {
+		return victim
+	}
+	if reclaim != 0 {
+		return -1 // Preserve the admitted suffix when its prefix cannot fit.
 	}
 	// Preserve each sender's admitted prefix within a priority class. Replacing
 	// it with each later datagram can discard the start of every TLS flight.
