@@ -192,21 +192,35 @@ type MDNSService struct {
 | `wired` | Comma-separated IPv4 addresses of the device's connected Ethernet ports (at most 8); absent when none. Used only to choose a route, never to trust a device | `192.168.2.50` |
 
 
-## Wendy Net LAN peer discovery
+## Connect Wendy Net devices over Ethernet or Wi-Fi
 
-Enrolled WendyOS devices can discover Wendy Net peers independently over physical Ethernet and connected infrastructure Wi-Fi. Enable the carriers on each device using the CLI:
+Devices enrolled in the same organization can find one another on a local
+Ethernet or ordinary Wi-Fi network. Run this on each device you want to connect:
 
 ```sh
-wendy device wendy-net configure --ethernet=true --infrastructure-wifi=true
+wendy device wendy-net configure --participate=true --ethernet=true --infrastructure-wifi=true
 wendy device wendy-net status
 ```
 
-Omitted flags preserve saved settings. Set either flag to `false` to disable that carrier. Changing these settings requires an authenticated user in the device's tenant. Check the reported runtime state after saving; saved configuration alone does not establish peer connectivity.
+Add `--device <device>` to select a particular device. Check the authenticated peer count;
+saving settings alone does not confirm connectivity. Omitted
+flags preserve saved choices. Set a flag to `false` to disable that connection
+type. Changing saved settings restarts local routing and can interrupt traffic.
 
-Discovery uses IPv4 mDNS (`_wendy-net._udp` on UDP port 5353, TXT `protocol=quic-v1`), followed by native UDP-backed QUIC on UDP port 43023 with mutual TLS. Allow both UDP ports on enabled LAN interfaces; production LAN has no TCP fallback. Explicit configured TCP links remain a separate topology simulator. Old `_wendy-mesh._tcp` discovery is incompatible. Enabled interfaces need usable IPv4 addresses and local multicast connectivity. Virtual bridges, veth devices, access-point Wi-Fi interfaces and IPv4 link-local addresses are excluded. Every admitted peer must authenticate the exact enrolled device principal in the same tenant. An advertisement alone cannot authorize a connection.
+Ethernet is preferred over ordinary Wi-Fi, followed by the radio connections.
+If a connection disappears, another enabled connection can take over. Existing
+TCP sessions may survive a short outage; new connections wait for a valid route.
 
-Authenticated Ethernet links have lower cost than infrastructure Wi-Fi, followed by the radio carriers. Interface changes are scanned every five seconds; removing an interface closes its links and permits another enabled carrier to reconnect.
+### Network requirements and privacy
 
-Established TCP sessions can recover from a short carrier outage through another enabled carrier, within their normal connection and certificate lifetime limits. New connections still require an authorized route. Changing saved carrier settings restarts the local routing runtime and may interrupt active connections; it is different from a carrier disappearing while both carriers remain enabled.
+Allow local multicast discovery on UDP port 5353 and encrypted peer connections
+on UDP port 43023. Devices need usable IPv4 addresses; isolated Wi-Fi clients and
+multicast filtering can prevent discovery. Container bridges, access-point
+interfaces, and IPv4 link-local addresses are not used.
 
-LAN discovery broadcasts the enrolled tenant/device principal and device UUID in cleartext to the local network. These are discovery hints, not credentials. Enable these carriers on networks where exposing those identifiers is acceptable; other stations on that network can enumerate the advertisements.
+Discovery advertises device and organization identifiers in cleartext on the
+local network. Enable it only where that disclosure is acceptable. A discovered
+address is a hint: each peer must still authenticate before carrying traffic.
+
+The discovery service is `_wendy-net._udp`; peer traffic uses QUIC over UDP.
+There is no TCP fallback on these LAN connections.

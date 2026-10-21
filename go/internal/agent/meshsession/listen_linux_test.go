@@ -4,6 +4,7 @@ package meshsession
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -25,7 +26,7 @@ func TestAppListenerBeforeVIPAndAddressRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pc.Close()
-	udp, ok := pc.(*net.UDPConn)
+	udp, ok := pc.(*routedAppPackets)
 	if !ok {
 		t.Fatal("lost native UDP optimizations")
 	}
@@ -141,5 +142,26 @@ func TestAppServerCloseBeforeAndDuringRunReleasesSocket(t *testing.T) {
 			}
 			rebound.Close()
 		})
+	}
+}
+
+func TestRoutedAppSocketPreservesFatalErrors(t *testing.T) {
+	raw, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := &routedAppPackets{UDPConn: raw}
+	peer := raw.LocalAddr().(*net.UDPAddr)
+	raw.Close()
+	if _, err := socket.WriteTo([]byte("closed"), peer); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closed socket error suppressed: %v", err)
+	}
+	if _, _, err := socket.WriteMsgUDP([]byte("closed"), nil, peer); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closed native send error suppressed: %v", err)
+	}
+	for _, err := range []error{unix.EPERM, unix.EACCES, unix.ECONNREFUSED, unix.EMSGSIZE, unix.EBADF} {
+		if routingUnavailable(err) {
+			t.Fatalf("non-routing error suppressed: %v", err)
+		}
 	}
 }

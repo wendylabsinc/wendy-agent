@@ -180,6 +180,36 @@ func TestPooledAppSurvivesSameAddressRouteSwitch(t *testing.T) {
 		t.Fatal("initial", err)
 	}
 	t.Log("initial stream succeeded")
+	// Production removes the selected route behind a permanent unreachable
+	// fallback. A send during repair must remain packet loss rather than
+	// permanently closing the authenticated end-to-end QUIC session.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	live, err := client.Dial(ctx, b.Device, endpoint, 18080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	live.SetDeadline(time.Now().Add(4 * time.Second))
+	for _, side := range []string{"client", "server"} {
+		if side == "client" {
+			run("ip", "-6", "route", "replace", "unreachable", serverAddress+"/128")
+		} else {
+			run("ip", "-n", ns, "-6", "route", "replace", "unreachable", clientAddress+"/128")
+		}
+		if _, err := live.Write([]byte("repair")); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		switchRoute("old")
+		var repaired [6]byte
+		if _, err := io.ReadFull(live, repaired[:]); err != nil {
+			t.Fatalf("%s route repair killed the original stream: %v (QUIC cause: %v)", side, err, context.Cause(first.conn.Context()))
+		}
+		if string(repaired[:]) != "repair" {
+			t.Fatalf("wrong repair reply: %q", repaired)
+		}
+	}
 	switchRoute("new")
 	run("ip", "netns", "exec", ns, "ip6tables", "-A", "OUTPUT", "-o", "arsold", "-p", "udp", "--sport", "43021", "-j", "DROP")
 	after, pooledErr := exchange(client)

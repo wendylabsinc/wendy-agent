@@ -79,7 +79,7 @@ func Dial(ctx context.Context, credentials *localmesh.Credentials, peer meshid.D
 	if err != nil {
 		return nil, err
 	}
-	conn, err := quic.DialAddr(ctx, address.String(), cfg, quicConfig())
+	conn, err := dialAppQUIC(ctx, credentials, address, cfg, quicConfig())
 	if err != nil {
 		return nil, fmt.Errorf("wendy net app QUIC dial: %w", err)
 	}

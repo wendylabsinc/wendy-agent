@@ -63,7 +63,7 @@ func NewClient(credentials *localmesh.Credentials, managers ...*udpmessage.Manag
 	}
 	c := &Client{credentials: credentials, peers: make(map[meshid.Device]*pooledSession), sessions: make(map[*pooledSession]struct{}), udpSessions: make(map[*udpSession]struct{}), stop: make(chan struct{}), done: make(chan struct{}),
 		dial: func(ctx context.Context, endpoint netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
-			return quic.DialAddr(ctx, endpoint.String(), tlsConfig, config)
+			return dialAppQUIC(ctx, credentials, endpoint, tlsConfig, config)
 		}}
 	c.udpManager = udpmessage.NewManager()
 	c.ownsUDPManager = true

@@ -4,11 +4,17 @@ package meshsession
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net"
+	"net/netip"
 	"syscall"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	quic "github.com/quic-go/quic-go"
 	"golang.org/x/sys/unix"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
 func listenAppPackets(ctx context.Context, credentials *localmesh.Credentials, addr string) (net.PacketConn, error) {
@@ -42,5 +48,64 @@ func listenAppPackets(ctx context.Context, credentials *localmesh.Credentials, a
 		}
 		return sockErr
 	}
-	return lc.ListenPacket(ctx, network, address.String())
+	packets, err := lc.ListenPacket(ctx, network, address.String())
+	if err != nil {
+		return nil, err
+	}
+	if meshid.MeshPrefix.Contains(address.AddrPort().Addr()) {
+		return &routedAppPackets{UDPConn: packets.(*net.UDPConn)}, nil
+	}
+	return packets, nil
+}
+
+// routedAppPackets keeps a temporary loss of the signed kernel route from
+// terminating QUIC's send loop. The kernel still rejects the packet; reporting
+// that offer as lost lets QUIC retransmit after route repair, subject to its
+// existing idle timeout and independent credential lifetime. Other socket
+// errors remain fatal. Embedding UDPConn preserves native batching, GSO and ECN.
+type routedAppPackets struct{ *net.UDPConn }
+
+var _ quic.OOBCapablePacketConn = (*routedAppPackets)(nil)
+
+func routingUnavailable(err error) bool {
+	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH)
+}
+func (c *routedAppPackets) WriteTo(packet []byte, peer net.Addr) (int, error) {
+	n, err := c.UDPConn.WriteTo(packet, peer)
+	if routingUnavailable(err) {
+		return len(packet), nil
+	}
+	return n, err
+}
+func (c *routedAppPackets) WriteMsgUDP(packet, oob []byte, peer *net.UDPAddr) (int, int, error) {
+	n, oobn, err := c.UDPConn.WriteMsgUDP(packet, oob, peer)
+	if routingUnavailable(err) {
+		return len(packet), len(oob), nil
+	}
+	return n, oobn, err
+}
+
+func dialAppQUIC(ctx context.Context, credentials *localmesh.Credentials, endpoint netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
+	// Non-mesh endpoints are used by local tests and explicit callers. Only the
+	// routed mesh socket needs FREEBIND and route-repair loss semantics.
+	if !meshid.MeshPrefix.Contains(endpoint.Addr()) {
+		return quic.DialAddr(ctx, endpoint.String(), tlsConfig, config)
+	}
+	packets, err := listenAppPackets(ctx, credentials, ":0")
+	if err != nil {
+		return nil, err
+	}
+	transport := &quic.Transport{Conn: packets}
+	conn, err := transport.Dial(ctx, net.UDPAddrFromAddrPort(endpoint), tlsConfig, config)
+	if err != nil {
+		transport.Close()
+		packets.Close()
+		return nil, err
+	}
+	go func() {
+		<-conn.Context().Done()
+		transport.Close()
+		packets.Close()
+	}()
+	return conn, nil
 }
