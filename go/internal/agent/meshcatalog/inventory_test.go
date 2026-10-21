@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"io"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 )
 
 func TestInventoryFramingAndBounds(t *testing.T) {
@@ -42,12 +44,13 @@ func TestInventoryFramingAndBounds(t *testing.T) {
 		t.Fatal("duplicate inventory accepted")
 	}
 	var oversized receivedInventory
-	for _, m := range inventoryMessages(append(fps, fmt.Sprintf("%064x", 1024)))[:8] {
+	chunks := inventoryMessages(fps)
+	for _, m := range chunks[:len(chunks)-1] {
 		if err := oversized.receive(m); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if oversized.receive(inventoryMessages([]string{fmt.Sprintf("%064x", 1024)})[0]) == nil {
+	if oversized.receive(inventoryMessages([]string{fmt.Sprintf("%064x", maxInventoryEntries)})[0]) == nil {
 		t.Fatal("oversized inventory accepted")
 	}
 	invalid := []inventoryMessage{
@@ -73,7 +76,15 @@ func TestInventoryFramingAndBounds(t *testing.T) {
 	if _, err := ReadMessage(&old); err == nil {
 		t.Fatal("legacy parser accepted inventory")
 	}
-	for _, raw := range []string{`{"kind":"identity-cache-done","unknown":1}`, `{"kind":"identity-cache-done"} {}`, `{"kind":"identity-cache","fingerprints":"%%%"}`} {
+	for _, raw := range []string{
+		`{"kind":"identity-cache-done","unknown":1}`,
+		`{"kind":"identity-cache-done"} {}`,
+		`{"kind":"identity-cache","fingerprints":"%%%"}`,
+		`{"kind":"identity-cache"}`,
+		`{"kind":"identity-cache","fingerprints":"AA=="}`,
+		`{"kind":"identity-cache-done","fingerprints":"AA=="}`,
+		`{"kind":"snapshot-done","fingerprints":"AA=="}`,
+	} {
 		var b bytes.Buffer
 		_ = binary.Write(&b, binary.BigEndian, uint32(len(raw)))
 		b.WriteString(raw)
@@ -85,6 +96,14 @@ func TestInventoryFramingAndBounds(t *testing.T) {
 	_ = binary.Write(&b, binary.BigEndian, uint32(MaxMessageBytes+1))
 	if _, err := readInventoryMessage(&b); err == nil {
 		t.Fatal("oversized frame accepted")
+	}
+	if _, err := readInventoryMessage(bytes.NewReader(make([]byte, 4))); err == nil {
+		t.Fatal("empty frame accepted")
+	}
+	for _, raw := range [][]byte{{0, 0, 0}, {0, 0, 0, 5, '{'}} {
+		if _, err := readInventoryMessage(bytes.NewReader(raw)); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("truncated frame = %v", err)
+		}
 	}
 }
 
@@ -123,12 +142,14 @@ func TestInventoryDoesNotGrantTrustOrBypassSignatures(t *testing.T) {
 		}
 	}
 	sender := NewSynchronizer(origin, oc)
+	defer sender.Close()
 	sender.useCurrentInventory(inv)
 	frames := sender.Record(w, f.now)
 	if len(frames) != 1 || frames[0].Kind != "record" {
 		t.Fatal("inventory did not omit bundle")
 	}
 	receiver := NewSynchronizer(viewer, cache)
+	defer receiver.Close()
 	tampered := cloneWire(w)
 	tampered.Signature[0] ^= 0xff
 	if _, _, err = receiver.Receive(Message{Kind: "record", Record: &tampered}, f.now); err == nil {
@@ -143,6 +164,16 @@ func TestInventoryDoesNotGrantTrustOrBypassSignatures(t *testing.T) {
 	}
 	if _, _, err = receiver.Receive(Message{Kind: "bundle", Bundle: f.creds[p535].Certificate.Certificate}, f.now); err == nil {
 		t.Fatal("repair bypassed revoked trust")
+	}
+	// Current sessions repair an identity through certificate descriptors and
+	// cached or fetched elements. Public bytes retained before revocation must
+	// still pass the receiver's current verifier before pending records land.
+	descriptor := sender.certificates.Describe(p535, f.now)
+	if descriptor == nil {
+		t.Fatal("trusted sender could not describe origin identity")
+	}
+	if _, _, err = receiver.Receive(Message{Kind: "certificate", Certificate: descriptor}, f.now); err == nil {
+		t.Fatal("certificate element repair bypassed revoked trust")
 	}
 	if len(viewer.Snapshot(f.now)) != 0 {
 		t.Fatal("untrusted service visible")
@@ -160,8 +191,10 @@ func TestInventoryStaleAdvertisementCannotExceedPendingBound(t *testing.T) {
 	origin.limit, viewer.limit = maxPendingRecords+1, maxPendingRecords+1
 	fp := localmesh.Fingerprint(f.creds[p535].Certificate.Certificate)
 	sender := NewSynchronizer(origin, oc)
+	defer sender.Close()
 	sender.useCurrentInventory(receivedInventory{fingerprints: map[string]bool{fp: true}, done: true})
 	receiver := NewSynchronizer(viewer, cache)
+	defer receiver.Close()
 	for i := range maxPendingRecords + 1 {
 		spec := testSpec()
 		spec.ServiceID = fmt.Sprintf("http-%d", i)
@@ -190,7 +223,9 @@ func TestInventoryStaleAdvertisementCannotExceedPendingBound(t *testing.T) {
 	// A fresh session fetches the missing elements before transferring its
 	// snapshot; the sender can then deliver every record without pending data.
 	retry := NewSynchronizer(origin, oc)
+	defer retry.Close()
 	fresh := NewSynchronizer(viewer, cache)
+	defer fresh.Close()
 	for _, w := range retry.snapshotRecords(f.now) {
 		exchangeServiceMessages(t, retry, fresh, retry.Record(w, f.now), f.now)
 	}
