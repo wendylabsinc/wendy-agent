@@ -257,8 +257,11 @@ Router QUIC links require hello version 2, ALPN `wendy-net-router/2` and the
 authenticated IP carrier capability described below. BLE TLS uses hello version 3
 and `wendy-local-mesh-ble/3-catalog-1-cert-1` without router IP capabilities.
 The opt-in leaf listener requires
-`wendy-local-mesh-leaf/3` and the `WML3` preface. Old peers cannot join and no
-automatic downgrade is attempted; upgrade each connected Wendy Net network together.
+`wendy-local-mesh-leaf/3` and the `WML3` preface. Earlier BLE and leaf protocols
+are rejected during negotiation. Every carrier rejects earlier manifest versions
+for both directory presence and route admission, including peers that still
+negotiate the preserved router protocol. No automatic downgrade is attempted;
+upgrade each connected Wendy Net network together.
 This changes the internal Wendy Net wire
 contract, not public gRPC messages or application-session ALPNs.
 
