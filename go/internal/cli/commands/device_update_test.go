@@ -415,7 +415,7 @@ func TestAgentUpdateTerminalError(t *testing.T) {
 		{
 			name:       "update already in progress points at a running update",
 			recvErr:    status.Error(codes.FailedPrecondition, "an update is already in progress"),
-			wantSubstr: "another OS or agent update may still be running",
+			wantSubstr: "Another OS or agent update may still be running",
 		},
 		{
 			name:       "update already in progress keeps the stale-lock reboot hint",

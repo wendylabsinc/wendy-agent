@@ -444,6 +444,16 @@ func (e *deviceIdentityRefusalError) CLIMessage() string {
 	return e.diagnostic.message(true)
 }
 
+// RenderIdentityRefusal restores the CLI's separately styled pin diagnostic
+// inside text whose other failures have already passed the message boundary.
+func RenderIdentityRefusal(err error, text string) (string, bool) {
+	var refusal *deviceIdentityRefusalError
+	if !errors.As(err, &refusal) || !strings.Contains(text, refusal.Error()) {
+		return "", false
+	}
+	return strings.Replace(text, refusal.Error(), refusal.CLIMessage(), 1), true
+}
+
 // challengeUnprovisionedDevice handles a connection with no verifiable identity
 // at all. Only a hostname we have previously seen enrolled is challenged: for
 // everything else, connecting to an unprovisioned device is the normal

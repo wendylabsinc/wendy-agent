@@ -253,7 +253,11 @@ func errorClass(err error) string {
 
 // renderError and the JSON envelope share the CLI message boundary.
 func renderError(err error) string {
-	return tui.ErrorMessage(formatErrorParts(err).text)
+	text := formatErrorParts(err).text
+	if diagnostic, ok := commands.RenderIdentityRefusal(err, text); ok {
+		return diagnostic
+	}
+	return tui.ErrorMessage(text)
 }
 
 type formattedError struct {

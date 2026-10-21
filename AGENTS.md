@@ -95,4 +95,4 @@ wendy cloud discover
 
 ## CLI messages
 
-CLI failures shown to people must go through `go/internal/cli/usermessage` and the command failure printer. Use sentence case and a full stop, and never include raw server, agent, library, or transport text; preserve CLI-authored detail as sentences and keep foreign diagnostics behind the existing debug switch. Mark untyped agent, HTTP, or library failures with `usermessage.Foreign` where they enter the CLI.
+CLI failures shown to people must go through `go/internal/cli/usermessage` and the command failure printer. Use sentence case and a full stop, and never include raw server, agent, library, or transport text; preserve CLI-authored detail as sentences and keep foreign diagnostics behind the existing debug switch. Mark only the foreign cause with `usermessage.Foreign` where it enters the CLI, so authored context and recovery steps survive. Message formatting and TUI rendering must not write debug output.

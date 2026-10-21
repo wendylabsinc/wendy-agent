@@ -18,7 +18,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 type buildLibraryLogModel struct {
@@ -382,7 +381,7 @@ func TestRunBuildWithProgressReturnsTheStepAndCause(t *testing.T) {
 	defer func() { persistBuildFailureLog = originalPersist }()
 	persistBuildFailureLog = func(string, string) (string, error) { return "/tmp/wendy-build-image-test.log", nil }
 
-	buildErr := &imageBuildFailedError{usermessage.Foreign(errors.New("docker buildx build (OCI export) failed: exit status 1"))}
+	buildErr := &imageBuildFailedError{errors.New("docker buildx build (OCI export) failed: exit status 1")}
 	err := runBuildWithProgress(context.Background(), "Building image (OCI layout)...", shouldDumpChunkDiffBuildLog(chunkingAuto), func(_ context.Context, stream, _ io.Writer) error {
 		io.WriteString(stream, readBuildFailureFixture(t, "go-compile.log"))
 		return buildErr
@@ -398,7 +397,7 @@ func TestRunBuildWithProgressReturnsTheStepAndCause(t *testing.T) {
 		"  Step: build 4/4 — RUN go build -o /out/app .",
 		// The builder's error stays in the output; CI's OCI-export retry
 		// (go/scripts/test-ci.sh) greps for it.
-		"Error: Something went wrong. Try again.",
+		"  Error: docker buildx build (OCI export) failed: exit status 1",
 		"  Build log: /tmp/wendy-build-image-test.log",
 	} {
 		if !strings.Contains(out.String(), want) {

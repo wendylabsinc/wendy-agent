@@ -89,7 +89,7 @@ func TestReportFailure_JSONEnvelope(t *testing.T) {
 	want := errorBody{
 		Code:      "auth_required",
 		Exit:      3,
-		Message:   "Sign in again to continue.",
+		Message:   "Listing cloud devices: Sign in again to continue.",
 		NextSteps: []string{"Run 'wendy auth login', then try again."},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -110,7 +110,7 @@ func TestReportFailure_TextModeUsesApprovedSentences(t *testing.T) {
 		exit    int
 		message string
 	}{
-		{fmt.Errorf("listing cloud devices: %w", config.ErrNotLoggedIn), 3, "Sign in again to continue."},
+		{fmt.Errorf("listing cloud devices: %w", config.ErrNotLoggedIn), 3, "Listing cloud devices: Sign in again to continue."},
 		{errors.Join(errors.New("local: build failed\nstep 3/7 exited 1"), errors.New("worker: build failed")), 1, "Local: build failed\nstep 3/7 exited 1\nworker: build failed."},
 		{fmt.Errorf("connecting: %w", diagnosticTestError{}), 1, "Connecting: plain programmatic error."},
 	} {
@@ -149,7 +149,7 @@ func TestReportFailure_StepsLeaveTheMessage(t *testing.T) {
 	}
 	reportFailure(&out, err, nil, []string{"--json"})
 	got := decodeEnvelope(t, out.String())
-	wantMessage := "Could not connect to device at 127.0.0.1:1. Make sure it's on and connected, then try again."
+	wantMessage := "Default device \"127.0.0.1:1\" is set but could not be reached: Could not connect to device at 127.0.0.1:1. Make sure it's on and connected, then try again."
 	if got.Message != wantMessage {
 		t.Errorf("message = %q, want %q", got.Message, wantMessage)
 	}
@@ -168,11 +168,11 @@ func TestReportFailure_EnvelopeTextIsPlain(t *testing.T) {
 		steps: []string{"Retry with --device <host>."},
 	}
 	reportFailure(&out, tlsErr, nil, []string{"--json"})
-	if strings.Contains(out.String(), "Retry with --device <host>.") || strings.Contains(out.String(), "u003c") {
+	if !strings.Contains(out.String(), "Retry with --device <host>.") || strings.Contains(out.String(), "u003c") {
 		t.Errorf("unapproved advice reached output: %s", out.String())
 	}
 	got := decodeEnvelope(t, out.String())
-	if got.Message != "The device rejected the secure connection. Its clock or certificates may need attention." || len(got.NextSteps) != 2 {
+	if got.Message != "Querying device version: The device rejected the secure connection. Its clock or certificates may need attention." || !reflect.DeepEqual(got.NextSteps, []string{"Retry with --device <host>."}) {
 		t.Errorf("envelope = %+v", got)
 	}
 
@@ -204,15 +204,16 @@ func (e inlineAdviceError) Error() string {
 	return "Unauthorized. " + e.steps[0] + "\nLast mTLS error: tls: expired certificate\n" + e.steps[1]
 }
 func (e inlineAdviceError) NextSteps() []string { return e.steps }
+func (e inlineAdviceError) Unwrap() error       { return errors.New("tls: expired certificate") }
 
 // Advice that sits in the message must reach next_steps, and leave the
 // message, whatever its layout.
-func TestReportFailure_UnapprovedAdviceNeverReachesTheEnvelope(t *testing.T) {
+func TestReportFailure_LocalAdviceRemainsSeparateFromTheMessage(t *testing.T) {
 	var out strings.Builder
 	reportFailure(&out, commands.UnknownSubcommandError([]string{"device", "inf"}), nil, []string{"--json", "device", "inf"})
 	got := decodeEnvelope(t, out.String())
 	if !strings.Contains(got.Message, "Unknown command") ||
-		!reflect.DeepEqual(got.NextSteps, []string{}) {
+		!reflect.DeepEqual(got.NextSteps, []string{"Did you mean 'wendy device info'?", "Run 'wendy device --help' to see the available commands."}) {
 		t.Errorf("unknown subcommand envelope = %+v", got)
 	}
 
@@ -221,8 +222,8 @@ func TestReportFailure_UnapprovedAdviceNeverReachesTheEnvelope(t *testing.T) {
 	refresh := "Your stored certificates may be outdated. Run 'wendy auth refresh-certs' to re-issue them."
 	reportFailure(&out, fmt.Errorf("connecting: %w", inlineAdviceError{[]string{login, refresh}}), nil, []string{"--json"})
 	got = decodeEnvelope(t, out.String())
-	if got.Message != "The device rejected the secure connection. Its clock or certificates may need attention." ||
-		len(got.NextSteps) != 2 {
+	if !strings.HasPrefix(got.Message, "Connecting: Unauthorized.") || strings.Contains(got.Message, "tls: expired") ||
+		!reflect.DeepEqual(got.NextSteps, []string{login, refresh}) {
 		t.Errorf("unauthorized envelope = %+v", got)
 	}
 }

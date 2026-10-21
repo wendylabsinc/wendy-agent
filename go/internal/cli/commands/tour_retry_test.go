@@ -148,7 +148,7 @@ func TestTourStepReloadsCorrectedProject(t *testing.T) {
 	if err != nil || prompts != 1 || got != want {
 		t.Fatalf("error=%v prompts=%d project=%+v, want %+v", err, prompts, got, want)
 	}
-	if !strings.Contains(out.String(), "Something went wrong. Try again.") || strings.Contains(out.String(), path) {
+	if !strings.Contains(out.String(), path) {
 		t.Fatalf("missing file to correct: %s", out.String())
 	}
 }

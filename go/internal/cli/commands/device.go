@@ -3218,18 +3218,16 @@ func agentUpdateTerminalError(recvErr error) error {
 	}
 	switch s.Code() {
 	case codes.Unavailable, codes.Canceled:
-		return usermessage.Foreign(fmt.Errorf("%w (%s)", errAgentUpdateUnconfirmed, s.Message()))
+		return fmt.Errorf("%w (%w)", errAgentUpdateUnconfirmed, recvErr)
 	case codes.FailedPrecondition:
-		// The agent names its own cause here, and most have nothing to do with a
-		// half-applied update. Add the reboot hint only where it fits: for the
-		// sysext-overlay refusal a reboot is the one action that makes it worse.
 		if strings.Contains(s.Message(), "update is already in progress") {
-			return usermessage.Foreign(fmt.Errorf("%s — another OS or agent update may still be running; wait for it to finish, then retry. "+
-				"If this repeats with nothing running, reboot the device, then retry", s.Message()))
+			return withNextSteps(fmt.Errorf("agent rejected the update: %w", recvErr),
+				"Another OS or agent update may still be running; wait for it to finish, then retry.",
+				"If this repeats with nothing running, reboot the device, then retry.")
 		}
-		return usermessage.Foreign(errors.New(s.Message()))
+		return recvErr
 	default:
-		return usermessage.Foreign(fmt.Errorf("agent rejected the update: %s", s.Message()))
+		return fmt.Errorf("agent rejected the update: %w", recvErr)
 	}
 }
 

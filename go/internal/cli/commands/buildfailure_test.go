@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 const pipBuildFailureFixture = `#15 8.239 ERROR: Cannot install unknown 0.0.0 (from git+https://github.com/ultralytics/CLIP.git@488e81a6711eea7346872b46ea928b367da8889d) and unknown 0.0.0 (from git+https://github.com/ultralytics/mobileclip.git@a17446aaa1860d25cab8531ec27c3ecac3c05bf5) because these package versions have conflicting dependencies.
@@ -305,7 +303,7 @@ func TestRenderBuildFailureReturnsTheStepAndCause(t *testing.T) {
 	persistBuildFailureLog = func(string, string) (string, error) { return "/tmp/wendy-build-image-1.log", nil }
 
 	var out strings.Builder
-	buildErr := &imageBuildFailedError{usermessage.Foreign(errors.New("docker buildx build (OCI export) failed: exit status 1"))}
+	buildErr := &imageBuildFailedError{errors.New("docker buildx build (OCI export) failed: exit status 1")}
 	err := renderBuildFailure(&out, "", readBuildFailureFixture(t, "go-compile.log"), buildErr)
 	if err.Error() != "build failed at [build 4/4] RUN go build -o /out/app .: ./main.go:6:14: undefined: foo" || !errors.Is(err, buildErr) {
 		t.Fatalf("err = %q", err)
@@ -313,7 +311,7 @@ func TestRenderBuildFailureReturnsTheStepAndCause(t *testing.T) {
 	for _, want := range []string{
 		"  Step: build 4/4 — RUN go build -o /out/app .\n",
 		// The builder's own error stays visible above the rewritten one.
-		"Error: Something went wrong. Try again.\n",
+		"  Error: docker buildx build (OCI export) failed: exit status 1\n",
 		"  Build log: /tmp/wendy-build-image-1.log\n",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -331,15 +329,15 @@ func TestBuildFailureErrorRewritesOnlyImageBuildFailures(t *testing.T) {
 	persistBuildFailureLog = func(string, string) (string, error) { return "/tmp/wendy-build-image-1.log", nil }
 	log := readBuildFailureFixture(t, "go-compile.log")
 	for _, buildErr := range []error{
-		classifyCommandError(errBuilderUnavailable, usermessage.Foreign(errors.New(`bootstrapping buildx builder "wendy-oci": exit status 1`))),
-		usermessage.Foreign(errors.New("pushing the build context to spark-office: connection reset by peer")),
+		classifyCommandError(errBuilderUnavailable, errors.New(`bootstrapping buildx builder "wendy-oci": exit status 1`)),
+		errors.New("pushing the build context to spark-office: connection reset by peer"),
 	} {
 		var out strings.Builder
 		err := renderBuildFailure(&out, "", log, buildErr)
 		if err != buildErr {
 			t.Errorf("%q was rewritten to %q", buildErr, err)
 		}
-		if got := strings.Count(out.String(), "Something went wrong. Try again."); got != 1 {
+		if got := strings.Count(out.String(), buildErr.Error()); got != 1 {
 			t.Errorf("details block shows %q %d times, want once:\n%s", buildErr, got, out.String())
 		}
 	}
@@ -465,7 +463,7 @@ func TestBuildFailureErrorSkipsGenericTrailers(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			buildErr := &imageBuildFailedError{usermessage.Foreign(errors.New("docker buildx build (OCI export) failed: exit status 1"))}
+			buildErr := &imageBuildFailedError{errors.New("docker buildx build (OCI export) failed: exit status 1")}
 			if err := buildFailureError(summarizeBuildFailure(tc.log, buildErr), buildErr); err.Error() != tc.want {
 				t.Fatalf("error = %q\nwant    %q", err, tc.want)
 			}

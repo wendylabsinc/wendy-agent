@@ -317,6 +317,16 @@ func (e provisionedAgentUnauthorizedError) Error() string {
 	return fmt.Sprintf("Could not connect to the device's advertised secure endpoint.\n  For connection details rerun with WENDY_TLS_DEBUG=1.\nLast mTLS error: %s", tui.StripControl(e.cause.Error()))
 }
 
+// MessageWithoutSteps keeps the local diagnosis while mapping the raw mTLS
+// detail. The transport text remains available in Error() for explicit debugging.
+func (e provisionedAgentUnauthorizedError) MessageWithoutSteps() string {
+	text := e.Error()
+	if prefix, _, ok := strings.Cut(text, "\nLast mTLS error: "); ok {
+		return prefix + "\nLast mTLS error: " + usermessage.Text(e.cause)
+	}
+	return text
+}
+
 // NextSteps exposes the same evidence-based advice as the text message.
 func (e provisionedAgentUnauthorizedError) NextSteps() []string {
 	switch {

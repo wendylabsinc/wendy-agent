@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"reflect"
@@ -40,27 +41,159 @@ func (r Report) Text() string {
 
 func report(message string, steps ...string) Report { return Report{message, steps} }
 
-// Explain preserves CLI-authored detail and maps foreign failures to our
-// sentences. A chain containing foreign text never displays its wrapped context.
-// Category comes from ExecutionErrorClass; it does not affect exit/retry logic.
-func Explain(err error, category string) (result Report) {
-	defer func() { result.Steps = approvedSteps(err, result.Steps) }()
+// Explain replaces foreign failures inside CLI-authored message chains. Recovery
+// steps remain separate from the message, for both terminal and JSON output.
+func Explain(err error, category string) Report {
 	if err == nil {
 		return Report{}
 	}
-	if errors.Is(err, config.ErrNotLoggedIn) {
+	result := explainNode(err, category, err)
+	result.Message = sentence(result.Message)
+	return result
+}
+
+func explainNode(err error, category string, scope error) Report {
+	if err == nil {
+		return Report{}
+	}
+	if err == config.ErrNotLoggedIn {
 		return report("Sign in again to continue.", "Run 'wendy auth login', then try again.")
 	}
-	if category == "device_identity_mismatch" {
-		return report("Connection blocked because the device's identity has changed.",
-			"If this change was unexpected, keep the saved identity and verify the device first.",
-			"If you intentionally reset or unenrolled the device, run 'wendy device unpin <host>' and retry.")
+	if foreignNode(err) {
+		return mapForeign(err, category, scope)
 	}
+	text := err.Error()
+	var ownSteps []string
+	if carrier, ok := err.(interface{ NextSteps() []string }); ok {
+		for _, step := range carrier.NextSteps() {
+			if !containsForeignText(step, scope) {
+				ownSteps = appendUnique(ownSteps, step)
+			}
+		}
+		if custom, ok := err.(interface{ MessageWithoutSteps() string }); ok {
+			text = custom.MessageWithoutSteps()
+		}
+		for _, step := range carrier.NextSteps() {
+			text = withoutStep(text, step)
+		}
+	}
+	result := report(text, ownSteps...)
+	var replacements []messageReplacement
+	for _, cause := range causes(err) {
+		raw := cause.Error()
+		if raw == "" || !strings.Contains(text, raw) {
+			continue
+		}
+		child := explainNode(cause, category, scope)
+		replacements = append(replacements, messageReplacement{raw, child.Message})
+		if len(ownSteps) == 0 {
+			for _, step := range child.Steps {
+				result.Steps = appendUnique(result.Steps, step)
+			}
+		}
+	}
+	result.Message = replaceMessages(text, replacements)
+	return result
+}
+
+type messageReplacement struct{ raw, message string }
+
+// Match the original text once, choosing the longest match at each position.
+// Repeated or overlapping causes cannot leave raw fragments behind, and mapped
+// prose is never scanned again as if it were another foreign input.
+func replaceMessages(text string, replacements []messageReplacement) string {
+	var out strings.Builder
+	capitalizeNext := false
+	for text != "" {
+		position, selected := -1, -1
+		for i, replacement := range replacements {
+			at := strings.Index(text, replacement.raw)
+			if at >= 0 && (position < 0 || at < position || at == position && len(replacement.raw) > len(replacements[selected].raw)) {
+				position, selected = at, i
+			}
+		}
+		if position < 0 {
+			if capitalizeNext {
+				text = capitalize(text)
+			}
+			out.WriteString(text)
+			break
+		}
+		context := text[:position]
+		if capitalizeNext {
+			context = capitalize(context)
+		}
+		out.WriteString(context)
+		replacement := replacements[selected]
+		out.WriteString(replacement.message)
+		text = text[position+len(replacement.raw):]
+		capitalizeNext = false
+		if strings.HasSuffix(replacement.message, ".") && strings.HasPrefix(text, "; ") {
+			out.WriteString(" ")
+			text = text[2:]
+			capitalizeNext = true
+		}
+	}
+	return out.String()
+}
+
+func causes(err error) []error {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		return e.Unwrap()
+	case interface{ Unwrap() error }:
+		if e.Unwrap() != nil {
+			return []error{e.Unwrap()}
+		}
+	}
+	return nil
+}
+
+func appendUnique(steps []string, step string) []string {
+	if strings.TrimSpace(step) == "" {
+		return steps
+	}
+	for _, existing := range steps {
+		if existing == step {
+			return steps
+		}
+	}
+	return append(steps, step)
+}
+
+func withoutStep(text, step string) string {
+	for _, sep := range []string{"\n  ", "\n", " "} {
+		if strings.Contains(text, sep+step) {
+			return strings.Replace(text, sep+step, "", 1)
+		}
+	}
+	return text
+}
+
+func containsForeignText(text string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if foreignNode(err) {
+		if raw := err.Error(); raw != "" && strings.Contains(text, raw) {
+			return true
+		}
+		if st, ok := status.FromError(err); ok && st.Message() != "" && strings.Contains(text, st.Message()) {
+			return true
+		}
+		return false
+	}
+	for _, cause := range causes(err) {
+		if containsForeignText(text, cause) {
+			return true
+		}
+	}
+	return false
+}
+
+func mapForeign(err error, category string, scope error) Report {
 	msg := err.Error()
 	lower := strings.ToLower(msg)
-	if !isForeign(err) {
-		return report(sentence(msg))
-	}
 	code := status.Code(err)
 	// Broker verdicts live inside a connection failure. Other typed statuses
 	// keep their code even if a description happens to contain another status.
@@ -87,7 +220,10 @@ func Explain(err error, category string) (result Report) {
 	case codes.PermissionDenied:
 		return report("You don't have permission to do this. Check your access and try again.")
 	case codes.NotFound:
-		return report(NotFound)
+		if strings.Contains(lower, "asset not found") {
+			return report(NotFound)
+		}
+		return report("The requested item was not found.")
 	}
 	var path *os.PathError
 	if errors.As(err, &path) {
@@ -164,17 +300,22 @@ func Explain(err error, category string) (result Report) {
 	case "disk_full":
 		return report("There is not enough storage space. Free some space and try again.")
 	}
-	cloud := strings.Contains(lower, "issuing certificate") || strings.Contains(lower, "refreshing certificate") || strings.Contains(lower, "creating enrollment token") || strings.Contains(lower, "connecting to cloud")
-	pki := strings.Contains(lower, "pki-core")
+	scopeText := strings.ToLower(strings.ReplaceAll(scope.Error(), err.Error(), ""))
+	cloud := strings.Contains(scopeText, "registering deployment with cloud") || strings.Contains(scopeText, "issuing certificate") || strings.Contains(scopeText, "refreshing certificate") || strings.Contains(scopeText, "creating enrollment token") || strings.Contains(scopeText, "connecting to cloud")
+	pki := strings.Contains(scopeText, "pki-core")
 	cert := category == "device_tls_rejected" || strings.Contains(lower, "tls:") || strings.Contains(lower, "bad certificate") || strings.Contains(lower, "certificate required") || strings.Contains(lower, "x509:")
-	if cert && !cloud && !pki {
+	var https *url.Error
+	if cert && code == codes.Unavailable && !errors.As(scope, &https) && !cloud && !pki {
 		return report("The device rejected the secure connection. Its clock or certificates may need attention.",
 			"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.",
 			"For full connection details, rerun with WENDY_TLS_DEBUG=1.")
 	}
+	if cert {
+		return report("The secure connection could not be verified. Check your network and certificate settings, then try again.")
+	}
 	device := "device"
 	var dial interface{ DeviceAddress() string }
-	if errors.As(err, &dial) && safeAddress(dial.DeviceAddress()) {
+	if errors.As(scope, &dial) && safeAddress(dial.DeviceAddress()) {
 		device += " at " + dial.DeviceAddress()
 	}
 	if (code == codes.Unavailable || category == "device_not_resolved") && (strings.Contains(lower, "produced zero addresses") || strings.Contains(lower, "no such host")) {
@@ -196,7 +337,7 @@ func Explain(err error, category string) (result Report) {
 		}
 		return report("Connection timed out.")
 	}
-	if strings.Contains(lower, "authentication handshake failed") && !cloud && !pki {
+	if code == codes.Unavailable && !errors.As(scope, &https) && strings.Contains(lower, "authentication handshake failed") && !cloud && !pki {
 		return report("The secure connection dropped. The device or its Wendy Cloud tunnel may be offline.", "For full connection details, rerun with WENDY_TLS_DEBUG=1.")
 	}
 	switch code {
@@ -275,18 +416,11 @@ func Foreign(err error) error {
 	return &foreignError{err}
 }
 
-func isForeign(err error) bool {
+// foreignNode classifies this node, rather than inheriting its child's status:
+// a local fmt wrapper is context to retain, even when its cause is foreign.
+func foreignNode(err error) bool {
 	if err == nil {
 		return false
-	}
-	text := strings.ToLower(err.Error())
-	for _, marker := range []string{"rpc error: code =", "cloud tunnel closed by broker:", "tls:", "x509:", "authentication handshake failed"} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	if _, ok := status.FromError(err); ok {
-		return true
 	}
 	if _, ok := err.(*foreignError); ok {
 		return true
@@ -294,33 +428,30 @@ func isForeign(err error) bool {
 	if _, ok := err.(net.Error); ok {
 		return true
 	}
-	// Standard sentinels use errors.errorString, just like local errors.New.
-	for _, sentinel := range []error{io.EOF, io.ErrUnexpectedEOF, io.ErrClosedPipe, io.ErrNoProgress, io.ErrShortBuffer, io.ErrShortWrite, exec.ErrNotFound, os.ErrPermission, os.ErrNotExist, os.ErrExist, os.ErrInvalid, os.ErrClosed, context.Canceled, context.DeadlineExceeded} {
-		if errors.Is(err, sentinel) {
-			return true
-		}
+	if _, ok := err.(interface{ GRPCStatus() *status.Status }); ok {
+		return true
 	}
 	typ := reflect.TypeOf(err)
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	pkg := typ.PkgPath()
-	// fmt/errors implement local wrapping and construction too. All other
-	// library-defined error types are foreign, including net/url/TLS/JSON/exec.
-	// pflag's syntax errors describe this CLI's invocation. Its wrapped causes
-	// still pass through the foreign check (for example strconv parse errors).
 	if pkg != "fmt" && pkg != "errors" && pkg != "github.com/spf13/pflag" && !strings.HasPrefix(pkg, "github.com/wendylabsinc/wendy/go/internal/cli/") && !strings.HasPrefix(pkg, "github.com/wendylabsinc/wendy/go/internal/shared/") && pkg != "github.com/wendylabsinc/wendy/go/cmd/wendy" {
 		return true
 	}
-	switch e := err.(type) {
-	case interface{ Unwrap() []error }:
-		for _, cause := range e.Unwrap() {
-			if isForeign(cause) {
-				return true
-			}
+	if len(causes(err)) > 0 {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	for _, marker := range []string{"rpc error: code =", "cloud tunnel closed by broker:", "tls:", "x509:", "authentication handshake failed"} {
+		if strings.Contains(lower, marker) {
+			return true
 		}
-	case interface{ Unwrap() error }:
-		return isForeign(e.Unwrap())
+	}
+	for _, sentinel := range []error{io.EOF, io.ErrUnexpectedEOF, io.ErrClosedPipe, io.ErrNoProgress, io.ErrShortBuffer, io.ErrShortWrite, exec.ErrNotFound, os.ErrPermission, os.ErrNotExist, os.ErrExist, os.ErrInvalid, os.ErrClosed, context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
 	}
 	return false
 }
@@ -336,12 +467,23 @@ func Debug(err error) {
 // Successful payloads and application log streams must not pass through this.
 func Sprintf(format string, args ...any) string {
 	safe := append([]any(nil), args...)
+	var steps []string
 	for i, arg := range safe {
 		if err, ok := arg.(error); ok {
-			safe[i] = Text(err)
+			r := Explain(err, "")
+			safe[i] = r.Message
+			for _, step := range r.Steps {
+				steps = appendUnique(steps, step)
+			}
 		}
 	}
-	return sentence(fmt.Sprintf(format, safe...))
+	message := sentence(fmt.Sprintf(format, safe...))
+	if len(steps) == 0 {
+		return message
+	}
+	// Punctuate the message, never a command carried as a recovery step.
+	end := len(strings.TrimRightFunc(message, unicode.IsSpace))
+	return (Report{Message: message[:end], Steps: steps}).Text() + message[end:]
 }
 
 func Printf(format string, args ...any) (int, error) { return Fprintf(os.Stdout, format, args...) }
@@ -392,48 +534,4 @@ func safeAddress(s string) bool {
 		}
 	}
 	return true
-}
-
-// Only explicitly approved recovery sentences may cross from an error's
-// attached advice into human output. The map values, never the input, are used.
-func approvedSteps(err error, steps []string) []string {
-	approved := []string{
-		"Confirm it with 'wendy device get-default'.",
-		"Confirm it with 'wendy device get-default'; change it with 'wendy device set-default' or clear it with 'wendy device unset-default'.",
-		"Check its network connection and retry.",
-		"For connection details rerun with WENDY_TLS_DEBUG=1.",
-	}
-	var visit func(error)
-	visit = func(err error) {
-		if err == nil {
-			return
-		}
-		if carrier, ok := err.(interface{ NextSteps() []string }); ok {
-			for _, input := range carrier.NextSteps() {
-				for _, sentence := range approved {
-					if input == sentence {
-						found := false
-						for _, step := range steps {
-							if step == sentence {
-								found = true
-							}
-						}
-						if !found {
-							steps = append(steps, sentence)
-						}
-					}
-				}
-			}
-		}
-		switch inner := err.(type) {
-		case interface{ Unwrap() []error }:
-			for _, e := range inner.Unwrap() {
-				visit(e)
-			}
-		case interface{ Unwrap() error }:
-			visit(inner.Unwrap())
-		}
-	}
-	visit(err)
-	return steps
 }

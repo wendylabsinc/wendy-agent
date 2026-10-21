@@ -96,7 +96,7 @@ func newErrorEnvelope(err error, class string, outcome errorOutcome, executed *c
 // Foreign descriptions are mapped; local messages retain their specific detail.
 func plainErrorReport(err error) (string, []string) {
 	r := usermessage.Explain(err, commands.ExecutionErrorClass(err))
-	return r.Message, cleanSteps(r.Steps)
+	return strings.TrimSpace(ansi.Strip(r.Message)), cleanSteps(r.Steps)
 }
 
 // cleanSteps strips styling, drops blank and repeated steps, and never

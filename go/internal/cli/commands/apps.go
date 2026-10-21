@@ -722,7 +722,7 @@ func newAppsStopCmd() *cobra.Command {
 				}
 				defer bleClient.Close()
 				if bleErr = bleClient.AppsStop(appName); bleErr != nil {
-					return fmt.Errorf("stopping app: %w", bleErr)
+					return fmt.Errorf("stopping app %s: %w", appName, bleErr)
 				}
 				return reportAppAction(stopped, announce)
 			}
@@ -732,7 +732,7 @@ func newAppsStopCmd() *cobra.Command {
 					AppName: appName,
 				})
 				if err != nil {
-					return fmt.Errorf("stopping container: %w", err)
+					return fmt.Errorf("stopping app %s: %w", appName, err)
 				}
 				return reportAppAction(stopped, announce)
 			}

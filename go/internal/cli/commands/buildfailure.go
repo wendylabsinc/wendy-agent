@@ -8,8 +8,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-
-	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 const maxBuildFailureCauseLen = 220
@@ -225,7 +223,7 @@ func buildFailureError(summary buildFailureSummary, buildErr error) error {
 	if summary.stage != "" {
 		message = fmt.Sprintf("build failed at [%s] %s: %s", summary.stage, summary.command, cause)
 	}
-	return usermessage.Foreign(&buildFailureCauseError{message: message, err: buildErr})
+	return &buildFailureCauseError{message: message, err: buildErr}
 }
 
 // buildOutputCause is the one-line cause in a failing step's output: its last
@@ -285,7 +283,8 @@ func renderBuildFailure(w io.Writer, label, raw string, buildErr error) error {
 	if summary.cause != "" && buildErr != nil {
 		// The error the returned one may replace (buildFailureError). CI's
 		// OCI-export retry (go/scripts/test-ci.sh) also greps for it.
-		usermessage.Fprintf(w, "  Error: %s\n", usermessage.Text(buildErr))
+		// usermessage: payload — requested build diagnostics, alongside the compiler log.
+		fmt.Fprintf(w, "  Error: %s\n", strings.Join(strings.Fields(buildErr.Error()), " "))
 	}
 	if summary.source != "" {
 		fmt.Fprintf(w, "  At: %s\n", summary.source)

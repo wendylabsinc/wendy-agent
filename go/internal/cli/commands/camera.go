@@ -357,10 +357,10 @@ func runCameraTest(ctx context.Context, client cameraTester, id uint32, out io.W
 		}
 		return nil
 	case agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED:
-		return usermessage.Foreign(fmt.Errorf("camera %d rejected the stored credentials; run `wendy device camera login %d`: %s",
-			id, id, resp.GetDetail()))
+		return fmt.Errorf("camera %d rejected the stored credentials; run `wendy device camera login %d`: %w",
+			id, id, usermessage.Foreign(errors.New(resp.GetDetail())))
 	case agentpb.TestCameraCredentialsResponse_RESULT_UNREACHABLE:
-		return usermessage.Foreign(fmt.Errorf("camera %d: %s", id, resp.GetDetail()))
+		return fmt.Errorf("camera %d: %w", id, usermessage.Foreign(errors.New(resp.GetDetail())))
 	default:
 		return fmt.Errorf("camera %d: unexpected test result %v", id, resp.GetResult())
 	}

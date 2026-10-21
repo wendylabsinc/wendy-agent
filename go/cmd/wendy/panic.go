@@ -6,7 +6,6 @@ import (
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 )
 
 // internalErrorStep is the recovery step for a bug in wendy itself.
@@ -40,7 +39,7 @@ func (e *internalError) Unwrap() error {
 func executeRecovering(execute func() (*cobra.Command, error)) (executed *cobra.Command, err error) {
 	defer func() {
 		if value := recover(); value != nil {
-			executed, err = nil, usermessage.Foreign(&internalError{value: value, stack: debug.Stack()})
+			executed, err = nil, &internalError{value: value, stack: debug.Stack()}
 		}
 	}()
 	return execute()
