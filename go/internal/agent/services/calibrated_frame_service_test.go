@@ -730,6 +730,35 @@ func TestCalibratedFrames_FirstSubscriberIsReCheckedAgainstWhatTheCaptureOpened(
 	}
 }
 
+// The same re-check for size. A source can open larger than its listing's
+// default (the RealSense joins a colour capture another viewer already runs),
+// and the first subscriber's limit was only ever checked against the listing.
+// Admitting it would kill it on its first Recv, the failure the gate exists to
+// prevent.
+func TestCalibratedFrames_FirstSubscriberIsReSizedAgainstWhatTheCaptureOpened(t *testing.T) {
+	fake := framesourcetest.NewFake("fake:1", 64, 48, alignedDepth, measuredIntrinsics, captureSettings)
+	fake.Negotiated = &agentpbv2.CalibratedSource{
+		Source: "fake:1", Kind: "fake", Available: true,
+		ColourWidth: 1920, ColourHeight: 1080, ColourFourcc: "BGR3",
+		DepthWidth: 1920, DepthHeight: 1080,
+		Provides:      []agentpbv2.FrameRequirement{alignedDepth, measuredIntrinsics, captureSettings},
+		MaxFrameBytes: framesource.FrameBytes(1920*3, 1080, 1920*2, 1080),
+	}
+	svc := newCalibratedService(fake)
+
+	stream := newStreamStub(context.Background())
+	err := awaitErr(t, run(svc, &agentpbv2.StreamCalibratedFramesRequest{Source: "fake:1"}, stream))
+	if !streamreason.Has(err, streamreason.FrameTooLarge) {
+		t.Fatalf("stream ended with %v; want FRAME_TOO_LARGE", err)
+	}
+	if !strings.Contains(err.Error(), "1920x1080") {
+		t.Errorf("refusal does not name the geometry actually opened: %v", err)
+	}
+	if stream.count() != 0 {
+		t.Errorf("subscriber received %d frames before being refused", stream.count())
+	}
+}
+
 // A capture started with defaults has zero opts; a joiner naming exactly the
 // size the helper reported must be admitted, and one naming another size must
 // be told the real numbers rather than "the source's default geometry".

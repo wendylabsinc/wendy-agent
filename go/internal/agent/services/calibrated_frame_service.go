@@ -68,7 +68,7 @@ type CalibratedFrameService struct {
 	registry *framesource.Registry
 
 	// ctx is cancelled by Shutdown and every hub's context derives from it, so
-	// a SIGTERM ends each capture helper instead of waiting on subscribers that
+	// a SIGTERM ends each capture instead of waiting on subscribers that
 	// may never disconnect. wg tracks the producers, so Shutdown returns only
 	// once every camera has actually been released.
 	ctx    context.Context
@@ -80,7 +80,7 @@ type CalibratedFrameService struct {
 }
 
 // NewCalibratedFrameService builds the service over a source registry. Captures
-// are tied to ctx; call Shutdown to end them and wait for their helpers to exit.
+// are tied to ctx; call Shutdown to end them and wait for their cameras to be released.
 func NewCalibratedFrameService(ctx context.Context, logger *zap.Logger, registry *framesource.Registry) *CalibratedFrameService {
 	svcCtx, cancel := context.WithCancel(ctx)
 	return &CalibratedFrameService{
@@ -95,7 +95,7 @@ func NewCalibratedFrameService(ctx context.Context, logger *zap.Logger, registry
 // Shutdown ends every capture and waits until each has released its camera.
 // It mirrors VideoService.Shutdown for the same reason: GracefulStop waits for
 // open streams, and a subscriber that never disconnects would otherwise hold
-// the agent -- and the helper holding the camera -- up indefinitely.
+// the agent -- and the capture holding the camera -- up indefinitely.
 func (s *CalibratedFrameService) Shutdown() {
 	s.cancel()
 	s.wg.Wait()
@@ -116,10 +116,10 @@ func (s *CalibratedFrameService) StreamCalibratedFrames(req *agentpbv2.StreamCal
 	limit := req.GetMaxFrameBytes()
 
 	// A named source whose capture is already running is joined without
-	// enumerating. Enumeration forks the capture helper, and a second helper
-	// querying a camera the first is streaming from is exactly the disturbance
-	// the Provider contract forbids; the running hub already holds everything
-	// a join needs.
+	// enumerating. Enumeration can query the device (a RealSense calibration
+	// read is UVC control traffic), and querying a camera mid-capture is the
+	// disturbance the Provider contract forbids; the running hub already holds
+	// everything a join needs.
 	if name := req.GetSource(); name != "" {
 		if hub, id, sub, err := s.joinRunning(name, opts, require, limit); hub != nil {
 			if err != nil {
@@ -143,14 +143,15 @@ func (s *CalibratedFrameService) StreamCalibratedFrames(req *agentpbv2.StreamCal
 	}
 
 	// A source that is present but cannot be opened — in practice a RealSense
-	// on an image with no capture helper — is refused by name. Reporting it as
-	// "no depth camera" is the class of silence this service exists to remove.
+	// whose factory calibration could not be read — is refused by name.
+	// Reporting it as "no depth camera" is the class of silence this service
+	// exists to remove.
 	if !desc.GetAvailable() {
 		return errCalibratedSourceUnavailable(desc)
 	}
 	// Against the listing, before the camera is touched. The running capture's
 	// own descriptor is checked again on join, and by the producer once the
-	// helper has reported what it actually opened.
+	// source has reported what it actually opened.
 	if err := refuseUnmetRequirements(desc, require); err != nil {
 		return err
 	}
@@ -190,8 +191,9 @@ func (s *CalibratedFrameService) joinRunning(name string, opts framesource.Optio
 // newcomer to a capture that is ending: the producer's next Next returns
 // Canceled, finish closes the newcomer with no error, and the client sees a
 // clean EOF with zero frames. So an ending hub is evicted, its producer waited
-// for (the helper must exit before a fresh one can claim the camera), and the
-// lookup retried -- the same dance VideoService.getOrCreateHub does.
+// for (the old capture must release the camera before a fresh one can claim
+// it), and the lookup retried -- the same dance VideoService.getOrCreateHub
+// does.
 func (s *CalibratedFrameService) getOrCreateHub(ctx context.Context, desc *agentpbv2.CalibratedSource, src framesource.Source, opts framesource.Options, require []agentpbv2.FrameRequirement, clientLimit uint64) (*frameHub, int, *frameSub, error) {
 	name := desc.GetSource()
 	for retries := 0; ; retries++ {
@@ -251,7 +253,7 @@ func (s *CalibratedFrameService) getOrCreateHub(ctx context.Context, desc *agent
 }
 
 // awaitTeardown waits for an ending hub's producer to return, which is when its
-// helper has exited and the camera is free. Bounded: a producer that will not
+// stream has closed and the camera is free. Bounded: a producer that will not
 // die must not hold every new subscriber hostage, and the open that follows
 // reports its own failure if the camera is still held.
 func (s *CalibratedFrameService) awaitTeardown(ctx context.Context, hub *frameHub) error {
@@ -292,8 +294,8 @@ func (s *CalibratedFrameService) runProducer(hub *frameHub, src framesource.Sour
 		hub.finish(openFailure(name, err))
 		return
 	}
-	// Close on cancellation as well as on return: a helper blocked in a read
-	// does not notice a context until the pipe under it goes away.
+	// Close on cancellation as well as on return: a source blocked in a read
+	// does not notice a context until what it reads from goes away.
 	closed := make(chan struct{})
 	go func() {
 		select {
@@ -430,6 +432,7 @@ type frameSub struct {
 	latest  *agentpbv2.CalibratedFrame
 	notify  chan struct{}
 	require []agentpbv2.FrameRequirement
+	limit   uint64 // the client's receive limit, as it declared it (0 = grpc-go's default)
 	err     error
 	closed  bool
 }
@@ -469,7 +472,7 @@ func (h *frameHub) join(opts framesource.Options, require []agentpbv2.FrameRequi
 	}
 	id := h.nextID
 	h.nextID++
-	sub := &frameSub{notify: make(chan struct{}, 1), require: require}
+	sub := &frameSub{notify: make(chan struct{}, 1), require: require, limit: clientLimit}
 	h.subs[id] = sub
 	return id, sub, nil
 }
@@ -609,11 +612,14 @@ func (h *frameHub) finish(err error) {
 }
 
 // setNegotiated records what the capture actually opened and re-checks every
-// subscriber against it. The first subscriber was admitted on the listing's
-// promise, before the helper had said anything; a helper that opened a mode
-// without depth would otherwise hand that subscriber a depth-less first frame
-// and an error saying the source STOPPED providing depth, when the truth is
-// that this capture never could.
+// subscriber against it, exactly as join checks a joiner. The first
+// subscriber was admitted on the listing's promise, before the source had
+// said anything; a capture that opened without depth would otherwise hand
+// that subscriber a depth-less first frame and an error saying the source
+// STOPPED providing depth, when the truth is that this capture never could.
+// Likewise for size: a source that joined a capture already running at a
+// larger mode than its listing's default sends frames that subscriber's
+// receive limit was never checked against.
 func (h *frameHub) setNegotiated(desc *agentpbv2.CalibratedSource) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -623,6 +629,10 @@ func (h *frameHub) setNegotiated(desc *agentpbv2.CalibratedSource) {
 			continue
 		}
 		if err := refuseUnmetRequirements(desc, sub.require); err != nil {
+			h.closeSubLocked(sub, err)
+			continue
+		}
+		if err := refuseOversizedFrames(desc, framesource.Options{}, sub.limit); err != nil {
 			h.closeSubLocked(sub, err)
 		}
 	}
