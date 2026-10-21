@@ -372,21 +372,11 @@ func main() {
 	// Handle termination now so those workers can drain during startup too.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	var meshUDPPolicyDone <-chan struct{}
 	if meshUDPReady {
-		go func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := hostnetwork.EnsureMeshUDPTProxyPolicy(); err != nil {
-						logger.Warn("net UDP VIP policy repair failed", zap.Error(err))
-					}
-				}
-			}
-		}()
+		meshUDPPolicyDone = repairMeshUDPPolicy(ctx, 5*time.Second, hostnetwork.EnsureMeshUDPTProxyPolicy, func(err error) {
+			logger.Warn("net UDP VIP policy repair failed", zap.Error(err))
+		})
 	}
 
 	// Keep the chunk store bounded (WDY-3212, WDY-3217). This retires the
@@ -1534,6 +1524,8 @@ func main() {
 				_ = udpProxy.Close()
 			}
 			if meshUDPReady {
+				// Join an in-flight repair before removing its rules.
+				<-meshUDPPolicyDone
 				_ = hostnetwork.CloseMeshUDPTProxy()
 			}
 		},
