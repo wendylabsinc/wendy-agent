@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/WendyOS/go/babel"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netgossip"
 )
 
 type routePublicationSigner struct {
@@ -260,8 +261,11 @@ func (r *sequencePublicationIO) Send(d babel.Datagram) error {
 	return r.routingRecorder.Send(d)
 }
 
-func TestNodeSequenceFanoutPersistsAndQueuesProofBeforeSend(t *testing.T) {
+func TestNodeSequenceFanoutPersistsAndQueuesGossipProofBeforeSend(t *testing.T) {
 	n := routePublicationNode(t)
+	// Router neighbours share one announcement pool; the leaf adapter has a
+	// separate bundle protocol and must not stand in for this publication path.
+	pool := netgossip.NewPool()
 	io := &sequencePublicationIO{routingRecorder: &routingRecorder{}, node: n}
 	var err error
 	n.routing, err = NewRouting(babel.Config{RouterID: 1, HelloInterval: time.Second, UpdateInterval: 4 * time.Second}, nil, io)
@@ -270,7 +274,8 @@ func TestNodeSequenceFanoutPersistsAndQueuesProofBeforeSend(t *testing.T) {
 	}
 	prefix := netip.PrefixFrom(n.Credentials.Device.MeshAddress(), 128)
 	for _, id := range []babel.LinkID{1, 2} {
-		n.peers[id] = &nodePeer{id: id, control: make(chan ControlMessage, 16), sync: NewSynchronizer(n.directory, n.cache)}
+		n.peers[id] = &nodePeer{id: id, control: make(chan ControlMessage, 16), sync: NewSynchronizer(n.directory, n.cache, pool)}
+		defer n.peers[id].sync.Close()
 		link := babel.Link{ID: id, Local: netip.MustParseAddr("fe80::1"), Peer: netip.MustParseAddr("fe80::2"), Cost: 64}
 		if err := n.routing.Step(0, babel.AddLink{Link: link}); err != nil {
 			t.Fatal(err)
@@ -301,11 +306,26 @@ func TestNodeSequenceFanoutPersistsAndQueuesProofBeforeSend(t *testing.T) {
 		if persisted.Babel == nil || persisted.Babel.Seqno != 1 || persisted.Revision != n.advertisement.Revision {
 			t.Fatalf("link %d sent before sequence/revision persistence: %+v", d.Link, persisted)
 		}
+		// Persist must queue the new proof's HAVE before releasing a Babel
+		// datagram on either link. Download that exact artifact through the pooled
+		// protocol and verify it independently before checking its durable receipt.
+		receivedDirectory, err := NewDirectory(n.Credentials.Device.Tenant(), 10, n.cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiver := NewSynchronizer(receivedDirectory, n.cache, netgossip.NewPool())
+		defer receiver.Close()
 		var proof *SignedManifest
 		for len(n.peers[d.Link].control) != 0 {
-			if message := <-n.peers[d.Link].control; message.Manifest != nil {
-				proof = message.Manifest
+			message := <-n.peers[d.Link].control
+			if message.Gossip == nil || message.Gossip.Op != "have" {
+				t.Fatal("router publication bypassed HAVE/WANT", message.Kind)
 			}
+			changed := exchangeDirectoryMessages(t, n.peers[d.Link].sync, receiver, []ControlMessage{message}, time.Now())
+			if len(changed) != 1 {
+				t.Fatal("queued HAVE did not provide one verified proof", len(changed))
+			}
+			proof = &changed[0]
 		}
 		if proof == nil {
 			t.Fatalf("link %d sent before its new proof was queued", d.Link)
