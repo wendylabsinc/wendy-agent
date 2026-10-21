@@ -5,13 +5,15 @@ import (
 	"strings"
 )
 
+const developmentVersion = "0.1.0-dev"
+
 // buildVersion is stamped by scripts/build.py for packaged engines.
 var buildVersion string
 
 // Version returns the effective Wendy Core version without a leading v.
 // Packaged engines report their build identity. Go module consumers report the
 // dependency version recorded by the Go toolchain, including pseudo-versions.
-// Unversioned source builds return "0.1.0-dev".
+// Unversioned source builds return a development version.
 func Version() string {
 	if buildVersion != "" {
 		return buildVersion
@@ -19,7 +21,7 @@ func Version() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		return moduleVersion(info)
 	}
-	return "0.1.0-dev"
+	return developmentVersion
 }
 
 func moduleVersion(info *debug.BuildInfo) string {
@@ -36,5 +38,5 @@ func moduleVersion(info *debug.BuildInfo) string {
 			return strings.TrimPrefix(dependency.Version, "v")
 		}
 	}
-	return "0.1.0-dev"
+	return developmentVersion
 }

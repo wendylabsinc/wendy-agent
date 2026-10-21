@@ -57,6 +57,10 @@ def check_version(tag=None):
     # Checked-in metadata names the next stable release. Package staging applies
     # the effective version without leaving generated edits in the source tree.
     value = base_version()
+    go_versions = re.findall(r'^const developmentVersion = "([^"\n]+)"$',
+                             (ROOT / "core/version.go").read_text(), re.MULTILINE)
+    if go_versions != [value + "-dev"]:
+        raise ValueError("Go development version differs from VERSION + '-dev'")
     package = json.loads((JS / "package.json").read_text())
     if package["version"] != value:
         raise ValueError("npm version differs from VERSION")

@@ -22,6 +22,12 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build.check_version("v-not-semver")
 
+    def test_go_development_version_must_advance_with_version(self):
+        # A future VERSION bump must fail until the source fallback is updated.
+        with patch.object(build, "base_version", return_value="99.0.0"):
+            with self.assertRaisesRegex(ValueError, "Go development version differs"):
+                build.check_version()
+
     def test_removal_requires_major_bump_even_before_one(self):
         with self.assertRaises(ValueError):
             require_compatible(api("0.1.0", WendyHelloWorld="int32_t (void)"), api("0.2.0"))

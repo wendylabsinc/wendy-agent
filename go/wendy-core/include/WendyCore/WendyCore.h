@@ -16,9 +16,9 @@ extern "C" {
 /**
  * Returns 42 from the shared Go engine.
  *
- * This operation is
- * synchronous, thread-safe, and requires no platform capability. It returns a
- * scalar without transferring resources; runtime initialization is separate.
+ * This operation is synchronous, thread-safe, and requires no platform
+ * capability. It returns a scalar without transferring resources; runtime
+ * initialization is separate.
  * There are no input pointers, owned objects, callbacks, or error conditions.
  *
  * Binding pattern: scalar-unary.
