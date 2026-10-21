@@ -57,7 +57,8 @@ type ApplyOptions struct {
 	// would expose every system service, so it is never done.
 	DBusProxySocketDir string
 	// AvahiProxySocketDir is the host directory holding the filtered Avahi
-	// proxy socket prepared by the avahi bridge for this container. Same
+	// proxy socket for this container. A caller may plan this path during
+	// validation, but must prepare that exact directory before container create. Same
 	// mount convention as DBusProxySocketDir (/var/run/dbus). Bluetooth and
 	// avahi mounts are mutually exclusive (one /var/run/dbus); declaring
 	// both entitlements refuses container start.

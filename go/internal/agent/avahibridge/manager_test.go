@@ -145,6 +145,10 @@ func TestPrepareIsIdempotent(t *testing.T) {
 	m.ready = func(context.Context, string) error { return nil }
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	planned := m.ProxySocketDir("app1")
+	if _, err := os.Stat(planned); !os.IsNotExist(err) {
+		t.Fatalf("planning the proxy mount changed filesystem state: %v", err)
+	}
 	if _, err := m.Prepare(ctx, "app1"); err != nil {
 		t.Fatalf("first Prepare: %v", err)
 	}
@@ -153,8 +157,8 @@ func TestPrepareIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repeat Prepare: %v", err)
 	}
-	if dir2 == "" {
-		t.Fatal("repeat Prepare returned empty dir")
+	if dir2 == "" || dir2 != planned {
+		t.Fatalf("prepared proxy mount %q differs from validated path %q", dir2, planned)
 	}
 }
 

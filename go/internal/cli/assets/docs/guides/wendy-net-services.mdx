@@ -1,6 +1,6 @@
 ---
 title: Share and discover app services
-description: Publish TCP or UDP services across Wendy Net using mDNS, with an app-owned discovery socket.
+description: Publish TCP or UDP services across Wendy Net using mDNS, with an app-owned discovery socket or private Avahi.
 ---
 
 Let an app on one Wendy device find and connect to an app on another. Your app
@@ -112,6 +112,49 @@ Service discovery can cross intermediate Wendy Net devices without a direct
 connection to the publishing device. Discovery is not an application health
 check: verify an actual request to the discovered server.
 
+## Alternative: use private Avahi through D-Bus
+
+Use this when your app expects Avahi's D-Bus API or a compatible `dns_sd.h` client
+library instead of opening its own discovery socket. Add the following to the
+same app's entitlement list, alongside its Wendy Net network entitlement:
+
+```json
+{ "type": "avahi" }
+```
+
+Install the Avahi client libraries your app uses in its container image. The agent
+starts a private Avahi service for the app and supplies `DBUS_SYSTEM_BUS_ADDRESS`.
+Use that address; do not mount the host's D-Bus socket or start a system-wide
+Avahi daemon yourself.
+
+For a diagnostic app image containing `avahi-utils`, run these **inside the app**:
+
+```sh
+avahi-publish-service "My API" _http._tcp 8080 "path=/"
+avahi-browse --resolve _http._tcp
+```
+
+The publisher runs until interrupted, so run browsing in another process. The
+publish command only announces the service; your server must already listen on
+8080. The client app also needs `avahi` if it browses through Avahi. An app-owned
+mDNS client can browse the same services without it.
+
+Private Avahi needs an isolated network and cannot be combined with host networking
+or the Bluetooth entitlement in the same container. The current D-Bus proxy supports
+root clients; an app that drops privileges must retain a root process for its
+Avahi client. A failed private Avahi service can leave the app running without
+discovery; inspect its logs and restart the app if needed.
+
+After an agent restart, the agent rebuilds private discovery for apps that remain
+running. Avahi clients must reconnect to the bus; restart the app if its client
+cannot recover. A redeploy rejected during validation leaves the running app's
+discovery intact. An accepted replacement prepares a new private service before
+starting the new app.
+
+For an ordinary isolated app that needs Avahi only on its own bridge, `network`
+mode `bridge` plus `avahi` is also supported. Use mode `mesh` for cross-device
+Wendy Net discovery and access.
+
 ## Services on the physical LAN
 
 When Ethernet or ordinary Wi-Fi is enabled for Wendy Net, entitled apps can also
@@ -125,6 +168,21 @@ Access is limited to the advertised endpoint and port; discovering one service
 does not give an app unrestricted LAN access. Names are discovery labels rather
 than authentication. Use the service's own authentication where it needs it.
 
+## Choose the right grants
+
+| App needs | Configuration |
+| --- | --- |
+| Browse Wendy Net services with its own mDNS socket | `network` mode `mesh`, `serviceCIDR`, and isolated networking. |
+| Publish an incoming Wendy Net service | The same, plus a matching TCP or UDP port mapping and a live app announcement. |
+| Use Avahi or `dns_sd.h` client APIs | Add `avahi` and the client libraries in the image. |
+| Make outbound Internet requests | `network` mode `bridge`; device roaming is configured separately. |
+| Manage Wi-Fi Aware connections itself | Direct `nan` access, usually with host networking; this is a separate radio-control workflow. |
+
+Neither `http` nor `avahi` alone grants Wendy Net access. Ordinary Wendy Net apps
+do not need the administrative `admin` entitlement or direct Bluetooth/NAN access.
+For multi-service apps, keep Wendy Net services in isolated networking and declare
+the applicable entitlements per service. Shared host networking is a different mode.
+
 ## Troubleshoot discovery
 
 1. Check the Wendy Net connection and running agent on both devices.
@@ -132,7 +190,8 @@ than authentication. Use the service's own authentication where it needs it.
 3. Check the publisher listens on the container port and advertises its own IPv4
    address, a complete service record, and the matching transport type.
 4. Check the declared port mapping. Publishing TCP does not authorize UDP.
-5. Resolve from the client app and test the returned endpoint, rather than an
+5. If using Avahi, check the client library and supplied D-Bus address.
+6. Resolve from the client app and test the returned endpoint, rather than an
    address copied from another device.
 
 If only physical-LAN services are missing, check `wendy device logs`. Discovery

@@ -425,6 +425,9 @@ Bluetooth access.
 
 ### `avahi`
 
+For complete publication and browsing examples, see
+[share and discover app services](/docs/guides/wendy-net-services).
+
 Provides a private Avahi DNS-SD service for an app with a private network
 namespace. For example, a single-container app with outbound networking can use:
 
@@ -454,8 +457,15 @@ this proxy is not supported.
 A daemon that exits during an app run is retried with a bounded restart budget.
 If that budget is exhausted, or its private bus/proxy exits, the app continues
 running with DNS-SD unavailable and the agent logs the failure. Restart the app
-to recreate its private service. DNS-SD hostnames and service names are discovery
-metadata, not authenticated device identities.
+to recreate its private service.
+
+After an agent restart, private discovery is rebuilt for surviving app containers;
+clients must reconnect to D-Bus. A redeploy rejected during validation preserves
+the running app's discovery. For an accepted replacement, the agent retires the
+old private service and prepares the new one before releasing the new entrypoint.
+
+DNS-SD hostnames and service names are discovery metadata, not authenticated device
+identities.
 
 ### `nan`
 

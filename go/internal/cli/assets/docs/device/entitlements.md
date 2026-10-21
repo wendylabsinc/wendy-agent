@@ -117,6 +117,14 @@ networking. Declare incoming TCP or UDP ports explicitly. This enables service
 access, not general outbound Internet access. Follow the
 [service sharing guide](/docs/guides/wendy-net-services) for complete manifests.
 
+### Private Avahi
+
+Add `{ "type": "avahi" }` when an app uses Avahi through D-Bus or compatible
+client libraries. Apps using their own mDNS socket do not need this grant.
+Avahi does not grant network access by itself; combine it with the appropriate
+private network entitlement. See the
+[Avahi workflow](/docs/guides/wendy-net-services#alternative-use-private-avahi-through-d-bus).
+
 ## HTTP
 
 Use `http` to declare a web endpoint for clients to discover. It grants no
