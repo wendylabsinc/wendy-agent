@@ -526,6 +526,10 @@ type deviceHub struct {
 	rawState  rawTapState
 	rawReason string
 	rawFormat *agentpb.RawFormat
+	// thermal is the latest hot/cold reading from a radiometric raw tap
+	// (thermal_stats.go), attached to outgoing frames while fresh. Stays nil
+	// for every camera without a radiometric block.
+	thermal atomic.Pointer[thermalSnapshot]
 }
 
 // maxSubscribersPerHub caps the number of concurrent gRPC streams sharing one
@@ -2459,6 +2463,9 @@ func (s *VideoService) pumpFrames(stream grpc.ServerStreamingServer[agentpb.Vide
 				TimestampNs: frame.tsNs,
 				Codec:       frame.codec,
 				RawFormat:   frame.rawFmt,
+				// nil, and so absent on the wire, unless this camera's raw tap
+				// has a fresh radiometric reading (thermal_stats.go).
+				Thermal: h.currentThermal(),
 			}); err != nil {
 				return err
 			}
@@ -3018,7 +3025,7 @@ func (s *VideoService) runCameraPipeline(ctx context.Context, broadcast func([]b
 		sink.rawOffered(plan.raw)
 		s.logger.Info("raw frame tap open", zap.String("device", path),
 			zap.String("format", describeRawFormat(plan.raw)))
-		go s.pumpRawTap(ctx, rawR, plan.raw, sink, path)
+		go s.pumpRawTap(ctx, rawR, plan.raw, plan.radiometricRows, sink, path)
 	} else {
 		sink.rawNotOffered(plan.rawWhy)
 	}
@@ -3299,6 +3306,12 @@ type gstPipelinePlan struct {
 	raw *agentpb.RawFormat
 	// rawWhy says why raw is not offered — the reason a raw subscriber is refused with.
 	rawWhy string
+	// radiometricRows is how many rows at the TOP of each raw-tap frame are a
+	// stacked metadata block that viewers have cropped away; 0 when there is
+	// none. Hot/cold stats are computed only when it is set (thermal_stats.go),
+	// because only then is the block where it was measured and the picture its
+	// positions are normalized against exactly the one viewers receive.
+	radiometricRows uint32
 }
 
 // buildGStreamerArgs constructs the gst-launch-1.0 argument list for V4L2 encode.
@@ -3484,6 +3497,9 @@ func planGStreamerPipeline(gstPath, devicePath string, req *agentpb.StreamVideoR
 			edge := "bottom"
 			if thermalMetadataRowsOnTop {
 				edge = "top"
+				if plan.raw != nil {
+					plan.radiometricRows = rows
+				}
 			}
 			stages = append(stages, fmt.Sprintf("videocrop %s=%d", edge, rows))
 		}
