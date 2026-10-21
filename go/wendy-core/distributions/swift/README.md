@@ -16,7 +16,7 @@ Each process should link at most one Go-based library: a second embedded Go runt
 Swift release tags are bare `x.y.z` (or an exact preview such as `x.y.z-nightly.<run>.<attempt>`); Go uses `vx.y.z`. SwiftPM prefers the bare tag, which names a release-only commit whose `Package.swift` downloads the checksummed binaries from the matching GitHub release:
 
 ```swift
-.package(url: "https://github.com/wendylabsinc/wendy-core.git", from: "0.1.0")
+.package(url: "https://github.com/wendylabsinc/wendy-core.git", from: "0.0.1")
 ```
 
 On branches, including `main`, `Package.swift` instead uses binaries built locally. In this checkout, run `make swift` (or `python3 scripts/build.py swift`), which writes them to the ignored `distributions/swift/artifacts/`: on macOS the full Apple XCFramework, on Linux the host's artifact bundle. To develop a dependent package against this checkout, depend on it by path.

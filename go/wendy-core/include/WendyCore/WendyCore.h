@@ -24,7 +24,7 @@ extern "C" {
  * Binding pattern: scalar-unary.
  * Ownership: returns a value; no resources are transferred.
  * Threading: safe for concurrent calls.
- * Availability: 0.1.0.
+ * Availability: 0.0.1.
  */
 int32_t WENDY_CORE_CALL WendyHelloWorld(void);
 
