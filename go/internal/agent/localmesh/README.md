@@ -124,9 +124,10 @@ valid lease. Hop-local Babel retractions remain unchanged: they only remove that
 neighbour's candidate. Babel feasibility, split horizon, loop prevention, and
 end-to-end application authentication still apply.
 
-Wendy Net links require hello version 2 and ALPN
-`wendy-local-mesh/2-catalog-1-cert-1` (QUIC) or
-`wendy-local-mesh-ble/2-catalog-1-cert-1` (BLE TLS).
+Wendy Net router QUIC links require ALPN `wendy-net-router/2` and hello version
+2 with the explicit IP receive capability described below. BLE TLS streams use
+ALPN `wendy-local-mesh-ble/2-catalog-1-cert-1` and their independent hello version
+2, with no router IP capability.
 Upgrade each connected Wendy Net network together. This changes the internal
 Wendy Net wire contract, not public gRPC messages or application-session ALPNs.
 
