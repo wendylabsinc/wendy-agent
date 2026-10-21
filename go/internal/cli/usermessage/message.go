@@ -255,7 +255,6 @@ func Explain(err error, category string) (result Report) {
 // Text is used for inline errors. Mark untyped foreign errors with Foreign at
 // their source; use Server for a response received as a string.
 func Text(err error) string {
-	Debug(err)
 	return Explain(err, "").Text()
 }
 
@@ -342,13 +341,7 @@ func Sprintf(format string, args ...any) string {
 			safe[i] = Text(err)
 		}
 	}
-	lines := strings.Split(fmt.Sprintf(format, safe...), "\n")
-	for i, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			lines[i] = sentence(line)
-		}
-	}
-	return strings.Join(lines, "\n")
+	return sentence(fmt.Sprintf(format, safe...))
 }
 
 func Printf(format string, args ...any) (int, error) { return Fprintf(os.Stdout, format, args...) }
@@ -357,28 +350,38 @@ func Fprintf(w io.Writer, format string, args ...any) (int, error) {
 }
 
 func capitalize(s string) string {
-	r := []rune(s)
-	// Styled names already carry the caller's chosen presentation. Do not
-	// rewrite bytes inside terminal control sequences.
-	if strings.ContainsRune(s, '\x1b') {
+	// Capitalize only an ordinary leading word, never a flag, path, quoted
+	// name, terminal control sequence, or a label following a status glyph.
+	start := len(s) - len(strings.TrimLeftFunc(s, unicode.IsSpace))
+	word := strings.Fields(s[start:])
+	if len(word) == 0 {
 		return s
 	}
-	for i, c := range r {
-		if unicode.IsLetter(c) {
-			r[i] = unicode.ToUpper(c)
-			break
+	token := strings.TrimRight(word[0], ":;,.?!")
+	for _, r := range token {
+		if !unicode.IsLetter(r) && r != '\'' {
+			return s
 		}
 	}
-	return string(r)
+	r := []rune(s[start:])
+	if len(r) == 0 || !unicode.IsLetter(r[0]) {
+		return s
+	}
+	r[0] = unicode.ToUpper(r[0])
+	return s[:start] + string(r)
 }
 func sentence(s string) string {
-	s = strings.TrimSpace(s)
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
 	s = capitalize(s)
-	if !strings.HasSuffix(s, ".") && !strings.HasSuffix(s, "?") && !strings.HasSuffix(s, "!") {
-		s += "."
+	end := len(strings.TrimRightFunc(s, unicode.IsSpace))
+	if !strings.ContainsAny(s[end-1:end], ".?!") {
+		s = s[:end] + "." + s[end:]
 	}
 	return s
 }
+
 func safeAddress(s string) bool {
 	if s == "" {
 		return false

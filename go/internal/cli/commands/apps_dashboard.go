@@ -273,7 +273,6 @@ func appsDashPollFlash(err error) string {
 }
 
 func userFacingGRPCError(err error) string {
-	usermessage.Debug(err)
 	return usermessage.Explain(err, ExecutionErrorClass(err)).Text()
 }
 
