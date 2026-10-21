@@ -1014,7 +1014,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 	if seekableZst != "" || bmapPath != "" {
-		// bmap failures fall back silently; suppress the TUI error render
+		// a bmap failure falls back and its reason is printed then; suppress the TUI error render
 		writeProg = writeProg.WithoutErrorView()
 	}
 	wp := tui.NewProgressProgram(writeProg)
@@ -1122,6 +1122,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		if err := checkImageFitsDrive(fallbackSize, targetDrive); err != nil {
 			return fmt.Errorf("%w; full-image fallback skipped: %v", primary, err)
 		}
+		announceFastWriteFallback(os.Stdout, primary)
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
