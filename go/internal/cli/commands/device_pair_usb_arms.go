@@ -11,6 +11,7 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/usermessage"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,7 +27,7 @@ func armRPCError(err error) error {
 		// An older Agent lacks the service; a Go Agent off Linux has no inventory.
 		return fmt.Errorf("target Agent does not support USB arm bindings; they need an up-to-date Linux Agent or the native Mac Agent")
 	}
-	return fmt.Errorf("USB arm request failed: %s", userFacingGRPCError(err))
+	return fmt.Errorf("USB arm request failed: %w", err)
 }
 
 // Explicit USB flags have their own additive JSON contract; legacy --list
@@ -202,7 +203,7 @@ func (m armPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanning = false
 		m.scanOK = msg.err == nil
 		if msg.err != nil {
-			m.message = msg.err.Error()
+			m.message = usermessage.Text(msg.err)
 			return m, nil
 		}
 		id := m.selected().GetId()
@@ -212,7 +213,7 @@ func (m armPairModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case armPairOpMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
+			m.message = usermessage.Text(msg.err)
 			m.scanOK = false
 			return m, nil
 		}

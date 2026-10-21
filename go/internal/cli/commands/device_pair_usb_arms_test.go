@@ -209,3 +209,14 @@ func TestUSBArmFlagsLeaveLegacyPairingUntouched(t *testing.T) {
 		t.Fatal("legacy flags removed")
 	}
 }
+
+func TestArmPairFailuresMapForeignTextAndPreserveContext(t *testing.T) {
+	cause := armRPCError(status.Error(codes.Internal, "private USB service diagnostic"))
+	for _, msg := range []tea.Msg{armPairScanMsg{err: cause}, armPairOpMsg{err: cause}} {
+		model := newArmPairModel(nil)
+		updated, _ := model.Update(msg)
+		if got := updated.(armPairModel).message; got != "USB arm request failed: something went wrong. Try again." {
+			t.Errorf("unsafe arm failure: %q", got)
+		}
+	}
+}
