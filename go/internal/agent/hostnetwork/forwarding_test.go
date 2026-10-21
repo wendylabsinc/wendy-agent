@@ -20,6 +20,7 @@ func forwardingFixture(t *testing.T, initial string) *bool {
 		t.Fatal(err)
 	}
 	forwarding.users = make(map[string]bool)
+	forwarding.lanOwners = make(map[string]string)
 	fail := false
 	absent := exec.Command("sh", "-c", "exit 1").Run()
 	rules := map[string]bool{}
@@ -53,6 +54,7 @@ func forwardingFixture(t *testing.T, initial string) *bool {
 	t.Cleanup(func() {
 		forwardingSysctl, forwardingMarker, lanIPTables = oldSysctl, oldMarker, oldTables
 		forwarding.users = make(map[string]bool)
+		forwarding.lanOwners = make(map[string]string)
 	})
 	return &fail
 }
@@ -159,4 +161,42 @@ func TestForwardingConcurrentLifetimes(t *testing.T) {
 		t.Fatal(e)
 	}
 	forwardingValue(t, "0")
+}
+
+func TestOrphanLANForwardingReleasesReplacedNamespacesAndRetainsFailures(t *testing.T) {
+	fail := forwardingFixture(t, "0")
+	if err := AcquireForwarding("mesh"); err != nil {
+		t.Fatal(err)
+	}
+	for _, access := range []LANServiceAccess{
+		{NetNS: "/old/ns", AppIP: "10.42.1.2", Port: 8080},
+		{NetNS: "/replacement/ns", AppIP: "10.42.1.2", Port: 9090},
+		{NetNS: "/other/ns", AppIP: "10.42.1.3", Port: 8080},
+	} {
+		if err := acquireLANForwarding(access); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := releaseOrphanLANForwarding("10.42.1.2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(forwarding.users) != 2 || len(forwarding.lanOwners) != 1 || !forwarding.users["mesh"] {
+		t.Fatalf("orphan release changed another owner or retained old handles: %v %v", forwarding.users, forwarding.lanOwners)
+	}
+	forwardingValue(t, "1")
+	if err := ReleaseForwarding("mesh"); err != nil {
+		t.Fatal(err)
+	}
+	*fail = true
+	if err := releaseOrphanLANForwarding("10.42.1.3"); err == nil || len(forwarding.users) != 1 || len(forwarding.lanOwners) != 1 {
+		t.Fatal("failed final restoration lost its retry owner")
+	}
+	*fail = false
+	if err := releaseOrphanLANForwarding("10.42.1.3"); err != nil {
+		t.Fatal(err)
+	}
+	forwardingValue(t, "0")
+	if len(forwarding.users) != 0 || len(forwarding.lanOwners) != 0 {
+		t.Fatal("orphan cleanup leaked forwarding ownership")
+	}
 }

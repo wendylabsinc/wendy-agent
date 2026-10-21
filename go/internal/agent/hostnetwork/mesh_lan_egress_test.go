@@ -25,6 +25,7 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 	lanHostRoute = func(string) ([]byte, error) { return []byte("192.168.41.22 dev eth7 src 192.168.41.1\n"), nil }
 	rules := make(map[string][]string)
 	var routeCommands []string
+	failReverseDelete := false
 	lanIPRoute = func(_ string, args ...string) ([]byte, error) {
 		routeCommands = append(routeCommands, strings.Join(args, " "))
 		return nil, nil
@@ -62,6 +63,9 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 		case "-A":
 			rules[chainKey] = append(rules[chainKey], rule)
 		case "-D":
+			if failReverseDelete && strings.Contains(rule, "--sport 8080") && strings.HasSuffix(rule, "-j ACCEPT") {
+				return nil, fmt.Errorf("simulated reverse-rule deletion failure")
+			}
 			if idx < 0 {
 				t.Fatalf("delete missing rule %q", rule)
 			}
@@ -100,6 +104,39 @@ func TestLANServiceRulesRestrictPortAndRestartRevokesAllows(t *testing.T) {
 	}
 	if err := EnsureLANServiceAccess(a); err != nil {
 		t.Fatalf("recovery failed to reauthorize service: %v", err)
+	}
+	// A failed projector withdrawal leaves its old port ACCEPT and NAT. An app
+	// attachment can reopen with a different namespace handle before retrying.
+	failReverseDelete = true
+	if err := WithdrawLANServiceAccess(a); err == nil {
+		t.Fatal("expected failed service withdrawal")
+	}
+	replacement := a.NetNS + "/replacement"
+	before := len(routeCommands)
+	if err := RevokeOrphanLANAppRoutes(replacement, a.AppIP, a.Gateway); err == nil {
+		t.Fatal("orphan cleanup ignored surviving port ACCEPT")
+	}
+	if len(routeCommands) != before || !strings.Contains(strings.Join(rules["filter/"+LANChainName], "\n"), "--dport 8080 -j DROP") {
+		t.Fatal("failed cleanup removed route or its port deny")
+	}
+	failReverseDelete = false
+	if err := RevokeOrphanLANAppRoutes(replacement, a.AppIP, a.Gateway); err != nil {
+		t.Fatal(err)
+	}
+	if forwarding.users[a.forwardingKey()] {
+		t.Fatal("orphan cleanup retained the old namespace's forwarding owner")
+	}
+	if len(rules["nat/POSTROUTING"]) != 0 || strings.Contains(strings.Join(rules["filter/"+LANChainName], "\n"), "-j ACCEPT") {
+		t.Fatal("orphan cleanup retained old port or NAT grants")
+	}
+	// Restoring a different service on the same destination must not reopen
+	// the withdrawn port when the /32 route becomes reachable again.
+	a.NetNS, a.Port = replacement, 9090
+	if err := EnsureLANServiceAccess(a); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(rules["filter/"+LANChainName], "\n"), "8080") || strings.Contains(strings.Join(rules["nat/POSTROUTING"], "\n"), "8080") {
+		t.Fatal("regranting a different service resurrected the old port")
 	}
 	if err := WithdrawLANServiceAccess(a); err != nil {
 		t.Fatal(err)

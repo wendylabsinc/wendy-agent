@@ -169,7 +169,7 @@ func EnsureLANServiceAccess(a LANServiceAccess) error {
 	if !uses {
 		return errors.New("LAN service is not routed through its observed physical interface")
 	}
-	if err := AcquireForwarding(a.forwardingKey()); err != nil {
+	if err := acquireLANForwarding(a); err != nil {
 		return err
 	}
 	if err := InitLANServiceChain(); err != nil {
@@ -312,62 +312,88 @@ func RevokeOrphanLANServiceAllows() error {
 	return reconcileUnusedForwarding()
 }
 
-// RevokeOrphanLANAppRoutes removes retained /32 routes before removing their
-// destination guards for a verified live app namespace. It handles both an
-// inherited task after agent restart and a new task reusing the same CNI IP.
+// RevokeOrphanLANAppRoutes revokes all retained LAN grants and /32 routes for
+// a verified app sandbox before removing its destination guards. A projector's
+// failed Close can leave ACCEPT/NAT rules as well as DROP guards. A later bridge
+// must never restore a route while those old port grants still exist.
 func RevokeOrphanLANAppRoutes(netns, appIP, gateway string) error {
 	if netns == "" || net.ParseIP(appIP).To4() == nil || net.ParseIP(gateway).To4() == nil {
 		return errors.New("invalid inherited LAN app network")
 	}
-	var out []byte
-	for _, chain := range []string{MeshChainName, LANChainName} {
-		part, err := lanIPTables("-t", "filter", "-S", chain)
-		if err != nil {
-			return fmt.Errorf("inspect inherited LAN guards: %w (%s)", err, part)
-		}
-		out = append(out, part...)
-		out = append(out, '\n')
-	}
+	lanGuardMu.Lock()
+	defer lanGuardMu.Unlock()
 	type ownedRule struct {
-		args   []string
-		chain  string
-		access LANServiceAccess
+		table, chain string
+		args         []string
 	}
-	var guards []ownedRule
+	var grants, guards []ownedRule
 	routes := make(map[string]LANServiceAccess)
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[0] != "-A" || (fields[1] != MeshChainName && fields[1] != LANChainName) {
-			continue
+	for _, item := range [][2]string{{"filter", MeshChainName}, {"filter", LANChainName}, {"nat", "POSTROUTING"}} {
+		out, err := lanIPTables("-t", item[0], "-S", item[1])
+		if err != nil {
+			return fmt.Errorf("inspect inherited LAN rules: %w (%s)", err, out)
 		}
-		for i := range fields {
-			fields[i] = strings.Trim(fields[i], `"`)
-		}
-		values := make(map[string]string)
-		for i := 2; i+1 < len(fields); i++ {
-			if strings.HasPrefix(fields[i], "-") {
-				values[fields[i]] = fields[i+1]
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 || fields[0] != "-A" || fields[1] != item[1] {
+				continue
+			}
+			for i := range fields {
+				fields[i] = strings.Trim(fields[i], `"`)
+			}
+			values := make(map[string]string)
+			for i := 2; i+1 < len(fields); i++ {
+				if strings.HasPrefix(fields[i], "-") {
+					values[fields[i]] = fields[i+1]
+				}
+			}
+			if values["--comment"] != lanRuleMarker {
+				continue
+			}
+			outbound := values["-s"] == appIP+"/32"
+			inbound := values["-d"] == appIP+"/32"
+			if !outbound && !inbound {
+				continue
+			}
+			rule := ownedRule{item[0], item[1], append([]string(nil), fields[2:]...)}
+			switch {
+			case item[0] == "filter" && values["-j"] == "DROP":
+				guards = append(guards, rule)
+			case item[0] == "filter" && values["-j"] == "ACCEPT":
+				grants = append(grants, rule)
+			case item[0] == "nat" && outbound && values["-j"] == "MASQUERADE":
+				grants = append(grants, rule)
+			default:
+				continue
+			}
+			if outbound {
+				destination := strings.TrimSuffix(values["-d"], "/32")
+				a := LANServiceAccess{NetNS: netns, AppIP: appIP, Gateway: gateway,
+					Destination: destination, Interface: values["-o"], Protocol: "tcp", Port: 1}
+				if err := a.validate(); err != nil {
+					return err
+				}
+				routes[destination] = a
 			}
 		}
-		if values["--comment"] != lanRuleMarker || values["-s"] != appIP+"/32" || values["-j"] != "DROP" {
-			continue
-		}
-		destination := strings.TrimSuffix(values["-d"], "/32")
-		a := LANServiceAccess{NetNS: netns, AppIP: appIP, Gateway: gateway,
-			Destination: destination, Interface: values["-o"], Protocol: "tcp", Port: 1}
-		if err := a.validate(); err != nil {
+	}
+	// Do not remove a deny after a partial grant withdrawal. A retry reads the
+	// remaining kernel state, including NAT left after an earlier filter delete.
+	for _, rule := range grants {
+		if err := lanRemoveRule(rule.table, rule.chain, rule.args); err != nil {
 			return err
 		}
-		guards = append(guards, ownedRule{args: append([]string(nil), fields[2:]...), chain: fields[1], access: a})
-		routes[destination] = a
 	}
 	for _, a := range routes {
 		if err := WithdrawLANRoute(a); err != nil {
-			return err // retain guards until the route is confirmed gone
+			return err
 		}
 	}
+	if err := releaseOrphanLANForwarding(appIP); err != nil {
+		return err
+	}
 	for _, rule := range guards {
-		if err := lanRunIPTables(append([]string{"-t", "filter", "-D", rule.chain}, rule.args...)...); err != nil {
+		if err := lanRemoveRule(rule.table, rule.chain, rule.args); err != nil {
 			return err
 		}
 	}

@@ -13,7 +13,8 @@ import (
 // either user must not turn off the other user's existing, scoped grants.
 var forwarding = struct {
 	sync.Mutex
-	users map[string]bool
+	users     map[string]bool
+	lanOwners map[string]string // consumer key to the app IP whose grants it owns
 }{users: make(map[string]bool)}
 
 var forwardingSysctl = "/proc/sys/net/ipv4/ip_forward"
@@ -125,6 +126,7 @@ func ReleaseForwarding(key string) error {
 		}
 	}
 	delete(forwarding.users, key)
+	delete(forwarding.lanOwners, key)
 	return nil
 }
 
@@ -141,4 +143,40 @@ func reconcileUnusedForwarding() error {
 
 func (a LANServiceAccess) forwardingKey() string {
 	return fmt.Sprintf("lan:%s:%s:%s:%s:%s:%s:%d", a.NetNS, a.AppIP, a.AppBridge, a.Interface, a.Destination, a.Protocol, a.Port)
+}
+
+// The app IP belongs to the CNI sandbox, while its namespace handle can change
+// across bridge retries. Retain that scope separately from the consumer key so
+// orphan cleanup can release the old handle's forwarding ownership too.
+func acquireLANForwarding(a LANServiceAccess) error {
+	key := a.forwardingKey()
+	if err := AcquireForwarding(key); err != nil {
+		return err
+	}
+	forwarding.Lock()
+	defer forwarding.Unlock()
+	if forwarding.lanOwners == nil {
+		forwarding.lanOwners = make(map[string]string)
+	}
+	forwarding.lanOwners[key] = a.AppIP
+	return nil
+}
+
+// The caller holds lanGuardMu and has revoked every scoped grant and route.
+func releaseOrphanLANForwarding(appIP string) error {
+	forwarding.Lock()
+	var keys []string
+	for key, owner := range forwarding.lanOwners {
+		if !forwarding.users[key] {
+			delete(forwarding.lanOwners, key)
+		} else if owner == appIP {
+			keys = append(keys, key)
+		}
+	}
+	forwarding.Unlock()
+	var errs []error
+	for _, key := range keys {
+		errs = append(errs, ReleaseForwarding(key))
+	}
+	return errors.Join(errs...)
 }
