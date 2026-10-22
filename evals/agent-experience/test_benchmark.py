@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -180,6 +181,26 @@ class MetricsTests(unittest.TestCase):
         rows.append(row(False, complete=False))
         self.assertIsNone(b.summary(rows)[0]["tokens_per_success_including_failures"])
 
+    def test_summary_counts_tool_choice_and_medians(self):
+        def row(outcome, tokens, seconds):
+            return {"agent": "a", "target": "sim", "task": "deploy", "status": "failed", "success": False,
+                    "task_seconds": 10, "tool_choice": {"outcome": outcome} if outcome else None,
+                    "stages": {"agent": {"seconds": seconds}},
+                    "metrics": {"usage_complete": True, "tokens": {"input_tokens": tokens, "output_tokens": 10}}}
+        result = b.summary([row("right", 90, 5), row("wrong", 190, 9), row(None, 290, 7)])[0]
+        self.assertEqual(result["tool_choice"], {"right": 1, "wrong": 1, "missed": 0, "asked": 0, "ungraded": 1})
+        self.assertEqual(result["median_tokens_per_attempt"], 200)
+        self.assertEqual(result["median_agent_seconds"], 7)
+
+    def test_every_builtin_task_has_valid_expect(self):
+        import grading
+        tasks = json.loads((Path(__file__).parent / "tasks.json").read_text())
+        for task in tasks:
+            if task.get("fixture") == "builtin":
+                with self.subTest(task=task["id"]):
+                    self.assertIn("expect", task)
+                    grading.validate_expect(task["expect"])
+
     def test_timeout_retains_partial_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -199,9 +220,266 @@ class MetricsTests(unittest.TestCase):
                     "verify": [sys.executable, "-c", "from pathlib import Path; assert Path('answer').read_text()=='ok'"],
                     "cleanup": [sys.executable, "-c", "pass"]}
             result = b.trial(config, "fake", "sim", task, path, sys.executable)
+            self.addCleanup(shutil.rmtree, result["workspace"], True)
             self.assertTrue(result["success"])
             self.assertFalse(result["metrics"]["usage_complete"])
             self.assertTrue(result["cleanup_ok"])
+
+    def test_staged_plugin_has_no_mcp_server_and_same_skills(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / "plugin"
+            b.stage_plugin(b.ROOT, dest)
+            self.assertNotIn("mcpServers", json.loads((dest / ".claude-plugin/plugin.json").read_text()))
+            self.assertEqual(b.tree_sha256(dest / "skills"),
+                             b.tree_sha256(b.ROOT / "plugins/wendy-agentic-coding/skills"))
+
+    def test_tree_hash_changes_with_content_and_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a").mkdir()
+            (root / "a/f").write_text("x")
+            first = b.tree_sha256(root / "a")
+            (root / "a/f").write_text("y")
+            second = b.tree_sha256(root / "a")
+            (root / "a/f").rename(root / "a/g")
+            self.assertEqual(len({first, second, b.tree_sha256(root / "a")}), 3)
+
+    def test_harness_hash_covers_python_cli_safe_and_canned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            for name, text in (("a.py", "x"), ("cli_safe.json", "{}"), ("canned/s/tool.json", "{}"),
+                               ("README.md", "doc"), ("__pycache__/a.cpython.pyc", "c"), ("results/r/result.json", "r")):
+                (here / name).parent.mkdir(parents=True, exist_ok=True)
+                (here / name).write_text(text)
+            first = b.harness_sha256(here)
+            for name in ("README.md", "__pycache__/a.cpython.pyc", "results/r/result.json"):
+                (here / name).write_text("changed")
+            self.assertEqual(b.harness_sha256(here), first)
+            seen = {first}
+            for name in ("a.py", "cli_safe.json", "canned/s/tool.json", "canned/s/cli/new.json", "b.py"):
+                with self.subTest(changed=name):
+                    (here / name).parent.mkdir(parents=True, exist_ok=True)
+                    (here / name).write_text("changed " + name)
+                    value = b.harness_sha256(here)
+                    self.assertNotIn(value, seen)
+                    seen.add(value)
+        self.assertEqual(b.harness_sha256(), b.harness_sha256(b.HERE))
+
+    def test_skills_come_from_treatment_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            treatment, workspace = Path(directory, "t"), Path(directory, "w")
+            skill = treatment / "plugins/wendy-agentic-coding/skills/x"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("hi")
+            workspace.mkdir()
+            b.stage_context(workspace, "codex", "wendy", treatment_root=treatment)
+            self.assertEqual((workspace / ".agents/skills/x/SKILL.md").read_text(), "hi")
+
+    def test_extra_wendy_server_is_detected(self):
+        init = {"type": "system", "subtype": "init", "mcp_servers": [
+            {"name": "wendy", "status": "connected"},
+            {"name": "plugin:wendy-agentic-coding:wendy", "status": "connected"}]}
+        m = b.metrics("claude", [init, {"type": "result", "result": "x"}])
+        self.assertEqual(b.extra_wendy_servers(m), ["plugin:wendy-agentic-coding:wendy"])
+        self.assertIsNone(b.metrics("claude", [])["mcp_servers_observed"])
+
+    def test_missing_init_event_is_unverified_not_clean(self):
+        self.assertIsNone(b.metrics("claude", [{"type": "result", "result": "x"}])["mcp_servers_observed"])
+        init = {"type": "system", "subtype": "init", "mcp_servers": []}
+        self.assertEqual(b.metrics("claude", [init])["mcp_servers_observed"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            command = [sys.executable, "-c", "import json; print(json.dumps({'type':'result','result':'ok'}))"]
+            config = {"agents": {"fake": {"adapter": "claude", "model": "fixture", "command": command}},
+                      "targets": {"sim": {"kind": "simulator", "device": "vm:test"}}}
+            task = {"id": "fixture", "prompt": "p", "prepare": [sys.executable, "-c", "pass"],
+                    "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
+            result = b.trial(config, "fake", "sim", task, Path(directory), sys.executable)
+            self.addCleanup(shutil.rmtree, result["workspace"], True)
+            self.assertEqual(result["status"], "mcp_unverified")
+            self.assertFalse(result["success"])
+
+    def test_trial_stages_a_plugin_per_attempt_and_flags_a_second_wendy_server(self):
+        # Each Claude attempt loads its own plugin copy without mcpServers; a second Wendy server in the
+        # init event still makes the attempt mcp_contaminated, and it never passes.
+        init = {"type": "system", "subtype": "init", "mcp_servers": [
+            {"name": "wendy"}, {"name": "plugin:wendy-agentic-coding:wendy"}]}
+        code = ("import json, sys; print(json.dumps(%r)); "
+                "print(json.dumps({'type': 'result', 'result': sys.argv[2], 'is_error': False}))" % init)
+        command = [sys.executable, "-c", code, "--plugin-dir", "{plugin_dir}"]
+        config = {"agents": {"fake": {"adapter": "claude", "model": "fixture", "command": command}},
+                  "targets": {"sim": {"kind": "simulator", "device": "vm:test"}}}
+        task = {"id": "fixture", "prompt": "p", "prepare": [sys.executable, "-c", "pass"],
+                "verify": [sys.executable, "-c", "pass"], "cleanup": [sys.executable, "-c", "pass"]}
+        with tempfile.TemporaryDirectory() as directory:
+            rows = [b.trial(config, "fake", "sim", task, Path(directory), sys.executable) for _ in range(2)]
+            for row in rows:
+                self.addCleanup(shutil.rmtree, row["workspace"], True)
+            plugins = []
+            for row in rows:
+                self.assertEqual((row["status"], row["success"]), ("mcp_contaminated", False))
+                plugin = Path(row["metrics"]["final_text"])  # the plugin dir the agent was given
+                self.assertEqual(plugin, Path(directory) / f"fake-sim-fixture-{row['id']}" / "plugin")
+                self.assertNotIn("mcpServers", json.loads((plugin / ".claude-plugin/plugin.json").read_text()))
+                self.assertEqual(b.tree_sha256(plugin / "skills"),
+                                 b.tree_sha256(b.ROOT / "plugins/wendy-agentic-coding/skills"))
+                plugins.append(plugin)
+            self.assertNotEqual(*plugins)
+
+    def test_treatment_git_records_none_outside_a_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(b.treatment_git(Path(directory)), (None, None))
+
+    def test_rescore_rebuilds_grades_without_touching_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            dump = lambda f, v: f.write_text(json.dumps(v))
+            dump(path / "manifest.json", {"config": {"agents": {"c": {"adapter": "claude"}}}})
+            attempt = path / "c-sim-deploy-http-1"
+            attempt.mkdir()
+            events = [{"type": "assistant", "message": {"content": [
+                          {"type": "tool_use", "id": "1", "name": "mcp__wendy__run", "input": {}}]}},
+                      {"type": "result", "result": "done"}]
+            (attempt / "agent.stdout").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+            dump(attempt / "result.json", {"task": "deploy-http", "agent": "c", "target": "sim",
+                                           "metrics": {"tokens": None, "usage_complete": False}, "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None})
+            before = (attempt / "result.json").read_bytes()
+            tasks = [{"id": "deploy-http", "expect": {"right": [{"tool": "run"}], "wrong": []}}]
+            out = b.rescore(path, tasks, [])
+            self.assertEqual(out.parent, path)
+            rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+            self.assertEqual(rows[0]["tool_choice"]["outcome"], "right")
+            self.assertEqual((attempt / "result.json").read_bytes(), before)
+            self.assertTrue((out / "summary.json").exists() and (out / "summary.md").exists())
+
+    def _rescore_dir(self, path):
+        dump = lambda f, v: f.write_text(json.dumps(v))
+        dump(path / "manifest.json", {"config": {"agents": {"c": {"adapter": "claude"}}}})
+        def attempt(name, **extra):
+            d = path / name
+            d.mkdir()
+            dump(d / "result.json", {"id": name, "task": "t", "agent": "c", "target": "sim", "metrics": {"tokens": None, "usage_complete": False},
+                                     "status": "failed", "success": True, "task_seconds": 1.0, "tool_choice": None, **extra})
+            return d
+        return attempt
+
+    @staticmethod
+    def _stdout(directory):
+        events = [{"type": "assistant", "message": {"content": [
+                      {"type": "tool_use", "id": "1", "name": "mcp__wendy__run", "input": {}}]}},
+                  {"type": "result", "result": "done", "usage": {"input_tokens": 5, "output_tokens": 7}}]
+        (directory / "agent.stdout").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+    def test_rescore_keeps_saved_accounting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            d = self._rescore_dir(path)("a")
+            self._stdout(d)
+            out = b.rescore(path, [{"id": "t", "expect": {"right": [{"tool": "run"}], "wrong": []}}], [])
+            row = json.loads((out / "results.jsonl").read_text().splitlines()[0])
+            self.assertIs(row["metrics"]["usage_complete"], False)
+            self.assertIsNone(row["metrics"]["tokens"])
+            self.assertEqual(row["tool_choice"]["outcome"], "right")
+
+    def test_rescore_carries_unreadable_attempts_through(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            self._stdout(make("a"))
+            make("b", tool_choice={"outcome": "wrong"})
+            make("c", agent="ghost")
+            out = b.rescore(path, [{"id": "t", "expect": {"right": [{"tool": "run"}], "wrong": []}}], [])
+            rows = {json.loads(l)["tool_choice"] and json.loads(l)["agent"] + json.loads(l)["tool_choice"]["outcome"]
+                    for l in (out / "results.jsonl").read_text().splitlines()}
+            self.assertEqual(rows, {"cright", "cwrong", None})
+
+    def test_unknown_usage_charges_scenario_reserve_and_continues(self):
+        import contextlib
+        import io
+        unknown = {"estimated_cost_usd": None, "reported_cost_usd": None}
+        scenario_row_unknown = {"kind": "scenario", "metrics": dict(unknown)}
+        task_row_unknown = {"metrics": dict(unknown)}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(b.charge(1.0, scenario_row_unknown, {"scenario_reserve_usd": .5}), (1.5, True))
+            self.assertEqual(b.charge(1.0, scenario_row_unknown, {}), (1.5, True))
+            self.assertEqual(b.charge(1.0, task_row_unknown, {}), (1.0, False))
+        self.assertIn("Usage unknown; charged the scenario reserve of $0.50.", out.getvalue())
+        self.assertEqual(b.charge(1.0, {"kind": "scenario", "metrics": {"estimated_cost_usd": .25}}, {}), (1.25, True))
+        self.assertEqual(b.charge(1.0, {"metrics": {"estimated_cost_usd": None, "reported_cost_usd": .5}}, {}),
+                         (1.5, True))
+
+    def test_rescore_scenario_rows_follow_the_live_success_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+            agent = {"exit_code": 0, "timed_out": False, "interrupted": False, "seconds": 1.0}
+            def attempt(name, events, proxy, **saved):
+                d = make(name, kind="scenario", group="core", task="s", stages={"agent": agent}, **saved)
+                (d / "agent.stdout").write_text("".join(json.dumps(e) + "\n" for e in events))
+                (d / "proxy.jsonl").write_text("".join(json.dumps(r) + "\n" for r in proxy))
+                (d / "cli.jsonl").write_text("")
+            done = {"type": "result", "result": "done"}
+            attempt("unverified", [done], [{"tool": "run"}], status="mcp_unverified", success=False)
+            attempt("regraded-wrong", [init, done], [{"tool": "container_exec", "arguments": {"command": ["nmcli"]}}],
+                    status="passed", success=True)
+            attempt("regraded-right", [init, done], [{"tool": "run"}], status="failed", success=False)
+            scenarios = [{"id": "s", "expect": {"right": [{"tool": "run"}], "wrong": [{"tool": "container_exec"}]}}]
+            out = b.rescore(path, [], scenarios)
+            rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+            got = sorted((r["tool_choice"]["outcome"], r["success"], r["status"]) for r in rows)
+            self.assertEqual(got, [("right", False, "mcp_unverified"), ("right", True, "passed"),
+                                   ("wrong", False, "failed")])
+
+    def test_rescore_flags_mcp_calls_the_proxy_never_saw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            agent = {"exit_code": 0, "timed_out": False, "interrupted": False, "seconds": 1.0}
+            init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+            call = {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "1", "name": "mcp__wendy__run", "input": {}}]}}
+            for name, proxy in (("unrouted", []), ("routed", [{"tool": "run"}])):
+                d = make(name, kind="scenario", group="core", task="s", stages={"agent": agent},
+                         status="passed", success=True)
+                (d / "agent.stdout").write_text("".join(json.dumps(e) + "\n" for e in (init, call, {"type": "result"})))
+                (d / "proxy.jsonl").write_text("".join(json.dumps(r) + "\n" for r in proxy))
+                (d / "cli.jsonl").write_text("")
+            out = b.rescore(path, [], [{"id": "s", "expect": {"right": [{"tool": "run"}], "wrong": []}}])
+            rows = {r["id"]: r for r in (json.loads(l) for l in (out / "results.jsonl").read_text().splitlines())}
+            self.assertEqual((rows["unrouted"]["status"], rows["unrouted"]["success"]), ("mcp_unverified", False))
+            self.assertEqual((rows["routed"]["status"], rows["routed"]["success"]), ("passed", True))
+            self.assertEqual(rows["unrouted"]["metrics"]["proxy_calls"], 0)
+
+    def test_rescore_keeps_a_scenario_row_that_aborted_before_its_verdict(self):
+        # scenario_trial raised after run_process (e.g. bad prices): stages.agent exists, metrics is {}.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            make = self._rescore_dir(path)
+            agent = {"exit_code": 0, "timed_out": False, "interrupted": False, "seconds": 1.0}
+            init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "wendy"}]}
+            for name, saved in (("normal", {"status": "failed", "success": False}),
+                                ("aborted", {"status": "setup_error", "success": False, "metrics": {}})):
+                d = make(name, kind="scenario", group="core", task="s", stages={"agent": agent}, **saved)
+                (d / "agent.stdout").write_text(json.dumps(init) + "\n" + json.dumps({"type": "result", "result": "x"}) + "\n")
+                (d / "proxy.jsonl").write_text(json.dumps({"tool": "run"}) + "\n")
+            out = b.rescore(path, [], [{"id": "s", "expect": {"right": [{"tool": "run"}], "wrong": []}}])
+            rows = {r["id"]: r for r in (json.loads(l) for l in (out / "results.jsonl").read_text().splitlines())}
+            self.assertEqual((rows["aborted"]["status"], rows["aborted"]["success"]), ("setup_error", False))
+            self.assertEqual((rows["normal"]["status"], rows["normal"]["success"]), ("passed", True))
+            self.assertTrue((out / "summary.json").exists() and (out / "summary.md").exists())
+            summary = json.loads((out / "summary.json").read_text())[0]
+            self.assertEqual((summary["attempts"], summary["setup_errors"]), (1, 1))
+
+    def test_rescore_looks_up_expect_by_kind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            self._stdout(self._rescore_dir(path)("a"))
+            tasks = [{"id": "t", "expect": {"right": [{"tool": "run"}], "wrong": []}}]
+            scenarios = [{"id": "t", "expect": {"right": [{"tool": "other"}], "wrong": []}}]
+            out = b.rescore(path, tasks, scenarios)
+            row = json.loads((out / "results.jsonl").read_text().splitlines()[0])
+            self.assertEqual(row["tool_choice"]["outcome"], "right")
 
 
 if __name__ == "__main__":

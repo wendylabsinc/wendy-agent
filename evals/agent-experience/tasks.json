@@ -52,7 +52,25 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "repair-startup",
@@ -107,7 +125,25 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "update-http",
@@ -162,7 +198,25 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "stop-app",
@@ -217,7 +271,25 @@
       "--port",
       "{port}"
     ],
-    "fixture": "builtin"
+    "fixture": "builtin",
+    "expect": {
+      "right": [
+        {
+          "tool": "container_stop"
+        },
+        {
+          "cli": "device apps stop"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "create-simulator",
@@ -271,7 +343,17 @@
       "{port}"
     ],
     "fixture": "builtin",
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "simulator_create"
+        },
+        {
+          "cli": "vm create"
+        }
+      ]
+    }
   },
   {
     "id": "start-app",
@@ -326,7 +408,25 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "container_start"
+        },
+        {
+          "cli": "device apps start"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "compose-app",
@@ -381,7 +481,25 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "run"
+        },
+        {
+          "cli": "run"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "create-go2-simulator",
@@ -435,7 +553,17 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "simulator_create"
+        },
+        {
+          "cli": "vm create"
+        }
+      ]
+    }
   },
   {
     "id": "create-g1-simulator",
@@ -489,7 +617,17 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "simulator_create"
+        },
+        {
+          "cli": "vm create"
+        }
+      ]
+    }
   },
   {
     "id": "install-physical",
@@ -601,7 +739,25 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "telemetry_logs"
+        },
+        {
+          "cli": "device logs"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "debug-otel-metrics",
@@ -665,7 +821,26 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "telemetry_metrics"
+        },
+        {
+          "cli": "device telemetry-stream",
+          "args_regex": "--metrics\\b"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "debug-otel-traces",
@@ -729,7 +904,26 @@
       "{run_id}",
       "--port",
       "{port}"
-    ]
+    ],
+    "expect": {
+      "right": [
+        {
+          "tool": "telemetry_traces"
+        },
+        {
+          "cli": "device telemetry-stream",
+          "args_regex": "--traces\\b"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "debug-ros2",
@@ -904,7 +1098,31 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "ros2_topics"
+        },
+        {
+          "tool": "ros2_topic_info"
+        },
+        {
+          "cli": "device ros2 topics"
+        },
+        {
+          "cli": "device ros2 topic info"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "repair-go2-camera",
@@ -962,7 +1180,31 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "camera_list"
+        },
+        {
+          "tool": "camera_snapshot"
+        },
+        {
+          "cli": "device camera list"
+        },
+        {
+          "cli": "device camera view"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "debug-g1-ros2",
@@ -1020,7 +1262,31 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "ros2_topics"
+        },
+        {
+          "tool": "ros2_topic_info"
+        },
+        {
+          "cli": "device ros2 topics"
+        },
+        {
+          "cli": "device ros2 topic info"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   },
   {
     "id": "repair-g1-camera",
@@ -1078,6 +1344,30 @@
       "--port",
       "{port}"
     ],
-    "owns_vm": true
+    "owns_vm": true,
+    "expect": {
+      "right": [
+        {
+          "tool": "camera_list"
+        },
+        {
+          "tool": "camera_snapshot"
+        },
+        {
+          "cli": "device camera list"
+        },
+        {
+          "cli": "device camera view"
+        }
+      ],
+      "wrong": [
+        {
+          "shell": "(?:^|[;&|(\\n])\\s*(?:sudo\\s+)?(?:ssh|scp|sftp)\\s"
+        },
+        {
+          "shell": "\\bdocker\\s+(?:-H|--host|--context)\\b|\\bDOCKER_HOST="
+        }
+      ]
+    }
   }
 ]
