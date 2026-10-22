@@ -49,6 +49,7 @@ type mcpServer struct {
 	cloudTunnels         map[string]*mcpCloudTunnel
 	tunnelsClosed        bool
 	toolGroups           []string
+	toolProfile          string
 	discoverLANFn        func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
 	usbSetupNoticeFn     func() string
 	mu                   sync.RWMutex
@@ -316,6 +317,7 @@ func (s *mcpServer) newProtocolServer() (*server.MCPServer, error) {
 	s.registerOSTools(srv)
 	s.registerInstallationTools(srv)
 	s.registerSimulatorTools(srv)
+	s.registerJobTools(srv)
 	s.registerAppInspectTools(srv)
 	s.registerDeviceMaintenanceTools(srv)
 	s.registerProjectTools(srv)
