@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,12 +23,12 @@ func unresolvedCloudNameError() error {
 func stubUnresolvedCloudPinSideEffects(t *testing.T) {
 	t.Helper()
 	t.Setenv(runNoCloudFallbackEnv, "")
-	oldCloud, oldFresh, oldUpdate := connectUnresolvedCloudNameFn, ensureFreshCertificateFn, checkAndOfferUpdateFn
+	oldCloud, oldFresh, oldUpdate := connectCloudLookupFn, ensureFreshCertificateFn, checkAndOfferUpdateFn
 	t.Cleanup(func() {
-		connectUnresolvedCloudNameFn, ensureFreshCertificateFn, checkAndOfferUpdateFn = oldCloud, oldFresh, oldUpdate
+		connectCloudLookupFn, ensureFreshCertificateFn, checkAndOfferUpdateFn = oldCloud, oldFresh, oldUpdate
 	})
 	ensureFreshCertificateFn = func(context.Context, *config.AuthConfig) error { return nil }
-	connectUnresolvedCloudNameFn = func(context.Context, *config.AuthConfig, string, string, *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+	connectCloudLookupFn = func(context.Context, *config.AuthConfig, string, string, *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 		t.Fatal("refused Cloud session reached device discovery or connection")
 		return nil, nil
 	}
@@ -107,7 +108,7 @@ func TestUnresolvedCloudNameSelectsPinnedSessionBeforeCurrentContext(t *testing.
 				return nil
 			}
 			want := &grpcclient.AgentConnection{Host: "ci-mesh-2", IsMTLS: true}
-			connectUnresolvedCloudNameFn = func(_ context.Context, selected *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+			connectCloudLookupFn = func(_ context.Context, selected *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 				connected = true
 				if !prepared || selected.Name != matching.Name || selected.CloudGRPC != matching.CloudGRPC ||
 					selected.Certificates[0].OrganizationID != matching.Certificates[0].OrganizationID ||
@@ -184,17 +185,60 @@ func TestUnresolvedCloudNameRefusesSessionsOutsidePin(t *testing.T) {
 				return nil
 			}
 			conn, err, attempted := connectUnresolvedCloudName(context.Background(), "ci-mesh-2", unresolvedCloudNameError())
-			if conn != nil || !attempted || !errors.Is(err, errDeviceIdentityRefused) {
-				t.Fatalf("connection = %v, %v, attempted=%v; want identity refusal", conn, err, attempted)
+			if conn != nil || !attempted {
+				t.Fatalf("connection = %v, %v, attempted=%v; want refusal", conn, err, attempted)
 			}
+			assertNoPinnedCloudLogin(t, err)
 		})
+	}
+}
+
+// No device answered, so a missing login must not read as an identity
+// refusal, and it names the unpin a migrated organization needs.
+func assertNoPinnedCloudLogin(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, config.ErrNotLoggedIn) || errors.Is(err, errDeviceIdentityRefused) || ErrorClass(err) != "auth_required" {
+		t.Fatalf("error = %v (class %q); want an authentication failure, not an identity refusal", err, ErrorClass(err))
+	}
+	if !strings.Contains(err.Error(), "wendy device unpin ci-mesh-2") {
+		t.Fatalf("error = %q; want the unpin command", err)
+	}
+}
+
+// LAN pins written before tenant-aware endpoint mapping can record another
+// tenant's endpoint. The tenant alone selects the session.
+func TestUnresolvedCloudNameMatchesTenantPinOnAnyEndpoint(t *testing.T) {
+	const prodTenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"
+	const stagingTenant = "ed6e09f3-d287-450b-a053-e4554f3c70ed"
+	const device = "7791d76e-a942-4a8e-b582-063d063b5623"
+	stubUnresolvedCloudPinSideEffects(t)
+	setPinCache(t)
+	prod := config.AuthConfig{Name: "prod", CloudGRPC: "grpc.prod.sh:443",
+		Certificates: []config.CertificateInfo{{PrincipalURI: "spiffe://wendy.sh/tenant/" + prodTenant + "/operator/test"}}}
+	staging := config.AuthConfig{Name: "staging", CloudGRPC: "grpc.staging.sh:443",
+		Certificates: []config.CertificateInfo{{PrincipalURI: "spiffe://wendy.sh/tenant/" + stagingTenant + "/operator/test"}}}
+	pin := config.DevicePin{CloudGRPC: prod.CloudGRPC, AssetID: device, Principal: certs.DeviceSPIFFEURI(stagingTenant, device)}
+	setTempConfig(t, &config.Config{
+		Auth: []config.AuthConfig{prod, staging}, CurrentContext: prod.Name,
+		DevicePins: map[string]config.DevicePin{"ci-mesh-2": pin},
+	})
+	want := &grpcclient.AgentConnection{Host: "ci-mesh-2", IsMTLS: true}
+	connectCloudLookupFn = func(_ context.Context, selected *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+		if selected.Name != staging.Name || name != device || expected == nil || expected.Principal != pin.Principal {
+			t.Fatalf("Cloud lookup = session %q, selector %q, expected %+v; want the staging tenant's session and pinned device", selected.Name, name, expected)
+		}
+		return want, nil
+	}
+	conn, err, attempted := connectUnresolvedCloudName(context.Background(), "ci-mesh-2", unresolvedCloudNameError(), SuppressUpdateCheck())
+	if conn != want || err != nil || !attempted {
+		t.Fatalf("connection = %p, %v, attempted=%v; want the pinned tenant device", conn, err, attempted)
 	}
 }
 
 func TestUnresolvedCloudNameRechecksPinAfterCertificatePreparation(t *testing.T) {
 	const tenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"
 	const otherTenant = "ed6e09f3-d287-450b-a053-e4554f3c70ed"
-	for _, change := range []string{"organization", "endpoint", "tenant"} {
+	for _, change := range []string{"organization", "endpoint", "tenant", "renewed onto tenant PKI"} {
 		t.Run(change, func(t *testing.T) {
 			stubUnresolvedCloudPinSideEffects(t)
 			setPinCache(t)
@@ -215,13 +259,16 @@ func TestUnresolvedCloudNameRechecksPinAfterCertificatePreparation(t *testing.T)
 					selected.CloudGRPC = "grpc.b.sh:443"
 				case "tenant":
 					selected.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + otherTenant + "/operator/test"
+				case "renewed onto tenant PKI":
+					selected.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + tenant + "/operator/test"
 				}
 				return nil
 			}
 			conn, err, attempted := connectUnresolvedCloudName(context.Background(), "ci-mesh-2", unresolvedCloudNameError())
-			if !prepared || conn != nil || !attempted || !errors.Is(err, errDeviceIdentityRefused) {
-				t.Fatalf("connection = %v, %v, attempted=%v, prepared=%v; want identity refusal after preparation", conn, err, attempted, prepared)
+			if !prepared || conn != nil || !attempted {
+				t.Fatalf("connection = %v, %v, attempted=%v, prepared=%v; want refusal after preparation", conn, err, attempted, prepared)
 			}
+			assertNoPinnedCloudLogin(t, err)
 		})
 	}
 }
@@ -238,11 +285,11 @@ func TestNamedCloudDeviceResolvesThroughBothAgentEntryPoints(t *testing.T) {
 			deviceFlag = "ci-mesh-2"
 			oldLookup, oldBrowse, oldDiscover := osLookupHostFn, lanBrowseFn, discoverLANDevices
 			oldUSB, oldFind := usbDirectCandidatesFn, findDeviceByIDFn
-			oldCloud := connectUnresolvedCloudNameFn
+			oldCloud := connectCloudLookupFn
 			t.Cleanup(func() {
 				osLookupHostFn, lanBrowseFn, discoverLANDevices = oldLookup, oldBrowse, oldDiscover
 				usbDirectCandidatesFn, findDeviceByIDFn = oldUSB, oldFind
-				connectUnresolvedCloudNameFn = oldCloud
+				connectCloudLookupFn = oldCloud
 			})
 			osLookupHostFn = func(context.Context, string) ([]string, error) { return nil, unresolvedCloudNameError() }
 			lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
@@ -251,7 +298,7 @@ func TestNamedCloudDeviceResolvesThroughBothAgentEntryPoints(t *testing.T) {
 			findDeviceByIDFn = func(context.Context, string) *SelectedDevice { return nil }
 			want := &grpcclient.AgentConnection{Host: "ci-mesh-2", IsMTLS: true}
 			calls := 0
-			connectUnresolvedCloudNameFn = func(_ context.Context, _ *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+			connectCloudLookupFn = func(_ context.Context, _ *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 				calls++
 				if name != deviceFlag || expected != nil {
 					t.Fatalf("cloud selection = %q, %+v; want the explicitly named device", name, expected)
@@ -283,15 +330,15 @@ func TestUnresolvedCloudNamePreservesPinnedIdentityAndCloudErrors(t *testing.T) 
 		"ci-mesh-2": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
 	})
 	t.Setenv(runNoCloudFallbackEnv, "")
-	old := connectUnresolvedCloudNameFn
-	t.Cleanup(func() { connectUnresolvedCloudNameFn = old })
+	old := connectCloudLookupFn
+	t.Cleanup(func() { connectCloudLookupFn = old })
 	for _, want := range []error{
 		&errCloudDeviceNotFound{name: "ci-mesh-2"},
 		commandErrorf(errDeviceAmbiguous, "multiple devices match"),
 		commandErrorf(errDeviceOffline, "device is enrolled but offline"),
 		refuseIdentity("saved device identity changed"),
 	} {
-		connectUnresolvedCloudNameFn = func(_ context.Context, _ *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+		connectCloudLookupFn = func(_ context.Context, _ *config.AuthConfig, name, _ string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 			if name != "42" || expected == nil || expected.EntityID != "42" || expected.OrgID != 7 {
 				t.Fatalf("cloud selection = %q, %+v; want pinned asset 42 in org 7", name, expected)
 			}
@@ -307,9 +354,9 @@ func TestUnresolvedCloudNamePreservesPinnedIdentityAndCloudErrors(t *testing.T) 
 func TestUnresolvedCloudNameNeverReinterpretsEndpointsOrRefusals(t *testing.T) {
 	setTempConfig(t, &config.Config{Auth: []config.AuthConfig{{CloudGRPC: "cloud.example:443"}}})
 	t.Setenv(runNoCloudFallbackEnv, "")
-	old := connectUnresolvedCloudNameFn
-	t.Cleanup(func() { connectUnresolvedCloudNameFn = old })
-	connectUnresolvedCloudNameFn = func(context.Context, *config.AuthConfig, string, string, *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
+	old := connectCloudLookupFn
+	t.Cleanup(func() { connectCloudLookupFn = old })
+	connectCloudLookupFn = func(context.Context, *config.AuthConfig, string, string, *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 		t.Fatal("Cloud must not replace the requested endpoint or bypass a refusal")
 		return nil, nil
 	}

@@ -814,9 +814,9 @@ func cloudFallbackDeviceName(explicit, flagValue, configDefault string) string {
 	return configDefault
 }
 
-// A LAN hostname often differs from the Cloud display name. When the default
-// has a saved asset identity, look up that exact asset through Cloud; the
-// identity check still verifies the selected org and asset before connecting.
+// A LAN hostname often differs from the Cloud display name. When the name has
+// a saved asset identity, look up that exact asset through Cloud; the identity
+// check still verifies the selected org and asset before connecting.
 func cloudDefaultSelector(defaultName string, expected *certs.WendyIdentity) string {
 	if expected != nil && expected.EntityType == certs.EntityAsset && expected.EntityID != "" {
 		return expected.EntityID
@@ -853,8 +853,7 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 			if len(cfg.Auth) == 0 {
 				return nil, fmt.Errorf("no Wendy Cloud session available")
 			}
-			expected := expectedIdentityFor(pinKeyForAddr(defaultName))
-			conn, err := connectToCloudAgentExpecting(ctx, "", cloudDefaultSelector(defaultName, expected), "", expected)
+			conn, err := connectToPinnedCloudName(ctx, cfg, defaultName)
 			if err != nil {
 				return nil, err
 			}
@@ -897,11 +896,9 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 		return nil, err
 	}
 
-	var expected *certs.WendyIdentity
-	if cloudName == "" && deviceFlag == "" && deviceName == cfg.DefaultDevice {
-		expected = expectedIdentityFor(pinKeyForAddr(deviceName))
-	}
-	cloudConn, cloudErr := cloudFallbackConnectFn(ctx, "", cloudDefaultSelector(deviceName, expected), "", expected)
+	// An explicit --device or build host whose dial failed without a DNS miss
+	// is pinned here just as the default is.
+	cloudConn, cloudErr := cloudFallbackConnectFn(ctx, cfg, deviceName)
 	if cloudErr != nil {
 		if errors.Is(cloudErr, errDeviceIdentityRefused) {
 			return nil, cloudErr

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
-var connectUnresolvedCloudNameFn = connectToCloudAgentWithAuthExpecting
+var connectCloudLookupFn = connectToCloudAgentWithAuthExpecting
 
 // A failed Cloud lookup must not fall through to another, unpinned Cloud session.
 type cloudNameResolutionError struct{ error }
@@ -40,18 +41,7 @@ func connectUnresolvedCloudName(ctx context.Context, device string, cause error,
 	if err != nil || len(cfg.Auth) == 0 {
 		return nil, cause, false
 	}
-	var auth *config.AuthConfig
-	var expected *certs.WendyIdentity
-	if pin, key, pinned := lookupPin(cfg, device); pinned {
-		expected = expectedIdentityForPin(pin)
-		auth, err = resolvePinnedCloudAuth(ctx, cfg, key, pin)
-	} else {
-		auth, err = pickAuthEntry("")
-	}
-	if err != nil {
-		return nil, err, true
-	}
-	conn, err = connectUnresolvedCloudNameFn(ctx, auth, cloudDefaultSelector(device, expected), "", expected)
+	conn, err = connectToPinnedCloudName(ctx, cfg, device)
 	if err != nil {
 		// Cloud's not-found, offline and duplicate-name errors name the next
 		// useful action. Do not replace them with the earlier DNS failure.
@@ -67,20 +57,56 @@ func connectUnresolvedCloudName(ctx context.Context, device string, cause error,
 	return conn, err, true
 }
 
+// connectToPinnedCloudName looks up a device name in Cloud. A reused name in
+// another organization or after re-enrollment must not silently redirect a
+// command to a different asset, so a pinned name is looked up with the session
+// for its saved organization and must have its saved identity. An unpinned
+// name uses the current session.
+func connectToPinnedCloudName(ctx context.Context, cfg *config.Config, name string) (*grpcclient.AgentConnection, error) {
+	var auth *config.AuthConfig
+	var expected *certs.WendyIdentity
+	var err error
+	if pin, key, pinned := lookupPin(cfg, pinKeyForAddr(name)); pinned {
+		expected = expectedIdentityForPin(pin)
+		auth, err = resolvePinnedCloudAuth(ctx, cfg, key, pin)
+	} else {
+		auth, err = pickAuthEntry("")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return connectCloudLookupFn(ctx, auth, cloudDefaultSelector(name, expected), "", expected)
+}
+
 // A device identity alone omits the Cloud endpoint and may be absent on older
 // pins. Select the session using the full pin before querying Cloud devices.
+//
+// A principal pin belongs to its tenant on any endpoint, preferring the saved
+// one: LAN pins written before tenant-aware endpoint mapping can record another
+// tenant's endpoint. An unparseable principal leaves neither a tenant nor an
+// organization to match.
 func resolvePinnedCloudAuth(ctx context.Context, cfg *config.Config, key string, pin config.DevicePin) (*config.AuthConfig, error) {
+	orgID, tenant := int32(pin.OrgID), ""
+	if pin.Principal != "" {
+		identity, _ := certs.ParsePrincipal(pin.Principal)
+		orgID, tenant = 0, identity.TenantUUID
+	}
 	filtered := *cfg
 	filtered.Auth = nil
+	endpoint := ""
 	for _, auth := range cfg.Auth {
-		if cloudAuthMatchesDevicePin(&auth, pin) {
-			filtered.Auth = append(filtered.Auth, auth)
+		if !cloudAuthInOrganization(&auth, pin.CloudGRPC, orgID, tenant) {
+			continue
+		}
+		filtered.Auth = append(filtered.Auth, auth)
+		if endpoint == "" || auth.CloudGRPC == pin.CloudGRPC {
+			endpoint = auth.CloudGRPC
 		}
 	}
 	if len(filtered.Auth) == 0 {
-		return nil, refuseIdentity("No Cloud session matches the organization and endpoint saved for device %q. Log in to its saved Cloud organization before retrying.", key)
+		return nil, noPinnedCloudLogin("No Cloud login matches the organization saved for device %q.", key)
 	}
-	auth, err := config.ResolveAuth(&filtered, pin.CloudGRPC, nil)
+	auth, err := config.ResolveAuth(&filtered, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -88,19 +114,16 @@ func resolvePinnedCloudAuth(ctx context.Context, cfg *config.Config, key string,
 		return nil, err
 	}
 	// Certificate preparation reloads and can renew the selected session.
-	if !cloudAuthMatchesDevicePin(auth, pin) {
-		return nil, refuseIdentity("Cloud session no longer matches the organization and endpoint saved for device %q. Log in to its saved Cloud organization before retrying.", key)
+	if !cloudAuthInOrganization(auth, pin.CloudGRPC, orgID, tenant) {
+		return nil, noPinnedCloudLogin("The Cloud login for device %q no longer matches its saved organization.", key)
 	}
 	return auth, nil
 }
 
-func cloudAuthMatchesDevicePin(auth *config.AuthConfig, pin config.DevicePin) bool {
-	if auth == nil || len(auth.Certificates) == 0 || auth.CloudGRPC != pin.CloudGRPC {
-		return false
-	}
-	if pin.Principal != "" {
-		identity, err := certs.ParsePrincipal(pin.Principal)
-		return err == nil && identity.TenantUUID != "" && auth.Certificates[0].TenantUUID() == identity.TenantUUID
-	}
-	return auth.Certificates[0].TenantUUID() == "" && cloudAuthOrgID(auth) == int32(pin.OrgID)
+// noPinnedCloudLogin formats lead with the pin key. No device answered, so a
+// missing login is an authentication failure rather than an identity refusal.
+// An organization-only pin can never match a tenant login, so unpinning is the
+// way forward once its organization has migrated.
+func noPinnedCloudLogin(lead, key string) error {
+	return commandErrorf(config.ErrNotLoggedIn, "%s Log in to that organization, or if the device moved to another organization, run: wendy device unpin %s", fmt.Sprintf(lead, key), shellQuoteArg(key))
 }
