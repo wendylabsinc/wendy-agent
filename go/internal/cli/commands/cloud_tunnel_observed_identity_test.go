@@ -96,7 +96,7 @@ func TestCloudTLSObservedReporterIdentity(t *testing.T) {
 
 func TestCloudTLSTenantReporterIdentity(t *testing.T) {
 	auth, serverTLS := localLiteTestPKI(t)
-	device, err := certs.ParsePrincipal(certs.DeviceSPIFFEURI(liteTestTenant, "lite-00aa11bb"))
+	device, err := certs.ParsePrincipal(certs.DeviceSPIFFEURI(liteTestTenant, liteTestAssetID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestCloudTLSTenantReporterIdentity(t *testing.T) {
 	}{
 		{"verified tenant identity", device.Principal, false, true},
 		{"wrong device", certs.DeviceSPIFFEURI(liteTestTenant, "different-device"), false, false},
-		{"wrong tenant", certs.DeviceSPIFFEURI("11111111-1111-4111-8111-111111111111", "lite-00aa11bb"), false, false},
+		{"wrong tenant", certs.DeviceSPIFFEURI("11111111-1111-4111-8111-111111111111", liteTestAssetID), false, false},
 		{"untrusted chain", device.Principal, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
