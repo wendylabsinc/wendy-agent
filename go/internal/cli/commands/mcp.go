@@ -72,7 +72,7 @@ func newMCPServeCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&deviceFlag, "device", "d", "", "Device name or IP:port to connect on startup")
-	cmd.Flags().StringVar(&toolProfile, "tool-profile", "", "Task-specific catalog: training or workflow (saved-file submission; default keeps core and selected groups)")
+	cmd.Flags().StringVar(&toolProfile, "tool-profile", "", "Task catalog: training, workflow, or experimental workflow-v1 (Wendy MCP V1; explicit startup target required)")
 	cmd.Flags().StringSliceVar(&toolGroups, "tool-groups", []string{"core"}, "Advertised tools: core, setup, simulator, hardware, robotics, observability, cloud, all (comma-separated; groups can also be selected with wendy_tools)")
 	return cmd
 }

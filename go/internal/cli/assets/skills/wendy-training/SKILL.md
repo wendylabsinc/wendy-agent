@@ -14,6 +14,11 @@ For a focused agent catalog, configure `wendy mcp serve --device <selector>
 permissions. For an existing saved workflow, `--tool-profile workflow` advertises
 only the workflow-file input for submission. It retains the same authorization.
 
+Experimental **Wendy MCP V1** uses `--tool-profile workflow-v1` with an explicit
+startup target. It advertises four workflow tools and concise known-success
+counts; full outcomes remain in the saved receipt. Read
+[V1 client behavior](references/workflow-v1.md) when using that profile.
+
 For a project-owned seed/condition grid, use
 `experiment_plan(recipe_path="/absolute/recipe.json", destination="/absolute/new-workflow.json")`
 or `wendy job plan /absolute/recipe.json --output /absolute/new-workflow.json`.
