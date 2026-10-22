@@ -599,20 +599,34 @@ func TestUnenrollResolutionFindsLiteBoardBySerial(t *testing.T) {
 }
 
 func TestCloudOnlyLiteUnenrollExplainsUSBRecovery(t *testing.T) {
-	preserveCloudUnenrollmentHooks(t)
-	// The hint keys on the asset's OS type, not on a lite- device id.
-	asset := unenrollTestCloudDevice(liteTestAssetID, "desk", "").v2
-	asset.OsType = proto.String(liteCloudOSType)
-	service := &unenrollConfirmationServer{asset: asset}
-	startUnenrollResetServer(t, service)
-	cmd := &cobra.Command{}
-	cmd.SetContext(context.Background())
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	if err := runCloudDeviceUnenroll(cmd, "", liteTestAssetID, "", true); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "Connect this Lite board over USB and run 'wendy device unenroll'") {
-		t.Fatalf("missing Lite recovery instructions: %q", output.String())
+	const usbHint = "Connect this Lite board over USB and run 'wendy device unenroll'"
+	// The hint keys on the asset's OS type, never on a lite- device id.
+	for _, tc := range []struct {
+		name, osType, pkiName string
+		wantUSB               bool
+	}{
+		{"Lite, post-873 asset", liteCloudOSType, "", true},
+		{"Lite, UUID pki name", liteCloudOSType, "44444444-4444-4444-8444-444444444444", true},
+		{"compute asset with a lite- pki name", "wendyos", "lite-441bf6804824", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			asset := unenrollTestCloudDevice(liteTestAssetID, "desk", tc.pkiName).v2
+			asset.OsType = proto.String(tc.osType)
+			startUnenrollResetServer(t, &unenrollConfirmationServer{asset: asset})
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			if err := runCloudDeviceUnenroll(cmd, "", liteTestAssetID, "", true); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), usbHint) != tc.wantUSB {
+				t.Fatalf("USB recovery hint shown = %v, want %v: %q", !tc.wantUSB, tc.wantUSB, output.String())
+			}
+			if !tc.wantUSB && !strings.Contains(output.String(), "clear it through device recovery") {
+				t.Fatalf("missing generic recovery hint: %q", output.String())
+			}
+		})
 	}
 }
