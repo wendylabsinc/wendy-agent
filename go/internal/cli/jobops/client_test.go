@@ -16,17 +16,22 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/jobops"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 type host struct {
 	agentpb.UnimplementedWendyShellServiceServer
-	calls       atomic.Int32
-	noExit      bool
-	corrupt     bool
-	failInspect bool
-	lastWait    atomic.Int32
-	env         []string
+	calls              atomic.Int32
+	noExit             bool
+	corrupt            bool
+	failInspect        bool
+	inspectCalls       atomic.Int32
+	inspectFailures    int32
+	inspectFailureCode codes.Code
+	lastWait           atomic.Int32
+	env                []string
 }
 
 func (h *host) HostShell(stream grpc.BidiStreamingServer[agentpb.HostShellRequest, agentpb.HostShellResponse]) error {
@@ -38,6 +43,11 @@ func (h *host) HostShell(stream grpc.BidiStreamingServer[agentpb.HostShellReques
 	args := r.GetStart().GetCommand()
 	if len(args) != 4 || args[0] != "python3" || args[1] != "-c" {
 		return stream.Send(&agentpb.HostShellResponse{ResponseType: &agentpb.HostShellResponse_ExitCode{ExitCode: 99}})
+	}
+	if strings.Contains(args[3], `"until_terminal"`) {
+		if n := h.inspectCalls.Add(1); n <= h.inspectFailures {
+			return status.Error(h.inspectFailureCode, "injected observation transport failure")
+		}
 	}
 	var payload map[string]any
 	if json.Unmarshal([]byte(args[3]), &payload) == nil {

@@ -32,7 +32,7 @@ func compactWorkflowResult(receipt map[string]any) map[string]any {
 		}
 	}
 	obs := map[string]any{}
-	for _, key := range []string{"step_check", "step_outcomes", "expected_steps", "step_outcomes_omitted", "execution_seconds", "warnings"} {
+	for _, key := range []string{"step_check", "step_outcomes", "expected_steps", "step_outcomes_omitted", "execution_seconds", "transport_retries", "warnings"} {
 		if value, exists := observation[key]; exists {
 			obs[key] = value
 		}

@@ -11,6 +11,10 @@ import (
 )
 
 func (s *mcpServer) registerJobTools(srv *server.MCPServer) {
+	plan := []mcpgo.ToolOption{mcpgo.WithDescription("Expand a project-owned wendy.experiment.v1 parameter recipe into a new local workflow. Saves deterministic bounded argv steps and selected evidence; no device access or execution. Does not verify runtime/source compatibility. Refuses overwrites. Submit the saved workflow separately when authorized."), mcpgo.WithString("recipe_path", mcpgo.Required(), mcpgo.Description("Absolute local recipe JSON path")), mcpgo.WithString("destination", mcpgo.Required(), mcpgo.Description("Absolute new local workflow file; parent directory must exist"))}
+	plan = append(plan, mutating()...)
+	plan = append(plan, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("experiment_plan", plan...), s.handleExperimentPlan)
 	opts := []mcpgo.ToolOption{mcpgo.WithDescription("Read an existing host training job: bounded progress, process identity, freshness, errors and full-report reference. Requires authenticated Linux host access, python3 and status.json in job_path. Never changes a job. Use since and wait_seconds to avoid repeated full snapshots."), mcpgo.WithString("job_path", mcpgo.Required(), mcpgo.Description("Absolute directory containing status.json and optional child metrics.jsonl files")), mcpgo.WithString("since", mcpgo.Description("Cursor from a previous result")), mcpgo.WithInteger("wait_seconds", mcpgo.Min(0), mcpgo.Max(30), mcpgo.Description("Wait for a changed snapshot; requires since. Omitted: 0."))}
 	opts = append(opts, readOnly()...)
 	opts = append(opts, openWorld()...)
@@ -71,6 +75,20 @@ func (s *mcpServer) registerJobTools(srv *server.MCPServer) {
 	pull = append(pull, idempotent()...)
 	pull = append(pull, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("job_artifacts_pull", pull...), s.handleJobArtifactsPull)
+}
+
+func (s *mcpServer) handleExperimentPlan(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	recipe, _ := args["recipe_path"].(string)
+	destination, _ := args["destination"].(string)
+	if len(args) != 2 {
+		return errResult(errCodeInvalidArgument, "supply only recipe_path and destination"), nil
+	}
+	out, err := jobops.PlanExperiment(recipe, destination)
+	if err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
+	}
+	return jobJSON(out), nil
 }
 func (s *mcpServer) handleJobInspect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	jobPath, ok := req.GetArguments()["job_path"].(string)

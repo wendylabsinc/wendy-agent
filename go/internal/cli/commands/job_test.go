@@ -3,9 +3,35 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestJobPlanWorksOfflineAndNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	recipe := filepath.Join(dir, "recipe.json")
+	dest := filepath.Join(dir, "workflow.json")
+	os.WriteFile(recipe, []byte(`{"schema":"wendy.experiment.v1","parameters":{"seed":["1","2"]},"workflow":{"schema":"wendy.workflow.v1","job":{"name":"pair","working_directory":"/owned/project","steps":[{"name":"eval-{{seed}}","argv":["python3","eval.py","{{seed}}"],"timeout_seconds":60}]},"wait_seconds":0}}`), 0600)
+	var output bytes.Buffer
+	c := newJobCmd()
+	c.SetOut(&output)
+	c.SetArgs([]string{"plan", recipe, "--output", dest})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil || result["steps"] != float64(2) || result["execution_started"] != false {
+		t.Fatalf("invalid plan receipt: %v %s", err, output.String())
+	}
+	c = newJobCmd()
+	c.SetArgs([]string{"plan", recipe, "--output", dest})
+	if err := c.Execute(); err == nil {
+		t.Fatal("overwrote workflow")
+	}
+}
 
 func TestJobInspectInvalidWaitFailsWithoutDeviceDiscovery(t *testing.T) {
 	c := newJobCmd()

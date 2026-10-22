@@ -30,7 +30,21 @@ func newJobCmd() *cobra.Command {
 	}}
 	inspect.Flags().StringVar(&since, "since", "", "Return a compact unchanged acknowledgement for this cursor")
 	inspect.Flags().IntVar(&wait, "wait", 0, "Wait up to 30 seconds for a change; requires --since")
-	cmd.AddCommand(inspect, newJobArtifactsCmd(), newJobSubmitCmd(), newCheckpointCmd())
+	cmd.AddCommand(inspect, newJobArtifactsCmd(), newJobSubmitCmd(), newCheckpointCmd(), newExperimentPlanCmd())
+	return cmd
+}
+
+func newExperimentPlanCmd() *cobra.Command {
+	var destination string
+	cmd := &cobra.Command{Use: "plan <recipe.json>", Short: "Expand a local parameter recipe into a new workflow without executing it", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		result, err := jobops.PlanExperiment(args[0], destination)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+	}}
+	cmd.Flags().StringVarP(&destination, "output", "o", "", "Absolute new local workflow path; never overwrites")
+	cmd.MarkFlagRequired("output")
 	return cmd
 }
 

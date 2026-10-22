@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // SubmitObserved optionally waits for terminal evidence without model polling.
@@ -60,11 +62,34 @@ func WaitTerminal(ctx context.Context, conn *grpcclient.AgentConnection, jobPath
 	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
 	ctx, cancel := context.WithDeadline(ctx, deadline.Add(10*time.Second))
 	defer cancel()
+	retries := 0
 	for {
 		remaining := max(0, int(math.Ceil(time.Until(deadline).Seconds())))
 		observation, err := Inspect(ctx, conn, jobPath, InspectOptions{WaitSeconds: min(remaining, 30), UntilTerminal: true})
 		if err != nil {
+			// A lost observation stream does not mean the detached job failed.
+			// Retry only reads of this exact path on this same authenticated
+			// connection. Never resubmit, choose another target, or retry an
+			// authorization, malformed-response, or missing-evidence error.
+			delay := time.Duration(1<<retries) * 250 * time.Millisecond
+			if status.Code(err) == codes.Unavailable && retries < 3 && ctx.Err() == nil && time.Now().Add(delay).Before(deadline) {
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, ctx.Err()
+				case <-timer.C:
+				}
+				retries++
+				continue
+			}
+			if retries > 0 {
+				return nil, fmt.Errorf("observation failed after %d read-only transport retries: %w", retries, err)
+			}
 			return nil, err
+		}
+		if retries > 0 {
+			observation["transport_retries"] = retries
 		}
 		state, _ := observation["reported_state"].(string)
 		if state == "completed" || state == "failed" || state == "stopped" || state == "cancelled" || !time.Now().Before(deadline) {

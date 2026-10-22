@@ -15,7 +15,7 @@ func TestCompactSuccessPreservesDecisionsAndDefersOnlySavedProvenance(t *testing
 		"source_check": map[string]any{"status": "passed", "scope": "original_submission"},
 		"observation": map[string]any{"reported_state": "completed", "step_check": "passed", "expected_steps": 1,
 			"step_outcomes":     []any{map[string]any{"label": "evaluate", "returncode": 0, "timed_out": false, "duration_seconds": 1.5}},
-			"execution_seconds": 1.6, "warnings": []string{"preserve this warning"}, "process": map[string]any{"pid": 123}, "report": map[string]any{"path": "/owned/job/status.json", "sha256": strings.Repeat("d", 64)}},
+			"execution_seconds": 1.6, "transport_retries": 2, "warnings": []string{"preserve this warning"}, "process": map[string]any{"pid": 123}, "report": map[string]any{"path": "/owned/job/status.json", "sha256": strings.Repeat("d", 64)}},
 		"artifacts": map[string]any{"complete": true, "verified_files": 2, "unchanged_files": 0, "manifest_path": "/local/manifest", "manifest_sha256": strings.Repeat("e", 64)},
 		"reports":   map[string]any{"evaluate/result.json": map[string]any{"sha256": strings.Repeat("f", 64), "fields": map[string]any{"/successes": 7}, "unavailable": map[string]string{"/optional": "missing_pointer"}}},
 	}
@@ -31,7 +31,7 @@ func TestCompactSuccessPreservesDecisionsAndDefersOnlySavedProvenance(t *testing
 		}
 	}
 	obs := compact["observation"].(map[string]any)
-	if !reflect.DeepEqual(obs["step_outcomes"], full["observation"].(map[string]any)["step_outcomes"]) || obs["warnings"] == nil {
+	if !reflect.DeepEqual(obs["step_outcomes"], full["observation"].(map[string]any)["step_outcomes"]) || obs["warnings"] == nil || obs["transport_retries"] != 2 {
 		t.Fatal("lost exits, durations or warnings")
 	}
 	r := compact["reports"].(map[string]any)["evaluate/result.json"].(map[string]any)

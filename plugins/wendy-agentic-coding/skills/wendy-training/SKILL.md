@@ -13,6 +13,12 @@ For a focused agent catalog, configure `wendy mcp serve --device <selector>
 --tool-profile training`. This changes discovery only; each tool retains its
 permissions. For an existing saved workflow, `--tool-profile workflow` advertises
 only the workflow-file input for submission. It retains the same authorization.
+
+For a project-owned seed/condition grid, use
+`experiment_plan(recipe_path="/absolute/recipe.json", destination="/absolute/new-workflow.json")`
+or `wendy job plan /absolute/recipe.json --output /absolute/new-workflow.json`.
+Planning writes a new local file without executing it. Read
+[experiment recipes](references/experiment-recipes.md) only when authoring one.
 The default catalog remains available for general device work.
 
 1. Call `wendy_status`; connect to the selected target if needed.
@@ -79,6 +85,18 @@ Set the client's tool timeout above the wait plus submission/collection time
 (for example, wait + 300 seconds). Expiry never cancels the job; inspect it or
 retry the identical workflow to collect later. Observation errors preserve the
 confirmed receipt and leave completion unknown.
+Terminal waiting retries a transient unavailable observation stream at most
+three times, on the same authenticated connection and exact job path. It never
+resubmits a job, changes targets, or retries permission/missing-evidence errors.
+Recovered observations include `transport_retries`; exhausted retries preserve
+the original receipt and an explicit observation error.
+
+Keep the assistant's outer wait out of repeated model decisions as well. When
+using a code-mode tool wrapper, use its documented long yield (up to 60 seconds)
+and the same bounded wait for a still-running call. Avoid 1-second polling of a
+workflow that already waits internally. Use a known tool directly once its
+schema is available; do not rediscover it before each invocation. Count wrapper
+calls and waits when measuring agent tokens, not only nested MCP calls.
 
 After terminal observation the response includes every declared step's exit
 and timeout outcome, plus `step_check`. New jobs record monotonic per-step wall

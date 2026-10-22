@@ -11,6 +11,48 @@ import (
 	"testing"
 )
 
+func TestExperimentPlanningIsLocalAndKeepsExecutionProfileSmall(t *testing.T) {
+	s := New(&config.Config{}, nil)
+	srv, err := s.newProtocolServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := srv.GetTool("experiment_plan")
+	if tool == nil || *tool.Tool.Annotations.ReadOnlyHint || *tool.Tool.Annotations.OpenWorldHint {
+		t.Fatal("planner missing or falsely labelled passive/networked")
+	}
+	dir := t.TempDir()
+	recipe := filepath.Join(dir, "recipe.json")
+	dest := filepath.Join(dir, "workflow.json")
+	raw := `{"schema":"wendy.experiment.v1","parameters":{"seed":["1","2"]},"workflow":{"schema":"wendy.workflow.v1","job":{"name":"pair","working_directory":"/owned/project","steps":[{"name":"eval-{{seed}}","argv":["python3","eval.py","{{seed}}"],"timeout_seconds":60}]},"wait_seconds":0}}`
+	os.WriteFile(recipe, []byte(raw), 0600)
+	r, err := s.handleExperimentPlan(context.Background(), callToolReq("experiment_plan", map[string]any{"recipe_path": recipe, "destination": dest}))
+	if err != nil || r.IsError {
+		t.Fatalf("local plan required a device: %v %+v", err, r)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.handleExperimentPlan(context.Background(), callToolReq("experiment_plan", map[string]any{"recipe_path": recipe, "destination": dest}))
+	if err != nil || !r.IsError {
+		t.Fatal("planner overwrote workflow")
+	}
+	for _, profile := range []string{"training", "workflow"} {
+		if err := s.SetToolProfile(profile); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, tool := range protocolTools(t, srv) {
+			if tool.Name == "experiment_plan" {
+				found = true
+			}
+		}
+		if found != (profile == "training") {
+			t.Fatalf("planner changed warm workflow catalog for %s", profile)
+		}
+	}
+}
+
 func TestJobInspectRequiresExplicitDirectoryAndConnection(t *testing.T) {
 	s := New(&config.Config{}, nil)
 	for _, args := range []map[string]any{{}, {"job_path": 1}, {"job_path": "/tmp/job", "since": 2}, {"job_path": "/tmp/job", "wait_seconds": 1.5}} {
@@ -57,7 +99,7 @@ func TestTrainingProfileBoundsCatalogWithoutChangingDefaultOrAuthority(t *testin
 		t.Fatal(err)
 	}
 	tools := protocolTools(t, srv)
-	if len(tools) != 10 {
+	if len(tools) != 11 {
 		t.Fatalf("training catalog contains %d tools", len(tools))
 	}
 	for _, tool := range tools {

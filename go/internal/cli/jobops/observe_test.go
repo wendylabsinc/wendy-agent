@@ -8,7 +8,63 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
 )
+
+func TestObservationTransportRecoveryNeverResubmitsOrRepeatsWork(t *testing.T) {
+	h := &host{inspectFailures: 2, inspectFailureCode: codes.Unavailable}
+	c := connection(t, h)
+	root := t.TempDir()
+	spec := jobops.Spec{Name: "transport-recovery", WorkingDirectory: root, Steps: []jobops.Step{{Name: "once", Argv: []string{"python3", "-c", "from pathlib import Path;p=Path('executions');p.write_text(p.read_text()+'x' if p.exists() else 'x')"}, TimeoutSeconds: 2}}}
+	r, err := jobops.SubmitObserved(context.Background(), c, spec, 5)
+	if err != nil || r["reported_state"] != "completed" {
+		t.Fatalf("did not recover observation: %v %+v", err, r)
+	}
+	obs := r["observation"].(map[string]any)
+	data, _ := os.ReadFile(filepath.Join(root, "executions"))
+	if obs["transport_retries"] != 2 || string(data) != "x" || h.calls.Load() != 4 || h.inspectCalls.Load() != 3 {
+		t.Fatalf("recovery repeated execution or lost retry evidence: %+v calls=%d data=%q", r, h.calls.Load(), data)
+	}
+}
+
+func TestObservationRetriesAreBoundedAndNeverRetryPermissionErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		code      codes.Code
+		wantCalls int32
+	}{
+		{"unavailable", codes.Unavailable, 4},
+		{"permission", codes.PermissionDenied, 1},
+		{"missing", codes.NotFound, 1},
+		{"invalid", codes.InvalidArgument, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &host{inspectFailures: 100, inspectFailureCode: tc.code}
+			r, err := jobops.SubmitObserved(context.Background(), connection(t, h), jobops.Spec{Name: tc.name, WorkingDirectory: t.TempDir(), Steps: []jobops.Step{{Name: "once", Argv: []string{"python3", "-c", "print('ok')"}, TimeoutSeconds: 2}}}, 5)
+			if err != nil || r["observation_error"] == nil || r["completion"] != "unknown" || h.inspectCalls.Load() != tc.wantCalls || h.calls.Load() != tc.wantCalls+1 {
+				t.Fatalf("lost receipt or retried unsafe operation: %v %+v calls=%d", err, r, h.calls.Load())
+			}
+			if state := waitForJob(t, r["job_path"].(string)); state["state"] != "completed" {
+				t.Fatalf("observation failure altered job: %+v", state)
+			}
+		})
+	}
+}
+
+func TestObservationRetryCancellationLeavesEvidenceUntouched(t *testing.T) {
+	h := &host{inspectFailures: 100, inspectFailureCode: codes.Unavailable}
+	c := connection(t, h)
+	root := fixture(t)
+	before, _ := os.ReadFile(filepath.Join(root, "status.json"))
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := jobops.WaitTerminal(ctx, c, root, 5)
+	after, _ := os.ReadFile(filepath.Join(root, "status.json"))
+	if err == nil || h.inspectCalls.Load() != 1 || string(before) != string(after) {
+		t.Fatalf("cancellation retried or changed job evidence: %v calls=%d", err, h.inspectCalls.Load())
+	}
+}
 
 func TestSubmitWaitReturnsTerminalExitsAndRetryDoesNotRerun(t *testing.T) {
 	c := connection(t, &host{})
