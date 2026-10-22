@@ -32,8 +32,11 @@ int32_t WENDY_CORE_CALL WendyHelloWorld(void);
  * Returns the effective Wendy Core version without a leading v.
  *
  * Packaged engines report their build identity, including preview/development
- * suffixes. The NUL-terminated UTF-8 string is borrowed and valid for the life
- * of the process. Callers must not modify or free it. No Go pointer crosses
+ * suffixes. Unreleased source builds use a language-neutral development
+ * identity such as 0.1.0-dev+a0e8ddc when a commit is known, or 0.1.0-dev
+ * otherwise. Tagged dependencies retain their release/prerelease version.
+ * The NUL-terminated UTF-8 string is borrowed and valid for the life of the
+ * process. Callers must not modify or free it. No Go pointer crosses
  * the ABI, and there are no error conditions.
  *
  * Binding pattern: borrowed-string-unary.

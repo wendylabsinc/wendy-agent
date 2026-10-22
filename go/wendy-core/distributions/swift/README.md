@@ -21,4 +21,4 @@ Swift release tags are bare `x.y.z` (or an exact preview such as `x.y.z-nightly.
 
 On branches, including `main`, `Package.swift` instead uses binaries built locally. In this checkout, run `make swift` (or `python3 scripts/build.py swift`), which writes them to the ignored `distributions/swift/artifacts/`: on macOS the full Apple XCFramework, on Linux the host's artifact bundle. To develop a dependent package against this checkout, depend on it by path.
 
-`WendyCoreVersion() -> String` returns the effective version stamped into the linked engine, including preview or development suffixes.
+`WendyCoreVersion() -> String` returns the effective version stamped into the linked engine, including preview or development suffixes. Source development identities use `0.1.0-dev+<7-character commit>` when a commit is known; the packaged build identity takes precedence.

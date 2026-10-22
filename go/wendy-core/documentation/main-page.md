@@ -6,7 +6,7 @@
 
 `WendyHelloWorld()` returns the signed 32-bit integer `42`, synchronously without transferring owned resources or requiring a platform capability. It is implemented once in Go and projected into C, Swift, Python, Kotlin/JVM and JavaScript.
 
-`WendyCoreVersion()` returns the effective engine version as a borrowed process-lifetime UTF-8 C string, copied into language strings by projections. Go exposes the same query as `core.Version()`.
+`WendyCoreVersion()` returns the effective engine version as a borrowed process-lifetime UTF-8 C string, copied into language strings by projections. Go exposes the same query as `core.Version()`. Unreleased source builds use `0.1.0-dev+<7-character commit>` when known; tagged dependencies retain their release/prerelease version and packaged engines retain their stamped build identity.
 
 JavaScript has one ESM package, one operation interface, shared TypeScript declarations, and separate Node/native and browser/WASM backends. Both execute the same conformance suite against the actual engine.
 
