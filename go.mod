@@ -34,14 +34,14 @@ require (
 	github.com/gen2brain/malgo v0.11.26
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gofrs/flock v0.13.0
-	github.com/google/go-containerregistry v0.21.8
+	github.com/google/go-containerregistry v0.22.1
 	github.com/google/gousb v1.1.3
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/hashicorp/mdns v1.0.7
-	github.com/klauspost/compress v1.19.1
+	github.com/klauspost/compress v1.19.2
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/mattn/go-isatty v0.0.21
 	github.com/miekg/dns v1.1.72
