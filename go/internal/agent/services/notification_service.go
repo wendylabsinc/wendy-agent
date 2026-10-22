@@ -55,7 +55,7 @@ const (
 
 // NotificationSender forwards a trusted, app-attributed Notification to Wendy Cloud.
 type NotificationSender interface {
-	CreateNotificationV2(context.Context, *cloudpb.CreateNotificationV2Request, []string) (*cloudpb.CreateNotificationV2Response, error)
+	CreateNotificationV2(context.Context, *cloudpb.CreateNotificationV2Request) (*cloudpb.CreateNotificationV2Response, error)
 }
 
 // SystemNotificationService serves one app-specific app-facing socket. The
@@ -83,7 +83,7 @@ func (s *SystemNotificationService) Send(
 	if s.sender == nil {
 		return nil, status.Error(codes.Unavailable, "notification delivery is unavailable")
 	}
-	cloudAudience, teamUUIDs, notificationID, err := validateNotificationSendRequest(req)
+	cloudAudience, notificationID, err := validateNotificationSendRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (s *SystemNotificationService) Send(
 	defer cancel()
 	// One app-facing Send makes exactly one Cloud creation attempt. In particular,
 	// ALREADY_EXISTS is terminal: retrying it here could duplicate downstream push work.
-	response, err := s.sender.CreateNotificationV2(forwardCtx, cloudRequest, teamUUIDs)
+	response, err := s.sender.CreateNotificationV2(forwardCtx, cloudRequest)
 	if err != nil {
 		if cloudStatus, ok := status.FromError(err); ok {
 			return nil, cloudStatus.Err()
@@ -158,19 +158,19 @@ func (l *notificationRateLimiter) allow(now time.Time) bool {
 	return true
 }
 
-func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.NotificationAudience, []string, string, error) {
+func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.NotificationAudience, string, error) {
 	if request == nil {
-		return nil, nil, "", status.Error(codes.InvalidArgument, "request is required")
+		return nil, "", status.Error(codes.InvalidArgument, "request is required")
 	}
 	notificationID, valid := canonicalNotificationUUIDv4(request.GetNotificationId())
 	if !valid {
-		return nil, nil, "", status.Error(codes.InvalidArgument, "notification_id must be a UUID v4")
+		return nil, "", status.Error(codes.InvalidArgument, "notification_id must be a UUID v4")
 	}
 	if !validNotificationText(request.GetTitle(), 120) {
-		return nil, nil, "", status.Error(codes.InvalidArgument, "title must contain 1...120 printable UTF-8 bytes")
+		return nil, "", status.Error(codes.InvalidArgument, "title must contain 1...120 printable UTF-8 bytes")
 	}
 	if !validNotificationText(request.GetBody(), 2000) {
-		return nil, nil, "", status.Error(codes.InvalidArgument, "body must contain 1...2000 printable UTF-8 bytes")
+		return nil, "", status.Error(codes.InvalidArgument, "body must contain 1...2000 printable UTF-8 bytes")
 	}
 	switch request.GetSeverity() {
 	case systempb.NotificationSeverity_NOTIFICATION_SEVERITY_INFO,
@@ -178,34 +178,31 @@ func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.No
 		systempb.NotificationSeverity_NOTIFICATION_SEVERITY_ERROR,
 		systempb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL:
 	default:
-		return nil, nil, "", status.Error(codes.InvalidArgument, "severity is required")
+		return nil, "", status.Error(codes.InvalidArgument, "severity is required")
 	}
-	cloudAudience, teamUUIDs, err := normalizeNotificationAudience(request.GetAudience())
+	cloudAudience, err := normalizeNotificationAudience(request.GetAudience())
 	if err != nil {
-		return nil, nil, "", err
+		return nil, "", err
 	}
 	if !validNotificationDeepLink(request.GetDeepLink()) {
-		return nil, nil, "", status.Error(codes.InvalidArgument, "deep_link must be an absolute wendy:// URI with a host, no userinfo, and at most 2048 bytes")
+		return nil, "", status.Error(codes.InvalidArgument, "deep_link must be an absolute wendy:// URI with a host, no userinfo, and at most 2048 bytes")
 	}
 	if metadata := request.GetMetadata(); metadata != nil && proto.Size(metadata) > maxNotificationMetadataBytes {
-		return nil, nil, "", status.Errorf(codes.InvalidArgument, "metadata must be at most %d encoded bytes", maxNotificationMetadataBytes)
+		return nil, "", status.Errorf(codes.InvalidArgument, "metadata must be at most %d encoded bytes", maxNotificationMetadataBytes)
 	}
-	return cloudAudience, teamUUIDs, notificationID, nil
+	return cloudAudience, notificationID, nil
 }
 
-func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cloudpb.NotificationAudience, []string, error) {
+func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cloudpb.NotificationAudience, error) {
 	if audience == nil {
-		return nil, nil, status.Error(codes.InvalidArgument, "audience is required")
+		return nil, status.Error(codes.InvalidArgument, "audience is required")
 	}
-	if len(audience.GetTeamIds()) != 0 && len(audience.GetTeamUuids()) != 0 {
-		return nil, nil, status.Error(codes.InvalidArgument, "audience cannot contain both team_ids and team_uuids")
-	}
-	rawSelectorCount := len(audience.GetUserIds()) + len(audience.GetTeamIds()) + len(audience.GetTeamUuids()) + len(audience.GetRoles())
+	rawSelectorCount := len(audience.GetUserIds()) + len(audience.GetTeamIds()) + len(audience.GetRoles())
 	if rawSelectorCount == 0 {
-		return nil, nil, status.Error(codes.InvalidArgument, "audience must contain at least one selector")
+		return nil, status.Error(codes.InvalidArgument, "audience must contain at least one selector")
 	}
 	if rawSelectorCount > maxNotificationAudienceSelectors {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "audience must contain at most %d selectors", maxNotificationAudienceSelectors)
+		return nil, status.Errorf(codes.InvalidArgument, "audience must contain at most %d selectors", maxNotificationAudienceSelectors)
 	}
 
 	mapped := &cloudpb.NotificationAudience{}
@@ -213,7 +210,7 @@ func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cl
 	for _, rawUserID := range audience.GetUserIds() {
 		userID := strings.TrimSpace(rawUserID)
 		if !validNotificationIdentifier(userID, 128) {
-			return nil, nil, status.Error(codes.InvalidArgument, "audience user_ids must contain 1...128 safe ASCII bytes")
+			return nil, status.Error(codes.InvalidArgument, "audience user_ids must contain 1...128 safe ASCII bytes")
 		}
 		if _, exists := seenUsers[userID]; exists {
 			continue
@@ -225,28 +222,13 @@ func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cl
 	seenTeams := make(map[int32]struct{}, len(audience.GetTeamIds()))
 	for _, teamID := range audience.GetTeamIds() {
 		if teamID <= 0 {
-			return nil, nil, status.Error(codes.InvalidArgument, "audience team_ids must be positive")
+			return nil, status.Error(codes.InvalidArgument, "audience team_ids must be positive")
 		}
 		if _, exists := seenTeams[teamID]; exists {
 			continue
 		}
 		seenTeams[teamID] = struct{}{}
 		mapped.TeamIds = append(mapped.TeamIds, teamID)
-	}
-
-	teamUUIDs := make([]string, 0, len(audience.GetTeamUuids()))
-	seenTeamUUIDs := make(map[string]struct{}, len(audience.GetTeamUuids()))
-	for _, rawTeamUUID := range audience.GetTeamUuids() {
-		teamUUID := strings.TrimSpace(rawTeamUUID)
-		parsed, err := uuid.Parse(teamUUID)
-		if err != nil || parsed.String() != teamUUID {
-			return nil, nil, status.Error(codes.InvalidArgument, "audience team_uuids must contain canonical UUIDs")
-		}
-		if _, exists := seenTeamUUIDs[teamUUID]; exists {
-			continue
-		}
-		seenTeamUUIDs[teamUUID] = struct{}{}
-		teamUUIDs = append(teamUUIDs, teamUUID)
 	}
 
 	seenRoles := make(map[systempb.OrganizationRole]struct{}, len(audience.GetRoles()))
@@ -258,7 +240,7 @@ func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cl
 			systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER,
 			systempb.OrganizationRole_ORGANIZATION_ROLE_VIEWER:
 		default:
-			return nil, nil, status.Error(codes.InvalidArgument, "audience roles must be specified")
+			return nil, status.Error(codes.InvalidArgument, "audience roles must be specified")
 		}
 		if _, exists := seenRoles[role]; exists {
 			continue
@@ -267,7 +249,7 @@ func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cl
 		mapped.Roles = append(mapped.Roles, cloudOrganizationRole(role))
 	}
 
-	return mapped, teamUUIDs, nil
+	return mapped, nil
 }
 
 func cloudOrganizationRole(role systempb.OrganizationRole) cloudpb.OrganizationRole {
@@ -613,7 +595,6 @@ func NewCloudNotificationSender(logger *zap.Logger, provisioningSvc *Provisionin
 func (s *CloudNotificationSender) CreateNotificationV2(
 	ctx context.Context,
 	request *cloudpb.CreateNotificationV2Request,
-	teamUUIDs []string,
 ) (*cloudpb.CreateNotificationV2Response, error) {
 	cloudHost, orgID, assetID, enrolled := s.provisioningSvc.ProvisioningInfo()
 	if !enrolled {
@@ -630,11 +611,9 @@ func (s *CloudNotificationSender) CreateNotificationV2(
 		if err := validateNotificationDevicePrincipal(principal); err != nil {
 			return nil, err
 		}
-		return s.createNotificationV2WithACME(ctx, cloudHost, certPEM, chainPEM, keyData, request, teamUUIDs)
+		return s.createNotificationV2WithACME(ctx, cloudHost, certPEM, chainPEM, keyData, request)
 	}
-	if len(teamUUIDs) != 0 {
-		return nil, status.Error(codes.FailedPrecondition, "Cloud v2 team audiences require ACME enrollment")
-	}
+
 	if orgID <= 0 || assetID <= 0 {
 		return nil, status.Error(codes.FailedPrecondition, "device proof requires positive organization and asset IDs")
 	}
@@ -682,9 +661,8 @@ func (s *CloudNotificationSender) createNotificationV2WithACME(
 	cloudHost, certPEM, chainPEM string,
 	keyData []byte,
 	request *cloudpb.CreateNotificationV2Request,
-	teamUUIDs []string,
 ) (*cloudpb.CreateNotificationV2Response, error) {
-	v2Request, err := cloudNotificationRequestV2(request, teamUUIDs)
+	v2Request, err := cloudNotificationRequestV2(request)
 	if err != nil {
 		return nil, err
 	}
@@ -711,14 +689,13 @@ func (s *CloudNotificationSender) createNotificationV2WithACME(
 	return &cloudpb.CreateNotificationV2Response{NotificationId: response.GetNotificationId()}, nil
 }
 
-func cloudNotificationRequestV2(request *cloudpb.CreateNotificationV2Request, teamUUIDs []string) (*cloudpbv2.CreateNotificationV2Request, error) {
+func cloudNotificationRequestV2(request *cloudpb.CreateNotificationV2Request) (*cloudpbv2.CreateNotificationV2Request, error) {
 	if len(request.GetAudience().GetTeamIds()) != 0 {
-		return nil, status.Error(codes.FailedPrecondition, "Cloud v2 team audiences require UUID team IDs")
+		return nil, status.Error(codes.FailedPrecondition, "Cloud v2 Notifications support user and role selectors. Choose recipients by user or role.")
 	}
 	return &cloudpbv2.CreateNotificationV2Request{
 		Audience: &cloudpbv2.NotificationAudience{
 			UserIds: request.GetAudience().GetUserIds(),
-			TeamIds: teamUUIDs,
 			Roles:   notificationRolesV2(request.GetAudience().GetRoles()),
 		},
 		Title:          request.GetTitle(),

@@ -19,13 +19,11 @@ attempts APNs delivery; apps do not send an arbitrary APNs payload directly.
 WendyKit is currently the only application SDK for this API, and it is
 Swift-only. Apps written in other languages call this gRPC service directly.
 See [Send notifications from a device app](/docs/guides/device-notifications)
-for entitlement and Cloud grant setup, Swift and direct gRPC examples, and
-delivery behavior.
+for local entitlement setup, Swift and direct gRPC examples, and delivery behavior.
 
-On Cloud v2, `wendy run`, Compose, and remote build-host deployments register
-each app ID in the organization's Cloud Apps catalog before deployment. Pass
-`--skip-cloud-registration` only when Cloud is intentionally unavailable. An
-unregistered app cannot receive the Cloud Notification grant.
+Cloud v2 accepts Notifications from an enrolled device for its own organization;
+the app or campaign name is only a label. No per-app grant, catalog entry, or
+Cloud deployment assignment is required.
 
 The private socket binds every call to trusted app identity. The request cannot
 supply an app ID, device ID, or organization ID; the agent adds app identity and
@@ -52,7 +50,7 @@ forwarding paths.
 
 | Field | Type | Description |
 |---|---|---|
-| `audience` | `NotificationAudience` | Union of `user_ids`, numeric `team_ids` (Cloud v1 only), UUID `team_uuids` (Cloud v2 / ACME only), and `roles`. Do not combine the two team-ID namespaces. |
+| `audience` | `NotificationAudience` | Union of `user_ids` and `roles` for Cloud v2. |
 | `title` | `string` | Notification title. |
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
@@ -62,23 +60,15 @@ forwarding paths.
 
 #### `NotificationAudience`
 
-The selector fields have union semantics. At most 100 selector entries may be
-supplied across the lists. Cloud normalizes and deduplicates them, remains authoritative
-for recipient resolution, and resolves at most 100 recipients for a device-app
-send.
+User and role selectors have union semantics. At most 100 raw selectors may be
+supplied. Cloud resolves and deduplicates recipients inside the device's
+organization. A user selected through more than one field receives one
+Notification. The legacy numeric team field is not forwarded to Cloud v2.
 
 | Field | Type | Description |
 |---|---|---|
 | `user_ids` | `repeated string` | User IDs to include. |
-| `team_ids` | `repeated int32` | Legacy Cloud v1 organization team IDs. |
 | `roles` | `repeated OrganizationRole` | Organization roles to include. |
-| `team_uuids` | `repeated string` | Canonical Cloud v2 organization team UUIDs. |
-
-Do not set both `team_ids` and `team_uuids`. At least one selector is required.
-A user selected through more than one field
-receives one Notification. `team_uuids` requires an ACME-enrolled Cloud v2
-device; a legacy-enrolled device returns `FAILED_PRECONDITION` and must use
-numeric `team_ids` instead.
 
 #### `SendResponse`
 
@@ -160,7 +150,7 @@ the Wendy agent stamps `app_id` from trusted container state.
 | Field | Type | Description |
 |---|---|---|
 | `organization_id` | `optional int32` (v1), `optional string` (v2) | Required for user-authenticated callers; omitted by provisioned devices. |
-| `audience` | `NotificationAudience` | Union of repeated `user_ids`, `team_ids`, and `roles`; numeric team IDs on Cloud v1, UUIDs on Cloud v2. |
+| `audience` | `NotificationAudience` | Union of repeated `user_ids` and `roles` for Cloud v2. |
 | `title` | `string` | Notification title. |
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
@@ -169,11 +159,8 @@ the Wendy agent stamps `app_id` from trusted container state.
 | `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
 | `app_id` | `optional string` | Required for provisioned-device calls and stamped from trusted app identity by the Wendy agent. |
 
-For ACME-enrolled device callers, Cloud v2 `audience.team_ids` is a
-`repeated string` containing the canonical UUIDs supplied to the app-facing
-`team_uuids` field. Legacy numeric `team_ids` are forwarded only through the
-Cloud v1 path. The app-facing Agent API rejects requests that combine numeric
-`team_ids` and UUID `team_uuids`.
+ACME-enrolled devices use the Cloud v2 service over device mTLS; the Agent
+forwards user and role selectors and omits the retired team selector.
 
 #### `CreateNotificationV2Response`
 
@@ -243,7 +230,7 @@ MarkAsRead(MarkAsReadRequest) → MarkAsReadResponse
 
 Marks the requested Notification IDs as read and returns the number marked.
 
-## Campaign notifications and catalog registration
+## Campaign notifications
 
 A campaign with `notify.on: event` and `notify.event: <name>` sends an immediate
 notification for the matching event. `notify.on: detection` sends on an inference
@@ -251,11 +238,11 @@ appearance. Omit `notify.webhook` for Wendy Cloud delivery, or supply an HTTP(S)
 endpoint for webhook delivery. `episode_committed` remains manifest intent for
 notification after upload; it is separate from immediate delivery.
 
-Cloud delivery currently requires a legacy enrollment with positive numeric
-organization and asset IDs. Experimental direct-PKI/OIDC enrollments with only
-a SPIFFE principal cannot use this sender: it rejects them before sending with
-`FailedPrecondition`, reported in `inference_status.notification_error`. Use an
-explicit `notify.webhook` for immediate notifications on those devices.
+Campaigns use the same device-authenticated Cloud sender as apps. On ACME-enrolled
+devices they call the Cloud v2 service over device mTLS with `app_id` set to
+`campaign:<name>` and owner/admin recipients. The campaign label needs no app
+catalog entry, grant, or deployment assignment. Legacy numeric enrollments retain
+the Cloud v1 sender. An explicit webhook still selects HTTP delivery instead.
 
 The agent uses its enrolled device credentials and a bounded, nonpersistent
 queue. There are at most three attempts, with 10-second timeouts and the same
