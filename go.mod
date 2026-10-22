@@ -65,7 +65,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	github.com/wendylabsinc/WendyOS/go/babel v0.0.0
-	github.com/wendylabsinc/wendy-go v0.0.2-0.20261021210745-5388b24f76ac
+	github.com/wendylabsinc/wendy-go v0.0.2-0.20261022062750-f3ca62073f5f
 	go.bug.st/serial v1.6.4
 	go.etcd.io/bbolt v1.5.0
 	go.opentelemetry.io/proto/otlp v1.11.1
@@ -166,7 +166,7 @@ require (
 	github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea // indirect
 	github.com/tonistiigi/vt100 v0.0.0-20240514184818-90bafcd6abab // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
-	github.com/wendylabsinc/wendy-core v0.0.2-0.20261021205519-a0e8ddc88e76 // indirect
+	github.com/wendylabsinc/wendy-core v0.0.2-0.20261022061404-2806e328246a // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
