@@ -37,6 +37,12 @@ type catalogPeer struct {
 func (r *Runtime) syncPeers(ctx context.Context) {
 	live := make(map[babel.LinkID]bool)
 	for _, info := range r.hub.Peers() {
+		// Operators join routing and the signed device directory, but do not
+		// host a device service catalogue. Requiring their inventory would
+		// close a healthy mesh link after the catalogue handshake timeout.
+		if info.Device.IsOperator() {
+			continue
+		}
 		live[info.ID] = true
 		if r.peers[info.ID] != nil {
 			continue

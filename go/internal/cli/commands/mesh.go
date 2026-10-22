@@ -202,19 +202,20 @@ func meshDeviceRow(d netmesh.Device) models.LANDevice {
 }
 
 func meshDiscoveryStream(ctx context.Context) <-chan discovery.LANEvent {
+	return meshDiscoveryStreamWith(ctx, time.Second, func(ctx context.Context) (string, error) {
+		dir, _, err := ensureMeshSession(ctx)
+		return dir, err
+	}, netmesh.ReadStatus)
+}
+
+// A transient IPC failure must not permanently detach a running discovery view.
+// Re-resolve the organization before reconnecting, and retract stale routes while
+// the worker is unavailable. An empty selection ends participation.
+func meshDiscoveryStreamWith(ctx context.Context, interval time.Duration, ensure func(context.Context) (string, error), read func(context.Context, string) (netmesh.Status, error)) <-chan discovery.LANEvent {
 	out := make(chan discovery.LANEvent)
 	go func() {
 		defer close(out)
-		dir, _, err := ensureMeshSession(ctx)
-		if err != nil {
-			if ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "Wendy Net: %v\n", err)
-			}
-			return
-		}
-		if dir == "" {
-			return
-		}
+		dir := ""
 		seen := map[string]models.LANDevice{}
 		send := func(event discovery.LANEvent) bool {
 			select {
@@ -224,17 +225,36 @@ func meshDiscoveryStream(ctx context.Context) <-chan discovery.LANEvent {
 				return true
 			}
 		}
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
-			status, err := netmesh.ReadStatus(ctx, dir)
+			var err error
+			if dir == "" {
+				dir, err = ensure(ctx)
+				if err == nil && dir == "" {
+					return
+				}
+			}
+			var status netmesh.Status
+			if err == nil {
+				probe, cancel := context.WithTimeout(ctx, 2*time.Second)
+				status, err = read(probe, dir)
+				cancel()
+			}
 			if err != nil {
 				for _, row := range seen {
 					if !send(discovery.LANEvent{Kind: discovery.LANRetracted, Device: row}) {
 						return
 					}
 				}
-				return
+				seen = map[string]models.LANDevice{}
+				dir = ""
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					continue
+				}
 			}
 			next := map[string]models.LANDevice{}
 			for _, d := range status.Devices {
