@@ -108,6 +108,9 @@ var errTLSHandshakeRejected = errors.New("TLS handshake rejected by device")
 type tlsHandshakeRejectedError struct {
 	cause         error
 	refreshReason string
+	// switchStep, when set, is the advice to follow instead of renewing the
+	// current auth context, which would not fix this rejection (WDY-3864).
+	switchStep string
 }
 
 func newTLSHandshakeRejectedError(cause error) error {
@@ -282,7 +285,7 @@ func chooseRejectionError(ctx context.Context, observedDeviceOrg int32, allCerts
 			cause:    cause,
 		}
 	}
-	rejection := tlsHandshakeRejectedError{cause: cause}
+	rejection := tlsHandshakeRejectedError{cause: cause, switchStep: switchContextStep(observedDeviceOrg)}
 	if isTLSCertificateError(cause) {
 		rejection.refreshReason = expiredClientCertificateReason(observedDeviceOrg, allCerts, time.Now())
 	}
@@ -472,7 +475,12 @@ var confirmDefaultNoFn = func(question string) bool {
 	return err == nil && ok
 }
 
-var refreshAllCertsFn = refreshAllCerts
+// refreshCurrentCertsFn renews the current auth context only (WDY-3864);
+// stubbed in tests.
+var refreshCurrentCertsFn = func(ctx context.Context) error { return refreshCerts(ctx, false) }
+
+// refreshCertsForAuthFn renews one auth entry; stubbed in tests.
+var refreshCertsForAuthFn = refreshCertsForAuth
 
 // maxHandshakeTimeoutRetries bounds automatic retries of a direct device
 // connection that failed with a handshake-timeout-class error (see
@@ -576,7 +584,11 @@ var runAgentConnectionSpinner = func(ctx context.Context, label string, fn func(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	prog := tui.NewProgressProgram(tui.NewSpinner(label))
+	spin := tui.NewSpinner(label)
+	if progressHintsOff(ctx) {
+		spin = spin.WithoutHints()
+	}
+	prog := tui.NewProgressProgram(spin)
 
 	var (
 		conn   *grpcclient.AgentConnection
@@ -4188,7 +4200,8 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		}
 	}
 
-	// Allow 'd' to set default and 'x' to unset default from the picker.
+	// 'd' sets the highlighted device as the default, or clears it when it
+	// already is.
 	picker.OnSetDefault = setPickerDefault
 	picker.OnUnsetDefault = unsetPickerDefault
 

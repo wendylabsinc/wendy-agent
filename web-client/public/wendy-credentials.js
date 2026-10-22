@@ -30,10 +30,133 @@ self.wendyCredentials = (() => {
         reject(tx.error || new Error("Credential storage was interrupted"));
     });
   }
+  const get = (key) => transaction("readonly", (store) => store.get(key));
+  // One sign-in per organization: records are keyed "<tenant>:<subject>", the
+  // same pair the wrapped seed's aad carries. "current" names the slot the
+  // last sign-in used, so a new worker restores it. "session" is the single
+  // slot from before; the first load moves it to its organization's slot.
+  const CURRENT = "current";
+  const LEGACY = "session";
+  let current;
+  const slotOf = (aad) => {
+    if (!aad.startsWith("operator-key:")) throw new Error("Invalid key label");
+    return aad.slice("operator-key:".length);
+  };
+  const sessionOf = (record) =>
+    typeof record === "string" ? record : (record?.session ?? "");
+  async function migrate() {
+    const legacy = await get(LEGACY);
+    if (legacy === "") return;
+    let profile;
+    try {
+      profile = JSON.parse(sessionOf(legacy)).profile;
+    } catch {}
+    const slot =
+      profile?.tenant && profile?.subject
+        ? profile.tenant + ":" + profile.subject
+        : "";
+    await transaction("readwrite", (store) => {
+      if (slot) {
+        store.put(legacy, slot);
+        store.put(slot, CURRENT);
+      }
+      return store.delete(LEGACY);
+    });
+  }
+  async function currentSlot() {
+    if (current) return current;
+    await migrate();
+    current = (await get(CURRENT)) || undefined;
+    return current;
+  }
+  async function slots(tenant) {
+    const keys = await transaction("readonly", (store) => store.getAllKeys());
+    return keys.filter(
+      (key) =>
+        key !== CURRENT &&
+        key !== LEGACY &&
+        (!tenant || key.startsWith(tenant + ":")),
+    );
+  }
+  // WDY-3920, as the console does: the operator key's ML-DSA seed is
+  // AES-GCM-encrypted under a NON-extractable WebCrypto key stored next to it
+  // as a CryptoKey. Page script cannot export that key, but script running in
+  // this origin can still call decrypt, so this protects the seed at rest
+  // (readable records, disk), not against XSS. aad is the tenant and operator.
+  // A record that is a string comes from before this and holds the key in
+  // plaintext; the worker rewraps it on its first restore.
   return {
-    load: () => transaction("readonly", (store) => store.get("session")),
-    save: (value) =>
-      transaction("readwrite", (store) => store.put(value, "session")),
-    clear: () => transaction("readwrite", (store) => store.delete("session")),
+    // The slot this worker uses, or undefined before the first load.
+    slot: () => current,
+    // Selects this worker's organization: subject picks one operator, tenant
+    // alone the most recent sign-in to it. It reports whether one is saved.
+    select: async (tenant, subject) => {
+      await currentSlot();
+      let slot = subject ? tenant + ":" + subject : "";
+      if (!slot) {
+        const saved = await slots(tenant);
+        const last = await get(CURRENT);
+        slot = saved.includes(last) ? last : (saved[0] ?? tenant + ":");
+      }
+      current = slot;
+      if ((await get(slot)) === "") return false;
+      await transaction("readwrite", (store) => store.put(slot, CURRENT));
+      return true;
+    },
+    load: async () => {
+      const slot = await currentSlot();
+      return slot ? sessionOf(await get(slot)) : "";
+    },
+    loadKey: async (aad) => {
+      const record = await get(slotOf(aad));
+      if (typeof record?.session !== "string")
+        throw new Error("No wrapped operator key");
+      return new Uint8Array(
+        await crypto.subtle.decrypt(
+          {
+            name: "AES-GCM",
+            iv: record.iv,
+            additionalData: new TextEncoder().encode(aad),
+          },
+          record.wrappingKey,
+          record.wrappedSeed,
+        ),
+      );
+    },
+    saveWrapped: async (session, seed, aad) => {
+      const slot = slotOf(aad);
+      const wrappingKey = await crypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"],
+      );
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const wrappedSeed = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(aad) },
+        wrappingKey,
+        seed,
+      );
+      await transaction("readwrite", (store) => {
+        store.put({ session, wrappingKey, iv, wrappedSeed }, slot);
+        return store.put(slot, CURRENT);
+      });
+      current = slot;
+    },
+    clear: async () => {
+      const slot = await currentSlot();
+      if (slot) await transaction("readwrite", (store) => store.delete(slot));
+    },
+    // Removes every saved sign-in to tenant, or every saved sign-in.
+    forget: async (tenant) => {
+      await currentSlot();
+      const doomed = await slots(tenant);
+      if (!tenant) doomed.push(CURRENT);
+      if (doomed.length)
+        await transaction("readwrite", (store) => {
+          let request;
+          for (const key of doomed) request = store.delete(key);
+          return request;
+        });
+    },
   };
 })();

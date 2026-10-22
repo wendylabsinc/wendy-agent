@@ -47,31 +47,18 @@ After setup, restart or reload the target AI tool so it discovers the new MCP se
 
 ## ChatGPT connections
 
-For ChatGPT desktop, check `wendy mcp setup chatgpt --help`, then run:
+ChatGPT uses the hosted Wendy plugin. It reaches devices through the Cloud
+relay and a signed-in CLI session on the user's computer:
 
 ```bash
-wendy mcp setup chatgpt
+wendy auth login
+wendy cloud mcp --allow-read --allow-tool device_connect
 ```
 
-This creates a personal marketplace entry for the scoped UI gateway. It can
-start without configured targets or Cloud credentials. Follow the printed
-restart and plugin-install instructions. Add `--device <selector>` for each
-authorized physical device or `--simulators` for local simulators. The
-[onboarding skill](../wendy-onboarding/SKILL.md) covers first-time CLI setup
-and the separate project and host permissions.
-
-For a registered hosted app, `--connection hosted --app-id <registered-app-id>`
-packages its existing connection without a local MCP dependency. Use
-`--connection both --app-id <registered-app-id>` to make both entries available.
-This references the supplied app; it does not deploy or publish a server.
-Hosted users connect the available plugin through ChatGPT, without installing
-the CLI. Web/mobile cannot launch the local desktop MCP process.
-
-`--developer-tools` additionally launches `wendy mcp serve`. Enable it only
-when the user wants the broader developer operations. These tools do not
-inherit the gateway's grants. The two processes keep independent targets;
-prefer the scoped gateway for device UI tasks and never use the developer
-server to bypass denied gateway access.
+The user connects the plugin in ChatGPT with the same account and organization,
+asks for Wendy's status, and accepts the matching pairing code in the terminal.
+Calls stop when `wendy cloud mcp` exits. `wendy mcp setup` does not configure
+ChatGPT.
 
 ## Manual server command
 
@@ -94,9 +81,11 @@ For a host not detected by `wendy mcp setup`, configure a stdio server named `we
 ## Verification
 
 Call `wendy_status` after restarting the host and inspect the actual tool list;
-`wendy_tools` with no arguments lists the enabled groups and their tools. If
-`wendy_status` reports `auth` as `logged_out` or `expired`, or a tool returns
-`AUTH_REQUIRED`, call `auth_login` and show the user its link. The server reports its CLI version; changing the CLI on disk does
+`wendy_tools` with no arguments lists the enabled groups and their tools. If a
+tool returns `AUTH_REQUIRED`, or `wendy_status` reports `auth` as `logged_out` or
+`expired` and the task needs a Cloud device, call `auth_login` and show the user
+its link. Local simulators and LAN devices that are not Cloud-enrolled need no
+sign-in. The server reports its CLI version; changing the CLI on disk does
 not replace an already running MCP process. It also serves this skill bundle
 through the MCP skills extension, its guide as `wendy://guide`, and Wendy docs
 under `wendy://docs/`. A skill mentioning a tool is not evidence that the

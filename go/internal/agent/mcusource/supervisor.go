@@ -228,6 +228,14 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		return false, fmt.Errorf("mcusource: resolving transport for source %s: %w", p.Key(), err)
 	}
 	defer tr.Close()
+	// WendyCom keeps one connection for the manifest and stream. Its TLS and
+	// protocol handshakes have their own timeout, separate from the manifest
+	// round trip, which starts once the connection is ready.
+	if connector, ok := tr.(interface{ Connect(context.Context) error }); ok {
+		if err := connector.Connect(ctx); err != nil {
+			return false, err
+		}
+	}
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
 	manifestCtx, cancelManifest := context.WithTimeout(ctx, 3*time.Second)
 	manifest, err := tr.FetchManifest(manifestCtx)
