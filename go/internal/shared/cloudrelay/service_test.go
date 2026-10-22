@@ -1,12 +1,16 @@
 package cloudrelay
 
 import (
+	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/relaypb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -137,5 +141,38 @@ func TestUDPFlowLimitsAndExpiry(t *testing.T) {
 	}
 	if len(r.flows) != 0 {
 		t.Fatalf("expired sockets retained: %d", len(r.flows))
+	}
+}
+
+type oldCloud struct {
+	pb.UnimplementedTunnelAuthorizationServiceServer
+}
+
+func (oldCloud) RequestTunnel(context.Context, *pb.RequestTunnelRequest) (*pb.RequestTunnelResponse, error) {
+	return nil, status.Error(codes.NotFound, "unknown service")
+}
+
+func TestOldCloudRefusesPortService(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer()
+	pb.RegisterTunnelAuthorizationServiceServer(srv, oldCloud{})
+	go func() { _ = srv.Serve(listener) }()
+	defer srv.Stop()
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx := context.Background()
+	sign := func(b []byte) ([]byte, error) { return b, nil }
+	asset := "00000000-0000-4000-8000-000000000042"
+	if _, err := OpenTCP(ctx, ctx, conn, nil, asset, "tcp-3000", sign); err == nil || !strings.Contains(err.Error(), `Cloud does not offer tunnel service "tcp-3000"`) {
+		t.Fatalf("TCP: %v", err)
+	}
+	if _, err := OpenUDP(ctx, ctx, conn, nil, asset, 5353, sign); err == nil || !strings.Contains(err.Error(), `Cloud does not offer tunnel service "udp-5353"`) {
+		t.Fatalf("UDP: %v", err)
 	}
 }

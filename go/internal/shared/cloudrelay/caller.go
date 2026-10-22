@@ -25,6 +25,8 @@ import (
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/relaypb"
 	authpb "github.com/wendylabsinc/wendy/go/proto/gen/wendyauthpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -194,6 +196,10 @@ func openPortSession(ctx, authCtx context.Context, cloudConn *grpc.ClientConn, v
 	defer cancel()
 	response, err := pb.NewTunnelAuthorizationServiceClient(cloudConn).RequestTunnel(requestCtx, request)
 	if err != nil {
+		// A Cloud before WDY-3955 (cloud #895) knows only ssh and wendy-agent.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound && st.Message() == "unknown service" {
+			return nil, fmt.Errorf("Cloud does not offer tunnel service %q; port tunnels need a Cloud release with WDY-3955", service)
+		}
 		return nil, fmt.Errorf("authorizing Cloud tunnel (%s): %w", pb.TunnelAuthorizationService_RequestTunnel_FullMethodName, err)
 	}
 	if response.Broker == nil {
