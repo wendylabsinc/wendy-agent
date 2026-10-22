@@ -133,6 +133,7 @@ func (s *ProvisioningServiceV2) localUnprovision(ctx context.Context, req *agent
 	if state.Unenrollment != nil {
 		return nil, status.Error(codes.FailedPrecondition, "Cloud reset is already pending; resume that operation")
 	}
+	previous := *state
 	state.KeyPEM = ""
 	state.LocalReset = &localResetState{Version: 1, Status: unenrollmentPending, Principal: svc.principalURI, Fingerprint: req.GetExpectedCertificateSha256()}
 	if err := validateLocalResetState(state); err != nil {
@@ -140,6 +141,15 @@ func (s *ProvisioningServiceV2) localUnprovision(ctx context.Context, req *agent
 	}
 	if err := svc.saveState(state); err != nil {
 		return nil, status.Error(codes.Internal, "durable local reset authorization failed; keys retained")
+	}
+	// Recovery honours a pending record only from protected storage. If the
+	// saved record would be refused (for example, a group-writable config
+	// directory), restore the enrolled state rather than block the next start.
+	if _, err := svc.pendingLocalReset(); err != nil {
+		if rollbackErr := svc.saveState(&previous); rollbackErr != nil {
+			svc.logger.Error("Restoring state after an unusable local reset record failed", zap.Error(rollbackErr))
+		}
+		return nil, status.Error(codes.FailedPrecondition, "provisioning state is not in protected local storage; keys retained")
 	}
 	caller, _ := peer.FromContext(ctx)
 	operator, _ := certs.TenantPrincipalFromCert(caller.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0])

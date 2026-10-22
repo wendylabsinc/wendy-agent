@@ -280,3 +280,25 @@ func TestLocalResetRecoveryRejectsUntrustedOrChangedState(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalResetRefusesUnprotectedStorageWithoutBlockingRestart(t *testing.T) {
+	svc, req, ctx := localResetFixture(t)
+	if err := os.Chmod(svc.configPath, 0770); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(svc.configPath, 0700) })
+	if _, err := NewProvisioningServiceV2(svc).Unprovision(ctx, req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unprotected storage accepted a local reset: %v", err)
+	}
+	state, err := svc.readProvisioningState()
+	if err != nil || state.LocalReset != nil || !state.Enrolled {
+		t.Fatalf("refused reset left a pending record or lost enrollment: %#v, %v", state, err)
+	}
+	restarted := NewProvisioningService(zap.NewNop(), svc.configPath)
+	if restarted.resetRecoveryErr != nil || !restarted.enrolled {
+		t.Fatalf("refused reset blocked the next start: %v", restarted.resetRecoveryErr)
+	}
+	if _, err := os.Stat(filepath.Join(svc.configPath, "device-key.pem")); err != nil {
+		t.Fatal("refused reset removed the device key", err)
+	}
+}
