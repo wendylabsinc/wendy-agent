@@ -125,3 +125,15 @@ func TestLiteBrokerHost(t *testing.T) {
 		})
 	}
 }
+
+// Both Cloud dials share brokerKeepalive. Pings faster than Cloud's 10s floor
+// are answered with GOAWAY (BrokerHTTP2Config.swift), and an idle presence
+// stream must keep pinging or it is dropped as idle.
+func TestBrokerKeepaliveRespectsCloudPingFloor(t *testing.T) {
+	if brokerKeepalive.Time < 10*time.Second {
+		t.Fatalf("ping interval %v is below Cloud's 10s floor", brokerKeepalive.Time)
+	}
+	if brokerKeepalive.Timeout <= 0 || !brokerKeepalive.PermitWithoutStream {
+		t.Fatalf("idle connections are not kept alive: %+v", brokerKeepalive)
+	}
+}
