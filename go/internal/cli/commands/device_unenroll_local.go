@@ -12,12 +12,14 @@ import (
 	grpcpeer "google.golang.org/grpc/peer"
 )
 
-// Called only after an authenticated Cloud lookup reports an absent asset.
+// Called only for --force after an authenticated Cloud lookup returned NotFound.
+// That is also Cloud's answer to a caller who cannot see the device, so the
+// operator's explicit flag and confirmation are the intent, not the lookup.
 // Local cleanup has its own capability and acknowledgement; it cannot produce
 // or stand in for Cloud deletion or certificate revocation evidence.
 func runV2LocalDeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, yes, checkOnly bool) error {
 	if !prov.GetLocalResetSupported() {
-		return fmt.Errorf("Cloud asset not found; this Agent does not support local enrollment reset; update it with 'wendy device update' and retry; no mutation performed")
+		return fmt.Errorf("this Agent does not support forced local enrollment reset; update it with 'wendy device update' and retry; no mutation performed")
 	}
 	principal, err := certs.ParsePrincipal(prov.GetPrincipalUri())
 	if err != nil || principal.EntityType != certs.EntityAsset {
@@ -36,18 +38,19 @@ func runV2LocalDeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 	if checkOnly {
 		if jsonOutput {
-			out, _ := json.Marshal(map[string]any{"principal": principal.Principal, "cloudAssetAbsent": true, "localResetSupported": true, "revocationAttempted": false, "assetDeleted": false, "deviceReset": false})
+			out, _ := json.Marshal(map[string]any{"principal": principal.Principal, "cloudAssetNotFound": true, "localResetSupported": true, "revocationAttempted": false, "assetDeleted": false, "deviceReset": false})
 			fmt.Println(string(out))
 		} else {
-			fmt.Println("Cloud asset not found. Authenticated local enrollment reset is supported. No changes made.")
+			fmt.Println("Cloud returned no asset for this device. Forced local enrollment reset is supported. No changes made.")
 		}
 		return nil
 	}
 	if !yes {
 		if jsonOutput || !isInteractiveTerminalFn() {
-			return fmt.Errorf("Cloud asset not found; pass --yes to confirm clearing this device's local enrollment without Cloud deletion or certificate revocation")
+			return fmt.Errorf("forced local reset is destructive; pass --yes to confirm clearing this device's local enrollment without Cloud deletion or certificate revocation")
 		}
-		fmt.Printf("Cloud asset not found. Clear the local enrollment for %s? This does not revoke its certificate or delete a Cloud record.\n", principal.Principal)
+		fmt.Printf("Cloud returned no asset for %s. Cloud gives the same answer when this account cannot access the device, so make sure it is no longer in use.\n", principal.Principal)
+		fmt.Println("Clear only its local enrollment? This does not revoke its certificate or delete a Cloud record.")
 		if !confirmDefaultNoFn("Continue?") {
 			return nil
 		}
@@ -59,13 +62,13 @@ func runV2LocalDeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnect
 	if jsonOutput {
 		out, _ := json.MarshalIndent(struct {
 			v2UnenrollProgress
-			LocalOnly        bool `json:"localOnly"`
-			CloudAssetAbsent bool `json:"cloudAssetAbsent"`
-		}{v2UnenrollProgress: v2UnenrollProgress{Cloud: prov.GetCloudHost(), Principal: principal.Principal, Fingerprint: fingerprint, Reset: completed}, LocalOnly: true, CloudAssetAbsent: true}, "", "  ")
+			LocalOnly          bool `json:"localOnly"`
+			CloudAssetNotFound bool `json:"cloudAssetNotFound"`
+		}{v2UnenrollProgress: v2UnenrollProgress{Cloud: prov.GetCloudHost(), Principal: principal.Principal, Fingerprint: fingerprint, Reset: completed}, LocalOnly: true, CloudAssetNotFound: true}, "", "  ")
 		fmt.Println(string(out))
 	}
 	if resetErr != nil {
-		return fmt.Errorf("Cloud asset not found; local enrollment reset unconfirmed: %w", resetErr)
+		return fmt.Errorf("forced local enrollment reset unconfirmed: %w", resetErr)
 	}
 	if !completed {
 		return fmt.Errorf("Agent did not confirm local enrollment reset; local identity pins retained")
@@ -74,7 +77,7 @@ func runV2LocalDeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnect
 		return fmt.Errorf("local enrollment cleared; local identity pin cleanup failed: %w", err)
 	}
 	if !jsonOutput {
-		fmt.Println("Cloud asset not found. Local enrollment cleared; the device can enroll again. Certificate revocation was not performed.")
+		fmt.Println("Local enrollment cleared; the device can enroll again. Its certificate was not revoked and no Cloud record was changed.")
 	}
 	return nil
 }

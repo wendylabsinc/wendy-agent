@@ -1171,6 +1171,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 	var uuidAssetID string
 	var checkOnly bool
 	var cloudOnly bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "unenroll",
@@ -1178,16 +1179,17 @@ func newDeviceUnenrollCmd() *cobra.Command {
 		Short: "Unenroll a device and remove it from Wendy Cloud",
 		Long: "Reverses 'wendy device enroll'. For a UUID/direct PKI device reached over direct LAN mTLS, Cloud revokes " +
 			"its certificate and deletes the asset, then the device verifies Cloud's signed reset authorization and erases its credentials; " +
-			"it can then enroll again. If Cloud reports no asset or retained deletion record, clears only the local enrollment using the authenticated LAN connection. " +
-			"This requires Agent local-reset support and does not revoke certificates. Agents without the required reset support are refused before any change. " +
+			"it can then enroll again. Agents without Cloud-authenticated reset support are refused before any change. " +
+			"If Cloud has no record of such a device, --force clears only its local enrollment over that connection; this needs Agent local-reset support, " +
+			"refuses a device Cloud still lists, and does not revoke certificates or delete Cloud records. " +
 			"Numeric legacy enrollment retains its separate cleanup path. " +
 			"For Wendy Lite over USB, removes the cloud enrollment, clears the board's identity and reboots it while preserving Wi-Fi and apps. Requires firmware with enrollment reset support. " +
 			"Use --cloud-only or 'wendy cloud device unenroll' to remove an offline device by asset ID or name without contacting it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			runCloud := func(selector string) error {
-				if uuidAssetID != "" || checkOnly {
-					return fmt.Errorf("--asset-id and --check require a directly connected WendyOS device with v2 UUID enrollment")
+				if uuidAssetID != "" || checkOnly || force {
+					return fmt.Errorf("--asset-id, --check and --force require a directly connected WendyOS device with v2 UUID enrollment")
 				}
 				return runCloudDeviceUnenroll(cmd, cloudGRPC, selector, "", assumeYes)
 			}
@@ -1215,8 +1217,8 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				return runCloud(target.DefaultSelector)
 			}
 			if target.External != nil && target.External.ProviderKey == "wendy-lite" {
-				if uuidAssetID != "" || checkOnly {
-					return fmt.Errorf("--asset-id and --check require a directly connected WendyOS device with v2 UUID enrollment")
+				if uuidAssetID != "" || checkOnly || force {
+					return fmt.Errorf("--asset-id, --check and --force require a directly connected WendyOS device with v2 UUID enrollment")
 				}
 				if target.External.ConnectionType() == "Cloud" {
 					selector := target.DefaultSelector
@@ -1263,12 +1265,12 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				var verifiedPeer grpcpeer.Peer
 				v2State, v2Err := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn).IsProvisioned(v2Ctx, &agentpbv2.IsProvisionedRequest{}, grpc.Peer(&verifiedPeer))
 				if v2Err == nil && v2State.GetProvisioned().GetPrincipalUri() != "" {
-					return runV2DeviceUnenroll(v2Ctx, conn, v2State.GetProvisioned(), &verifiedPeer, cloudGRPC, uuidAssetID, assumeYes, checkOnly)
+					return runV2DeviceUnenroll(v2Ctx, conn, v2State.GetProvisioned(), &verifiedPeer, cloudGRPC, uuidAssetID, assumeYes, checkOnly, force)
 				}
 				return fmt.Errorf("cannot safely identify this enrollment; refusing numeric legacy cleanup; update the Agent for v2 unenrollment")
 			}
-			if uuidAssetID != "" || checkOnly {
-				return fmt.Errorf("--asset-id and --check are for v2 UUID enrollments only")
+			if uuidAssetID != "" || checkOnly || force {
+				return fmt.Errorf("--asset-id, --check and --force are for v2 UUID enrollments only")
 			}
 
 			if !assumeYes {
@@ -1336,9 +1338,12 @@ func newDeviceUnenrollCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Skip the confirmation prompt")
 	cmd.Flags().StringVar(&uuidAssetID, "asset-id", "", "Exact Cloud asset UUID to unenroll or reconcile (v2 UUID enrollments only); must match the device's Cloud binding")
-	cmd.Flags().BoolVar(&checkOnly, "check", false, "Only check Cloud enrollment and the Agent's applicable reset support; change nothing (v2 UUID enrollments only)")
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Only verify the Cloud binding and the Agent's authenticated-reset support, or with --force its local-reset support; change nothing (v2 UUID enrollments only)")
 	cmd.Flags().BoolVar(&cloudOnly, "cloud-only", false, "Remove the cloud enrollment without contacting or resetting the device; --device accepts an asset ID, name, or PKI device ID")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint for cleanup (cloud-only uses the selected auth session; local WendyOS uses its enrolled cloud host)")
+	cmd.Flags().BoolVar(&force, "force", false, "Clear only the local enrollment of a device Cloud has no record of; does not revoke its certificate or delete a Cloud record (v2 UUID enrollments over direct LAN only)")
+	cmd.MarkFlagsMutuallyExclusive("force", "asset-id")
+	cmd.MarkFlagsMutuallyExclusive("force", "cloud-only")
 	return cmd
 }
 

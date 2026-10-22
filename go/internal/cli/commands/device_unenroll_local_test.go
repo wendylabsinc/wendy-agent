@@ -96,29 +96,40 @@ type localUnenrollMissingCloudServer struct {
 
 func (s *localUnenrollMissingCloudServer) GetAsset(context.Context, *cloudpbv2.GetAssetRequest) (*cloudpbv2.Asset, error) {
 	s.gets.Add(1)
-	return nil, s.lookupErr
+	if s.lookupErr != nil {
+		return nil, s.lookupErr
+	}
+	return s.asset, nil
 }
 
-func TestV2DeviceUnenrollFallsBackLocallyForMissingCloudAsset(t *testing.T) {
+// Cloud returns the same bare NotFound to a caller who cannot see the device,
+// so only an explicit --force may clear the local enrollment.
+func TestV2DeviceUnenrollForceAloneClearsLocalEnrollment(t *testing.T) {
+	notFound := status.Error(codes.NotFound, "asset not found")
 	for _, tc := range []struct {
-		name            string
-		lookupErr       error
-		check, oldAgent bool
-		assetOverride   string
-		wantLocalCalls  int32
-		wantErr         bool
+		name                   string
+		lookupErr              error
+		force, check, oldAgent bool
+		assetOverride          string
+		wantGets               int32
+		wantLocalCalls         int32
+		wantErr                string
 	}{
-		{name: "missing asset", lookupErr: status.Error(codes.NotFound, "asset not found"), wantLocalCalls: 1},
-		{name: "missing asset check", lookupErr: status.Error(codes.NotFound, "asset not found"), check: true},
-		{name: "missing asset old Agent", lookupErr: status.Error(codes.NotFound, "asset not found"), oldAgent: true, wantErr: true},
-		{name: "missing explicit asset", lookupErr: status.Error(codes.NotFound, "asset not found"), assetOverride: unenrollAsset, wantErr: true},
-		{name: "permission denied", lookupErr: status.Error(codes.PermissionDenied, "asset not found"), wantErr: true},
-		{name: "Cloud unavailable", lookupErr: status.Error(codes.Unavailable, "asset not found"), wantErr: true},
+		{name: "not found without force", lookupErr: notFound, wantGets: 1, wantErr: "--force"},
+		{name: "not found check without force", lookupErr: notFound, check: true, wantGets: 1, wantErr: "asset not found"},
+		{name: "forced", lookupErr: notFound, force: true, wantGets: 1, wantLocalCalls: 1},
+		{name: "forced check", lookupErr: notFound, force: true, check: true, wantGets: 1},
+		{name: "forced old Agent", lookupErr: notFound, force: true, oldAgent: true, wantErr: "does not support forced local enrollment reset"},
+		{name: "forced with asset ID", lookupErr: notFound, force: true, assetOverride: unenrollAsset, wantErr: "--asset-id"},
+		{name: "forced active asset", force: true, wantGets: 1, wantErr: "Cloud still lists"},
+		{name: "forced permission denied", lookupErr: status.Error(codes.PermissionDenied, "asset not found"), force: true, wantGets: 1, wantErr: "PermissionDenied"},
+		{name: "forced Cloud unavailable", lookupErr: status.Error(codes.Unavailable, "asset not found"), force: true, wantGets: 1, wantErr: "Unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			preserveCloudUnenrollmentHooks(t)
 			jsonOutput = true
 			cloudServer := &localUnenrollMissingCloudServer{lookupErr: tc.lookupErr}
+			cloudServer.asset = testUnenrollAsset()
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -138,29 +149,30 @@ func TestV2DeviceUnenrollFallsBackLocallyForMissingCloudAsset(t *testing.T) {
 			prov.PrincipalUri = "spiffe://wendy.sh/tenant/" + auth.Certificates[0].TenantUUID() + "/device/" + unenrollDevice
 			prov.CloudAuthenticatedResetSupported = true
 			prov.LocalResetSupported = !tc.oldAgent
+			cloudServer.asset.OrganizationId = auth.Certificates[0].TenantUUID()
 			deviceURI, _ := url.Parse(prov.PrincipalUri)
 			remote.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0].URIs = []*url.URL{deviceURI}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			output, err := captureCommandStdout(t, func() error {
-				return runV2DeviceUnenroll(ctx, conn, prov, remote, "", tc.assetOverride, true, tc.check)
+				return runV2DeviceUnenroll(ctx, conn, prov, remote, "", tc.assetOverride, true, tc.check, tc.force)
 			})
-			if err == nil && tc.wantErr || err != nil && !tc.wantErr {
-				t.Fatalf("error = %v, want error %v", err, tc.wantErr)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("error = %v, want error containing %q", err, tc.wantErr)
 			}
-			if localServer.calls.Load() != tc.wantLocalCalls || cloudServer.gets.Load() != 1 {
-				t.Fatalf("local reset calls = %d, Cloud reads = %d; want %d and 1", localServer.calls.Load(), cloudServer.gets.Load(), tc.wantLocalCalls)
+			if localServer.calls.Load() != tc.wantLocalCalls || cloudServer.gets.Load() != tc.wantGets {
+				t.Fatalf("local reset calls = %d, Cloud reads = %d; want %d and %d", localServer.calls.Load(), cloudServer.gets.Load(), tc.wantLocalCalls, tc.wantGets)
 			}
 			if cloudServer.deletes.Load() != 0 || cloudServer.revokes.Load() != 0 {
-				t.Fatal("missing Cloud asset triggered a Cloud mutation")
+				t.Fatal("forced local reset triggered a Cloud mutation")
 			}
-			if !tc.wantErr {
+			if tc.wantErr == "" {
 				var result map[string]any
 				if err := json.Unmarshal([]byte(output), &result); err != nil {
 					t.Fatalf("invalid JSON output %q: %v", output, err)
 				}
-				if result["cloudAssetAbsent"] != true || result["deviceReset"] != !tc.check || result["assetDeleted"] == true || result["certificateRevoked"] == true {
-					t.Fatalf("incorrect fallback result: %v", result)
+				if result["cloudAssetNotFound"] != true || result["deviceReset"] != !tc.check || result["assetDeleted"] == true || result["certificateRevoked"] == true {
+					t.Fatalf("incorrect forced reset result: %v", result)
 				}
 			}
 		})
@@ -289,7 +301,7 @@ func TestV2LocalUnenrollConfirmationCompletionAndPinCleanup(t *testing.T) {
 				if result["deviceReset"] != tc.wantReset {
 					t.Errorf("JSON reset = %v, want %v", result["deviceReset"], tc.wantReset)
 				}
-				if result["cloudAssetAbsent"] != true || tc.wantCalls > 0 && result["localOnly"] != true {
+				if result["cloudAssetNotFound"] != true || tc.wantCalls > 0 && result["localOnly"] != true {
 					t.Errorf("JSON omitted the local reset's Cloud absence status: %v", result)
 				}
 				for _, field := range []string{"certificateRevoked", "assetDeleted", "cloudBindingVerified"} {
@@ -299,5 +311,19 @@ func TestV2LocalUnenrollConfirmationCompletionAndPinCleanup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeviceUnenrollForceExcludesCloudBindingFlags(t *testing.T) {
+	for _, other := range []struct{ name, value string }{{"asset-id", unenrollAsset}, {"cloud-only", "true"}} {
+		cmd := newDeviceUnenrollCmd()
+		for name, value := range map[string]string{"force": "true", other.name: other.value} {
+			if err := cmd.Flags().Set(name, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := cmd.ValidateFlagGroups(); err == nil {
+			t.Errorf("--force accepted together with --%s", other.name)
+		}
 	}
 }
