@@ -51,7 +51,7 @@ func liteTestAuth(cloud string) *config.AuthConfig {
 
 // liteCloudAsset is a Lite board as Cloud lists it once its control connection is up.
 func liteCloudAsset() *cloudpbv2.Asset {
-	osType, osVersion, target, deviceName := "wendy-lite", "0.9.1", "esp32c6", "lite-00aa11bb"
+	osType, osVersion, target, deviceName := "wendy-lite", "0.9.1", "esp32c6", "6f1c2d3e-4a5b-4c6d-8e7f-901234567890"
 	return &cloudpbv2.Asset{
 		Id:            liteTestAssetID,
 		Name:          "bench-board",
@@ -94,7 +94,7 @@ func TestCloudLiteSelectorTargetsTheLiteProvider(t *testing.T) {
 		"assetId":  liteTestAssetID,
 		"cloud":    auth.CloudGRPC,
 		"tenantId": liteTestTenant,
-		"deviceId": "lite-00aa11bb",
+		"deviceId": "6f1c2d3e-4a5b-4c6d-8e7f-901234567890",
 	}
 	for key, value := range want {
 		if got := selected.External.ConnectionInfo[key]; got != value {
@@ -494,7 +494,7 @@ func liteRelayTestPKIForPrincipal(t *testing.T, principal string) ([]config.Cert
 	}
 	root, rk := issue(1, "", nil, nil)
 	operator, ok := issue(2, principal, root, rk)
-	device, dk := issue(3, "spiffe://wendy.sh/tenant/"+liteTestTenant+"/device/lite-00aa11bb", root, rk)
+	device, dk := issue(3, "spiffe://wendy.sh/tenant/"+liteTestTenant+"/device/6f1c2d3e-4a5b-4c6d-8e7f-901234567890", root, rk)
 	key, err := x509.MarshalECPrivateKey(ok)
 	if err != nil {
 		t.Fatal(err)

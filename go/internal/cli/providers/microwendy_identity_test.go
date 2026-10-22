@@ -432,3 +432,36 @@ func TestLiteLANRefusesPKIWithoutAdvertisedPrincipal(t *testing.T) {
 		t.Fatalf("LAN PKI without principal=: %v", err)
 	}
 }
+
+// A pin is a canonical device UUID whatever its source: a crafted mDNS or BLE
+// principal, or a pre-UUID asset found through Cloud, is refused before dialing.
+func TestLitePinRefusesANonUUIDDeviceIdentity(t *testing.T) {
+	const legacy = "lite-441bf6804ff8"
+	principal := "spiffe://wendy.sh/tenant/" + localLiteTenant + "/device/" + legacy
+	primary := localLiteTestCertificate(t, localLiteOperator, false)
+	localLiteTestSessions(t, config.AuthConfig{Name: "work", Certificates: []config.CertificateInfo{primary}})
+	LiteIdentityResolver = func(context.Context, *config.AuthConfig) (config.CertificateInfo, string, error) {
+		return primary, primary.PemCertificate, nil
+	}
+	previous := LiteBoardIdentityResolver
+	t.Cleanup(func() { LiteBoardIdentityResolver = previous })
+	LiteBoardIdentityResolver = func(context.Context, string) (string, string, error) { return localLiteTenant, legacy, nil }
+	p := &MicroWendyProvider{}
+	lan := p.mdnsExternalDevice(discovery.MDNSService{
+		Hostname: "board.local", IPAddress: "192.0.2.1", Port: 5054,
+		TXTRecords: map[string]string{"id": "441bf6804ff8", "mtls": "true", "tenant": localLiteTenant, "principal": principal},
+	})
+	bleAdvertised := p.bleExternalDevice(discovery.BLELiteDevice{Address: "invalid", Info: ble.LiteInfo{PSM: 129, DeviceID: "441bf6804ff8", MTLSEnabled: true, Principal: principal}})
+	bleCloud := p.bleExternalDevice(discovery.BLELiteDevice{Address: "invalid", Info: ble.LiteInfo{PSM: 129, DeviceID: "441bf6804ff8", MTLSEnabled: true}})
+	for name, device := range map[string]models.ExternalDevice{"LAN principal": lan, "BLE principal": bleAdvertised, "BLE cloud lookup": bleCloud} {
+		t.Run(name, func(t *testing.T) {
+			client, err := p.connectClient(context.Background(), device)
+			if client != nil {
+				client.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), "is not a device UUID") {
+				t.Fatalf("non-UUID pin %q not refused: %v", legacy, err)
+			}
+		})
+	}
+}

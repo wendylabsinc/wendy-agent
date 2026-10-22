@@ -55,6 +55,13 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	if err := connect(NewWendyLiteClient(), "invalid:0", client, chain, "", nil); err == nil || !strings.Contains(err.Error(), "missing Wendy Lite device identity") {
 		t.Fatalf("missing selected device identity must be rejected before dialing: %v", err)
 	}
+	// Only a canonical device UUID is a pin: a hardware id, a pre-UUID lite-
+	// identity or a non-canonical UUID spelling is refused before dialing.
+	for _, pin := range []string{"441bf6804ff8", "lite-441bf6804ff8", "lite-" + liteTestDevice, strings.ToUpper(liteTestDevice), "{" + liteTestDevice + "}"} {
+		if err := connect(NewWendyLiteClient(), "invalid:0", client, chain, pin, nil); err == nil || !strings.Contains(err.Error(), "is not a device UUID") {
+			t.Fatalf("pin %q must be refused before dialing: %v", pin, err)
+		}
+	}
 	for _, uri := range []string{"", "urn:wendy:org:2:user:42", "spiffe://wendy.sh/tenant/" + tenant + "/device/other"} {
 		leaf, key := issue(6, "unscoped", uri, false, root, rootKey)
 		c := NewWendyLiteClient()
@@ -77,15 +84,10 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 		wantHandshake             bool
 	}{
 		{"matching device", matching, liteTestDevice, true, nil, nil, true},
-		{"prefixed device ID", matching, "lite-" + liteTestDevice, true, nil, nil, false},
-		// A hardware id is never a pin, not even for a legacy lite- certificate.
-		{"legacy hardware identity", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-441bf6804ff8", "441bf6804ff8", true, nil, nil, false},
 		{"UUID device ID", uuidPrincipal, deviceUUID, true, nil, nil, true},
 		{"UUID under Lite CA", uuidPrincipal, deviceUUID, false, liteCA, liteKey, true},
 		{"different UUID", uuidPrincipal, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true, nil, nil, false},
 		{"UUID in different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/" + deviceUUID, deviceUUID, false, liteCA, liteKey, false},
-		{"UUID with legacy prefix", uuidPrincipal, "lite-" + deviceUUID, true, nil, nil, false},
-		{"uppercase UUID", uuidPrincipal, strings.ToUpper(deviceUUID), true, nil, nil, false},
 		{"UUID under untrusted CA", uuidPrincipal, deviceUUID, false, selfSignedLite, selfSignedLiteKey, false},
 		{"different device", "spiffe://wendy.sh/tenant/" + tenant + "/device/00000000-0000-4000-8000-000000000000", liteTestDevice, true, nil, nil, false},
 		{"different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/" + liteTestDevice, liteTestDevice, true, nil, nil, false},

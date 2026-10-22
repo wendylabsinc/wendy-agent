@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
@@ -1167,6 +1168,11 @@ func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID 
 	}
 	if deviceID == "" {
 		return nil, fmt.Errorf("missing Wendy Lite device identity")
+	}
+	// A Lite board's one id is a canonical device UUID. Any other pin, such as
+	// a pre-UUID lite- identity, is refused rather than used verbatim.
+	if id, err := uuid.Parse(deviceID); err != nil || id.String() != deviceID {
+		return nil, fmt.Errorf("Wendy Lite device identity %q is not a device UUID; update the board's firmware, then unenroll and re-enroll it over USB", deviceID)
 	}
 	opts.ExpectedIdentity = &certs.WendyIdentity{
 		EntityType: certs.EntityAsset, EntityID: deviceID, TenantUUID: identity.TenantUUID,
