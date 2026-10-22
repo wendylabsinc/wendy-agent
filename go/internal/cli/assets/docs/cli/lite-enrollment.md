@@ -53,6 +53,11 @@ Wait for your board to appear online, then select it for your next command.
 Cloud presence can take a little longer than enrollment. The board needs Wi-Fi
 and internet access to connect to Wendy Cloud.
 
+Over LAN and Bluetooth, the CLI requires the board's certificate to name the
+device UUID the board advertises. Firmware that does not advertise it over
+Bluetooth is looked up in the selected Cloud organization by its hardware ID, so
+sign in first. Over LAN, update firmware that advertises no device identity.
+
 ## If enrollment does not finish
 
 - **The board is already enrolled or has a pending enrollment:** let the pending

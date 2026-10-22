@@ -66,7 +66,7 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	// The Lite Device CA is a sibling under the session's root, absent from chain.
 	liteCA, liteKey := issue(7, "Lite Device CA", "", true, root, rootKey)
 	selfSignedLite, selfSignedLiteKey := issue(8, "Lite Device CA", "", true, nil, nil)
-	const matching = "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-441bf6804ff8"
+	const matching = "spiffe://wendy.sh/tenant/" + tenant + "/device/" + liteTestDevice
 	const deviceUUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const uuidPrincipal = "spiffe://wendy.sh/tenant/" + tenant + "/device/" + deviceUUID
 	for _, tc := range []struct {
@@ -76,8 +76,10 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 		liteKey                   *ecdsa.PrivateKey
 		wantHandshake             bool
 	}{
-		{"matching device", matching, "441bf6804ff8", true, nil, nil, true},
-		{"prefixed device ID", matching, "lite-441bf6804ff8", true, nil, nil, true},
+		{"matching device", matching, liteTestDevice, true, nil, nil, true},
+		{"prefixed device ID", matching, "lite-" + liteTestDevice, true, nil, nil, false},
+		// A hardware id is never a pin, not even for a legacy lite- certificate.
+		{"legacy hardware identity", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-441bf6804ff8", "441bf6804ff8", true, nil, nil, false},
 		{"UUID device ID", uuidPrincipal, deviceUUID, true, nil, nil, true},
 		{"UUID under Lite CA", uuidPrincipal, deviceUUID, false, liteCA, liteKey, true},
 		{"different UUID", uuidPrincipal, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true, nil, nil, false},
@@ -85,11 +87,11 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 		{"UUID with legacy prefix", uuidPrincipal, "lite-" + deviceUUID, true, nil, nil, false},
 		{"uppercase UUID", uuidPrincipal, strings.ToUpper(deviceUUID), true, nil, nil, false},
 		{"UUID under untrusted CA", uuidPrincipal, deviceUUID, false, selfSignedLite, selfSignedLiteKey, false},
-		{"different device", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-000000000000", "441bf6804ff8", true, nil, nil, false},
-		{"different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/lite-441bf6804ff8", "441bf6804ff8", true, nil, nil, false},
-		{"untrusted issuer", matching, "441bf6804ff8", false, nil, nil, false},
-		{"Lite CA under session trust", matching, "441bf6804ff8", false, liteCA, liteKey, true},
-		{"self-signed Lite CA", matching, "441bf6804ff8", false, selfSignedLite, selfSignedLiteKey, false},
+		{"different device", "spiffe://wendy.sh/tenant/" + tenant + "/device/00000000-0000-4000-8000-000000000000", liteTestDevice, true, nil, nil, false},
+		{"different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/" + liteTestDevice, liteTestDevice, true, nil, nil, false},
+		{"untrusted issuer", matching, liteTestDevice, false, nil, nil, false},
+		{"Lite CA under session trust", matching, liteTestDevice, false, liteCA, liteKey, true},
+		{"self-signed Lite CA", matching, liteTestDevice, false, selfSignedLite, selfSignedLiteKey, false},
 		{"UUID device", "spiffe://wendy.sh/tenant/" + tenant + "/device/44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444", true, nil, nil, true},
 		{"wrong UUID device", "spiffe://wendy.sh/tenant/" + tenant + "/device/55555555-5555-4555-8555-555555555555", "44444444-4444-4444-8444-444444444444", true, nil, nil, false},
 		{"UUID prefixed by legacy firmware", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444", true, nil, nil, false},
