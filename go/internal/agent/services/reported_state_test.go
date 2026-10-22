@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func (f fakeMetricsPublisher) PublishMetrics(req *colmetricspb.ExportMetricsServ
 	f.metrics <- req
 }
 
-func startReportedState(t *testing.T, apps AppReporter, poll, heartbeat time.Duration) (*fakeReportedCloud, fakeMetricsPublisher) {
+func startReportedState(t *testing.T, apps AppReporter, poll, heartbeat time.Duration) (*fakeReportedCloud, fakeMetricsPublisher, *ReportedState, *atomic.Int32) {
 	t.Helper()
 	cloud := &fakeReportedCloud{reports: make(chan *cloudpbv2.UpdateReportedStateRequest, 16)}
 	lis := bufconn.Listen(1 << 20)
@@ -80,7 +81,9 @@ func startReportedState(t *testing.T, apps AppReporter, poll, heartbeat time.Dur
 	pub := fakeMetricsPublisher{metrics: make(chan *colmetricspb.ExportMetricsServiceRequest, 16)}
 	r := NewReportedState(zap.NewNop(), apps, pub, "cloud", "cert", "key", "")
 	r.poll, r.heartbeat = poll, heartbeat
+	dials := new(atomic.Int32)
 	r.dial = func(string, string, string, string) (grpc.ClientConnInterface, io.Closer, error) {
+		dials.Add(1)
 		conn, err := grpc.NewClient("passthrough:///bufnet",
 			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 			grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -89,7 +92,16 @@ func startReportedState(t *testing.T, apps AppReporter, poll, heartbeat time.Dur
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go r.Run(ctx)
-	return cloud, pub
+	return cloud, pub, r, dials
+}
+
+func noReport(t *testing.T, reports <-chan *cloudpbv2.UpdateReportedStateRequest, d time.Duration) {
+	t.Helper()
+	select {
+	case req := <-reports:
+		t.Fatalf("unexpected report %v", req)
+	case <-time.After(d):
+	}
 }
 
 func nextReport(t *testing.T, reports <-chan *cloudpbv2.UpdateReportedStateRequest) *cloudpbv2.UpdateReportedStateRequest {
@@ -108,7 +120,7 @@ func nextReport(t *testing.T, reports <-chan *cloudpbv2.UpdateReportedStateReque
 func TestReportedStateReportsUnassignedApp(t *testing.T) {
 	apps := &fakeAppReporter{}
 	apps.set(AppReport{AppID: "com.example.cam", ReleaseID: "0b6f2c1e-8a3d-4c5e-9f00-1234567890ab", ManifestDigest: "sha256:abc", Running: true})
-	cloud, pub := startReportedState(t, apps, time.Hour, time.Hour)
+	cloud, pub, _, _ := startReportedState(t, apps, time.Hour, time.Hour)
 
 	want := &cloudpbv2.UpdateReportedStateRequest{CurrentStates: []*cloudpbv2.CurrentState{{
 		AppId:          "com.example.cam",
@@ -130,24 +142,52 @@ func TestReportedStateReportsUnassignedApp(t *testing.T) {
 	}
 }
 
-// An unchanged state is resent on the heartbeat; a change is sent at once.
-func TestReportedStateHeartbeatAndChange(t *testing.T) {
+// A change is sent at the next poll, long before the heartbeat; an unchanged
+// state is not resent in between.
+func TestReportedStateSendsChangeAtOnce(t *testing.T) {
 	apps := &fakeAppReporter{}
 	apps.set(AppReport{AppID: "com.example.cam", Running: true})
-	cloud, _ := startReportedState(t, apps, 10*time.Millisecond, 100*time.Millisecond)
+	cloud, _, _, _ := startReportedState(t, apps, 10*time.Millisecond, time.Hour)
+
+	nextReport(t, cloud.reports)
+	noReport(t, cloud.reports, 100*time.Millisecond)
+	apps.set(AppReport{AppID: "com.example.cam", ExitSignal: 9})
+	s := nextReport(t, cloud.reports).GetCurrentStates()[0]
+	if s.GetReportedState() != cloudpbv2.Running_STOPPED || s.GetReportedLastExitSignal() != 9 {
+		t.Fatalf("changed state = %v", s)
+	}
+}
+
+// An unchanged state is resent on the heartbeat, not on every poll.
+func TestReportedStateHeartbeatResendsUnchanged(t *testing.T) {
+	apps := &fakeAppReporter{}
+	apps.set(AppReport{AppID: "com.example.cam", Running: true})
+	const heartbeat = 200 * time.Millisecond
+	cloud, _, _, _ := startReportedState(t, apps, 10*time.Millisecond, heartbeat)
 
 	first := nextReport(t, cloud.reports)
-	if again := nextReport(t, cloud.reports); !proto.Equal(again, first) {
+	sent := time.Now()
+	again := nextReport(t, cloud.reports)
+	if gap := time.Since(sent); gap < heartbeat/2 {
+		t.Fatalf("unchanged state resent after %v, want the %v heartbeat", gap, heartbeat)
+	}
+	if !proto.Equal(again, first) {
 		t.Fatalf("heartbeat report = %v, want the unchanged %v", again, first)
 	}
-	apps.set(AppReport{AppID: "com.example.cam", ExitSignal: 9})
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		got := nextReport(t, cloud.reports)
-		if s := got.GetCurrentStates()[0]; s.GetReportedState() == cloudpbv2.Running_STOPPED && s.GetReportedLastExitSignal() == 9 {
-			return
-		}
+}
+
+// A new identity drops the stream and reports again under it at once.
+func TestReportedStateReconnectsOnIdentityChange(t *testing.T) {
+	apps := &fakeAppReporter{}
+	apps.set(AppReport{AppID: "com.example.cam"})
+	cloud, _, r, dials := startReportedState(t, apps, time.Hour, time.Hour)
+
+	nextReport(t, cloud.reports)
+	r.UpdateIdentity("cloud", "cert2", "key2", "")
+	nextReport(t, cloud.reports)
+	if n := dials.Load(); n != 2 {
+		t.Fatalf("dials = %d, want 2", n)
 	}
-	t.Fatal("changed state never reported")
 }
 
 // Without a device identity (not enrolled) nothing is dialed.

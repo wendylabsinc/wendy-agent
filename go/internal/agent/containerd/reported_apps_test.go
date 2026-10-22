@@ -10,7 +10,9 @@ import (
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/errdefs"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -50,6 +52,7 @@ func TestReportAppsReadsReleaseIdentityLabels(t *testing.T) {
 			{ID: "multi_api", Labels: labels("multi", "sha256:c", labelKeyReleaseID, release)},
 			{ID: "multi_web", Labels: labels("multi", "sha256:d", labelKeyReleaseID, release)},
 			{ID: "legacy", Labels: labels("campaign:x", "sha256:e")},
+			{ID: "tampered", Labels: labels("tampered", "sha256:f", labelKeyReleaseID, "not-a-uuid")},
 		}}),
 		containerd.WithTaskClient(runningTasks{running: map[string]bool{"cam": true, "multi_web": true}})))
 	if err != nil {
@@ -67,6 +70,8 @@ func TestReportAppsReadsReleaseIdentityLabels(t *testing.T) {
 		{AppID: "crashed", ManifestDigest: "sha256:b", ExitSignal: 9},
 		// Services disagree on the image, so no digest; they share a release.
 		{AppID: "multi", ReleaseID: release, Running: true},
+		// A release id cloud would refuse is dropped, not sent.
+		{AppID: "tampered", ManifestDigest: "sha256:f"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reports = %+v\nwant      %+v", got, want)
@@ -95,5 +100,35 @@ func TestAddReleaseIdentityLabels(t *testing.T) {
 	addReleaseIdentity(unrecorded, "sha256:a", nil)
 	if _, ok := unrecorded[labelKeyReleaseID]; ok || unrecorded[labelKeyImageDigest] != "sha256:a" {
 		t.Fatalf("unrecorded deploy labels = %v", unrecorded)
+	}
+}
+
+type oneImageStore struct {
+	images.Store
+	image images.Image
+}
+
+func (s oneImageStore) Get(_ context.Context, name string) (images.Image, error) {
+	if name != s.image.Name {
+		return images.Image{}, errdefs.ErrNotFound
+	}
+	return s.image, nil
+}
+
+// The digest lookup names the image as create stored it: a chunk-diff deploy
+// sends "<app>:latest", which the store holds under its normalized name.
+func TestImageDigestNormalizesTheRequestName(t *testing.T) {
+	const digest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+	remote, err := containerd.New("", containerd.WithServices(containerd.WithImageStore(oneImageStore{image: images.Image{
+		Name:   "docker.io/library/com.example.cam:latest",
+		Target: ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest},
+	}})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remote.Close()
+	c := &Client{client: remote, namespace: "digest-test", logger: zap.NewNop()}
+	if got, err := c.ImageDigest(context.Background(), "com.example.cam:latest"); err != nil || got != digest {
+		t.Fatalf("ImageDigest = %q, %v; want %s", got, err, digest)
 	}
 }

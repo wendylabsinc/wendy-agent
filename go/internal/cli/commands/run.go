@@ -534,10 +534,9 @@ type runOptions struct {
 	deploy                bool
 	skipCloudRegistration bool
 	// recordRelease is the tag of the release this deploy is recorded as
-	// (--record-release); empty records nothing. releaseID is that release,
-	// sent to the agent with the container.
+	// (--record-release); empty records nothing. release records it.
 	recordRelease string
-	releaseID     *string
+	release       *deployRelease
 	detach        bool
 	// detachedOutput enables the ordinary CLI run result. Fleet and internal
 	// provisioning callers own their output and leave this false.
@@ -2200,7 +2199,6 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
 		return err
 	}
-	var release *deployRelease
 	if opts.recordRelease != "" {
 		// ponytail: one container per recorded deploy; multi-service apps and
 		// watch loops need a release per service or per cycle first.
@@ -2208,18 +2206,19 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			return usageErrorf("--record-release supports a single-container deploy without --watch or --skip-cloud-registration")
 		}
 		var err error
-		if release, err = startDeployRelease(ctx, conn, appCfg.AppID, opts.recordRelease); err != nil {
+		if opts.release, err = newDeployRelease(appCfg.AppID, opts.recordRelease); err != nil {
 			return err
 		}
-		opts.releaseID = &release.id
-		ctx = withImageDigestSink(ctx, &release.digest)
+		ctx = withDeployRelease(ctx, opts.release)
 	}
 	metrics := newDeployMetrics(opts)
 	metrics.ctx = ctx
 	err := runWithAgentRecorded(ctx, conn, cwd, appCfg, opts, metrics)
 	metrics.emit(err)
-	if err == nil && release != nil {
-		err = release.finish(ctx)
+	if opts.release != nil {
+		if recErr := opts.release.outcome(err); recErr != nil {
+			err = errors.Join(err, recErr)
+		}
 	}
 	return err
 }
@@ -2432,7 +2431,8 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 	// hashed only when they can use it: an unpinned FROM python:3.12-slim
 	// never reads it (WDY-3216).
 	deviceKey := deviceFingerprintKey(versionResp)
-	fingerprintUsed := !isDarwinAgent && !opts.deploy
+	// A recorded deploy always creates its container, so it carries the release.
+	fingerprintUsed := !isDarwinAgent && !opts.deploy && opts.release == nil
 	desiredHash, hashErr := "", errBasesNotPinned
 	if fingerprintUsed {
 		desiredHash, hashErr = singleServiceDesiredHash(cwd, opts.dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, deployEnv, appCfg, opts)
@@ -2799,7 +2799,11 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 // optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
 	activationStep(ctx, "deploy", nil)
-	createReq.ReleaseId = opts.releaseID
+	releaseID, err := opts.release.begin(ctx, conn)
+	if err != nil {
+		return err
+	}
+	createReq.ReleaseId = releaseID
 	if opts.deploy {
 		if err := createContainerWithoutProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return err
@@ -3633,7 +3637,7 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
-			noteImageDigest(stream.Context(), resp.GetStarted().GetImageDigest())
+			noteImageDigest(ctx, resp.GetStarted().GetImageDigest())
 			if !started {
 				started = true
 				if onStarted != nil && !opts.deploy {
@@ -4128,6 +4132,10 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		logSub = startRunLogSubscription(ctx, pushConn, appCfg.AppID, os.Stdout, runLogStreamWarning)
 		defer logSub.stop()
 	}
+	releaseID, err := opts.release.begin(ctx, pushConn)
+	if err != nil {
+		return nil, hint, err
+	}
 	runStarted := time.Now()
 	stream, err := pushConn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
 		ImageName:      imageName,
@@ -4139,7 +4147,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:       opts.userArgs,
 		ImageSignature: imageSignature,
 		Env:            deployEnv,
-		ReleaseId:      opts.releaseID,
+		ReleaseId:      releaseID,
 	})
 	if err != nil {
 		return nil, hint, err

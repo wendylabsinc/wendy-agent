@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"os"
 	"sync"
 	"time"
@@ -111,7 +112,7 @@ func (r *ReportedState) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.identityChanged:
-		case <-time.After(r.retry):
+		case <-time.After(r.retry + rand.N(r.retry)): // jitter: a fleet does not reconnect in one wave
 		}
 	}
 }

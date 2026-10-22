@@ -37,7 +37,7 @@ func TestAppReleaseRefusesImplicitLatest(t *testing.T) {
 			}
 		})
 	}
-	if _, err := startDeployRelease(context.Background(), nil, "app", ""); err == nil || !strings.Contains(err.Error(), "latest") {
+	if _, err := newDeployRelease("app", ""); err == nil || !strings.Contains(err.Error(), "latest") {
 		t.Fatalf("--record-release with an empty tag: err = %v", err)
 	}
 }
@@ -89,22 +89,42 @@ func TestRecordedReleaseCarriesTagAndDigest(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// The agent's create response reaches the deploy through its context.
-	var sink imageDigestSink
-	noteImageDigest(withImageDigestSink(context.Background(), &sink), "sha256:feed")
-	noteImageDigest(context.Background(), "sha256:other")
-
 	ctx := context.Background()
 	id, err := createAppRelease(ctx, conn, auth, deploymentTenant, "com.example.cam", "v1.4.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := setAppReleaseDigest(ctx, conn, auth, id, "v1.4.0", sink.get()); err != nil {
+	if err := setAppReleaseDigest(ctx, conn, auth, id, "v1.4.0", "sha256:feed"); err != nil {
 		t.Fatal(err)
 	}
 	wantCreate := &cloudpb.CreateAppReleaseRequest{AppId: "com.example.cam", OrganizationId: deploymentTenant, Name: "v1.4.0"}
 	wantUpdate := &cloudpb.UpdateAppReleaseRequest{Id: id, Name: "v1.4.0", ImageDigest: "sha256:feed"}
 	if !proto.Equal(rec.created, wantCreate) || !proto.Equal(rec.updated, wantUpdate) {
 		t.Fatalf("create = %v, update = %v", rec.created, rec.updated)
+	}
+}
+
+// A recorded deploy says what it left behind: nothing on a path that cannot
+// record, the release id when the digest never arrived, silence when complete.
+func TestDeployReleaseOutcome(t *testing.T) {
+	r, err := newDeployRelease("app", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No release was begun: a digest from the agent is dropped.
+	noteImageDigest(withDeployRelease(context.Background(), r), "sha256:feed")
+	if err := r.outcome(nil); err == nil || !strings.Contains(err.Error(), "nothing was recorded") {
+		t.Fatalf("unsupported path: %v", err)
+	}
+	if err := r.outcome(context.Canceled); err != nil {
+		t.Fatalf("failed deploy before any release: %v", err)
+	}
+	r.id = "0b6f2c1e-8a3d-4c5e-9f00-1234567890ab"
+	if err := r.outcome(nil); err == nil || !strings.Contains(err.Error(), r.id) {
+		t.Fatalf("release without digest: %v", err)
+	}
+	r.stored = true
+	if err := r.outcome(context.Canceled); err != nil {
+		t.Fatalf("completed release after Ctrl-C: %v", err)
 	}
 }

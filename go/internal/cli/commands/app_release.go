@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -61,24 +62,17 @@ func newAppReleaseCmd() *cobra.Command {
 			if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() == "" {
 				return fmt.Errorf("wendy app release needs an operator session; run 'wendy auth login'")
 			}
-			conn, err := dialCloudGRPC(auth)
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
-			ctx, err := cloudContext(cmd.Context(), auth)
-			if err != nil {
-				return err
-			}
-			id, err := createAppRelease(ctx, conn, auth, auth.Certificates[0].TenantUUID(), appCfg.AppID, tag)
-			if err != nil {
-				return err
-			}
-			if err := setAppReleaseDigest(ctx, conn, auth, id, tag, digest); err != nil {
-				return fmt.Errorf("release %s was created without its digest: %w", id, err)
-			}
-			cliLogln("Recorded release %s of %s: %s = %s", id, appCfg.AppID, tag, digest)
-			return nil
+			return withCloud(cmd.Context(), auth, func(ctx context.Context, conn grpc.ClientConnInterface) error {
+				id, err := createAppRelease(ctx, conn, auth, auth.Certificates[0].TenantUUID(), appCfg.AppID, tag)
+				if err != nil {
+					return err
+				}
+				if err := setAppReleaseDigest(ctx, conn, auth, id, tag, digest); err != nil {
+					return fmt.Errorf("release %s was created without its digest: %w", id, err)
+				}
+				cliLogln("Recorded release %s of %s: %s = %s", id, appCfg.AppID, tag, digest)
+				return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&tag, "tag", "", "Release tag, e.g. v1.4.0 (required)")
@@ -111,59 +105,99 @@ func setAppReleaseDigest(ctx context.Context, conn grpc.ClientConnInterface, aut
 		&cloudpb.UpdateAppReleaseRequest{Id: id, Name: tag, ImageDigest: digest}, new(cloudpb.AppRelease))
 }
 
-// deployRelease is a release recorded for one `wendy run --record-release`:
-// created before the deploy, so the container carries its id, and completed
-// with the digest the agent reports when the container is created.
+// deployRelease records one `wendy run --record-release <tag>` deploy. The
+// release is created only when a path that supports recording is about to
+// send the container, so a failed build or an unsupported path leaves nothing
+// behind; the digest is stored as soon as the agent reports it, so an attached
+// session ended with Ctrl-C still completes the release.
 type deployRelease struct {
-	id, tag string
-	auth    *config.AuthConfig
-	digest  imageDigestSink
+	appID, tag string
+
+	mu     sync.Mutex
+	id     string
+	auth   *config.AuthConfig
+	stored bool
+	err    error // why the digest was not stored
 }
 
-// startDeployRelease creates the release in the device's own organization,
-// with the operator session that deploys to it.
-func startDeployRelease(ctx context.Context, conn *grpcclient.AgentConnection, appID, tag string) (*deployRelease, error) {
+func newDeployRelease(appID, tag string) (*deployRelease, error) {
 	if err := validateReleaseTag(tag); err != nil {
 		return nil, usageErrorf("%v", err)
 	}
-	rel := &deployRelease{tag: tag}
-	err := registerDeviceApps(ctx, deploymentProvisioningService{conn}, []string{appID}, config.Load,
-		func(ctx context.Context, auth *config.AuthConfig, device *agentpb.ProvisionedResponse, _ []string) error {
-			identity, err := certs.ParsePrincipal(device.GetPrincipalUri())
-			if err != nil || identity.TenantUUID == "" {
-				return fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud v2")
-			}
-			return rel.withCloud(ctx, auth, func(ctx context.Context, cc grpc.ClientConnInterface) (err error) {
-				rel.auth = auth
-				rel.id, err = createAppRelease(ctx, cc, auth, identity.TenantUUID, appID, tag)
-				return err
+	return &deployRelease{appID: appID, tag: tag}, nil
+}
+
+// begin creates the release in the organization of the device behind conn,
+// with the operator session that deploys to it, and returns its id for the
+// container. A nil recorder records nothing.
+func (r *deployRelease) begin(ctx context.Context, conn *grpcclient.AgentConnection) (*string, error) {
+	if r == nil {
+		return nil, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.id == "" {
+		err := registerDeviceApps(ctx, deploymentProvisioningService{conn}, []string{r.appID}, config.Load,
+			func(ctx context.Context, auth *config.AuthConfig, device *agentpb.ProvisionedResponse, _ []string) error {
+				identity, err := certs.ParsePrincipal(device.GetPrincipalUri())
+				if err != nil || identity.TenantUUID == "" {
+					return fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud v2")
+				}
+				return withCloud(ctx, auth, func(ctx context.Context, cc grpc.ClientConnInterface) (err error) {
+					r.auth = auth
+					r.id, err = createAppRelease(ctx, cc, auth, identity.TenantUUID, r.appID, r.tag)
+					return err
+				})
 			})
-		})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		if r.id == "" {
+			return nil, fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud")
+		}
 	}
-	if rel.id == "" {
-		return nil, fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud")
-	}
-	return rel, nil
+	id := r.id
+	return &id, nil
 }
 
-// finish stores the digest the agent reported on the release.
-func (r *deployRelease) finish(ctx context.Context) error {
-	digest := r.digest.get()
-	if digest == "" {
-		return fmt.Errorf("release %s was created, but this deploy path or agent reported no image digest; it stays without one", r.id)
+// store records the digest the agent reported for the release's container.
+// It is detached from the deploy's cancellation: the deploy may be ending.
+func (r *deployRelease) store(ctx context.Context, digest string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.id == "" || r.stored {
+		return
 	}
-	if err := r.withCloud(ctx, r.auth, func(ctx context.Context, cc grpc.ClientConnInterface) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	r.err = withCloud(ctx, r.auth, func(ctx context.Context, cc grpc.ClientConnInterface) error {
 		return setAppReleaseDigest(ctx, cc, r.auth, r.id, r.tag, digest)
-	}); err != nil {
-		return fmt.Errorf("release %s was created without its digest: %w", r.id, err)
+	})
+	if r.stored = r.err == nil; r.stored {
+		cliLogln("Recorded release %s: %s = %s", r.id, r.tag, digest)
 	}
-	cliLogln("Recorded release %s: %s = %s", r.id, r.tag, digest)
-	return nil
 }
 
-func (r *deployRelease) withCloud(ctx context.Context, auth *config.AuthConfig, call func(context.Context, grpc.ClientConnInterface) error) error {
+// outcome reports a recording that did not complete; deployErr is the
+// deploy's own result.
+func (r *deployRelease) outcome(deployErr error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.stored:
+		return nil
+	case r.id == "" && deployErr == nil:
+		return fmt.Errorf("--record-release is not supported for this project or deploy path; nothing was recorded")
+	case r.id == "":
+		return nil
+	case r.err != nil:
+		return fmt.Errorf("release %s (%s) was created without its digest: %w", r.id, r.tag, r.err)
+	default:
+		return fmt.Errorf("release %s (%s) was created, but the device reported no image digest (an older agent?); it stays without one", r.id, r.tag)
+	}
+}
+
+func withCloud(ctx context.Context, auth *config.AuthConfig, call func(context.Context, grpc.ClientConnInterface) error) error {
 	conn, err := dialCloudGRPC(auth)
 	if err != nil {
 		return err
@@ -176,31 +210,21 @@ func (r *deployRelease) withCloud(ctx context.Context, auth *config.AuthConfig, 
 	return call(ctx, conn)
 }
 
-// imageDigestSink receives the image digest from whichever create path the
-// deploy takes, carried on the deploy's context so no path changes signature.
-type imageDigestSink struct {
-	mu     sync.Mutex
-	digest string
+type deployReleaseKey struct{}
+
+// withDeployRelease carries the recorder on the deploy's context, so every
+// create path can hand it the agent's digest without changing signature.
+func withDeployRelease(ctx context.Context, r *deployRelease) context.Context {
+	return context.WithValue(ctx, deployReleaseKey{}, r)
 }
 
-func (s *imageDigestSink) get() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.digest
-}
-
-type imageDigestSinkKey struct{}
-
-func withImageDigestSink(ctx context.Context, sink *imageDigestSink) context.Context {
-	return context.WithValue(ctx, imageDigestSinkKey{}, sink)
-}
-
-// noteImageDigest hands a create response's digest to the deploy's sink, if
-// it has one.
+// noteImageDigest hands a create response's digest to the deploy's recorder,
+// if it has one. A stream without a context (test doubles) has none.
 func noteImageDigest(ctx context.Context, digest string) {
-	if sink, ok := ctx.Value(imageDigestSinkKey{}).(*imageDigestSink); ok && digest != "" {
-		sink.mu.Lock()
-		sink.digest = digest
-		sink.mu.Unlock()
+	if ctx == nil || digest == "" {
+		return
+	}
+	if r, ok := ctx.Value(deployReleaseKey{}).(*deployRelease); ok {
+		r.store(ctx, digest)
 	}
 }

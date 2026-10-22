@@ -44,6 +44,9 @@ func (c *Client) ReportApps(ctx context.Context) ([]services.AppReport, error) {
 			signal = uint32(code - 128)
 		}
 		digest, release := info.Labels[labelKeyImageDigest], info.Labels[labelKeyReleaseID]
+		if !isCanonicalUUID(release) {
+			release = "" // cloud refuses the whole report for a non-UUID release id
+		}
 		r, seen := byApp[appID]
 		if !seen {
 			byApp[appID] = &services.AppReport{AppID: appID, Running: running, ExitSignal: signal, ManifestDigest: digest, ReleaseID: release}
@@ -71,9 +74,10 @@ func (c *Client) ReportApps(ctx context.Context) ([]services.AppReport, error) {
 	return reports, nil
 }
 
-// ImageDigest returns the manifest digest of a locally held image.
+// ImageDigest returns the manifest digest of a locally held image, named as a
+// create request names it.
 func (c *Client) ImageDigest(ctx context.Context, imageName string) (string, error) {
-	image, err := c.client.GetImage(c.withNamespace(ctx), imageName)
+	image, err := c.client.GetImage(c.withNamespace(ctx), normalizeImageName(imageName))
 	if err != nil {
 		return "", err
 	}
