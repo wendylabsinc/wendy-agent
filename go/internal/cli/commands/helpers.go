@@ -748,6 +748,20 @@ func lanDialCandidates(ctx context.Context, dev models.LANDevice) []string {
 // returns the first one that answers GetAgentVersion, along with whether that
 // connection used mTLS.
 func resolveLANAgentVersion(ctx context.Context, dev models.LANDevice) (string, bool, *agentpb.GetAgentVersionResponse, error) {
+	if dev.Mesh {
+		// Never send mesh ULAs through the host network or probe another identity.
+		picked, err := connectMeshSelector(ctx, "mesh:"+dev.ID)
+		if err != nil {
+			return "", false, nil, err
+		}
+		defer picked.Close()
+		version, ok := picked.Agent.CachedAgentVersion()
+		if !ok {
+			return "", false, nil, errors.New("mesh connection returned no agent metadata")
+		}
+		return "mesh:" + dev.ID, true, version, nil
+	}
+
 	// connectWithAutoTLSDiagnostics tries every stored org cert in turn, so the
 	// per-address budget must cover all of them — otherwise a device whose org
 	// isn't the user's first cert is cancelled before its cert is reached, even
@@ -821,9 +835,6 @@ var lanStreamFn = discovery.StreamLAN
 //
 // Consumers omit cached and offline events before mapping visible rows.
 func lanRowState(ev discovery.LANEvent) (probe tui.ProbeState, insecure bool) {
-	if ev.Device.Mesh {
-		return tui.ProbeNone, false
-	}
 	switch {
 	case ev.ProbeFailed:
 		return tui.ProbeFailed, false

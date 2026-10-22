@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -198,14 +199,27 @@ func ensureMeshSession(ctx context.Context) (string, config.CertificateInfo, err
 	}
 }
 func meshDeviceRow(d netmesh.Device) models.LANDevice {
-	return models.LANDevice{ID: d.ID.String(), DisplayName: discovery.SanitiseDisplayName(d.Name), Hostname: "mesh:" + d.ID.String(), IPAddress: d.Address.String(), Port: int(d.Port), IsMTLS: true, IsWendyDevice: true, Mesh: true}
+	return models.LANDevice{ID: d.ID.String(), DisplayName: meshDisplayName(d.Name), Hostname: "mesh:" + d.ID.String(), IPAddress: d.Address.String(), Port: int(d.Port), IsMTLS: true, IsWendyDevice: true, Mesh: true}
+}
+
+func meshDisplayName(name string) string {
+	name = discovery.SanitiseDisplayName(name)
+	name = strings.TrimPrefix(strings.TrimSuffix(name, ".local"), "wendyos-")
+	words := strings.Fields(strings.ReplaceAll(name, "-", " "))
+	for i, word := range words {
+		chars := []rune(word)
+		chars[0] = unicode.ToUpper(chars[0])
+		words[i] = string(chars)
+	}
+	return strings.Join(words, " ")
 }
 
 func meshDiscoveryStream(ctx context.Context) <-chan discovery.LANEvent {
-	return meshDiscoveryStreamWith(ctx, time.Second, func(ctx context.Context) (string, error) {
+	events := meshDiscoveryStreamWith(ctx, time.Second, func(ctx context.Context) (string, error) {
 		dir, _, err := ensureMeshSession(ctx)
 		return dir, err
 	}, netmesh.ReadStatus)
+	return probeMeshDiscovery(ctx, events, lanProber, 30*time.Second)
 }
 
 // A transient IPC failure must not permanently detach a running discovery view.
@@ -375,9 +389,11 @@ func connectDiscoveredMeshName(ctx context.Context, name string) (*SelectedDevic
 		return nil, false, nil
 	}
 	matches := 0
+	var selectedID string
 	for _, device := range status.Devices {
-		if device.Name == name || device.ID.String() == name {
+		if device.Name == name || meshDisplayName(device.Name) == name || device.ID.String() == name {
 			matches++
+			selectedID = device.ID.String()
 		}
 	}
 	if matches == 0 {
@@ -386,6 +402,6 @@ func connectDiscoveredMeshName(ctx context.Context, name string) (*SelectedDevic
 	if matches > 1 {
 		return nil, true, fmt.Errorf("ambiguous mesh device %q; use its UUID", name)
 	}
-	picked, err := connectMeshSelector(ctx, "mesh:"+name)
+	picked, err := connectMeshSelector(ctx, "mesh:"+selectedID)
 	return picked, true, err
 }
