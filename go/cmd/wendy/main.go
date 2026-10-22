@@ -23,6 +23,9 @@ import (
 )
 
 func main() {
+	if commands.RunMeshWorker() {
+		return
+	}
 	start := time.Now()
 	// Before anything else, so a leak during command construction or prerun is
 	// caught too. A trip kills the process outright, which means no analytics

@@ -60,6 +60,10 @@ type LANProber func(ctx context.Context, dev models.LANDevice) (models.LANDevice
 
 // StreamOptions configures a streaming LAN discovery scan.
 type StreamOptions struct {
+	// Supplemental streams authenticated mesh presence alongside LAN.
+	// These rows are never probed over the host network or written to the LAN cache.
+	Supplemental func(context.Context) <-chan LANEvent
+
 	UseCache bool      // emit cached entries and persist discoveries
 	Prober   LANProber // nil = no probing (mDNS-only confirmation)
 	Exclude  LANFilter // nil = nothing is excluded
@@ -339,7 +343,7 @@ type lanStream struct {
 }
 
 // runLANStream drives one session, ending after a quiet period in batch mode.
-func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, batch bool) {
+func runLANEngine(ctx context.Context, opts StreamOptions, out chan<- LANEvent, batch bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	s := &lanStream{
 		ctx:       ctx,
@@ -1180,4 +1184,89 @@ func probeTargetChanged(old, updated models.LANDevice) bool {
 	return old.IPAddress != updated.IPAddress ||
 		old.Port != updated.Port ||
 		old.Hostname != updated.Hostname
+}
+
+func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, batch bool) {
+	if opts.Supplemental == nil {
+		runLANEngine(ctx, opts, out, batch)
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	extra := opts.Supplemental(ctx)
+	primary := make(chan LANEvent)
+	drain := primary
+	drainExtra := extra
+	done := make(chan struct{})
+	go func() { defer close(done); defer close(drain); runLANEngine(ctx, opts, drain, batch) }()
+	defer func() {
+		cancel()
+		for range drain {
+		}
+		<-done
+		if drainExtra != nil {
+			for range drainExtra {
+			}
+		}
+	}()
+	merged := supplementalRows{primary: map[string]LANEvent{}, extra: map[string]LANEvent{}}
+	for primary != nil || extra != nil {
+		fromExtra := false
+		var event LANEvent
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok = <-primary:
+			if !ok {
+				primary = nil
+				continue
+			}
+		case event, ok = <-extra:
+			fromExtra = true
+			if !ok {
+				extra = nil
+				continue
+			}
+		}
+		event, ok = merged.accept(event, fromExtra)
+		if !ok {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case out <- event:
+		}
+	}
+}
+
+// Keep both sources so a LAN update cannot overwrite a live authenticated mesh
+// selector, and removing either source cannot erase the other's live result.
+type supplementalRows struct{ primary, extra map[string]LANEvent }
+
+func (s *supplementalRows) accept(event LANEvent, extra bool) (LANEvent, bool) {
+	key := discoverycache.Key(event.Device.ID, event.Device.DisplayName)
+	source := s.primary
+	if extra {
+		source = s.extra
+	}
+	switch event.Kind {
+	case LANFound, LANUpdated:
+		source[key] = event
+	case LANRetracted, LANOffline:
+		delete(source, key)
+	}
+	if !extra {
+		if _, ok := s.extra[key]; ok {
+			return LANEvent{}, false
+		}
+	}
+	if extra && (event.Kind == LANRetracted || event.Kind == LANOffline) {
+		if primary, ok := s.primary[key]; ok {
+			primary.Kind = LANUpdated
+			return primary, true
+		}
+	}
+	return event, true
 }

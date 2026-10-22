@@ -667,6 +667,9 @@ func lanAgentPort(dev models.LANDevice) int {
 }
 
 func lanAgentAddresses(dev models.LANDevice) []string {
+	if dev.Mesh {
+		return []string{dev.Hostname}
+	}
 	port := lanAgentPort(dev)
 
 	ip, hostname := strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)
@@ -818,6 +821,9 @@ var lanStreamFn = discovery.StreamLAN
 //
 // Consumers omit cached and offline events before mapping visible rows.
 func lanRowState(ev discovery.LANEvent) (probe tui.ProbeState, insecure bool) {
+	if ev.Device.Mesh {
+		return tui.ProbeNone, false
+	}
 	switch {
 	case ev.ProbeFailed:
 		return tui.ProbeFailed, false
@@ -838,7 +844,7 @@ func lanRowState(ev discovery.LANEvent) (probe tui.ProbeState, insecure bool) {
 // same cache+probe acceleration and the same idea of what a device is. ctx
 // bounds the filter's background learning; pass the session's.
 func cliLANStreamOptions(ctx context.Context) discovery.StreamOptions {
-	return discovery.StreamOptions{UseCache: true, Prober: lanProber, Exclude: newSimulatorFilter(ctx)}
+	return discovery.StreamOptions{UseCache: true, Prober: lanProber, Exclude: newSimulatorFilter(ctx), Supplemental: meshDiscoveryStream}
 }
 
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
@@ -1533,6 +1539,9 @@ func pinKeyForLANDevice(d *models.LANDevice) string {
 // pin first) or `wendy device unpin <host>` is the way back — a re-pin has to be
 // an act aimed at a specific device, not a row in a list mDNS filled in.
 func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, addr string, suppressUpdateCheck bool) (*SelectedDevice, error) {
+	if d.LAN != nil && d.LAN.Mesh {
+		return connectMeshSelector(ctx, d.LAN.Hostname)
+	}
 	if name, matched, err := simulatorName(d.LAN.ID); err != nil {
 		return nil, err
 	} else if matched {
@@ -4383,9 +4392,13 @@ func lanPickerItem(dev models.LANDevice, insecure bool, probe tui.ProbeState) tu
 	if probe != tui.ProbePending {
 		hint = lanProbeHint(&devCopy)
 	}
+	kind := "LAN"
+	if dev.Mesh {
+		kind = "Mesh"
+	}
 	return tui.PickerItem{
 		Name:          dev.DisplayName,
-		Type:          "LAN",
+		Type:          kind,
 		USB:           dev.USB,
 		Address:       preferredLANAddress(dev),
 		AgentVersion:  dev.AgentVersion,

@@ -11,9 +11,11 @@ import "C"
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -72,8 +74,16 @@ func (s *darwinScanner) Snapshot(_ context.Context) ([]BLEDeviceInfo, error) {
 	cDevices := unsafe.Slice(snapshot.devices, count)
 	devices := make([]BLEDeviceInfo, 0, count)
 	for _, cd := range cDevices {
+		data := map[string][]byte{}
+		_ = json.Unmarshal([]byte(C.GoString(cd.service_data)), &data)
+		canonical := make(map[string][]byte, len(data))
+		for key, value := range data {
+			canonical[strings.ToUpper(key)] = value
+		}
 		devices = append(devices, BLEDeviceInfo{
 			Address:      C.GoString(cd.address),
+			ServiceData:  canonical,
+			LastSeen:     time.UnixMilli(int64(float64(cd.last_seen) * 1000)),
 			Name:         C.GoString(cd.name),
 			ServiceUUIDs: splitList(C.GoString(cd.service_uuids)),
 			RSSI:         int(cd.rssi),

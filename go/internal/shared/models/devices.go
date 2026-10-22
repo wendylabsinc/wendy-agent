@@ -58,6 +58,7 @@ type ProbeFailure struct {
 
 // LANDevice represents a device discovered via mDNS on the local network.
 type LANDevice struct {
+	Mesh         bool          `json:"mesh,omitempty"`
 	ProbeFailure *ProbeFailure `json:"probeFailure,omitempty"`
 	ID           string        `json:"id"`
 	DisplayName  string        `json:"displayName"`
@@ -256,7 +257,11 @@ type DiscoveredDevice struct {
 func (d *DiscoveredDevice) ConnectionTypes() string {
 	var types []string
 	if d.LAN != nil {
-		types = append(types, "LAN")
+		if d.LAN.Mesh {
+			types = append(types, "Mesh")
+		} else {
+			types = append(types, "LAN")
+		}
 	}
 	if d.Bluetooth != nil {
 		if d.Bluetooth.IsWendyAgent() {
@@ -281,6 +286,9 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 // Prefers the LAN IP/hostname over the BLE address.
 func (d *DiscoveredDevice) Address() string {
 	if d.LAN != nil {
+		if d.LAN.Mesh {
+			return d.LAN.Hostname
+		}
 		if d.LAN.IPAddress != "" {
 			return d.LAN.IPAddress
 		}

@@ -44,7 +44,7 @@ func (m CertificateMessage) validate() error {
 		if len(c.Principal) > maxPrincipalBytes || len(c.Hashes) == 0 || len(c.Hashes) > 16 {
 			return errors.New("invalid certificate chain description")
 		}
-		if _, err := meshid.DeviceFromPrincipal(c.Principal); err != nil {
+		if _, err := meshid.PeerFromPrincipal(c.Principal); err != nil {
 			return err
 		}
 		seen := make(map[string]bool)
@@ -176,7 +176,7 @@ func (e *CertificateExchange) Receive(m CertificateMessage, now time.Time) (repl
 		return nil, nil, err
 	}
 	if c := m.Chain; c != nil {
-		device, _ := meshid.DeviceFromPrincipal(c.Principal)
+		device, _ := meshid.PeerFromPrincipal(c.Principal)
 		if device.Tenant() != e.tenant {
 			return nil, nil, errors.New("foreign certificate chain description")
 		}

@@ -21,6 +21,8 @@ typedef struct {
     const char *address;       // CoreBluetooth peripheral identifier UUID string
     const char *name;          // advertised local name, or "" when unknown
     const char *service_uuids; // comma-separated advertised service UUIDs, or ""
+    const char *service_data; // JSON map of service UUID to base64 data
+    double last_seen; // seconds since Unix epoch
     int rssi;                  // signal strength in dBm
 } WendyBLEScanDeviceC;
 

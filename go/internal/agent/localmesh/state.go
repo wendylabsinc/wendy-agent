@@ -70,7 +70,7 @@ func OpenDeviceStateStore(path string, device meshid.Device, routerID babel.Rout
 	// the current credentials: that would relabel another router's history.
 	var legacy struct{ Org, Asset int32 }
 	_ = json.Unmarshal(data, &legacy)
-	_, principalErr := meshid.DeviceFromPrincipal(old.Device)
+	_, principalErr := meshid.PeerFromPrincipal(old.Device)
 	if old.Version != 1 || (principalErr != nil && !(old.Device == "" && legacy.Org > 0 && legacy.Asset > 0)) {
 		return nil, old, errors.New("wendy net safety state identity mismatch")
 	}
@@ -101,7 +101,7 @@ func OpenStateStore(path string, device meshid.Device, routerID babel.RouterID) 
 	if state.Version != 1 || state.Device != principal {
 		return nil, state, errors.New("wendy net safety state identity mismatch")
 	}
-	if _, err := meshid.DeviceFromPrincipal(state.Device); err != nil {
+	if _, err := meshid.PeerFromPrincipal(state.Device); err != nil {
 		return nil, state, errors.New("wendy net safety state identity mismatch")
 	}
 	if state.RouterID == 0 || state.RouterID == uint64(babel.RouterID(^uint64(0))) {
