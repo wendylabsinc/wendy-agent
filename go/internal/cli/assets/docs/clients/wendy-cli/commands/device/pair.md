@@ -31,6 +31,14 @@ from the selected Wendy device, enrolled in the same organization, and accessibl
 to your signed-in account. Sources needing enrollment are listed separately;
 enroll them and press `r` to refresh.
 
+A Linux WendyOS consumer can also discover Wendy Lite sensor sources across
+Wendy Net. The Lite board must already have joined the mesh with UUID enrollment
+and compatible mesh-enabled firmware. Discovery checks its authenticated sensor
+manifest; an offline board or a board still starting its mesh connection may need
+a later refresh. Connections prefer the local network and fall back to a live
+mesh route, including routes through other Wendy devices. Camera and audio
+performance depends on the links along that route.
+
 Saved sources are found again if their address changes, and remain available to
 forget while offline. If an older agent falls back to discovery on the CLI's
 network, the list says so; update that agent to scan from the device instead.

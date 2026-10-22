@@ -493,6 +493,17 @@ func main() {
 		return certPEM, chainPEM, keyPEM
 	}
 	robotArmSvc := services.NewRobotArmService(robotarm.NewStore("/var/lib/wendy/robot-arm-bindings.json"), robotarm.Discover)
+	var localMeshMu sync.RWMutex
+	var localMeshSnapshot func() localmesh.NodeSnapshot
+	meshSnapshot := func() localmesh.NodeSnapshot {
+		localMeshMu.RLock()
+		snapshot := localMeshSnapshot
+		localMeshMu.RUnlock()
+		if snapshot == nil {
+			return localmesh.NodeSnapshot{}
+		}
+		return snapshot()
+	}
 	sensorStore := mcusource.NewPairingStore("/var/lib/wendy/sensor-pairings.json")
 	if err := sensorStore.Load(); err != nil {
 		logger.Warn("loading sensor pairing store failed", zap.Error(err))
@@ -523,6 +534,8 @@ func main() {
 	sensorFrames := services.NewSensorFrameFeed()
 	videoSvc.SetSensorFrameFeed(sensorFrames)
 	sensorSup := mcusource.NewSupervisor(logger, videoSvc.Loopback(), sensorTransportFor, sensorFrames.WrapWriters(ros2camera.NewFrameWriter), audioLoop)
+	meshSensors := mcusource.NewLiteMeshSources(meshSnapshot, sensorTransportFor)
+	sensorSup.SetAddressResolver(meshSensors.Resolve)
 	sensorRunner := mcusource.NewRunner(logger, sensorSup)
 	sensorAgentScope := func() certs.Scope {
 		certPEM, _, _ := mcuIdentity()
@@ -534,7 +547,7 @@ func main() {
 	// `device pair` lists sources from this device's network, so this device
 	// must not offer itself. Its asset ID is read per request because
 	// enrollment can assign one while the agent runs.
-	sensorSvc.SetSourceDiscovery(nil, func() services.SensorSourceSelf {
+	sensorSvc.SetSourceDiscovery(meshSensors.Browse, func() services.SensorSourceSelf {
 		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
 		return services.LocalSensorSourceSelf(assetID)
 	})
@@ -546,8 +559,8 @@ func main() {
 		logger.Warn("loading Unitree pairings failed", zap.Error(err))
 	}
 	// Boot-resume: every previously paired source reconnects on its own —
-	// addr == "" tells the runner to resolve the source's current LAN address
-	// by asset id rather than trusting a possibly-stale one from disk.
+	// addr == "" resolves the source by identity over LAN and Wendy Net
+	// rather than trusting a possibly-stale address from disk.
 	for _, p := range sensorStore.List() {
 		sensorRunner.Start(p, "")
 	}
@@ -743,8 +756,6 @@ func main() {
 	// true, BuildImage reports "no mesh dialer" rather than panicking.
 	var meshDialer *services.MeshDialer
 	var meshRoster *services.MeshRoster
-	var localMeshMu sync.RWMutex
-	var localMeshSnapshot func() localmesh.NodeSnapshot
 	// All listeners extract into the same per-app context directories. Share
 	// their locks so a local-socket build cannot race an mTLS build for the same
 	// app and replace its source tree while buildctl is reading it.
