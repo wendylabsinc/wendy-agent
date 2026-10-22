@@ -21,7 +21,7 @@ require (
 	github.com/containerd/log v0.1.0
 	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/containerd/typeurl/v2 v2.3.0
-	github.com/containernetworking/cni v1.3.0
+	github.com/containernetworking/cni v1.3.1
 	github.com/containernetworking/plugins v1.9.1
 	github.com/creack/pty v1.1.24
 	github.com/diskfs/go-diskfs v1.9.3
