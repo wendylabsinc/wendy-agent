@@ -62,10 +62,10 @@ func SubmitWorkflow(ctx context.Context, conn *grpcclient.AgentConnection, spec 
 	artifacts, err := Pull(ctx, conn, jobPath, opts.ArtifactDestination, opts.ArtifactFiles)
 	if err != nil {
 		receipt["artifact_error"] = err.Error()
-		return receipt, nil
+	} else {
+		receipt["artifacts"] = artifacts
 	}
-	receipt["artifacts"] = artifacts
-	if len(opts.ReportFields) > 0 {
+	if err == nil && len(opts.ReportFields) > 0 {
 		reports, err := summarizeReports(opts.ArtifactDestination, artifacts, opts.ReportFields)
 		if err != nil {
 			receipt["report_error"] = err.Error()

@@ -20,7 +20,7 @@ var toolGroups = map[string][]string{
 		"cloud_enroll_device", "provisioning_start", "provisioning_status", "wifi_list", "wifi_connect", "wifi_disconnect", "wifi_status", "wifi_known_networks"},
 	"hardware":      {"bluetooth_scan", "bluetooth_connect", "bluetooth_disconnect", "camera_list", "camera_controls", "camera_set_control", "camera_snapshot"},
 	"robotics":      {"ros2_topics", "ros2_topic_info", "ros2_topic_sample", "ros2_topic_hz", "ros2_lidar_summary"},
-	"observability": {"telemetry_metrics", "telemetry_traces", "app_inspect", "device_os_logs", "job_inspect", "job_artifacts_pull", "compute_status", "job_submit"},
+	"observability": {"telemetry_metrics", "telemetry_traces", "app_inspect", "device_os_logs", "job_inspect", "job_artifacts_pull", "compute_status", "job_submit", "checkpoint_inspect"},
 	"simulator":     {"simulator_list", "simulator_create", "simulator_start", "simulator_stop", "simulator_delete"},
 	"cloud":         {"cloud_discover", "cloud_connect", "cloud_tunnel", "cloud_tunnel_list", "cloud_tunnel_close", "cloud_ping"},
 }
@@ -39,7 +39,7 @@ func (s *mcpServer) SetToolProfile(profile string) error {
 	return nil
 }
 
-var trainingTools = []string{"wendy_status", "auth_login", "device_list", "device_connect", "device_disconnect", "job_inspect", "job_artifacts_pull", "compute_status", "job_submit"}
+var trainingTools = []string{"wendy_status", "auth_login", "device_list", "device_connect", "device_disconnect", "job_inspect", "job_artifacts_pull", "compute_status", "job_submit", "checkpoint_inspect"}
 
 // SetToolGroups sets the advertised built-in tools. Core is always included.
 // Call before Start; the wendy_tools handler also uses it while serving.
@@ -91,7 +91,7 @@ func (s *mcpServer) filterTools(_ context.Context, tools []mcpgo.Tool) []mcpgo.T
 			continue
 		}
 		if profile == "training" || profile == "workflow" {
-			if slices.Contains(trainingTools, tool.Name) {
+			if slices.Contains(trainingTools, tool.Name) && (profile != "workflow" || tool.Name != "checkpoint_inspect") {
 				if profile == "workflow" && tool.Name == "job_submit" {
 					tool.Description = "Run a saved wendy.workflow.v1 file on the connected target: bounded steps, terminal evidence, verified selected reports and a saved receipt. Identical retries reuse the job. Missing evidence stays unknown. Executes the declared argv with host-agent permissions."
 					tool.InputSchema = mcpgo.ToolInputSchema{Type: "object", Properties: map[string]any{"workflow_path": map[string]any{"type": "string", "description": "Absolute local workflow JSON path; contains job, wait_seconds, artifact selection/destination and scalar report fields"}}, Required: []string{"workflow_path"}}

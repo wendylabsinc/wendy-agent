@@ -68,6 +68,7 @@ func localOnly() []mcpgo.ToolOption {
 var toolTitles = map[string]string{
 	"job_submit":            "Submit Training Job",
 	"compute_status":        "Inspect Compute Capacity",
+	"checkpoint_inspect":    "Inspect Training Checkpoint",
 	"job_inspect":           "Inspect Training Job",
 	"job_artifacts_pull":    "Pull Job Artifacts",
 	"app_inspect":           "Inspect App",

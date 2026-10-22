@@ -57,7 +57,7 @@ func TestTrainingProfileBoundsCatalogWithoutChangingDefaultOrAuthority(t *testin
 		t.Fatal(err)
 	}
 	tools := protocolTools(t, srv)
-	if len(tools) != 9 {
+	if len(tools) != 10 {
 		t.Fatalf("training catalog contains %d tools", len(tools))
 	}
 	for _, tool := range tools {
@@ -149,5 +149,24 @@ func TestWorkflowProfileHasSmallSchemaAndPreservesHostAuthorization(t *testing.T
 		if err != nil || !r.IsError {
 			t.Fatalf("accepted ambiguous workflow: %v %+v", err, r)
 		}
+	}
+}
+
+func TestCheckpointInspectorDoesNotGainAutomaticReadAuthority(t *testing.T) {
+	s := New(&config.Config{}, nil)
+	srv, err := s.newProtocolServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := srv.GetTool("checkpoint_inspect").Tool
+	if readOnlyTool(tool) || (&BindingPolicy{AllowRead: true}).allows(tool) {
+		t.Fatal("explicit host runtime bypassed host authorization")
+	}
+	if err := CheckToolNames([]string{"checkpoint_inspect"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.handleCheckpointInspect(context.Background(), callToolReq("checkpoint_inspect", map[string]any{"checkpoint_path": "/tmp/a.pt", "sha256": strings.Repeat("a", 64), "python": "/tmp/python", "source_directory": 7}))
+	if err != nil || !result.IsError {
+		t.Fatalf("invalid source directory reached a host: %v %+v", err, result)
 	}
 }

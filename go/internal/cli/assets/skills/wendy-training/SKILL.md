@@ -31,6 +31,23 @@ The default catalog remains available for general device work.
    files whose hashes match. Bytes stay out of agent context. Maximum 64 files,
    16 MiB transferred; request fewer files when needed. Destination is absolute.
 
+Before a checkpoint restart, use `checkpoint_inspect(checkpoint_path=...,
+sha256=..., python=..., source_directory=...)` to inspect the trusted receipt's
+artifact through the existing remote Torch/NumPy interpreter. It returns counters,
+saved-state availability, source differences and matching environment-adapter
+files. Empty saved experiment RNG state is distinct from a missing field. Preserve
+the original adapter and stress profile as well as policy, optimizer and RNG.
+Source checks and readable metadata are evidence for planning, not proof that a
+restart is compatible or successful. The inspector uses restricted CPU loading,
+starts no training and installs nothing. It retains host-execution authorization
+because an explicit interpreter runs with host-agent permissions. Files above
+64 MiB or unsupported serialization remain unknown; it never falls back to an
+unrestricted pickle loader. The workflow catalog stays focused; the training
+catalog includes checkpoint inspection.
+
+CLI: `wendy job checkpoint inspect /remote/iteration.pt --sha256 <receipt-digest>
+--python /remote/.venv/bin/python --source-directory /remote/project`.
+
 For a new job explicitly requested by the user, prefer a saved local workflow:
 `job_submit(workflow_path="/absolute/local/workflow.json")`. Supply it alone.
 The versioned file combines the job and its evidence contract:
@@ -74,7 +91,8 @@ verification; their bytes stay outside context. `report_fields` returns at most
 Missing, compound, oversized or changed fields are explicitly unavailable;
 never infer zero or success from them. Full reports remain on disk for audit.
 
-A compact receipt is saved as `.wendy-artifacts-workflow-receipt.json` in the
+After terminal observation, a compact receipt is saved even if selected report
+collection fails; collection errors remain explicit. The receipt is saved as `.wendy-artifacts-workflow-receipt.json` in the
 artifact directory. The response links its path and SHA-256, the manifest and
 workflow hashes. A receipt proves provenance, not independent outcome grading.
 A running job returns `artifacts_pending`; an `artifact_error`, `report_error`

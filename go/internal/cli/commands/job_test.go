@@ -57,3 +57,11 @@ func TestJobSubmitRejectsBadCollectionBeforeReadingSpecOrConnecting(t *testing.T
 		t.Fatalf("invalid collection reached file/device access: %v", err)
 	}
 }
+
+func TestCheckpointInspectValidatesRuntimeBeforeDeviceDiscovery(t *testing.T) {
+	cmd := newJobCmd()
+	cmd.SetArgs([]string{"checkpoint", "inspect", "/tmp/checkpoint.pt", "--sha256", strings.Repeat("a", 64), "--python", "python3"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "absolute remote paths") {
+		t.Fatalf("invalid runtime reached device discovery: %v", err)
+	}
+}

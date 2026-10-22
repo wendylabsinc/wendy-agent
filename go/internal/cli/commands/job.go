@@ -30,7 +30,7 @@ func newJobCmd() *cobra.Command {
 	}}
 	inspect.Flags().StringVar(&since, "since", "", "Return a compact unchanged acknowledgement for this cursor")
 	inspect.Flags().IntVar(&wait, "wait", 0, "Wait up to 30 seconds for a change; requires --since")
-	cmd.AddCommand(inspect, newJobArtifactsCmd(), newJobSubmitCmd())
+	cmd.AddCommand(inspect, newJobArtifactsCmd(), newJobSubmitCmd(), newCheckpointCmd())
 	return cmd
 }
 
@@ -132,4 +132,33 @@ func newJobSubmitCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&fields, "report-field", nil, "Verified scalar field as relative.json#/pointer; repeat, requires --artifact, --wait and --output")
 	cmd.Flags().BoolVar(&workflow, "workflow", false, "Read a saved wendy.workflow.v1 execution/evidence contract instead of a plain job specification")
 	return cmd
+}
+
+func newCheckpointCmd() *cobra.Command {
+	parent := &cobra.Command{Use: "checkpoint", Short: "Inspect checkpoint metadata and source compatibility without starting training"}
+	var opts jobops.CheckpointOptions
+	cmd := &cobra.Command{Use: "inspect <absolute-remote-checkpoint>", Short: "Read bounded, restricted checkpoint metadata with an explicit remote Python runtime", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		opts.Path = args[0]
+		if err := jobops.ValidateCheckpoint(opts); err != nil {
+			return err
+		}
+		conn, err := connectToAgent(cmd.Context(), monitoringOptions(true)...)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		result, err := jobops.InspectCheckpoint(cmd.Context(), conn, opts)
+		if err != nil {
+			return err
+		}
+		result["target"] = deviceFlag
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+	}}
+	cmd.Flags().StringVar(&opts.Python, "python", "", "Absolute remote interpreter with Torch/NumPy; executes the fixed inspector with host-agent permissions")
+	cmd.Flags().StringVar(&opts.SHA256, "sha256", "", "Expected SHA-256 from the trusted checkpoint receipt")
+	cmd.Flags().StringVar(&opts.SourceDirectory, "source-directory", "", "Absolute remote project directory for source and environment-adapter checks")
+	cmd.MarkFlagRequired("python")
+	cmd.MarkFlagRequired("sha256")
+	parent.AddCommand(cmd)
+	return parent
 }

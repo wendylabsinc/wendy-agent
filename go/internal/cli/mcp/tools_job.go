@@ -37,6 +37,19 @@ func (s *mcpServer) registerJobTools(srv *server.MCPServer) {
 	submitSchema["additionalProperties"] = false
 	srv.AddTool(submitTool, s.handleJobSubmit)
 
+	checkpoint := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Inspect a hash-pinned PyTorch checkpoint using an explicit remote Python runtime: bounded counters, saved RNG availability, source differences and matching environment adapter. Restricted CPU loading; never starts training or restores a job. The runtime executes with host-agent permissions."),
+		mcpgo.WithString("checkpoint_path", mcpgo.Required(), mcpgo.Description("Absolute remote checkpoint path, at most 64 MiB")),
+		mcpgo.WithString("sha256", mcpgo.Required(), mcpgo.Description("Expected checkpoint SHA-256 from its trusted receipt")),
+		mcpgo.WithString("python", mcpgo.Required(), mcpgo.Description("Absolute remote Python interpreter with Torch/NumPy; no installation is performed")),
+		mcpgo.WithString("source_directory", mcpgo.Description("Optional absolute remote project directory for source and adapter checks")),
+	}
+	// An explicit executable runs with host permissions; do not label this
+	// capability automatically safe merely because the intended work is a read.
+	checkpoint = append(checkpoint, mutating()...)
+	checkpoint = append(checkpoint, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("checkpoint_inspect", checkpoint...), s.handleCheckpointInspect)
+
 	compute := []mcpgo.ToolOption{mcpgo.WithDescription("Read current GPU identity, utilization, compute processes and CPU/memory/disk headroom in one bounded snapshot. Missing GPU tools stay unknown. Does not reserve the device, start training or change jobs. Requires authenticated Linux host access and python3.")}
 	compute = append(compute, readOnly()...)
 	compute = append(compute, openWorld()...)
@@ -215,4 +228,31 @@ func (s *mcpServer) submitWorkflow(ctx context.Context, spec jobops.Spec, opts j
 	}
 	receipt["target"] = opts.Target
 	return jobJSON(receipt), nil
+}
+
+func (s *mcpServer) handleCheckpointInspect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	path, _ := args["checkpoint_path"].(string)
+	sha, _ := args["sha256"].(string)
+	python, _ := args["python"].(string)
+	source, _ := args["source_directory"].(string)
+	if raw, present := args["source_directory"]; present {
+		if _, ok := raw.(string); !ok {
+			return errResult(errCodeInvalidArgument, "source_directory must be a string"), nil
+		}
+	}
+	opts := jobops.CheckpointOptions{Path: path, SHA256: sha, Python: python, SourceDirectory: source}
+	if err := jobops.ValidateCheckpoint(opts); err != nil {
+		return errResult(errCodeInvalidArgument, err.Error()), nil
+	}
+	conn, _, target := s.connectionSnapshot()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	result, err := jobops.InspectCheckpoint(ctx, conn, opts)
+	if err != nil {
+		return errResult(errCodeInternal, err.Error()), nil
+	}
+	result["target"] = target.Selector
+	return jobJSON(result), nil
 }

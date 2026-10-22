@@ -57,7 +57,7 @@ func TestSubmitWorkflowRetainsCompletedReceiptWhenArtifactMissing(t *testing.T) 
 	c := connection(t, &host{})
 	spec := jobops.Spec{Name: "missing-report", WorkingDirectory: t.TempDir(), Steps: []jobops.Step{{Name: "check", Argv: []string{"python3", "-c", "print('done')"}, TimeoutSeconds: 2}}}
 	r, err := jobops.SubmitWorkflow(context.Background(), c, spec, jobops.SubmitOptions{WaitSeconds: 3, ArtifactFiles: []string{"missing.json"}, ArtifactDestination: filepath.Join(t.TempDir(), "out")})
-	if err != nil || r["job_path"] == nil || r["artifact_error"] == nil || r["artifacts"] != nil || r["observation"].(map[string]any)["reported_state"] != "completed" {
+	if err != nil || r["job_path"] == nil || r["artifact_error"] == nil || r["receipt_path"] == nil || r["receipt_sha256"] == nil || r["artifacts"] != nil || r["observation"].(map[string]any)["reported_state"] != "completed" {
 		t.Fatalf("lost job identity or claimed collection success: %v %+v", err, r)
 	}
 	data, _ := os.ReadFile(filepath.Join(r["job_path"].(string), "status.json"))
