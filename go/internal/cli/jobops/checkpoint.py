@@ -55,7 +55,7 @@ def inspect(request):
     experiment = manifest.get('experiment', {})
     if not isinstance(experiment, dict): experiment = {}
     scalar = lambda value: value if type(value) in (int, float, bool) or value is None else str(value)[:160]
-    result = {'checkpoint_sha256': expected, 'bytes': before.st_size, 'restricted_loader': True,
+    result = {'checkpoint_sha256': expected, 'bytes': len(raw), 'restricted_loader': True,
               'training_started': False, 'cuda_execution_verified': False,
               'iteration': scalar(saved.get('iteration')), 'optimizer_steps_total': scalar(saved.get('optimizer_steps_total')),
               'transitions': scalar(saved.get('transitions')),
@@ -81,7 +81,7 @@ def inspect(request):
             try:
                 actual,_=digest(source,MAX_CHECKPOINT)
                 checked+=1
-                if actual!=wanted:changed.append(name)
+                if not isinstance(wanted,str) or actual!=wanted.lower():changed.append(name)
             except FileNotFoundError:missing.append(name)
             if relative.suffix=='.py' and relative.parent!=Path('.'):
                 directories.setdefault(str(relative.parent),set()).add(relative.name)
@@ -109,8 +109,8 @@ def inspect(request):
             profile=manifest.get('stress_profile')
             encoded=json.dumps(profile,allow_nan=False)
             result['environment_adapter']={'sha256':adapter,'matching_project_files':candidates[:8],
-                                           'stress_profile':profile if len(encoded)<=1024 else None,
-                                           'stress_profile_available':len(encoded)<=1024,
+                                           'stress_profile':profile if 'stress_profile' in manifest and len(encoded)<=1024 else None,
+                                           'stress_profile_available':'stress_profile' in manifest and len(encoded)<=1024,
                                            'preserve_on_resume':True}
     return result
 

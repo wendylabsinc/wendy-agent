@@ -164,6 +164,7 @@ def main():
         "reported_state": "starting",
         "reused": False,
         "source_check": source_check,
+        "runner_sha256": hashlib.sha256(request["worker_source"].encode()).hexdigest(),
     }
     (root / "receipt.json").write_text(json.dumps(receipt, separators=(",", ":")))
     print("WENDY_JOB " + json.dumps(receipt, separators=(",", ":")), flush=True)

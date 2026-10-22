@@ -33,6 +33,10 @@ func TestWorkflowReturnsCompleteBoundedEvidenceAndSavedReceipt(t *testing.T) {
 		if step.(map[string]any)["returncode"] != float64(0) {
 			t.Fatalf("wrong exit: %+v", step)
 		}
+
+		if duration, ok := step.(map[string]any)["duration_seconds"].(float64); !ok || duration <= 0 {
+			t.Fatalf("missing monotonic step timing: %+v", step)
+		}
 	}
 	encoded, _ := json.Marshal(r["reports"])
 	if strings.Contains(string(encoded), strings.Repeat("x", 100)) || len(encoded) > 2000 {

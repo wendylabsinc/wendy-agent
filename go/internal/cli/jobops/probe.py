@@ -204,6 +204,9 @@ def snapshot(root, target, include_steps=False):
             "sha256": hashlib.sha256(raw).hexdigest(),
         },
     }
+    duration = data.get("execution_seconds")
+    if type(duration) in (int, float) and math.isfinite(duration) and duration >= 0:
+        out["execution_seconds"] = duration
     for key in ["robot_commands_sent", "child_pid"]:
         if isinstance(data.get(key), int):
             out[key] = data[key]
@@ -219,6 +222,7 @@ def snapshot(root, target, include_steps=False):
                     "label": str(step.get("label", "unknown"))[:80],
                     "returncode": code if isinstance(code, int) and not isinstance(code, bool) else None,
                     "timed_out": step.get("timed_out") if isinstance(step.get("timed_out"), bool) else None,
+                    "duration_seconds": step.get("duration_seconds") if type(step.get("duration_seconds")) in (int,float) and math.isfinite(step["duration_seconds"]) and step["duration_seconds"] >= 0 else None,
                 })
         out["step_outcomes"] = outcomes
         out["step_outcomes_omitted"] = max(0, len(stages) - len(outcomes)) if isinstance(stages, list) else 0

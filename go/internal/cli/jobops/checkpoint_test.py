@@ -48,6 +48,13 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('secret_tensor',json.dumps(result));self.assertFalse(result['training_started'])
         self.assertFalse(result['cuda_execution_verified'])
 
+    def test_missing_adapter_profile_stays_unknown(self):
+        del self.saved['manifest']['stress_profile']
+        torch.save(self.saved,self.path)
+        result=inspector.inspect(self.request())['environment_adapter']
+        self.assertIsNone(result['stress_profile'])
+        self.assertFalse(result['stress_profile_available'])
+
     def test_extra_module_cannot_hide_behind_matching_declared_hashes(self):
         (self.root/'rl/extra.py').write_text('# extra module\n')
         result=inspector.inspect(self.request())['source_check']

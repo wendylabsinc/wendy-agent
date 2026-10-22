@@ -81,7 +81,11 @@ retry the identical workflow to collect later. Observation errors preserve the
 confirmed receipt and leave completion unknown.
 
 After terminal observation the response includes every declared step's exit
-and timeout outcome, plus `step_check`. A passed step check verifies process
+and timeout outcome, plus `step_check`. New jobs record monotonic per-step wall
+durations, total execution time and the runner source hash. These durations
+include process startup, runtime and I/O; they are not GPU-only measurements.
+Keep framework training/evaluation loop time separate when comparing agent
+orchestration. Older jobs can have unknown timings. A passed step check verifies process
 exits, not scientific success. The top-level state reflects the latest
 observation. Failed workflows include one bounded log tail (at most 2048 bytes)
 and its path/hash so the agent can diagnose ordinary failures without another
