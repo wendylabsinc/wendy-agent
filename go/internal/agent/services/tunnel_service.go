@@ -1,6 +1,13 @@
 package services
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"strconv"
+	"time"
+
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -11,28 +18,152 @@ import (
 
 // Sessions may be long-lived because an active Companion port forward is
 // expected to run until explicitly stopped. Bound both dimensions instead:
-// idle flow sockets expire after datagramFlowIdleTimeout, each session gets the
-// relay's 256-flow cap, and all LAN sessions share a smaller process-wide cap.
+// idle UDP sockets expire after datagramFlowIdleTimeout, each datagram session
+// gets the relay's 256-flow cap, and TCP and UDP share the socket budget below.
 const (
 	maxConcurrentDatagramSessions = 8
 	maxConcurrentDatagramFlows    = 512
+	// Each TCP stream owns one socket. Count pending opens too, and share
+	// the socket budget with UDP so the transports cannot exhaust it separately.
+	maxConcurrentTCPTunnels = 256
 )
 
-// TunnelService exposes authenticated LAN datagram sessions. The TCP Tunnel
-// method in the shared wire contract is intentionally left unimplemented.
+// TunnelService exposes authenticated loopback TCP and datagram sessions.
+// It is registered only on the authenticated, tenant-checked mTLS server.
 type TunnelService struct {
 	agentpbv2.UnimplementedWendyTunnelServiceServer
-	logger    *zap.Logger
-	sessions  chan struct{}
-	flowSlots chan struct{}
+	logger      *zap.Logger
+	sessions    chan struct{}
+	flowSlots   chan struct{}
+	tcpSessions chan struct{}
+	dialTCP     func(context.Context, string, string) (net.Conn, error)
 }
 
 func NewTunnelService(logger *zap.Logger) *TunnelService {
 	return &TunnelService{
-		logger:    logger,
-		sessions:  make(chan struct{}, maxConcurrentDatagramSessions),
-		flowSlots: make(chan struct{}, maxConcurrentDatagramFlows),
+		logger:      logger,
+		sessions:    make(chan struct{}, maxConcurrentDatagramSessions),
+		flowSlots:   make(chan struct{}, maxConcurrentDatagramFlows),
+		tcpSessions: make(chan struct{}, maxConcurrentTCPTunnels),
+		dialTCP:     (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 	}
+}
+
+// Tunnel maps one stream to one TCP connection. The wire contract accepts only
+// a port: using a literal loopback IP also avoids DNS or caller-selected hosts.
+func (s *TunnelService) Tunnel(stream agentpbv2.WendyTunnelService_TunnelServer) error {
+	select {
+	case s.tcpSessions <- struct{}{}:
+		defer func() { <-s.tcpSessions }()
+	default:
+		return status.Error(codes.ResourceExhausted, "too many active tunnel sessions")
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return status.Error(codes.InvalidArgument, "first tunnel message must be open")
+		}
+		return err
+	}
+	open := first.GetOpen()
+	if open == nil {
+		return status.Error(codes.InvalidArgument, "first tunnel message must be open")
+	}
+	if open.Port == 0 || open.Port > 65535 {
+		return status.Errorf(codes.InvalidArgument, "invalid port %d", open.Port)
+	}
+	select {
+	case s.flowSlots <- struct{}{}:
+		defer func() { <-s.flowSlots }()
+	default:
+		return status.Error(codes.ResourceExhausted, "too many active tunnel flows")
+	}
+
+	conn, err := s.dialTCP(stream.Context(), "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(open.Port))))
+	if err != nil {
+		if stream.Context().Err() != nil {
+			return status.FromContextError(stream.Context().Err()).Err()
+		}
+		return status.Errorf(codes.Unavailable, "dialing local port %d: %v", open.Port, err)
+	}
+	defer conn.Close()
+	s.logger.Info("device tunnel accepted",
+		append([]zap.Field{zap.Uint32("port", open.Port)}, clientAuditFields(stream.Context())...)...)
+	return relayDeviceTCP(stream, conn)
+}
+
+func relayDeviceTCP(stream agentpbv2.WendyTunnelService_TunnelServer, conn net.Conn) error {
+	// A hard failure returns immediately: gRPC cancels any parked Recv/Send
+	// when the handler returns. Graceful half-closes wait for both directions
+	// so an EOF-delimited request can still receive its complete response.
+	done := make(chan error, 2)
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			if err != nil && !errors.Is(err, io.EOF) {
+				done <- err
+				return
+			}
+			var data *agentpbv2.DeviceTunnelData
+			if err == nil {
+				data = msg.GetData()
+				if data == nil {
+					done <- status.Error(codes.InvalidArgument, "expected data frame")
+					return
+				}
+				if _, err := conn.Write(data.Payload); err != nil {
+					done <- status.Error(codes.Unavailable, "writing tunnel data")
+					return
+				}
+			}
+			if errors.Is(err, io.EOF) || data.GetHalfClose() {
+				err := conn.(interface{ CloseWrite() error }).CloseWrite()
+				if err != nil {
+					err = status.Error(codes.Unavailable, "closing tunnel write side")
+				}
+				done <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				if sendErr := stream.Send(&agentpbv2.DeviceTunnelData{Payload: append([]byte(nil), buf[:n]...)}); sendErr != nil {
+					done <- sendErr
+					return
+				}
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					done <- stream.Send(&agentpbv2.DeviceTunnelData{HalfClose: true})
+				} else {
+					done <- status.Error(codes.Unavailable, "reading tunnel data")
+				}
+				return
+			}
+		}
+	}()
+	for range 2 {
+		select {
+		case <-stream.Context().Done():
+			return status.FromContextError(stream.Context().Err()).Err()
+		case err := <-done:
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // DatagramTunnel serves one multiplexed UDP + ICMP-echo session for a LAN

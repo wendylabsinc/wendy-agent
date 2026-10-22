@@ -909,7 +909,7 @@ func main() {
 		// root shell) and on the local admin socket.
 		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
 
-		// WendyTunnelService can reach arbitrary valid UDP ports on agent
+		// WendyTunnelService can reach arbitrary valid TCP/UDP ports on agent
 		// loopback. Register it only on the authenticated, org-checked server,
 		// never on the plaintext provisioning listener or local admin socket.
 		agentpbv2.RegisterWendyTunnelServiceServer(srv, services.NewTunnelService(logger))
