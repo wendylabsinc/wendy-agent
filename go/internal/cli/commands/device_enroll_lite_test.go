@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,7 +58,6 @@ func TestLiteEnrollmentUsesFreshUUIDThroughout(t *testing.T) {
 	http.DefaultClient = tsa.Client()
 	cloud := &oidcEnrollmentServer{response: &cloudpb.EnrollDeviceResponse{
 		CredentialKind: "enrollment_token", TokenValue: "single-use-test",
-		AssetId:   "00000000-0000-4000-8000-000000000004",
 		ExpiresAt: time.Now().Add(4 * time.Minute).Format(time.RFC3339),
 	}}
 	_, endpoint := enrollmentServers(t, cloud, &acmeProvisioningServer{})
@@ -73,7 +71,8 @@ func TestLiteEnrollmentUsesFreshUUIDThroughout(t *testing.T) {
 		cmd := &cobra.Command{}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd.SetContext(ctx)
-		cmd.SetOut(io.Discard)
+		var out strings.Builder
+		cmd.SetOut(&out)
 		err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), auth, "camera", liteEnrollmentOptions{
 			timeURL: tsa.URL, brokerHost: "broker.example", brokerPort: 5055,
 		})
@@ -87,6 +86,9 @@ func TestLiteEnrollmentUsesFreshUUIDThroughout(t *testing.T) {
 			t.Fatalf("expected a fresh canonical UUID, got %q", id)
 		}
 		seen[id] = true
+		if !strings.Contains(out.String(), "Enrolled camera as asset "+id+".") {
+			t.Fatalf("Cloud asset is not the minted UUID: %q", out.String())
+		}
 		if device.conf.GetEnrollment().GetDeviceId() != id || device.conf.GetEnrollment().GetToken() != "single-use-test" {
 			t.Fatal("USB configuration did not preserve the Cloud identity and credential")
 		}
