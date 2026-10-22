@@ -67,6 +67,8 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	liteCA, liteKey := issue(7, "Lite Device CA", "", true, root, rootKey)
 	selfSignedLite, selfSignedLiteKey := issue(8, "Lite Device CA", "", true, nil, nil)
 	const matching = "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-441bf6804ff8"
+	const deviceUUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const uuidPrincipal = "spiffe://wendy.sh/tenant/" + tenant + "/device/" + deviceUUID
 	for _, tc := range []struct {
 		name, principal, deviceID string
 		trusted                   bool
@@ -76,11 +78,21 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 	}{
 		{"matching device", matching, "441bf6804ff8", true, nil, nil, true},
 		{"prefixed device ID", matching, "lite-441bf6804ff8", true, nil, nil, true},
+		{"UUID device ID", uuidPrincipal, deviceUUID, true, nil, nil, true},
+		{"UUID under Lite CA", uuidPrincipal, deviceUUID, false, liteCA, liteKey, true},
+		{"different UUID", uuidPrincipal, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true, nil, nil, false},
+		{"UUID in different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/" + deviceUUID, deviceUUID, false, liteCA, liteKey, false},
+		{"UUID with legacy prefix", uuidPrincipal, "lite-" + deviceUUID, true, nil, nil, false},
+		{"uppercase UUID", uuidPrincipal, strings.ToUpper(deviceUUID), true, nil, nil, false},
+		{"UUID under untrusted CA", uuidPrincipal, deviceUUID, false, selfSignedLite, selfSignedLiteKey, false},
 		{"different device", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-000000000000", "441bf6804ff8", true, nil, nil, false},
 		{"different tenant", "spiffe://wendy.sh/tenant/33333333-3333-4333-8333-333333333333/device/lite-441bf6804ff8", "441bf6804ff8", true, nil, nil, false},
 		{"untrusted issuer", matching, "441bf6804ff8", false, nil, nil, false},
 		{"Lite CA under session trust", matching, "441bf6804ff8", false, liteCA, liteKey, true},
 		{"self-signed Lite CA", matching, "441bf6804ff8", false, selfSignedLite, selfSignedLiteKey, false},
+		{"UUID device", "spiffe://wendy.sh/tenant/" + tenant + "/device/44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444", true, nil, nil, true},
+		{"wrong UUID device", "spiffe://wendy.sh/tenant/" + tenant + "/device/55555555-5555-4555-8555-555555555555", "44444444-4444-4444-8444-444444444444", true, nil, nil, false},
+		{"UUID prefixed by legacy firmware", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444", true, nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issuer, issuerKey := root, rootKey

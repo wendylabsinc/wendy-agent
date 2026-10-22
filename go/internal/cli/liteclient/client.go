@@ -286,7 +286,9 @@ func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientCo
 	if err != nil {
 		return err
 	}
-	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// The opaque relay can cross a BLE mesh uplink. Bound setup without
+	// assuming a direct Internet path; the caller can still cancel sooner.
+	handshakeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	conn := tls.Client(raw, cfg)
 	if err := conn.HandshakeContext(handshakeCtx); err != nil {
@@ -1166,7 +1168,7 @@ func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID 
 	if deviceID == "" {
 		return nil, fmt.Errorf("missing Wendy Lite device identity")
 	}
-	deviceID = "lite-" + strings.TrimPrefix(deviceID, "lite-")
+	deviceID = enrollmentDeviceID(deviceID)
 	opts.ExpectedIdentity = &certs.WendyIdentity{
 		EntityType: certs.EntityAsset, EntityID: deviceID, TenantUUID: identity.TenantUUID,
 		Principal: "spiffe://wendy.sh/tenant/" + identity.TenantUUID + "/device/" + deviceID,
