@@ -90,9 +90,24 @@ func TestCloudDeviceIdentityUsesEnrollmentBinding(t *testing.T) {
 		t.Fatal("accepted another tenant")
 	}
 	record.OrganizationId = tenant
-	for _, name = range []string{"", "../device", "device/../other", "/device", "device/", "device?other"} {
+	for _, name = range []string{"../device", "device/../other", "/device", "device/", "device?other"} {
 		if _, err := cloudDeviceIdentity(record, assetID, tenant); err == nil {
 			t.Errorf("accepted missing/invalid binding %q", name)
+		}
+	}
+}
+
+// After cloud #873 the asset id is the device UUID and pki_device_name is empty.
+func TestCloudDeviceIdentityUsesTheAssetIDWithoutPKIDeviceName(t *testing.T) {
+	const tenant = "8a53be77-2a69-464f-8f73-83643fe0beaa"
+	const assetID = "00699be8-ee8b-4e81-a4af-47969d52251f"
+	for name, record := range map[string]*cloudpbv2.Asset{
+		"post-873":   {Id: assetID, OrganizationId: tenant},
+		"empty name": {Id: assetID, OrganizationId: tenant, PkiDeviceName: new(string)},
+	} {
+		got, err := cloudDeviceIdentity(record, assetID, tenant)
+		if err != nil || got.EntityID != assetID || got.Principal != "spiffe://wendy.sh/tenant/"+tenant+"/device/"+assetID {
+			t.Errorf("%s: identity %+v, %v; want the asset id", name, got, err)
 		}
 	}
 }

@@ -53,6 +53,11 @@ Wait for your board to appear online, then select it for your next command.
 Cloud presence can take a little longer than enrollment. The board needs Wi-Fi
 and internet access to connect to Wendy Cloud.
 
+Over LAN and Bluetooth, the CLI requires the board's certificate to name the
+device UUID the board advertises. Firmware that does not advertise it over
+Bluetooth is looked up in the selected Cloud organization by its hardware ID, so
+sign in first. Over LAN, update firmware that advertises no device identity.
+
 ## If enrollment does not finish
 
 - **The board is already enrolled or has a pending enrollment:** let the pending
@@ -84,7 +89,10 @@ enrollment, and reboots it. Wi-Fi and app configuration are preserved. You can
 then enroll it again, including in another organization.
 
 If Cloud removal succeeds but the USB reset fails, reconnect the board and rerun
-the same command. Firmware without reset support must be updated first.
+the same command. Firmware without reset support, or that does not report its
+enrollment identity, must be updated first. If several Cloud records carry the
+board's hardware ID, the command lists them and removes none; remove each with
+`wendy cloud device unenroll --device <asset-id>`, then run it again.
 Bluetooth and LAN connections cannot clear a Lite board's enrollment.
 
 If the board is unavailable, remove its Cloud access without contacting it:

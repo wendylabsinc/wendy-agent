@@ -292,3 +292,27 @@ func TestV2UnenrollRequiresDeviceConnectionOperatorLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Before cloud #873 the device UUID is pki_device_name on a random asset id;
+// after it, the UUID is the asset id and pki_device_name is empty.
+func TestV2UnenrollBindingMatchesBothAssetShapes(t *testing.T) {
+	postProgress := testUnenrollProgress()
+	postProgress.AssetID = unenrollDevice
+	for name, tc := range map[string]struct {
+		asset    *cloudpbv2.Asset
+		progress v2UnenrollProgress
+	}{
+		"pre-873":  {testUnenrollAsset(), testUnenrollProgress()},
+		"post-873": {&cloudpbv2.Asset{Id: unenrollDevice, OrganizationId: unenrollTenant}, postProgress},
+	} {
+		if err := checkV2UnenrollBinding(tc.asset, tc.progress); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Deletion evidence without a device id falls back to the asset id too.
+	reply := &v2AssetState{Deleted: &cloudpbv2.DeletedAsset{Id: unenrollDevice, OrganizationId: unenrollTenant, DeletedAt: timestamppb.New(time.Now())}}
+	progress := postProgress
+	if _, err := v2UnenrollLifecycle(reply, &progress); err != nil {
+		t.Errorf("post-873 deletion evidence: %v", err)
+	}
+}
