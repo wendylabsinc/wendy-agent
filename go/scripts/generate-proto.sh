@@ -195,16 +195,10 @@ done
 # service-protos exactly so a re-copy is a plain cp and the imports need no
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
 #
-# Pin (WDY-3458 round): wendycloud/v2/*.proto and wendy/options.proto are
-# service-protos master 09097e83 (merged #91); device_enrollment.proto is cloud #757 head
-# 5e3003e4 (cloud-proto/device_enrollment.proto), including enrollment hardware.
-# signed_request.proto is service-protos master 26ece19e (merged #118, WDY-3657);
-# relay_mcp.proto is service-protos master a41b4bac (merged #120, WDY-3675).
-# assets.proto is service-protos
-# 33cfab5 (service-protos #115, additive signed-reset proof; unmerged):
-# GetAsset deletion details/expected_device_id guard, reset certificate binding
-# and Cloud authorization bytes, plus upstream asset hardware/OS fields.
-# Other protocol ownership and vendored source baselines are unchanged.
+# Pin: wendycloud/v2/*.proto and wendy/options.proto are service-protos master
+# 32981db4 (merged #142, reported state v2). device_enrollment.proto is not in
+# service-protos: it is cloud #757 head 5e3003e4
+# (cloud-proto/device_enrollment.proto), including enrollment hardware.
 # Re-pin: copy those files from
 # the new heads with `git show <sha>:<path>`, run `make proto`, and update the
 # SHAs here. wendy/options.proto (the signed_request method option) generates
