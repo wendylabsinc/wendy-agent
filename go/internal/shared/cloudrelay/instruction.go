@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"fmt"
-	"net"
 
 	"github.com/cloudflare/circl/hpke"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/relaypb"
@@ -116,9 +115,9 @@ func validateService(d *pb.DialInstruction) error {
 	if d.Port != port || len(d.AuthorizedDatagramDestinations) != 0 {
 		return fmt.Errorf("cloud TCP service port mismatch")
 	}
-	ip := net.ParseIP(d.Host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("cloud dial target is not loopback")
+	// Cloud's catalog seals exactly 127.0.0.1 for every TCP service.
+	if d.Host != "127.0.0.1" {
+		return fmt.Errorf("cloud dial target is not 127.0.0.1")
 	}
 	return nil
 }

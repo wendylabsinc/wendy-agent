@@ -63,7 +63,7 @@ func TestInvalidPortServices(t *testing.T) {
 func TestPortServiceTargetBinding(t *testing.T) {
 	tcp := &pb.DialInstruction{Transport: pb.DialTransport_DIAL_TRANSPORT_TCP, Host: "127.0.0.1", Port: 3007, ServiceDescriptor: []byte("tcp-3007")}
 	udp := &pb.DialInstruction{Transport: pb.DialTransport_DIAL_TRANSPORT_DATAGRAM, ServiceDescriptor: []byte("udp-5353"), AuthorizedDatagramDestinations: []*pb.AuthorizedDatagramDestination{{DestinationId: 1, LoopbackPort: 5353}}}
-	for _, host := range []string{"169.254.169.254", "10.0.0.1", "localhost", "example.com", ""} {
+	for _, host := range []string{"169.254.169.254", "10.0.0.1", "localhost", "example.com", "", "::1", "127.0.0.2", "127.1", "0:0:0:0:0:ffff:7f00:1"} {
 		d := proto.Clone(tcp).(*pb.DialInstruction)
 		d.Host = host
 		if validateService(d) == nil {
