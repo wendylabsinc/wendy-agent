@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,20 +22,29 @@ import (
 // A release without a tag is refused before anything is sent: there is no
 // implicit "latest". A malformed digest is refused the same way.
 func TestAppReleaseRefusesImplicitLatest(t *testing.T) {
+	// Run beside a valid wendy.json, so only the flag checks can refuse.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(`{"appId":"com.example.cam"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
 	digest := "sha256:" + strings.Repeat("a", 64)
-	for name, args := range map[string][]string{
-		"no tag":       {"--digest", digest},
-		"blank tag":    {"--tag", " ", "--digest", digest},
-		"no digest":    {"--tag", "v1"},
-		"short digest": {"--tag", "v1", "--digest", "sha256:abc"},
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"no tag":       {[]string{"--digest", digest}, "no implicit 'latest'"},
+		"blank tag":    {[]string{"--tag", " ", "--digest", digest}, "no implicit 'latest'"},
+		"no digest":    {[]string{"--tag", "v1"}, "--digest must be"},
+		"short digest": {[]string{"--tag", "v1", "--digest", "sha256:abc"}, "--digest must be"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd := newAppReleaseCmd()
-			cmd.SetArgs(args)
+			cmd.SetArgs(tc.args)
 			cmd.SetOut(new(strings.Builder))
 			cmd.SetErr(new(strings.Builder))
-			if err := cmd.Execute(); err == nil {
-				t.Fatal("release accepted")
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want the refusal %q", err, tc.want)
 			}
 		})
 	}
