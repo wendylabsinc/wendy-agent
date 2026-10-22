@@ -132,7 +132,7 @@ func (r *ReportedState) session(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer closer.Close()
+	defer func() { _ = closer.Close() }()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

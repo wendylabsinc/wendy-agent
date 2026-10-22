@@ -202,7 +202,7 @@ func withCloud(ctx context.Context, auth *config.AuthConfig, call func(context.C
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ctx, err = cloudContext(ctx, auth)
 	if err != nil {
 		return err

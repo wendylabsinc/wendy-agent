@@ -58,7 +58,7 @@ func TestReportAppsReadsReleaseIdentityLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer remote.Close()
+	defer func() { _ = remote.Close() }()
 	c := &Client{client: remote, namespace: "report-test", logger: zap.NewNop()}
 
 	got, err := c.ReportApps(context.Background())
@@ -126,7 +126,7 @@ func TestImageDigestNormalizesTheRequestName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer remote.Close()
+	defer func() { _ = remote.Close() }()
 	c := &Client{client: remote, namespace: "digest-test", logger: zap.NewNop()}
 	if got, err := c.ImageDigest(context.Background(), "com.example.cam:latest"); err != nil || got != digest {
 		t.Fatalf("ImageDigest = %q, %v; want %s", got, err, digest)

@@ -75,7 +75,7 @@ func startReportedState(t *testing.T, apps AppReporter, poll, heartbeat time.Dur
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
 	cloudpbv2.RegisterDeploymentServiceServer(srv, cloud)
-	go srv.Serve(lis)
+	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
 	pub := fakeMetricsPublisher{metrics: make(chan *colmetricspb.ExportMetricsServiceRequest, 16)}

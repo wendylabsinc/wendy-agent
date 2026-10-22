@@ -81,13 +81,13 @@ func TestRecordedReleaseCarriesTagAndDigest(t *testing.T) {
 	rec := &releaseRecorder{}
 	srv := grpc.NewServer()
 	cloudpb.RegisterDeploymentServiceServer(srv, rec)
-	go srv.Serve(lis)
+	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx := context.Background()
 	id, err := createAppRelease(ctx, conn, auth, deploymentTenant, "com.example.cam", "v1.4.0")
