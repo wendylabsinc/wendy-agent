@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
@@ -20,11 +22,24 @@ func NewProvisioningServiceV2(v1 *ProvisioningService) *ProvisioningServiceV2 {
 	return &ProvisioningServiceV2{v1: v1}
 }
 
+// assetUUID is this certificate's device UUID under the sole-ID contract.
+// Reporting one's own identity requires no Cloud inventory or network access.
+func (s *ProvisioningServiceV2) assetUUID(principal string) string {
+	device, err := meshid.DeviceFromPrincipal(principal)
+	if err != nil {
+		return ""
+	}
+	return device.UUID().String()
+}
+
 func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.IsProvisionedRequest) (*agentpbv2.IsProvisionedResponse, error) {
 	s.v1.mu.Lock()
 	defer s.v1.mu.Unlock()
 	if s.v1.resetRecoveryErr != nil {
 		return nil, status.Error(codes.Unavailable, "reset recovery blocked; explicit local recovery required")
+	}
+	if s.v1.resetCleanupErr != nil {
+		return nil, status.Error(codes.Unavailable, "reset resource cleanup incomplete; agent recovery is retrying")
 	}
 	if !s.v1.enrolled {
 		completion, err := s.v1.cloudCompletion()
@@ -42,6 +57,7 @@ func (s *ProvisioningServiceV2) IsProvisioned(ctx context.Context, _ *agentpbv2.
 		ResponseType: &agentpbv2.IsProvisionedResponse_Provisioned{
 			Provisioned: &agentpbv2.ProvisionedResponse{
 				CloudHost:      s.v1.cloudHost,
+				AssetUuid:      s.assetUUID(s.v1.principalURI),
 				OrganizationId: s.v1.orgID,
 				AssetId:        s.v1.assetID,
 				PrincipalUri:   s.v1.principalURI,

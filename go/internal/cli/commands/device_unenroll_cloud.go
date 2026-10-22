@@ -70,7 +70,7 @@ var resolveCloudUnenrollAuthFn = resolveCloudUnenrollAuth
 
 var errCloudEnrollmentNotFound = errors.New("no cloud enrollment")
 
-// Match a local Lite board only by its hardware-derived PKI identity. An
+// Match a local Lite board only by its reported PKI identity. An
 // enrolled name may differ from the name still stored on the board.
 func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, deviceID string) (cloudDiscoveryDevice, error) {
 	identity := deviceID
@@ -104,16 +104,22 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, deviceID st
 }
 
 func runCloudDeviceUnenroll(cmd *cobra.Command, cloudGRPC, selector, deviceID string, assumeYes bool) error {
-	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, selector, deviceID, assumeYes, nil)
+	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, selector, deviceID, "", assumeYes, nil)
 }
 
 // Local recovery may clear an identity after a previous cloud-only removal.
 // Its absence must be established by a complete, authenticated asset inventory.
 func runCloudDeviceUnenrollWithReset(cmd *cobra.Command, cloudGRPC, deviceID string, assumeYes bool, reset func() error) error {
+	return runCloudDeviceUnenrollWithResetForTenant(cmd, cloudGRPC, deviceID, "", assumeYes, reset)
+}
+
+// New USB firmware reports its configured tenant, even for a pending issuance.
+// Its reset may use an absent asset only within that same authenticated tenant.
+func runCloudDeviceUnenrollWithResetForTenant(cmd *cobra.Command, cloudGRPC, deviceID, tenantID string, assumeYes bool, reset func() error) error {
 	if deviceID == "" || reset == nil {
 		return fmt.Errorf("local unenrollment requires a device identity and reset operation")
 	}
-	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, "", deviceID, assumeYes, reset)
+	return runCloudDeviceUnenrollAndReset(cmd, cloudGRPC, "", deviceID, tenantID, assumeYes, reset)
 }
 
 func fetchUnenrollAssets(ctx context.Context, client cloudpbv2.AssetServiceClient, tenant string) ([]cloudDiscoveryDevice, error) {
@@ -163,7 +169,7 @@ func fetchUnenrollAssets(ctx context.Context, client cloudpbv2.AssetServiceClien
 	}
 }
 
-func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, deviceID string, assumeYes bool, reset func() error) error {
+func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, deviceID, expectedTenant string, assumeYes bool, reset func() error) error {
 	if cfg, ok := cloudDeviceConfigFromContext(cmd.Context()); ok && cloudGRPC == "" {
 		cloudGRPC = cfg.CloudGRPC
 	}
@@ -174,6 +180,9 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 	auth, err = prepareEnrollmentAuth(cmd.Context(), auth)
 	if err != nil {
 		return err
+	}
+	if expectedTenant != "" && (len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() != expectedTenant) {
+		return fmt.Errorf("the board's configured tenant differs from the selected cloud organization; select its tenant before removing the enrollment")
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
 	defer cancel()

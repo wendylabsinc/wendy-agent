@@ -20,7 +20,7 @@ npm run desktop
 
 This builds the CLI, copies the Go2 runtime source, prepares `node-pty` for
 Electron, and opens the desktop app with Vite on `127.0.0.1:5174`. Node.js 22.13+
-and Go 1.27+ are required to build. Compiling the terminal dependency may also
+and Go 1.27.3+ are required to build. Compiling the terminal dependency may also
 require Xcode Command Line Tools on macOS or a C++ toolchain on Linux/Windows.
 
 To run without a development server, or produce a native application:
@@ -131,7 +131,7 @@ physical storage. Model responses require configured chat credentials.
 
 ## Run locally
 
-Install Node.js 22.13 or newer and Go 1.27 or newer, then run from `web-client`
+Install Node.js 22.13 or newer and Go 1.27.3 or newer, then run from `web-client`
 inside the Wendy repository:
 
 ```sh
@@ -196,6 +196,32 @@ sessions. Clearing site data also clears the saved login.
 Sign-out is local; it does not log you out of other Wendy applications.
 
 ## Cloud workspace
+
+Choose **Networks** to inspect local net membership, direct peer links, and selected
+routes. The browser reads snapshots from the signed-in Cloud inventory. The
+desktop combines LAN discovery with the current CLI Cloud inventory. Each
+snapshot uses an independent authenticated connection, so viewing networks does
+not replace the device dashboard connection.
+
+Devices are grouped by their verified tenant and device identity. A device seen
+only through another peer remains visible without claiming that it is reachable
+from this client. Selecting a node shows its reported next hops, carrier types,
+route costs, and signed announcement expiry. A signed route authorizes its
+origin and prefix; it does not prove that an intermediary forwards traffic.
+
+The view polls at most four devices concurrently, then waits ten seconds before
+the next batch. **Pause** stops new reads. Snapshots older than thirty seconds
+are marked stale. An active local network also needs a valid, recent device capture time.
+Failed reads retain the last snapshot visibly as stale. Older agents
+appear as unsupported until updated. Offline, denied, and unverified devices
+remain explicit rather than becoming empty healthy networks.
+
+The underlying read-only API is
+`WendyLocalMeshAdminService.GetLocalMeshTopology`, with the same tenant-scoped
+operator authorization as the existing net administration API. The CLI exposes
+it as `wendy --device HOST:PORT --json device wendy-net topology`.
+`--observation` adds a typed result envelope for clients handling partial
+failures. Neither the API nor this view enables the net or changes its policy.
 
 The sidebar shows the signed-in email from OIDC UserInfo and the organization
 name from Cloud's v2 OrganizationService. UserInfo must match the authenticated

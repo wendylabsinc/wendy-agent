@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
 type testAgentTunnelStream struct {
