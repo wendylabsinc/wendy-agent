@@ -1281,7 +1281,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				}
 			}
 
-			cloudConn, cloudCtx, cloudAuth, err := dialCloud(ctx, cloudGRPC, cloudHost)
+			cloudConn, cloudCtx, cloudAuth, err := dialLegacyUnenrollCloudFn(ctx, cloudGRPC, cloudHost)
 			if err != nil {
 				return fmt.Errorf("cloud cleanup preflight failed; device was not reset: %w", err)
 			}
@@ -1293,6 +1293,15 @@ func newDeviceUnenrollCmd() *cobra.Command {
 			})
 			if !result.DeviceReset {
 				return cloudErr
+			}
+			// The reset erased the device's enrolled identity whether or not
+			// Cloud cleanup then succeeded, so forget it now: a pin left behind
+			// refuses every later connection to the unprovisioned device
+			// (WDY-3974). The Cloud retry below never contacts the device.
+			identity := legacyEnrollmentIdentity(orgID, assetID)
+			pinErr := forgetResetDeviceIdentity(identity)
+			if pinErr != nil {
+				pinErr = fmt.Errorf("device reset, but clearing this CLI's saved identity for it failed: %w; run 'wendy device unpin %s'", pinErr, identity.IdentityKey())
 			}
 			retrySelector := (cloudDeviceSelector{Endpoint: cloudConn.Target(), OrgID: orgID, AssetID: assetID}).String()
 			retryCommand := "wendy cloud device unenroll --device " + shellQuoteArg(retrySelector)
@@ -1310,6 +1319,9 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					out["cloudError"] = cloudErr.Error()
 					out["retryCommand"] = retryCommand
 				}
+				if pinErr != nil {
+					out["pinError"] = pinErr.Error()
+				}
 				data, marshalErr := json.MarshalIndent(out, "", "  ")
 				if marshalErr != nil {
 					return marshalErr
@@ -1326,10 +1338,10 @@ func newDeviceUnenrollCmd() *cobra.Command {
 				}
 			}
 
-			if cloudErr != nil {
-				return cloudErr
+			if pinErr != nil {
+				return errors.Join(cloudErr, pinErr)
 			}
-			return nil
+			return cloudErr
 		},
 	}
 

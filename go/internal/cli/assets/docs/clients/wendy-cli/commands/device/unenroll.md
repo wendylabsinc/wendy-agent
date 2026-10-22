@@ -54,6 +54,12 @@ an owner or administrator account. If cleanup fails, run the exact Cloud removal
 command printed in the error; it retains the old enrollment details needed to
 finish. See [device unenrollment](/docs/device/unenrollment) for recovery guidance.
 
+Once a WendyOS device confirms its reset, the command also clears the identity
+pins this CLI saved for it, the entries `wendy device unpin` clears. For older
+numeric enrollments this happens even when the Cloud cleanup that follows
+fails, because the device no longer presents that identity. Cloud-only removal
+does not contact the device, so it keeps those pins.
+
 ## Flags
 
 | Flag | Description |

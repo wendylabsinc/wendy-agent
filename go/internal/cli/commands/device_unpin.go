@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,6 +142,34 @@ func printClearedPins(w io.Writer, cleared []clearedPin) {
 		}
 		fmt.Fprintf(w, "Cleared %s %q (%s)\n", c.store, c.key, identity)
 	}
+}
+
+// forgetResetDeviceIdentity is `wendy device unpin <identity>` run on the
+// user's behalf by `wendy device unenroll`, once the device has confirmed that
+// it erased identity. From then on every pin naming it describes a certificate
+// the device can never present again, so keeping them only refuses each later
+// connection to the now-unprovisioned device (WDY-3974).
+//
+// Call it only after the device's own reset. A Cloud-only unenrollment leaves
+// the device holding and presenting its certificate, and its pin is still the
+// binding the next connection must be judged against.
+//
+// It clears by identity, as unpin does when handed a URN: the identity is
+// exact, so no discovery-derived alias is consulted, and pins the device
+// collected under other names go with it rather than refusing the next dial
+// under those names. What it cleared goes to stderr, as clearDevicePinForRepin's
+// does — stdout may be carrying the command's JSON.
+func forgetResetDeviceIdentity(identity certs.WendyIdentity) error {
+	var cleared []clearedPin
+	err := config.Update(func(cfg *config.Config) (bool, error) {
+		cleared = clearPinsForIdentity(cfg, identity)
+		return clearedAnyConfigPin(cleared), nil
+	})
+	// A broker may still hold an authenticated session to the identity just
+	// erased; see the unpin command.
+	_ = sessionbroker.InvalidateAll()
+	printClearedPins(os.Stderr, cleared)
+	return err
 }
 
 // clearPinsForIdentity clears everything filed under one certificate identity:
