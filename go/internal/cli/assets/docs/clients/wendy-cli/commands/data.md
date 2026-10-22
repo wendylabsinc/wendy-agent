@@ -129,6 +129,7 @@ timestamps and boot ID.
 | `wendy data campaign list` | List deployed campaigns and revisions. |
 | `wendy data campaign inspect <name>` | Print the canonical deployed plan and state. |
 | `wendy data campaign trigger <name>` | Trigger a campaign manually; `--reason` is stored in the Episode. |
+| `wendy data export-env <campaign>` | Translate a training campaign into a simulator-environment directory. See [Simulator environment export](#simulator-environment-export). |
 
 Event and model-uncertainty triggers are armed immediately after deployment.
 A complete plan is in `Examples/WendyDataCampaign` in the WendyOS repository.
@@ -637,3 +638,39 @@ retained IDs per stream. Age retention across reboots depends on device clock ac
 This export path does not update cloud upload state.
 Payloads and metadata are exported in checksummed Protobuf `.wdr` frames. Episodes
 also include these frames in `records.wdr`, alongside legacy `events.jsonl`.
+
+## Simulator environment export
+
+`wendy data export-env <campaign>` reads a deployed training campaign, resolves its
+sources against the device, and writes a simulator-environment directory:
+
+```sh
+wendy data export-env pick_place --device workshop.local -o pick_place-env
+```
+
+```
+export-env <campaign> [--device <sel>] [-o <dir>] [--profile go2|g1|so101|rosmaster-r2|custom] [--json]
+```
+
+The campaign must carry a [`training`](#training) block; its presence is what marks
+a campaign as simulator ready. Without a campaign name, the sole deployed campaign is
+used when exactly one exists; zero or several deployed campaigns are an error that
+names what is present. A campaign with no `training` block is rejected with guidance
+to add a `training.action` stream.
+
+The directory holds three files. `env.json` is the interface manifest: a schema
+version, the profile, the control rate, the simulated observations, and the action a
+policy drives. `scene.xml` is a MuJoCo (MJCF) scene scaffold meant to sit beside the
+matching simulator model under `go/simulator/<kind>/`; for the default `custom`
+profile it emits a clearly marked placeholder body. `README.md` records what was
+generated. Both generated files are a scaffold, not a validated world, so review them
+before use.
+
+`--profile` selects the robot model the scene scaffold includes; it defaults to
+`custom`. The command never fails on a single source it cannot translate: such a
+source is skipped and the reason is printed to standard error and recorded under
+`warnings` in `env.json`, so any observation whose shape could not be derived from
+the campaign is set by hand rather than trusted. The command refuses to overwrite an
+existing destination, writes through a `.partial` staging directory, and renames it
+into place only once every file is written. `--json` prints the campaign, revision,
+profile, destination, written file names, and warnings.
