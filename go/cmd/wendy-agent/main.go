@@ -52,6 +52,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/agent/trustedkeys"
 	"github.com/wendylabsinc/wendy/go/internal/agent/usbgadget"
 	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
@@ -503,11 +504,42 @@ func main() {
 		sensorRunner.Start(p, "")
 	}
 
+	// Local operators (WDY-3882): public keys in trusted-keys.json may connect
+	// to the mTLS listener with self-issued certificates, with the role the
+	// file gives them. A present file also closes the open pre-enroll path:
+	// no plaintext listener, and the registry stays off until a key exists.
+	// An unreadable file refuses to start rather than fall back to an open
+	// device. WENDY_LOCAL_ACCESS=required additionally refuses to start
+	// without an owner key; the default ("auto") keeps today's behaviour on
+	// images without a seeded key.
+	trustedKeys, err := trustedkeys.Open(filepath.Join(configPath, "trusted-keys.json"))
+	if err != nil {
+		logger.Fatal("refusing to start: trusted keys file is unusable", zap.Error(err))
+	}
+	// Cloud enrollment overrides local access: while enrolled the saved keys
+	// are used nowhere (no fallback) and cloud never imports them; they come
+	// back when the device is unenrolled.
+	_, _, _, enrolled := provisioningSvc.ProvisioningInfo()
+	localOperatorsAtBoot(logger, trustedKeys, enrolled)
+	localAccessMode := os.Getenv("WENDY_LOCAL_ACCESS")
+	if err := checkLocalAccessMode(localAccessMode, trustedKeys); err != nil {
+		logger.Fatal("refusing to start", zap.Error(err))
+	}
+	// An enrolled `required` device boots without an owner key; unenrolling
+	// it would leave an agent that refuses every start. Refuse the unenroll.
+	provisioningSvc.CanUnprovision = func() error { return checkUnenrollLocalAccess(localAccessMode, trustedKeys) }
+	localAccess := trustedKeys.Present()
+	if localAccess && !trustedKeys.Dormant() {
+		logger.Info("local access: trusted keys present; plaintext pre-enroll listener disabled",
+			zap.Int("keys", trustedKeys.Len()))
+	}
+	trustedKeysSvc := services.NewTrustedKeysService(logger, trustedKeys)
+
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
 	// Returns nil if the PEM data is invalid, which causes the registry to stay HTTP.
 	registryTLSConfig := func(certPEM, chainPEM, keyPEM string) *tls.Config {
-		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, nil, certNotBeforeFloor(certPEM))
+		tlsConfig, err := mtls.NewRegistryTLSConfig(certPEM, chainPEM, keyPEM, nil, certNotBeforeFloor(certPEM), trustedKeys)
 		if err != nil {
 			logger.Error("Failed to build registry TLS config", zap.Error(err))
 			return nil
@@ -700,6 +732,9 @@ func main() {
 
 	var mtlsServer *grpc.Server
 	var mtlsMu sync.Mutex
+	// mtlsLocalOnly: the running mTLS server is the not-yet-enrolled one
+	// (self-signed, local operators only); enrollment restarts the agent.
+	var mtlsLocalOnly bool
 
 	// Declared here, assigned further down once the provisioning identity is
 	// available, because registerAllServices closes over it: the build service
@@ -787,8 +822,16 @@ func main() {
 			return
 		}
 
-		floor := certNotBeforeFloor(certPEM)
-		if floor.IsZero() && certPEM != "" {
+		// chainPEM == "" only for a device that is not enrolled but has
+		// trusted keys: certPEM is self-signed and only local operators can
+		// connect, so there is no tenant to enforce and no enrollment
+		// certificate to take a clock floor from.
+		localOnly := chainPEM == ""
+		floor := trustedKeys.Floor()
+		if f := certNotBeforeFloor(certPEM); !localOnly && f.After(floor) {
+			floor = f
+		}
+		if floor.IsZero() && !localOnly && certPEM != "" {
 			logger.Warn("Could not extract NotBefore from provisioning cert — NTP clock skew protection is disabled")
 		} else if now := time.Now(); !floor.IsZero() && now.Before(floor) {
 			logger.Warn("Device clock predates provisioning cert — using cert NotBefore as mTLS time floor; clock will sync when network is available",
@@ -804,9 +847,13 @@ func main() {
 		// startMTLSServer is also invoked from inside the OnProvisioned callback,
 		// where taking the provisioning mutex would risk re-entrancy (see the comment
 		// at the startTunnelBroker closure). Both call sites already pass certPEM.
-		expectedScope, haveScope := certs.ScopeFromCertPEM(certPEM)
+		var expectedScope certs.Scope
+		haveScope := false
+		if !localOnly {
+			expectedScope, haveScope = certs.ScopeFromCertPEM(certPEM)
+		}
 		effectiveMode := orgMode
-		if orgMode != interceptor.OrgModeOff && !haveScope {
+		if orgMode != interceptor.OrgModeOff && !haveScope && !localOnly {
 			logger.Error("cannot determine device identity scope; refusing to start mTLS server",
 				zap.String("configuredMode", orgMode.String()))
 			return
@@ -817,9 +864,11 @@ func main() {
 				zap.String("mode", effectiveMode.String()))
 		}
 
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, expectedScope, effectiveMode,
-			// UnaryMTLSInterceptor and StreamMTLSInterceptor are embedded inside
-			// mtls.NewServer and run before these caller-provided interceptors.
+		authz := &interceptor.Authorizer{Logger: logger, Listener: interceptor.ListenerMTLS,
+			Keys: trustedKeys, Expected: expectedScope, OrgMode: effectiveMode}
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, authz,
+			// The Authorizer is embedded inside mtls.NewServer and runs before
+			// these caller-provided interceptors.
 			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 			grpc.ChainStreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
 		)
@@ -861,6 +910,13 @@ func main() {
 			agentpbv2.RegisterWendyDriverServiceServer(srv, driverSvc)
 		}
 
+		// Trusted key management: owner keys only, so mTLS only.
+		agentpbv2.RegisterWendyTrustedKeysServiceServer(srv, trustedKeysSvc)
+		mustMapEveryMethod(logger, srv)
+		if localOnly {
+			mtlsLocalOnly = true
+		}
+
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)
 		if err != nil {
@@ -897,6 +953,13 @@ func main() {
 			logger.Error("Failed to build BLE TLS config", zap.Error(err))
 			return
 		}
+		scope, _ := certs.ScopeFromCertPEM(certPEM)
+		bleAuthz := &interceptor.Authorizer{Logger: logger, Listener: interceptor.ListenerMTLS,
+			Keys: trustedKeys, Expected: scope, OrgMode: orgMode}
+		bleDispatcher.SetAuthorizer(func(ctx context.Context, method string) error {
+			_, err := bleAuthz.Authorize(ctx, method)
+			return err
+		})
 		bluetooth.StartBLEPeripheral(ctx, logger, bleDispatcher, tlsConfig)
 	}
 
@@ -969,6 +1032,20 @@ func main() {
 		configpartition.PersistDeviceUUID(logger, certPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
+	} else if localAccess {
+		localCertPEM, localKeyPEM, err := localServerIdentity(provisioningSvc)
+		if err != nil {
+			logger.Fatal("refusing to start: cannot build the local mTLS identity", zap.Error(err))
+		}
+		startMTLSServer(localCertPEM, "", localKeyPEM)
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, 0, 0)
+		if runtime.GOOS == "linux" && ctrdErr == nil && trustedKeys.Len() > 0 {
+			if cfg, err := mtls.NewRegistryTLSConfig(localCertPEM, "", localKeyPEM, logger, trustedKeys.Floor(), trustedKeys); err != nil {
+				logger.Error("Failed to build registry TLS config", zap.Error(err))
+			} else {
+				startRegistry(cfg)
+			}
+		}
 	}
 
 	// Advertise the device's Ethernet addresses so hosts can prefer the cable.
@@ -983,7 +1060,7 @@ func main() {
 	if runtime.GOOS == "linux" && ctrdErr == nil {
 		if alreadyProvisioned {
 			startRegistry(registryTLSConfig(certPEM, chainPEM, keyPEM))
-		} else {
+		} else if !localAccess {
 			startRegistry(nil)
 		}
 	}
@@ -993,10 +1070,11 @@ func main() {
 	// plaintext port is shut down. The local unix socket (/run/wendy/agent.sock)
 	// remains active for on-device containers with the admin entitlement.
 	var agentServer *grpc.Server
-	if !alreadyProvisioned {
+	if !alreadyProvisioned && !localAccess {
+		preEnrollAuthz := &interceptor.Authorizer{Logger: logger, Listener: interceptor.ListenerPreEnroll}
 		agentServer = grpc.NewServer(
-			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
-			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			grpc.ChainUnaryInterceptor(preEnrollAuthz.Unary(), interceptor.UnaryErrorInterceptor(logger)),
+			grpc.ChainStreamInterceptor(preEnrollAuthz.Stream(), interceptor.StreamErrorInterceptor(logger)),
 			grpc.InitialWindowSize(8*1024*1024),
 			grpc.InitialConnWindowSize(16*1024*1024),
 			grpc.KeepaliveParams(keepalive.ServerParameters{
@@ -1010,6 +1088,7 @@ func main() {
 			}),
 		)
 		registerAllServices(agentServer)
+		mustMapEveryMethod(logger, agentServer)
 
 		agentLis, err := listenForAccess(accessPolicy, agentPort)
 		if err != nil {
@@ -1044,13 +1123,15 @@ func main() {
 	// WENDY_LOCAL_SOCKET=off.
 	var localSocketServer *grpc.Server
 	if os.Getenv("WENDY_LOCAL_SOCKET") != "off" {
+		socketAuthz := &interceptor.Authorizer{Logger: logger, Listener: interceptor.ListenerAdminSocket}
 		localSocketServer = grpc.NewServer(
-			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
-			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			grpc.ChainUnaryInterceptor(socketAuthz.Unary(), interceptor.UnaryErrorInterceptor(logger)),
+			grpc.ChainStreamInterceptor(socketAuthz.Stream(), interceptor.StreamErrorInterceptor(logger)),
 		)
 		registerAllServices(localSocketServer)
 		agentpbv2.RegisterWendyUnitreeServiceServer(localSocketServer, unitreeSvc)
 		agentpbv2.RegisterWendyUnitreeRobotServiceServer(localSocketServer, unitreeRobotSvc)
+		mustMapEveryMethod(logger, localSocketServer)
 
 		// oci.AdminAgentSocketHostPath is the single source of truth for this
 		// path: the admin entitlement bind-mounts its parent directory into
@@ -1078,6 +1159,10 @@ func main() {
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
+		// First, before anything else: cloud is the authority from here on.
+		if trustedKeys.SetDormant(true) && trustedKeys.Present() {
+			logger.Info("local operators disabled: cloud-enrolled")
+		}
 		// Bind to the callback's authenticated leaf before exposing a new tenant.
 		unitreeScope, _ := certs.ScopeFromCertPEM(certPEM)
 		if err := unitreeSvc.Rebind(unitreePairingOwner(unitreeScope, true)); err != nil {
@@ -1089,6 +1174,20 @@ func main() {
 			}
 		}()
 		keyPEM := string(keyData)
+		mtlsMu.Lock()
+		restart := mtlsLocalOnly
+		mtlsMu.Unlock()
+		if restart {
+			// The running mTLS server is the local-only one (self-signed, no
+			// CA, no tenant). Restart into enrolled mode like unprovisioning
+			// does, after the enrollment RPC has answered.
+			logger.Info("Device enrolled — restarting agent to serve the enrollment certificate")
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				os.Exit(0)
+			}()
+			return
+		}
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
 		cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
@@ -1134,6 +1233,9 @@ func main() {
 	// Revoke Unitree sessions and keys before Unprovision reports success.
 	// A failed clear is retried when the agent restarts unenrolled.
 	provisioningSvc.BeforeUnprovisioned = func() {
+		if trustedKeys.SetDormant(false) && trustedKeys.Present() {
+			logger.Info("local operators enabled: unenrolled")
+		}
 		if err := unitreeSvc.Rebind(unitree.PairingOwner{}); err != nil {
 			logger.Error("Clearing Unitree pairings during unprovisioning failed", zap.Error(err))
 		}
@@ -1301,6 +1403,81 @@ func main() {
 	shutdown.run()
 
 	logger.Info("wendy-agent stopped")
+}
+
+// localOperatorsAtBoot makes the saved keys dormant on a cloud-enrolled
+// device: cloud is the only authority while enrolled.
+func localOperatorsAtBoot(logger *zap.Logger, keys *trustedkeys.Store, enrolled bool) {
+	if !enrolled {
+		return
+	}
+	keys.SetDormant(true)
+	if keys.Present() {
+		logger.Info("local operators dormant (cloud-enrolled)")
+	}
+}
+
+// checkLocalAccessMode validates WENDY_LOCAL_ACCESS: "" or "auto" (today's
+// behaviour unless a trusted-keys file is present) or "required" (no start
+// without an owner key, unless cloud-enrolled: cloud is the authority then).
+// Any other value refuses to start: a setting meant to close the device must
+// never silently leave it open.
+func checkLocalAccessMode(mode string, keys *trustedkeys.Store) error {
+	switch mode {
+	case "", "auto":
+		return nil
+	case "required":
+		if keys.Dormant() || hasOwnerKey(keys) {
+			return nil // cloud-enrolled: cloud is the authority
+		}
+		return fmt.Errorf("WENDY_LOCAL_ACCESS=required but the trusted keys file has no owner key")
+	default:
+		return fmt.Errorf("WENDY_LOCAL_ACCESS has unrecognised value %q (want auto or required)", mode)
+	}
+}
+
+// checkUnenrollLocalAccess re-evaluates WENDY_LOCAL_ACCESS for the unenrolled
+// boot that follows an unenroll: under "required" the saved keys must hold an
+// owner (they cannot change while enrolled), or the agent would refuse every
+// start and only a reinstall would recover the device.
+func checkUnenrollLocalAccess(mode string, keys *trustedkeys.Store) error {
+	if mode == "required" && !hasOwnerKey(keys) {
+		return fmt.Errorf("WENDY_LOCAL_ACCESS=required and the trusted keys file has no owner key: the device could not start unenrolled")
+	}
+	return nil
+}
+
+// hasOwnerKey reads the saved keys whether or not they are dormant.
+func hasOwnerKey(keys *trustedkeys.Store) bool {
+	for _, e := range keys.List() {
+		if e.EntryRole() == trustedkeys.RoleOwner {
+			return true
+		}
+	}
+	return false
+}
+
+// localServerIdentity is the mTLS server identity of a device that is not
+// enrolled: its own device key and a self-signed certificate over it.
+func localServerIdentity(provisioningSvc *services.ProvisioningService) (certPEM, keyPEM string, err error) {
+	keyData, err := provisioningSvc.DeviceKey()
+	if err != nil {
+		return "", "", err
+	}
+	certPEM, err = mtls.SelfSignedCert(string(keyData), time.Now())
+	if err != nil {
+		return "", "", err
+	}
+	return certPEM, string(keyData), nil
+}
+
+// mustMapEveryMethod refuses to start a listener serving a method the role
+// table does not name: it would be denied to everyone at runtime, so it is a
+// missing role decision, not a working RPC.
+func mustMapEveryMethod(logger *zap.Logger, srv *grpc.Server) {
+	if unmapped := interceptor.Unmapped(srv); len(unmapped) > 0 {
+		logger.Fatal("refusing to start: RPCs without a role in the authorization table", zap.Strings("methods", unmapped))
+	}
 }
 
 // certNotBeforeFloor parses the device's own provisioning cert and returns its

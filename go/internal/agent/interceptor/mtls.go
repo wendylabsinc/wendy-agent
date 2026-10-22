@@ -3,11 +3,11 @@ package interceptor
 import (
 	"context"
 	"crypto/x509"
+	"slices"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -130,14 +130,7 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger, expected certs.Scope, mo
 	// handshake's VerifyPeerCertificate hook enforces this too, but re-checking here
 	// ensures the constraint holds even if that hook is absent or the TLS config is
 	// replaced without updating the server options.
-	hasClientAuth := false
-	for _, eku := range leaf.ExtKeyUsage {
-		if eku == x509.ExtKeyUsageClientAuth {
-			hasClientAuth = true
-			break
-		}
-	}
-	if !hasClientAuth {
+	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
 		logger.Warn("rejected cert without clientAuth EKU",
 			zap.String("remote", peerAddr(ctx)),
 			zap.String("serial", leaf.SerialNumber.String()))
@@ -213,27 +206,5 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger, expected certs.Scope, mo
 			zap.String("remote", peerAddr(ctx)),
 			zap.String("serial", leaf.SerialNumber.String()))
 		return nil
-	}
-}
-
-// UnaryMTLSInterceptor rejects unary calls that do not carry verified mTLS peer
-// credentials or whose client tenant is not permitted under the given mode.
-func UnaryMTLSInterceptor(logger *zap.Logger, expected certs.Scope, mode OrgMode) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if err := CheckMTLS(ctx, logger, expected, mode); err != nil {
-			return nil, err
-		}
-		return handler(ctx, req)
-	}
-}
-
-// StreamMTLSInterceptor rejects streaming calls that do not carry verified mTLS peer
-// credentials or whose client organization is not permitted under the given mode.
-func StreamMTLSInterceptor(logger *zap.Logger, expected certs.Scope, mode OrgMode) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := CheckMTLS(ss.Context(), logger, expected, mode); err != nil {
-			return err
-		}
-		return handler(srv, ss)
 	}
 }

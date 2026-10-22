@@ -68,6 +68,10 @@ func (s *ProvisioningServiceV2) StartProvisioning(ctx context.Context, req *agen
 }
 
 func (s *ProvisioningServiceV2) Unprovision(ctx context.Context, req *agentpbv2.UnprovisionRequest) (*agentpbv2.UnprovisionResponse, error) {
+	// Before the Cloud reset path records anything durable.
+	if err := s.v1.canUnprovision(); err != nil {
+		return nil, err
+	}
 	s.v1.mu.Lock()
 	directPKI := s.v1.principalURI != ""
 	s.v1.mu.Unlock()

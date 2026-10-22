@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -125,6 +126,12 @@ func clientAuditFields(ctx context.Context) []zap.Field {
 		return nil
 	}
 	fields := []zap.Field{zap.String("remote", p.Addr.String())}
+	if principal, ok := interceptor.PrincipalFromContext(ctx); ok {
+		fields = append(fields, zap.String("principal", principal.Kind.String()))
+		if principal.Fingerprint != "" {
+			fields = append(fields, zap.String("key_fingerprint", principal.Fingerprint))
+		}
+	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
 		return fields

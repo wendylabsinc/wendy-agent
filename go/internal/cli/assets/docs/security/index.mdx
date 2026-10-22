@@ -51,6 +51,85 @@ design — provisioning is the mitigation. The provisioning window is time-bound
 operators; pre-enrollment at imaging time eliminates it entirely. Once provisioned, all
 communication moves to mTLS on port 50052, and the plaintext port is shut down.
 
+### Local operators
+
+A device can be operated without Wendy Cloud or pki-core. The device keeps a list of trusted
+operator public keys in `/etc/wendy-agent/trusted-keys.json` (mode `0600`). The CLI presents its
+own key pair in a certificate signed by that same key; the agent accepts that certificate on the
+mTLS port when the key is on the list. There is no chain, issuer or network lookup. The agent logs the
+key's fingerprint (`sha256:` + hex SHA-256 of the public key) on every accepted handshake.
+
+Each key has one role:
+
+| Role | May |
+|------|-----|
+| `owner` | everything, including managing trusted keys, enrolling and unenrolling the device |
+| `operator` | everything a viewer may, plus apps and containers, builds, shell, tunnels, drivers, device settings, camera and audio settings, live camera and microphone streams, data recording, ROS 2 and robot control, agent and OS updates |
+| `viewer` | reads only: device info, lists, status, logs and telemetry, the kernel log, audio levels, ROS 2 topic echo and bag downloads, recorded data downloads, the robot state stream |
+
+A viewer may call exactly these (generated from the agent's role table; a test keeps this list
+in step with it):
+
+{/* viewer-methods:begin */}
+- `BLE`: agent_version, apps_list, bluetooth_list, hardware_list, wifi_known_list, wifi_list, wifi_status
+- `wendy.agent.services.v1.WendyAgentService`: DumpKernelLog, GetAgentVersion, GetOSUpdateStatus, GetPowerMode, GetWiFiStatus, ListHardwareCapabilities, ListKnownWiFiNetworks, ListWiFiNetworks, ScanBluetoothPeripherals
+- `wendy.agent.services.v1.WendyAudioService`: ListAudioDevices, StreamAudioLevels
+- `wendy.agent.services.v1.WendyContainerService`: GetContainerPorts, GetResourceStats, ListContainerStats, ListContainers, ListLayers, ListVolumes
+- `wendy.agent.services.v1.WendyProvisioningService`: IsProvisioned
+- `wendy.agent.services.v1.WendyTelemetryService`: StreamLogs, StreamMetrics, StreamTraces
+- `wendy.agent.services.v1.WendyVideoService`: GetCameraControls, ListVideoDevices
+- `wendy.agent.services.v2.DataService`: CampaignInspect, Campaigns, Download, Episodes, Events, Inspect, Sources, Status
+- `wendy.agent.services.v2.ROS2Service`: Doctor, DownloadBag, EchoTopic, GetActionInfo, GetGraph, GetLifecycleState, GetParam, GetTopicInfo, ListActions, ListBags, ListComponents, ListLifecycleNodes, ListLifecycleTransitions, ListNodes, ListParams, ListServices, ListTopics, MonitorHz
+- `wendy.agent.services.v2.WendyAudioService`: ListAudioDevices, StreamAudioLevels
+- `wendy.agent.services.v2.WendyBluetoothService`: ScanBluetoothPeripherals
+- `wendy.agent.services.v2.WendyBuildService`: GetBuildCapabilities
+- `wendy.agent.services.v2.WendyContainerService`: ListContainerStats, ListContainers, ListVolumes
+- `wendy.agent.services.v2.WendyDeviceInfoService`: GetDeviceInfo, ListHardwareCapabilities
+- `wendy.agent.services.v2.WendyDriverService`: ListDrivers
+- `wendy.agent.services.v2.WendyOSUpdateService`: GetOSUpdateStatus
+- `wendy.agent.services.v2.WendyProvisioningService`: CheckACMERevocation, IsProvisioned
+- `wendy.agent.services.v2.WendySensorPairingService`: ListSensorPairings
+- `wendy.agent.services.v2.WendyTelemetryService`: StreamLogs, StreamMetrics, StreamTraces
+- `wendy.agent.services.v2.WendyTimeSyncService`: GetClock
+- `wendy.agent.services.v2.WendyUnitreeRobotService`: Stream
+- `wendy.agent.services.v2.WendyUnitreeService`: DiscoverUnitreeRobots, ListUnitreePairings
+- `wendy.agent.services.v2.WendyWiFiService`: GetWiFiStatus, ListKnownWiFiNetworks, ListWiFiNetworks
+{/* viewer-methods:end */}
+
+- **One check on every channel.** A single method→role table runs on the mTLS port, the BLE
+  channel, the admin socket inside entitled containers (treated as `operator`) and the legacy
+  setup port. An RPC missing from the table is refused for everyone, and the agent will not
+  start if it serves an RPC without a role.
+- **Owners manage keys.** Only an owner key can add, list or remove keys. Every change is
+  written to the agent log with the acting key's fingerprint. The last owner key cannot be
+  removed. If the last owner key is lost, reinstall the device. A removed key is refused on its
+  next call and cannot resume a TLS session, but a shell or tunnel it already has open keeps
+  running until it closes.
+- **Operators are trusted with root.** The `operator` role includes the host shell, which runs
+  as root and can rewrite the trusted-keys file, so the owner/operator split protects against
+  viewers and the network, not against an operator who escalates: these are basic protections
+  by design.
+- **Cloud enrollment overrides local access.** While the device is enrolled with Wendy Cloud,
+  cloud is the only authority. Trusted keys are used nowhere: a local operator certificate is
+  refused at the handshake like any unknown certificate, and adding, listing or removing keys is
+  refused for every caller ("local operator keys are managed by cloud while enrolled") and
+  written to the agent log. There is no fallback to local keys of any kind. The trusted-keys file
+  stays on the device untouched, and Wendy Cloud never imports it: the operator who enrolled the
+  device already has access through cloud. After the device is unenrolled, the saved keys work
+  again. An enrolled device that has lost its enrollment key or certificate therefore has no
+  local recovery path, by design: reinstall it. Tenant operators get `operator` and can unenroll the device because Wendy Cloud
+  authorizes the reset.
+- **Local and cloud identities stay apart.** A self-issued certificate that names a tenant is
+  refused, and a cloud-issued certificate never gets owner rights, even when its key is also on
+  the list. Other devices in the same tenant can only open mesh connections and deliver builds.
+  They get no operator rights.
+- **No open setup path.** When the trusted-keys file is present, the agent does not open the
+  plaintext setup port, and the image registry stays off until at least one key is trusted.
+  If the file cannot be read, has a bad entry, or other users can write to it, the agent
+  refuses to start. A file that does not exist means there are no local operators, not that
+  everyone is allowed. Set `WENDY_LOCAL_ACCESS=required` to also refuse to start without an
+  owner key; an enrolled device starts regardless, because cloud is the authority.
+
 **Container isolation.** Apps run as non-root (`appuser`, UID 1000) inside containerd with a
 baseline seccomp profile, explicit capability grants, and entitlement-gated access to hardware,
 Bluetooth (D-Bus proxied), and host networking. No entitlement, no access.
