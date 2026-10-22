@@ -14,6 +14,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 const (
@@ -29,24 +30,81 @@ const (
 var ErrRegistration = errors.New("recipient key registration does not verify")
 
 // VerifyRegistration checks a RecipientKey's registration as the client that
-// will wrap to it: the JWS against its x5c leaf, that leaf through chainDER
-// (intermediates up to the tenant CA) to the pinned platform root at the
-// JWS's signed iat, the leaf identity against principal and its tenant
-// against organizationID, the operation against the principal kind, and the
-// body digest against the payload. Only ML-DSA-65 is accepted from devices
-// (the tier A/B device-signer profile; tier C has no wrap suite yet), ML-DSA-65
-// or -87 from operators. It returns the verified payload, a
-// RegisterEncryptionKeyRequest, for the caller to decode; the caller then
-// recomputes key_id from its public_key and checks its organization_id.
+// will wrap to it and returns the public key it registers, the only key the
+// caller may wrap to for principal (its key id is KeyID of it). It checks the
+// JWS against its x5c leaf, that leaf through chainDER (intermediates up to
+// the tenant CA) to the pinned platform root at the JWS's signed iat (never
+// in the future), the leaf identity against principal and its tenant
+// against organizationID, the operation against the principal kind, the body
+// digest, and the signed payload's organization_id and suite. Only ML-DSA-65
+// is accepted from devices (the tier A/B device-signer profile; tier C has no
+// wrap suite yet), ML-DSA-65 or -87 from operators. Revocation is cloud's:
+// it verified the registration when it was made and stops serving revoked
+// keys.
 func VerifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x509.Certificate, principal, organizationID string) ([]byte, error) {
-	payload, err := verifyRegistration(reg, chainDER, root, principal, organizationID)
+	payload, err := verifyRegistration(reg, chainDER, root, principal, organizationID, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRegistration, err)
 	}
-	return payload, nil
+	publicKey, err := registeredKey(payload, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRegistration, err)
+	}
+	return publicKey, nil
 }
 
-func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x509.Certificate, principal, organizationID string) ([]byte, error) {
+// registeredKey decodes a RegisterEncryptionKeyRequest (organization_id = 1,
+// suite = 2, public_key = 3) and checks it. Duplicate fields are refused so
+// no two parsers can read different keys from one signed payload.
+// TODO(T11 phase 2): decode with the generated type once registry.proto is
+// vendored.
+func registeredKey(payload []byte, organizationID string) ([]byte, error) {
+	seen := map[protowire.Number]bool{}
+	var org string
+	var suite uint64
+	var publicKey []byte
+	for b := payload; len(b) > 0; {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return nil, protowire.ParseError(n)
+		}
+		b = b[n:]
+		if seen[num] && num <= 3 {
+			return nil, errors.New("duplicate registration field")
+		}
+		seen[num] = true
+		switch {
+		case num == 1 && typ == protowire.BytesType:
+			var v []byte
+			v, n = protowire.ConsumeBytes(b)
+			org = string(v)
+		case num == 2 && typ == protowire.VarintType:
+			suite, n = protowire.ConsumeVarint(b)
+		case num == 3 && typ == protowire.BytesType:
+			publicKey, n = protowire.ConsumeBytes(b)
+		case num <= 3:
+			return nil, errors.New("registration field has the wrong type")
+		default:
+			n = protowire.ConsumeFieldValue(num, typ, b)
+		}
+		if n < 0 {
+			return nil, protowire.ParseError(n)
+		}
+		b = b[n:]
+	}
+	if org != organizationID {
+		return nil, errors.New("registration is for another organization")
+	}
+	if suite != 1 { // KEM_SUITE_MLKEM768_X25519
+		return nil, errors.New("registration names an unknown suite")
+	}
+	if _, err := KEM.NewPublicKey(publicKey); err != nil {
+		return nil, err
+	}
+	return publicKey, nil
+}
+
+func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x509.Certificate, principal, organizationID string, now time.Time) ([]byte, error) {
 	if reg == nil || root == nil {
 		return nil, errors.New("no registration or pinned root")
 	}
@@ -133,6 +191,9 @@ func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x
 	}
 	if id.EntityType == certs.EntityAsset && claims.Target.Resource != principal {
 		return nil, errors.New("device registration names another device")
+	}
+	if claims.Iat > now.Add(time.Minute).Unix() {
+		return nil, errors.New("registration is signed in the future")
 	}
 
 	// The issuing CA must be the ML-DSA Device Identity CA (or operator CA):

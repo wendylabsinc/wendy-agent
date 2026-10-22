@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -59,7 +61,7 @@ type binding struct {
 	ScopeKind       byte   `json:"scope_kind"`
 	ScopeID         string `json:"scope_id"`
 	KeyID           string `json:"key_id"`
-	RecipientKind   int32  `json:"recipient_kind"`
+	RecipientKind   byte   `json:"recipient_kind"`
 	Recipient       string `json:"recipient"`
 	RecipientKeyID  string `json:"recipient_key_id"`
 	DeploymentID    string `json:"deployment_id"`
@@ -80,6 +82,7 @@ type registryVectors struct {
 	PerBlobKey struct {
 		ContentKeyHex string `json:"content_key_hex"`
 		ContentKeyID  string `json:"content_key_id"`
+		ChunkSize     uint32 `json:"chunk_size"`
 		Blobs         []struct {
 			BlobKeyHex      string `json:"blob_key_hex"`
 			PlaintextDigest string `json:"plaintext_digest"`
@@ -144,7 +147,7 @@ func TestRegistryVectors(t *testing.T) {
 		t.Fatal("content_key_id")
 	}
 	for _, b := range v.PerBlobKey.Blobs {
-		key, err := BlobKey(contentKey, b.PlaintextDigest)
+		key, err := BlobKey(contentKey, b.PlaintextDigest, v.PerBlobKey.ChunkSize)
 		if err != nil || hex.EncodeToString(key) != b.BlobKeyHex {
 			t.Fatalf("per-blob key for %s", b.PlaintextDigest)
 		}
@@ -208,13 +211,10 @@ func TestRegistryVectors(t *testing.T) {
 		if hex.EncodeToString(info) != wv.InfoHex {
 			t.Fatalf("%s: info bytes differ", wv.Name)
 		}
+		// An invalid wrap may be refused before HPKE (recipient key id).
 		key, err := w.Open(wrapPriv, unhex(t, wv.EncHex), unhex(t, wv.CiphertextHex))
-		if wv.Expect == "valid" {
-			if err != nil || hex.EncodeToString(key) != wv.KeyHex {
-				t.Fatalf("%s: %v", wv.Name, err)
-			}
-		} else if !errors.Is(err, ErrOpen) {
-			t.Fatalf("%s: want ErrOpen, got %v", wv.Name, err)
+		if (err == nil) != (wv.Expect == "valid") || err == nil && hex.EncodeToString(key) != wv.KeyHex {
+			t.Fatalf("%s: expect %s, got %v", wv.Name, wv.Expect, err)
 		}
 	}
 
@@ -227,13 +227,10 @@ func TestRegistryVectors(t *testing.T) {
 		if hex.EncodeToString(aad) != sv.AADHex {
 			t.Fatalf("%s: aad bytes differ", sv.Name)
 		}
+		// An invalid seal may be refused before AES-GCM (deployment key id).
 		key, err := s.Open(unhex(t, v.SealedContentKey.DeploymentKeyHex), unhex(t, sv.NonceHex), unhex(t, sv.CiphertextHex))
-		if sv.Expect == "valid" {
-			if err != nil || hex.EncodeToString(key) != sv.ContentKeyHex {
-				t.Fatalf("%s: %v", sv.Name, err)
-			}
-		} else if !errors.Is(err, ErrOpen) {
-			t.Fatalf("%s: want ErrOpen, got %v", sv.Name, err)
+		if (err == nil) != (sv.Expect == "valid") || err == nil && hex.EncodeToString(key) != sv.ContentKeyHex {
+			t.Fatalf("%s: expect %s, got %v", sv.Name, sv.Expect, err)
 		}
 	}
 }
@@ -358,6 +355,22 @@ func TestWrapAndSeal(t *testing.T) {
 	if _, err := s.Open(NewKey(), nonce, sealed); err == nil {
 		t.Error("another deployment key opened the sealed key")
 	}
+
+	long := strings.Repeat("x", 65536)
+	tooLong := w
+	tooLong.Recipient = long
+	if _, _, err := tooLong.Seal(pub, deploymentKey); err == nil {
+		t.Error("wrap with a field over 65535 bytes accepted")
+	}
+	tooLongSeal := s
+	tooLongSeal.ManifestDigest = long
+	if _, _, err := tooLongSeal.Seal(deploymentKey, contentKey); err == nil {
+		t.Error("sealed key with a field over 65535 bytes accepted")
+	}
+	tooLong.Recipient = long[:65535]
+	if _, _, err := tooLong.Seal(pub, deploymentKey); err != nil {
+		t.Errorf("wrap with a 65535-byte field refused: %v", err)
+	}
 }
 
 // RecipientKey and RegisterEncryptionKeyRequest are decoded field by field
@@ -417,18 +430,12 @@ func TestRecipientKeyVectors(t *testing.T) {
 		if len(f[2]) != 1 || proto.Unmarshal(f[2][0], &reg) != nil {
 			t.Fatalf("%s: registration", rv.Name)
 		}
-		payload, err := VerifyRegistration(&reg, f[3], root, rv.Principal, rv.Organization)
-		if err == nil {
-			// The caller's remaining checks: organization_id and key_id.
-			p := fields(t, payload)
-			if len(p[1]) != 1 || string(p[1][0]) != rv.Organization || len(p[3]) != 1 {
-				err = errors.New("payload does not bind the organization")
-			} else if rv.Expect == "valid" && KeyID(p[3][0]) != rv.ExpectedKeyID {
-				t.Fatalf("%s: key_id %s", rv.Name, KeyID(p[3][0]))
-			}
-		}
+		publicKey, err := VerifyRegistration(&reg, f[3], root, rv.Principal, rv.Organization)
 		if (err == nil) != (rv.Expect == "valid") {
 			t.Errorf("%s: expect %s, got %v", rv.Name, rv.Expect, err)
+		}
+		if err == nil && KeyID(publicKey) != rv.ExpectedKeyID {
+			t.Errorf("%s: key_id %s", rv.Name, KeyID(publicKey))
 		}
 	}
 }
@@ -461,6 +468,40 @@ func TestDeviceRegistrationVector(t *testing.T) {
 		if _, err := VerifyRegistration(&reg, chain, root, dv.SAN, "00000000-0000-4000-8000-000000000000"); err == nil {
 			t.Fatal("registration verified for another organization")
 		}
+		var claims struct {
+			Iat int64 `json:"iat"`
+		}
+		parts := strings.Split(string(reg.GetSignature()), ".")
+		raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
+		if err := json.Unmarshal(raw, &claims); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := verifyRegistration(&reg, chain, root, dv.SAN, dv.Tenant, time.Unix(claims.Iat-3600, 0)); err == nil {
+			t.Fatal("registration signed an hour in the future accepted")
+		}
+		// The signed payload, not the caller, binds organization and key.
+		publicKey, err := registeredKey(reg.GetPayload(), dv.Tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := func(org string) []byte {
+			b := protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte(org))
+			b = protowire.AppendVarint(protowire.AppendTag(b, 2, protowire.VarintType), 1)
+			return protowire.AppendBytes(protowire.AppendTag(b, 3, protowire.BytesType), publicKey)
+		}
+		if _, err := registeredKey(request(dv.Tenant), dv.Tenant); err != nil {
+			t.Fatalf("rebuilt request refused: %v", err)
+		}
+		for name, payload := range map[string][]byte{
+			"other organization": request("00000000-0000-4000-8000-000000000000"),
+			"duplicate key":      append(reg.GetPayload(), protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), make([]byte, 1216))...),
+			"unknown suite":      protowire.AppendVarint(protowire.AppendTag(append([]byte{}, reg.GetPayload()...), 2, protowire.VarintType), 9),
+		} {
+			if _, err := registeredKey(payload, dv.Tenant); err == nil {
+				t.Errorf("%s: payload accepted", name)
+			}
+		}
+
 		return
 	}
 	t.Fatal("device registration vector missing")

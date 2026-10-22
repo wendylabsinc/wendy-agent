@@ -74,12 +74,14 @@ func NewKey() []byte {
 }
 
 // BlobKey derives a blob's own key from the release content key:
-// HKDF-SHA256(IKM = content key, no salt, info = plaintext_digest, L = 32).
-func BlobKey(contentKey []byte, plaintextDigest string) ([]byte, error) {
+// HKDF-SHA256(IKM = content key, no salt, info = plaintext_digest ‖ u32 BE
+// chunk_size, L = 32). The chunk size is in the key so that one blob chunked
+// two ways never reuses a (key, nonce) pair.
+func BlobKey(contentKey []byte, plaintextDigest string, chunkSize uint32) ([]byte, error) {
 	if len(contentKey) != KeySize {
 		return nil, fmt.Errorf("content key must be %d bytes", KeySize)
 	}
-	return hkdf.Key(sha256.New, contentKey, nil, plaintextDigest, KeySize)
+	return hkdf.Key(sha256.New, contentKey, nil, string(binary.BigEndian.AppendUint32([]byte(plaintextDigest), chunkSize)), KeySize)
 }
 
 // Blob is the digest and size pair an EncryptedBlob carries.
@@ -101,11 +103,14 @@ func chunkNonce(index uint64, last bool) []byte {
 	return nonce
 }
 
-func blobAEAD(contentKey []byte, plaintextDigest string) (cipher.AEAD, error) {
+func blobAEAD(contentKey []byte, plaintextDigest string, chunkSize int) (cipher.AEAD, error) {
+	if chunkSize <= 0 || chunkSize > math.MaxInt32-tagSize {
+		return nil, fmt.Errorf("invalid chunk size %d", chunkSize)
+	}
 	if !strings.HasPrefix(plaintextDigest, "sha256:") {
 		return nil, fmt.Errorf("plaintext digest must be sha256:<hex>")
 	}
-	key, err := BlobKey(contentKey, plaintextDigest)
+	key, err := BlobKey(contentKey, plaintextDigest, uint32(chunkSize))
 	if err != nil {
 		return nil, err
 	}
@@ -132,13 +137,12 @@ func (c *countingHash) Write(p []byte) (int, error) {
 // dst: chunkSize plaintext bytes per AES-256-GCM chunk (the last holds
 // 1..chunkSize; an empty blob is one empty last chunk), each chunk ct‖tag,
 // concatenated, no AAD. plaintextDigest is the digest the manifest names (the
-// per-blob key derives from it); the plaintext read must match it, or the
-// ciphertext written so far is useless and an error is returned.
+// per-blob key derives from it); the plaintext read must match it. On any
+// error the caller must discard dst and never upload it: ciphertext of a
+// plaintext that does not match its digest shares keys and nonces with the
+// real blob's.
 func EncryptBlob(dst io.Writer, src io.Reader, contentKey []byte, plaintextDigest string, chunkSize int) (Blob, error) {
-	if chunkSize <= 0 || chunkSize > math.MaxInt32-tagSize {
-		return Blob{}, fmt.Errorf("invalid chunk size %d", chunkSize)
-	}
-	gcm, err := blobAEAD(contentKey, plaintextDigest)
+	gcm, err := blobAEAD(contentKey, plaintextDigest, chunkSize)
 	if err != nil {
 		return Blob{}, err
 	}
@@ -184,10 +188,7 @@ func EncryptBlob(dst io.Writer, src io.Reader, contentKey []byte, plaintextDiges
 // caller must discard everything written to dst: the digests are only known
 // at the end.
 func DecryptBlob(dst io.Writer, src io.Reader, contentKey []byte, want Blob, chunkSize int) error {
-	if chunkSize <= 0 || chunkSize > math.MaxInt32-tagSize {
-		return fmt.Errorf("invalid chunk size %d", chunkSize)
-	}
-	gcm, err := blobAEAD(contentKey, want.PlaintextDigest)
+	gcm, err := blobAEAD(contentKey, want.PlaintextDigest, chunkSize)
 	if err != nil {
 		return err
 	}
@@ -268,14 +269,13 @@ type Wrap struct {
 	Scope          byte
 	ScopeID        string
 	KeyID          string
-	RecipientKind  int32
+	RecipientKind  byte
 	Recipient      string
 	RecipientKeyID string
 }
 
 // info = "wendy-registry-wrap-v1" ‖ lp(org) ‖ u8 scope kind ‖ lp(scope id) ‖
-// lp(key_id) ‖ lp(recipient_kind, decimal) ‖ lp(recipient) ‖
-// lp(recipient_key_id).
+// lp(key_id) ‖ u8 recipient_kind ‖ lp(recipient) ‖ lp(recipient_key_id).
 func (w Wrap) info() ([]byte, error) {
 	if w.Scope != ScopeDeployment && w.Scope != ScopeRelease {
 		return nil, fmt.Errorf("unknown wrap scope %d", w.Scope)
@@ -284,8 +284,10 @@ func (w Wrap) info() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b = append(b, w.Scope)
-	return appendAll(b, w.ScopeID, w.KeyID, fmt.Sprint(w.RecipientKind), w.Recipient, w.RecipientKeyID)
+	if b, err = appendAll(append(b, w.Scope), w.ScopeID, w.KeyID); err != nil {
+		return nil, err
+	}
+	return appendAll(append(b, w.RecipientKind), w.Recipient, w.RecipientKeyID)
 }
 
 // Seal wraps key (a content or deployment key, w.KeyID) to the recipient
