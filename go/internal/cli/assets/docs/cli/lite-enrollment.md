@@ -84,7 +84,10 @@ enrollment, and reboots it. Wi-Fi and app configuration are preserved. You can
 then enroll it again, including in another organization.
 
 If Cloud removal succeeds but the USB reset fails, reconnect the board and rerun
-the same command. Firmware without reset support must be updated first.
+the same command. Firmware without reset support, or that does not report its
+enrollment identity, must be updated first. If several Cloud records carry the
+board's hardware ID, the command lists them and removes none; remove each with
+`wendy cloud device unenroll --device <asset-id>`, then run it again.
 Bluetooth and LAN connections cannot clear a Lite board's enrollment.
 
 If the board is unavailable, remove its Cloud access without contacting it:
