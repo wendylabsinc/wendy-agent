@@ -1,4 +1,3 @@
-service-protos wendylabsinc/service-protos#145 head 2e5874f (branch wdy-registry-t1-vectors-wrap-seal-chunk)
+service-protos master cfa7f45d (merge of wendylabsinc/service-protos#145)
 conformance/registry/registry-vectors-v1.json
 conformance/reqsig/device-signed-request-vectors-v1.json
-Re-pin to the master merge commit of #145 before merge.
