@@ -17,7 +17,9 @@ class VersionTests(unittest.TestCase):
 
     def test_all_channels_and_python_mapping(self):
         self.assertEqual(self.derive("stable")["version"], "0.1.0")
-        self.assertEqual(self.derive("dev")["pythonVersion"], "0.1.0.dev0")
+        local = self.derive("dev")
+        self.assertEqual(local["version"], "0.1.0-dev+aaaaaaa")
+        self.assertEqual(local["pythonVersion"], "0.1.0.dev0")
         nightly = self.derive("nightly", run_id=123, attempt=2)
         self.assertEqual(nightly["version"], "0.1.0-nightly.123.2")
         self.assertEqual(nightly["pythonVersion"], "0.1.0.dev123002")
@@ -27,6 +29,52 @@ class VersionTests(unittest.TestCase):
         manual = self.derive("pr", branch="testing", run_id=125)
         self.assertEqual(manual["version"], "0.1.0-pr.manual-testing.125.1")
         self.assertEqual(manual["npmTag"], "preview-testing")
+
+    def test_local_identity_uses_head_without_a_dirty_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git").mkdir()
+            with patch.dict(os.environ, {"CORE_BUILD_IDENTITY": ""}), \
+                    patch.object(versioning, "ROOT", root), \
+                    patch.object(versioning.subprocess, "check_output", return_value=SHA + "\n"):
+                info = versioning.identity()
+        self.assertEqual(info["sourceSha"], SHA)
+        self.assertEqual(info["version"], versioning.base_version() + "-dev+aaaaaaa")
+        self.assertEqual(versioning.validate(info), info)
+        with self.assertRaises(ValueError):
+            versioning.validate({**info, "version": info["baseVersion"] + "-dev+bbbbbbb"})
+
+    def test_local_archive_does_not_inherit_a_parent_checkout(self):
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.dict(os.environ, {"CORE_BUILD_IDENTITY": ""}), \
+                patch.object(versioning, "ROOT", Path(temp)), \
+                patch.object(versioning.subprocess, "check_output") as git:
+            info = versioning.identity()
+        git.assert_not_called()
+        self.assertIsNone(info["sourceSha"])
+        self.assertEqual(info["version"], versioning.base_version() + "-dev")
+        self.assertEqual(versioning.validate(info), info)
+
+    def test_local_identity_falls_back_when_git_or_head_is_unavailable(self):
+        for error in (FileNotFoundError(), versioning.subprocess.CalledProcessError(128, "git")):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / ".git").mkdir()
+                with patch.dict(os.environ, {"CORE_BUILD_IDENTITY": ""}), \
+                        patch.object(versioning, "ROOT", root), \
+                        patch.object(versioning.subprocess, "check_output", side_effect=error):
+                    info = versioning.identity()
+            self.assertIsNone(info["sourceSha"])
+            self.assertEqual(info["version"], versioning.base_version() + "-dev")
+
+    def test_local_commits_have_distinct_versions_but_one_python_mapping(self):
+        first = self.derive("dev")
+        second = versioning.derive("0.1.0", "dev", source_sha="b" * 40)
+        self.assertNotEqual(first["version"], second["version"])
+        self.assertEqual(first["pythonVersion"], second["pythonVersion"])
+        for channel in ("stable", "nightly", "pr"):
+            with self.subTest(channel=channel), self.assertRaises(ValueError):
+                versioning.derive("0.1.0", channel, source_sha=None, run_id=123)
 
     def test_attempts_and_runs_have_distinct_versions(self):
         values = [self.derive("nightly", run_id=run, attempt=attempt)
@@ -88,11 +136,11 @@ class VersionTests(unittest.TestCase):
             (source / "src/index.mjs").write_text("export {}")
 
             def inspect(*args, cwd):
-                self.assertEqual(json.loads((cwd / "package.json").read_text())["version"], "0.1.0-dev")
+                self.assertEqual(json.loads((cwd / "package.json").read_text())["version"], "0.1.0-dev+aaaaaaa")
                 self.assertIn("--ignore-scripts", args)
 
             with patch.object(build, "JS", source), patch.object(build, "stage_licenses"), \
-                    patch.object(build, "version", return_value="0.1.0-dev"), patch.object(build, "run", side_effect=inspect):
+                    patch.object(build, "version", return_value="0.1.0-dev+aaaaaaa"), patch.object(build, "run", side_effect=inspect):
                 build.pack_npm(directory / "out")
             self.assertEqual((source / "package.json").read_text(), original)
 

@@ -24,7 +24,9 @@ def slug(value):
 
 
 def derive(base, channel, *, source_sha, branch="", pr=None, run_id=0, attempt=1):
-    if not re.fullmatch(STABLE, base) or not re.fullmatch(SHA, source_sha):
+    if not re.fullmatch(STABLE, base) or not (
+            source_sha is None and channel == "dev" or
+            isinstance(source_sha, str) and re.fullmatch(SHA, source_sha)):
         raise ValueError("Invalid base version or source commit")
     if channel not in ("stable", "nightly", "pr", "dev"):
         raise ValueError("Unknown release channel")
@@ -38,7 +40,8 @@ def derive(base, channel, *, source_sha, branch="", pr=None, run_id=0, attempt=1
     if channel == "stable":
         value, python, npm_tag = base, base, "latest"
     elif channel == "dev":
-        value, python, npm_tag = base + "-dev", base + ".dev0", ""
+        value = base + "-dev" + ("+" + source_sha[:7] if source_sha else "")
+        python, npm_tag = base + ".dev0", ""
     else:
         # GitHub run IDs are unique across workflows; attempts reserve distinct
         # versions for fresh rebuilds. Failed publication retries reuse identity.
@@ -65,17 +68,27 @@ def validate(info):
     return expected
 
 
+def checkout_revision():
+    # A source archive nested in another repository must not inherit its HEAD.
+    if not (ROOT / ".git").exists():
+        return None
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--verify", "HEAD"], cwd=ROOT,
+                                       text=True, stderr=subprocess.DEVNULL).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
 def identity():
     if os.environ.get("CORE_BUILD_IDENTITY"):
         info = validate(json.loads(os.environ["CORE_BUILD_IDENTITY"]))
         if info["baseVersion"] != base_version():
             raise ValueError("Release identity base differs from VERSION")
-        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        sha = checkout_revision()
         if info["sourceSha"] != sha:
             raise ValueError("Release identity source differs from the checkout")
         return info
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    return derive(base_version(), "dev", source_sha=sha)
+    return derive(base_version(), "dev", source_sha=checkout_revision())
 
 
 def github_plan(event, event_name, ref_type, ref_name, run_id, attempt):

@@ -12,7 +12,7 @@
 
 | Source | Effective version | Publication channel |
 |---|---|---|
-| Local build | `x.y.z-dev` | None |
+| Local build | `x.y.z-dev+<7-character HEAD commit>` (or `x.y.z-dev` without a checkout) | None |
 | PR head | `x.y.z-pr.<number>-<slug>.<run-id>.<attempt>` | PR preview |
 | Manual branch build | `x.y.z-pr.manual-<slug>.<run-id>.<attempt>` | Branch preview |
 | Passing main build | `x.y.z-nightly.<run-id>.<attempt>` | Nightly |
@@ -22,11 +22,13 @@
 
 PRs build their exact head commit, not GitHub's synthetic merge commit. Every native/WASM inventory records the same version, source SHA and originating run/attempt; assembly rejects mixed identities or changed checksums. The final `release.json` records this identity, including package-manager mappings. Generated C/JS contract snapshots describe the stable base, not each transient preview suffix.
 
-Python uses PEP 440: stable stays `x.y.z`, local becomes `x.y.z.dev0`, and both PR/nightly publications become `x.y.z.dev<run-id * 1000 + attempt>`. Attempts must be below 1000. PR/branch/channel information is retained in `release.json`; PyPI does not accept arbitrary SemVer prereleases or local-version labels. The mapping is deterministic and collision-free for distinct runs/attempts.
+Python uses PEP 440: stable stays `x.y.z`, local stays `x.y.z.dev0` even when the engine includes a commit (PyPI rejects local-version segments), and both PR/nightly publications become `x.y.z.dev<run-id * 1000 + attempt>`. Attempts must be below 1000. PR/branch/channel information is retained in `release.json`; PyPI does not accept arbitrary SemVer prereleases or local-version labels. The mapping is deterministic and collision-free for distinct runs/attempts.
 
 npm uses `latest` only for stable, `nightly` for main, `pr-<number>` for PRs and `preview-<slug>` for manual builds. Moving pointers are conveniences; reproducible preview consumers pin exact versions. Maven previews are immutable versions, not `SNAPSHOT`s. Go uses `v<effective-version>` tags; SwiftPM uses bare `<effective-version>` tags on release-only commits (see Swift below). Local builds do not create tags or update published pointers.
 
 `core.Version()` and its C/language projections report this effective identity, stamped into native/shared, static Swift and WASM engines at Go link time. Ordinary Go module consumers read dependency build information: tagged versions retain their release/prerelease version without `v`, while Go pseudo-versions become the language-neutral `0.1.0-dev+<7-character commit>`. Main-module source builds use `vcs.revision` when available, omitting a dirty-tree marker. Local replacements and source builds without a known Core revision report `0.1.0-dev`; a consuming application's VCS revision is never used as Core's revision. This does not run `git describe`: a Go module dependency has no Git checkout.
+
+Local engines omit dirty-tree markers, matching source-build version reporting. npm and Maven retain the SemVer build metadata unchanged; their local package validators accept it.
 
 Package stamping happens in staging directories, not by editing tracked metadata. Raw C archives carry the effective `VERSION` and the Swift artifact bundle records it; npm tarballs, Python wheels and Maven jars/POM use the appropriate effective version. Ordinary local source dependencies still read the checked-in base metadata; packaged local distributions carry the development version.
 
