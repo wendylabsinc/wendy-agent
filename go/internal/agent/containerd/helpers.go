@@ -215,6 +215,17 @@ func ParseContainerName(name string) (appID, serviceName string, err error) {
 	return "", "", fmt.Errorf("invalid container name %q: does not match appID or appID_serviceName format", sanitizeForLog(name, 300))
 }
 
+// containerOwnerFromLabels resolves the ambiguous underscore name boundary
+// using persisted app/service labels, then proves they reconstruct this exact
+// container. Neither a guessed split nor unvalidated labels authorize cleanup.
+func containerOwnerFromLabels(name string, labels map[string]string) (appID, serviceName string, err error) {
+	appID, serviceName = labels[labelKeyAppID], labels[labelKeyServiceName]
+	if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) || ContainerName(appID, serviceName) != name {
+		return "", "", fmt.Errorf("invalid app ownership for container %q", sanitizeForLog(name, 300))
+	}
+	return appID, serviceName, nil
+}
+
 // computeChainID computes the chain ID for a layer given its parent chain ID
 // and the layer's diff ID. The chain ID is defined recursively:
 //

@@ -35,20 +35,31 @@ var serviceNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$`)
 const (
 	EntitlementNetwork   = "network"
 	EntitlementBluetooth = "bluetooth"
-	EntitlementVideo     = "video"
-	EntitlementGPU       = "gpu"
-	EntitlementNPU       = "npu"
-	EntitlementPersist   = "persist"
-	EntitlementAudio     = "audio"
-	EntitlementCamera    = "camera"
-	EntitlementUSB       = "usb"
-	EntitlementI2C       = "i2c"
-	EntitlementGPIO      = "gpio"
-	EntitlementSPI       = "spi"
-	EntitlementInput     = "input"
-	EntitlementSerial    = "serial"
-	EntitlementMCP       = "mcp"
-	EntitlementDisplay   = "display"
+	// EntitlementAvahi grants an app its own Avahi mDNS stack: the agent
+	// runs a per-container avahi-daemon inside the app network namespace
+	// and exposes only that instance over a filtered D-Bus socket. Apps use
+	// stock avahi-compat (dns_sd.h) or native Avahi clients with no special
+	// socket handling; the daemon multicasts on the app bridge exactly like
+	// any other speaker, so the existing catalog bridge picks publications
+	// up transparently.
+	EntitlementAvahi = "avahi"
+	// EntitlementNAN grants direct control of the host's NAN management socket.
+	// Network access for NDP traffic is a separate entitlement.
+	EntitlementNAN     = "nan"
+	EntitlementVideo   = "video"
+	EntitlementGPU     = "gpu"
+	EntitlementNPU     = "npu"
+	EntitlementPersist = "persist"
+	EntitlementAudio   = "audio"
+	EntitlementCamera  = "camera"
+	EntitlementUSB     = "usb"
+	EntitlementI2C     = "i2c"
+	EntitlementGPIO    = "gpio"
+	EntitlementSPI     = "spi"
+	EntitlementInput   = "input"
+	EntitlementSerial  = "serial"
+	EntitlementMCP     = "mcp"
+	EntitlementDisplay = "display"
 	// EntitlementEpisodeWrite grants write access to the device's episode
 	// recorder through the app-private episode event socket, and nothing else.
 	// The app pushes its own event and prediction records into whatever
@@ -82,6 +93,8 @@ const (
 var ValidEntitlementTypes = []string{
 	EntitlementNetwork,
 	EntitlementBluetooth,
+	EntitlementAvahi,
+	EntitlementNAN,
 	EntitlementVideo,
 	EntitlementGPU,
 	EntitlementNPU,
@@ -120,6 +133,8 @@ var deprecatedEntitlementReplacements = map[string]string{
 var allowedKeys = map[string][]string{
 	EntitlementNetwork:       {"type", "mode", "ports", "serviceCIDR"},
 	EntitlementBluetooth:     {"type", "mode"},
+	EntitlementAvahi:         {"type"},
+	EntitlementNAN:           {"type"},
 	EntitlementVideo:         {"type", "mode", "allowlist"},
 	EntitlementGPU:           {"type"},
 	EntitlementNPU:           {"type"},
@@ -420,6 +435,8 @@ type PythonConfig struct {
 type PortMapping struct {
 	Host      uint16 `json:"host"`
 	Container uint16 `json:"container"`
+	// Empty is TCP for compatibility with existing app manifests.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // Entitlement represents a single entitlement entry in wendy.json.
@@ -559,6 +576,14 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			} else if e.ServiceCIDR != "" {
 				return fmt.Errorf("%s[%d]: network serviceCIDR is only valid with mode \"mesh\", got mode %q", prefix, i, e.Mode)
 			}
+			for _, pm := range e.Ports {
+				if pm.Host == 0 || pm.Container == 0 || (pm.Protocol != "" && pm.Protocol != "tcp" && pm.Protocol != "udp") {
+					return fmt.Errorf("%s[%d]: invalid network port mapping", prefix, i)
+				}
+				if pm.Protocol == "udp" && e.Mode != "mesh" {
+					return fmt.Errorf("%s[%d]: UDP port mappings require network mode \"mesh\"", prefix, i)
+				}
+			}
 		case EntitlementPersist:
 			if e.Name == "" {
 				return fmt.Errorf("%s[%d]: persist entitlement requires a name", prefix, i)
@@ -649,6 +674,15 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if adminCount > 1 {
 		return fmt.Errorf("at most one admin entitlement is allowed in %s, found %d", prefix, adminCount)
+	}
+	nanCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementNAN {
+			nanCount++
+		}
+	}
+	if nanCount > 1 {
+		return fmt.Errorf("at most one nan entitlement is allowed in %s, found %d", prefix, nanCount)
 	}
 
 	return nil

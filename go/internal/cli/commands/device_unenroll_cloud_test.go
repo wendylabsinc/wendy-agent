@@ -138,7 +138,7 @@ func TestUnenrollCommandDispatchesSelectedLite(t *testing.T) {
 		return &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}, nil
 	}
 	called := false
-	unenrollLiteCloudFn = func(_ *cobra.Command, _, deviceID string, assumeYes bool, reset func() error) error {
+	unenrollLiteCloudFn = func(_ *cobra.Command, _, deviceID, tenantID string, assumeYes bool, reset func() error) error {
 		called = true
 		if deviceID != "lite-441bf6804824" || !assumeYes {
 			t.Fatalf("Lite dispatch lost identity or confirmation: %q %v", deviceID, assumeYes)

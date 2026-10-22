@@ -2394,9 +2394,10 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 
 	// Fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
-	// just ensure the existing container is running. Best-effort — a missing or
-	// mismatched fingerprint, a missing app, or any RPC error falls through to
-	// the normal deploy below, so it can never deploy stale code.
+	// just ensure the existing container is running. A missing or mismatched
+	// fingerprint or failed device verification falls through to the normal
+	// deploy below. Once verified, lifecycle errors (including start failures)
+	// are returned directly without rebuilding or redeploying.
 	//
 	// The fingerprint feeds only this fast path and the one recorded when the
 	// chunk-diff deploy below starts. Both are off for darwin agents and
@@ -2411,11 +2412,13 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 	}
 	mark("build-input fingerprint")
 	if fingerprintUsed && hashErr == nil {
+		// Started emits its progress event inside the fast path, before it returns.
+		metrics.transport = "fastpath"
 		if done, err := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
-			metrics.transport = "fastpath"
 			return err
 		}
+		metrics.transport = ""
 	}
 
 	// A build will run below (the no-build fast path returned above), so make

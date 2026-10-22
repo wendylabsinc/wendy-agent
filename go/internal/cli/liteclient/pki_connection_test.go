@@ -90,6 +90,9 @@ func testPKITrustAndDeviceIdentity(t *testing.T, connect func(*WendyLiteClient, 
 		{"untrusted issuer", matching, "441bf6804ff8", false, nil, nil, false},
 		{"Lite CA under session trust", matching, "441bf6804ff8", false, liteCA, liteKey, true},
 		{"self-signed Lite CA", matching, "441bf6804ff8", false, selfSignedLite, selfSignedLiteKey, false},
+		{"UUID device", "spiffe://wendy.sh/tenant/" + tenant + "/device/44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444", true, nil, nil, true},
+		{"wrong UUID device", "spiffe://wendy.sh/tenant/" + tenant + "/device/55555555-5555-4555-8555-555555555555", "44444444-4444-4444-8444-444444444444", true, nil, nil, false},
+		{"UUID prefixed by legacy firmware", "spiffe://wendy.sh/tenant/" + tenant + "/device/lite-44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444", true, nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issuer, issuerKey := root, rootKey
