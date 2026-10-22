@@ -8,12 +8,12 @@ import re
 import subprocess
 
 from build import ROOT, check_version
-from versioning import STABLE, base_version, identity
+from versioning import RELEASE, base_version, identity, release_key
 
 
 def require_compatible(before, after):
-    old_version = tuple(int(x) for x in before["version"].split("."))
-    new_version = tuple(int(x) for x in after["version"].split("."))
+    old_version = release_key(before["version"])
+    new_version = release_key(after["version"])
     if new_version <= old_version:
         raise ValueError("Core release versions must increase")
     old = {x["name"]: x["signature"] for x in before["c"]["functions"]}
@@ -33,11 +33,11 @@ def main():
     tags = subprocess.check_output(["git", "tag", "--merged", "HEAD"], cwd=ROOT, text=True).splitlines()
     prior = []
     for tag in tags:
-        if not re.fullmatch("v" + STABLE, tag):
+        if not re.fullmatch("v" + RELEASE, tag):
             continue
         if identity()["channel"] == "stable" and tag == "v" + value:
             continue
-        parts = tuple(int(x) for x in tag[1:].split("."))
+        parts = release_key(tag[1:])
         prior.append((parts, tag))
     if not prior:
         print("Initial Core release: no previous version to compare")

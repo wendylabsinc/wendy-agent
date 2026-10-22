@@ -29,7 +29,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-      - id: plan
+      - name: Validate exact stable or seed tag against VERSION
+        id: plan
         run: python scripts/versioning.py plan --github-output
       - name: Validate the base version before building distributions
         env:

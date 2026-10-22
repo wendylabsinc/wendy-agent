@@ -170,8 +170,8 @@ jobs:
           tag_name: v${{ needs.context.outputs.version }}
           name: Wendy Core ${{ needs.context.outputs.version }}
           target_commitish: ${{ fromJSON(needs.context.outputs.identity).sourceSha }}
-          prerelease: ${{ needs.context.outputs.channel != 'stable' }}
-          make_latest: ${{ needs.context.outputs.channel == 'stable' }}
+          prerelease: ${{ needs.context.outputs.channel != 'stable' || contains(needs.context.outputs.version, '-') }}
+          make_latest: ${{ needs.context.outputs.channel == 'stable' && !contains(needs.context.outputs.version, '-') }}
           files: release/*
           fail_on_unmatched_files: true
           overwrite_files: false

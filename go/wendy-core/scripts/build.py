@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from versioning import base_version, identity
+from versioning import base_version, compatibility_version, identity, python_release_version
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / ".build"
@@ -54,19 +54,19 @@ def go_ldflags(extra=""):
 
 
 def check_version(tag=None):
-    # Checked-in metadata names the next stable release. Package staging applies
+    # Checked-in metadata names the exact release (Python uses its PEP 440 mapping). Package staging applies
     # the effective version without leaving generated edits in the source tree.
     value = base_version()
     go_versions = re.findall(r'^const developmentVersion = "([^"\n]+)"$',
                              (ROOT / "core/version.go").read_text(), re.MULTILINE)
-    if go_versions != [value + "-dev"]:
-        raise ValueError("Go development version differs from VERSION + '-dev'")
+    if go_versions != [compatibility_version(value) + "-dev"]:
+        raise ValueError("Go development version differs from the numeric VERSION base + '-dev'")
     package = json.loads((JS / "package.json").read_text())
     if package["version"] != value:
         raise ValueError("npm version differs from VERSION")
     python_versions = re.findall(r'^version\s*=\s*"([^"\n]+)"\s*$', (PYTHON / "pyproject.toml").read_text(), re.MULTILINE)
-    if python_versions != [value]:
-        raise ValueError("Python version differs from VERSION")
+    if python_versions != [python_release_version(value)]:
+        raise ValueError("Python version differs from the PEP 440 mapping of VERSION")
     if f"coreVersion={value}\n" != (KOTLIN / "gradle.properties").read_text():
         raise ValueError("Kotlin version differs from VERSION")
     if tag and (identity()["channel"] != "stable" or tag != "v" + value):
@@ -360,7 +360,7 @@ def wheel():
         directory = Path(temp) / "python"
         shutil.copytree(PYTHON, directory, ignore=shutil.ignore_patterns("build", "*.egg-info", "__pycache__"))
         metadata = directory / "pyproject.toml"
-        metadata.write_text(metadata.read_text().replace(f'version = "{base_version()}"', f'version = "{identity()["pythonVersion"]}"'))
+        metadata.write_text(metadata.read_text().replace(f'version = "{python_release_version(base_version())}"', f'version = "{identity()["pythonVersion"]}"'))
         environment = dict(os.environ)
         if platform.system() == "Darwin":
             environment["MACOSX_DEPLOYMENT_TARGET"] = "15.0"

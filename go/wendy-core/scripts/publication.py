@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
-from versioning import STABLE, derive, validate
+from versioning import derive, validate
 
 
 class SafeRedirect(HTTPRedirectHandler):
@@ -149,6 +149,7 @@ def verify_versions(directory, expected):
 
 def go_tag(repository, expected):
     from urllib.error import HTTPError
+    validate(expected)
     tag = "v" + expected["version"]
     try:
         source = tag_commit(repository, tag)
@@ -165,6 +166,7 @@ def swift_tag(directory, repository, expected):
     """Create or verify the bare Swift tag after the GitHub release assets exist."""
     from urllib.error import HTTPError
     from swift_release import release_manifest
+    validate(expected)
     tag, source = expected["version"], expected["sourceSha"]
 
     def package_swift(ref):

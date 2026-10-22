@@ -39,7 +39,7 @@ class VersionTests(unittest.TestCase):
                     patch.object(versioning.subprocess, "check_output", return_value=SHA + "\n"):
                 info = versioning.identity()
         self.assertEqual(info["sourceSha"], SHA)
-        self.assertEqual(info["version"], versioning.base_version() + "-dev+aaaaaaa")
+        self.assertEqual(info["version"], versioning.compatibility_version(versioning.base_version()) + "-dev+aaaaaaa")
         self.assertEqual(versioning.validate(info), info)
         with self.assertRaises(ValueError):
             versioning.validate({**info, "version": info["baseVersion"] + "-dev+bbbbbbb"})
@@ -52,7 +52,7 @@ class VersionTests(unittest.TestCase):
             info = versioning.identity()
         git.assert_not_called()
         self.assertIsNone(info["sourceSha"])
-        self.assertEqual(info["version"], versioning.base_version() + "-dev")
+        self.assertEqual(info["version"], versioning.compatibility_version(versioning.base_version()) + "-dev")
         self.assertEqual(versioning.validate(info), info)
 
     def test_local_identity_falls_back_when_git_or_head_is_unavailable(self):
@@ -65,7 +65,7 @@ class VersionTests(unittest.TestCase):
                         patch.object(versioning.subprocess, "check_output", side_effect=error):
                     info = versioning.identity()
             self.assertIsNone(info["sourceSha"])
-            self.assertEqual(info["version"], versioning.base_version() + "-dev")
+            self.assertEqual(info["version"], versioning.compatibility_version(versioning.base_version()) + "-dev")
 
     def test_local_commits_have_distinct_versions_but_one_python_mapping(self):
         first = self.derive("dev")
@@ -75,6 +75,31 @@ class VersionTests(unittest.TestCase):
         for channel in ("stable", "nightly", "pr"):
             with self.subTest(channel=channel), self.assertRaises(ValueError):
                 versioning.derive("0.1.0", channel, source_sha=None, run_id=123)
+
+    def test_seed_release_and_numeric_preview_base(self):
+        seed = versioning.derive("0.1.0-seed.1", "stable", source_sha=SHA)
+        self.assertEqual(seed["version"], "0.1.0-seed.1")
+        self.assertEqual(seed["pythonVersion"], "0.1.0a1")
+        self.assertEqual(seed["npmTag"], "seed")
+        self.assertEqual(versioning.validate(seed), seed)
+        for channel, options in (("dev", {}), ("nightly", {"run_id": 123}),
+                                 ("pr", {"run_id": 123, "pr": 42, "branch": "feature"})):
+            with self.subTest(channel=channel):
+                actual = versioning.derive("0.1.0-seed.1", channel, source_sha=SHA, **options)
+                unchanged = versioning.derive("0.1.0", channel, source_sha=SHA, **options)
+                for key in ("version", "pythonVersion", "npmTag"):
+                    self.assertEqual(actual[key], unchanged[key])
+        for invalid in ("0.1.0-rc.1", "0.1.0-seed.0", "0.1.0-seed.01", "0.1.0-seed.-1",
+                        "0.1.0-seed.1.extra", "0.1.0-seed.1+abc", "0.1.0-pr.2"):
+            with self.subTest(version=invalid), self.assertRaises(ValueError):
+                versioning.derive(invalid, "stable", source_sha=SHA)
+        with patch.object(versioning, "base_version", return_value="0.1.0-seed.1"), \
+                patch.object(versioning.subprocess, "check_output", return_value=SHA):
+            info = versioning.github_plan({}, "push", "tag", "v0.1.0-seed.1", 123, 1)
+            self.assertEqual(info["version"], "0.1.0-seed.1")
+            for tag in ("v0.1.0", "v0.1.0-seed.2", "v0.1.0-rc.1"):
+                with self.subTest(tag=tag), self.assertRaises(ValueError):
+                    versioning.github_plan({}, "push", "tag", tag, 123, 1)
 
     def test_attempts_and_runs_have_distinct_versions(self):
         values = [self.derive("nightly", run_id=run, attempt=attempt)

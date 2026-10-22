@@ -1,4 +1,4 @@
-"""One release identity, derived from the next stable VERSION and build context."""
+"""One release identity, derived from the exact release VERSION and build context."""
 import argparse
 import json
 import os
@@ -8,14 +8,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STABLE = r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+RELEASE = STABLE + r"(?:-seed\.[1-9]\d*)?"
 SHA = r"[0-9a-f]{40}"
 
 
 def base_version(root=ROOT):
     value = (root / "VERSION").read_text().strip()
-    if not re.fullmatch(STABLE, value):
-        raise ValueError("VERSION must name the next stable release: x.y.z")
+    if not re.fullmatch(RELEASE, value):
+        raise ValueError("VERSION must name x.y.z or x.y.z-seed.N (positive N without leading zeros)")
     return value
+
+
+def compatibility_version(value):
+    if not re.fullmatch(RELEASE, value):
+        raise ValueError("Release version must be x.y.z or x.y.z-seed.N")
+    return value.split("-", 1)[0]
+
+
+def python_release_version(value):
+    numeric = compatibility_version(value)
+    return numeric + "a" + value.split("-seed.")[1] if "-seed." in value else numeric
+
+
+def release_key(value):
+    numeric = tuple(int(part) for part in compatibility_version(value).split("."))
+    return numeric + ((0, int(value.split("-seed.")[1])) if "-seed." in value else (1, 0))
 
 
 def slug(value):
@@ -24,7 +41,7 @@ def slug(value):
 
 
 def derive(base, channel, *, source_sha, branch="", pr=None, run_id=0, attempt=1):
-    if not re.fullmatch(STABLE, base) or not (
+    if not re.fullmatch(RELEASE, base) or not (
             source_sha is None and channel == "dev" or
             isinstance(source_sha, str) and re.fullmatch(SHA, source_sha)):
         raise ValueError("Invalid base version or source commit")
@@ -36,21 +53,22 @@ def derive(base, channel, *, source_sha, branch="", pr=None, run_id=0, attempt=1
         raise ValueError("Published previews need a positive run ID and attempt below 1000")
     if pr is not None and pr <= 0:
         raise ValueError("PR numbers must be positive")
+    numeric = compatibility_version(base)
     suffix = f"{run_id}.{attempt}"
     if channel == "stable":
-        value, python, npm_tag = base, base, "latest"
+        value, python, npm_tag = base, python_release_version(base), "seed" if "-seed." in base else "latest"
     elif channel == "dev":
-        value = base + "-dev" + ("+" + source_sha[:7] if source_sha else "")
-        python, npm_tag = base + ".dev0", ""
+        value = numeric + "-dev" + ("+" + source_sha[:7] if source_sha else "")
+        python, npm_tag = numeric + ".dev0", ""
     else:
         # GitHub run IDs are unique across workflows; attempts reserve distinct
         # versions for fresh rebuilds. Failed publication retries reuse identity.
-        python = f"{base}.dev{run_id * 1000 + attempt}"
+        python = f"{numeric}.dev{run_id * 1000 + attempt}"
         if channel == "nightly":
-            value, npm_tag = f"{base}-nightly.{suffix}", "nightly"
+            value, npm_tag = f"{numeric}-nightly.{suffix}", "nightly"
         else:
             label = str(pr) if pr is not None else "manual"
-            value = f"{base}-pr.{label}-{slug(branch)}.{suffix}"
+            value = f"{numeric}-pr.{label}-{slug(branch)}.{suffix}"
             npm_tag = f"pr-{pr}" if pr is not None else "preview-" + slug(branch)
     return {
         "schemaVersion": 1, "baseVersion": base, "version": value,

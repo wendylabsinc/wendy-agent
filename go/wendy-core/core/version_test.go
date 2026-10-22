@@ -13,6 +13,8 @@ func TestModuleVersion(t *testing.T) {
 		want       string
 	}{
 		{"tag", &debug.Module{Version: "v0.1.0"}, "0.1.0"},
+		{"seed tag", &debug.Module{Version: "v0.1.0-seed.1"}, "0.1.0-seed.1"},
+		{"seed pseudo", &debug.Module{Version: "v0.1.0-seed.1.0.20261021200000-a0e8ddc88e76"}, developmentVersion + "+a0e8ddc"},
 		{"zero base pseudo", &debug.Module{Version: "v0.0.0-20261021200000-a0e8ddc88e76"}, developmentVersion + "+a0e8ddc"},
 		{"prerelease base pseudo", &debug.Module{Version: "v0.1.0-rc.1.0.20261021200000-a0e8ddc88e76"}, developmentVersion + "+a0e8ddc"},
 		{"release base pseudo", &debug.Module{Version: "v0.0.2-0.20261021200000-a0e8ddc88e76"}, developmentVersion + "+a0e8ddc"},

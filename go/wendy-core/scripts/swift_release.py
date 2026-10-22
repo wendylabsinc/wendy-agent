@@ -13,12 +13,12 @@ import tempfile
 from pathlib import Path
 
 from build import ROOT, check_version, copy, digest, run
-from versioning import STABLE
+from versioning import RELEASE, STABLE
 
 BEGIN = "// BEGIN BINARY TARGETS\n"
 END = "// END BINARY TARGETS\n"
 ASSETS = {"CWendyCoreApple": "xcframework", "CWendyCoreLinux": "artifactbundle"}
-VERSION = STABLE + r"(?:-[0-9A-Za-z.-]+)?"
+VERSION = RELEASE + r"|" + STABLE + r"-(?:dev(?:\+[0-9a-f]{7})?|nightly\.[1-9]\d*\.[1-9]\d*|pr\.(?:[1-9]\d*|manual)-[a-z0-9-]+\.[1-9]\d*\.[1-9]\d*)"
 
 
 def asset(name, value):

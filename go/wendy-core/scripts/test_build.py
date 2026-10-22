@@ -38,6 +38,13 @@ class ReleaseTests(unittest.TestCase):
             require_compatible(api("1.0.0"), api("1.0.1", WendyHelloWorld="int32_t (void)"))
         require_compatible(api("1.0.0"), api("1.1.0", WendyHelloWorld="int32_t (void)"))
 
+    def test_seed_release_order_and_compatibility(self):
+        require_compatible(api("0.0.1"), api("0.1.0-seed.1", WendyCoreVersion="char *(void)"))
+        require_compatible(api("0.1.0-seed.1"), api("0.1.0-seed.2"))
+        require_compatible(api("0.1.0-seed.2"), api("0.1.0"))
+        with self.assertRaises(ValueError):
+            require_compatible(api("0.1.0"), api("0.1.0-seed.1"))
+
     def test_unchanged_operation_allows_patch(self):
         require_compatible(api("1.0.0", WendyHelloWorld="int32_t (void)"), api("1.0.1", WendyHelloWorld="int32_t (void)"))
 

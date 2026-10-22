@@ -58,6 +58,26 @@ class PublicationTests(unittest.TestCase):
             info = publication.context(REPOSITORY, 123, 1)
         self.assertEqual(info, derive("0.1.0", "pr", source_sha=SHA, branch="feature", pr=42, run_id=123))
 
+    def test_seed_context_and_go_tag_are_exact(self):
+        run = self.run_info("push", "v0.1.0-seed.1")
+        original = self.api(run)
+        def response(path, data=None):
+            if "/contents/VERSION" in path:
+                return {"content": base64.b64encode(b"0.1.0-seed.1\n").decode()}
+            return original(path)
+        with patch.object(publication, "api", side_effect=response), \
+                patch.object(publication, "tag_commit", return_value=SHA) as tag:
+            info = publication.context(REPOSITORY, 123, 1)
+            self.assertEqual(info["version"], "0.1.0-seed.1")
+            self.assertEqual(info["npmTag"], "seed")
+            publication.go_tag(REPOSITORY, info)
+            tag.assert_called_with(REPOSITORY, "v0.1.0-seed.1")
+        for branch in ("v0.1.0", "v0.1.0-rc.1", "v0.1.0-seed.01"):
+            run["head_branch"] = branch
+            with self.subTest(branch=branch), patch.object(publication, "api", side_effect=response), \
+                    self.assertRaises(ValueError):
+                publication.context(REPOSITORY, 123, 1)
+
     def test_retries_keep_originating_attempt(self):
         run = self.run_info()
         with patch.object(publication, "api", side_effect=self.api(run)):
@@ -113,7 +133,7 @@ class PublicationTests(unittest.TestCase):
 
 
 class SwiftReleaseTests(unittest.TestCase):
-    info = derive("0.1.0", "pr", source_sha=SHA, pr=42, branch="feature", run_id=123)
+    info = derive("0.1.0-seed.1", "stable", source_sha=SHA)
     source = "let before = 1\n// BEGIN BINARY TARGETS\nlet binaryTargets: [Target] = local()\n// END BINARY TARGETS\nlet after = 2\n"
 
     def assets(self, directory):
@@ -132,7 +152,7 @@ class SwiftReleaseTests(unittest.TestCase):
         self.assertTrue(text.endswith("// END BINARY TARGETS\nlet after = 2\n"))
         self.assertIn(f'url: "{url}", checksum: "{hashlib.sha256(b"CWendyCoreApple").hexdigest()}"', text)
         self.assertNotIn("local()", text)
-        for invalid in ("1.0", '1.0.0"; evil'):
+        for invalid in ("1.0", '1.0.0"; evil', "0.1.0-rc.1", "0.1.0-seed.0", "0.1.0-seed.01"):
             with self.subTest(version=invalid), self.assertRaises(ValueError):
                 swift_release.release_manifest(self.source, REPOSITORY, invalid, Path(temp))
         with self.assertRaises(ValueError):
