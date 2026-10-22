@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,12 +248,14 @@ func TestTCPTunnelAlwaysDialsLoopback(t *testing.T) {
 	target := make(chan string, 1)
 	svc.dialTCP = func(_ context.Context, network, address string) (net.Conn, error) {
 		target <- network + " " + address
-		return nil, errors.New("refused")
+		return nil, errors.New("private dial diagnostic")
 	}
 	client, completed := tcpTunnelClient(t, svc)
 	stream := tcpTunnelOpen(t, client, tcpTunnelContext(t), 8080)
 	if _, err := stream.Recv(); status.Code(err) != codes.Unavailable {
 		t.Fatalf("status = %v", err)
+	} else if strings.Contains(status.Convert(err).Message(), "private dial diagnostic") {
+		t.Fatalf("dial diagnostic exposed to client: %v", err)
 	}
 	_ = tcpTunnelResult(t, completed)
 	if got := <-target; got != "tcp4 127.0.0.1:8080" {
@@ -451,6 +454,22 @@ func TestTCPTunnelResetReleasesPendingReceive(t *testing.T) {
 	if err := tcpTunnelResult(t, reset); err != nil {
 		t.Fatal(err)
 	}
+	if len(svc.tcpSessions) != 0 || len(svc.flowSlots) != 0 {
+		t.Fatal("slots leaked")
+	}
+}
+
+func TestTCPTunnelUnsupportedHalfCloseFailsWithoutPanic(t *testing.T) {
+	svc := NewTunnelService(zap.NewNop())
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	svc.dialTCP = func(context.Context, string, string) (net.Conn, error) { return conn, nil }
+	client, completed := tcpTunnelClient(t, svc)
+	stream := tcpTunnelOpen(t, client, tcpTunnelContext(t), 8080)
+	if _, err := stream.Recv(); status.Code(err) != codes.Internal {
+		t.Fatalf("unsupported half-close = %v", err)
+	}
+	_ = tcpTunnelResult(t, completed)
 	if len(svc.tcpSessions) != 0 || len(svc.flowSlots) != 0 {
 		t.Fatal("slots leaked")
 	}

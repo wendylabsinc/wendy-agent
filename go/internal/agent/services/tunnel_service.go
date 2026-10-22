@@ -80,12 +80,18 @@ func (s *TunnelService) Tunnel(stream agentpbv2.WendyTunnelService_TunnelServer)
 		return status.Error(codes.ResourceExhausted, "too many active tunnel flows")
 	}
 
+	// SECURITY: Arbitrary loopback TCP ports are deliberate Cloud v1 VPN parity.
+	// The mTLS-only service has the same tenant-checked admission as HostShell
+	// (a root shell) and DatagramTunnel. This is not device-to-device MeshDial;
+	// its published-app port policy does not apply to this operator VPN path.
 	conn, err := s.dialTCP(stream.Context(), "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(open.Port))))
 	if err != nil {
 		if stream.Context().Err() != nil {
 			return status.FromContextError(stream.Context().Err()).Err()
 		}
-		return status.Errorf(codes.Unavailable, "dialing local port %d: %v", open.Port, err)
+		s.logger.Warn("device tunnel dial failed",
+			append([]zap.Field{zap.Uint32("port", open.Port), zap.Error(err)}, clientAuditFields(stream.Context())...)...)
+		return status.Errorf(codes.Unavailable, "dialing local port %d", open.Port)
 	}
 	defer conn.Close()
 	s.logger.Info("device tunnel accepted",
@@ -94,6 +100,10 @@ func (s *TunnelService) Tunnel(stream agentpbv2.WendyTunnelService_TunnelServer)
 }
 
 func relayDeviceTCP(stream agentpbv2.WendyTunnelService_TunnelServer, conn net.Conn) error {
+	halfCloser, ok := conn.(interface{ CloseWrite() error })
+	if !ok {
+		return status.Error(codes.Internal, "tunnel connection does not support half-close")
+	}
 	// A hard failure returns immediately: gRPC cancels any parked Recv/Send
 	// when the handler returns. Graceful half-closes wait for both directions
 	// so an EOF-delimited request can still receive its complete response.
@@ -124,7 +134,7 @@ func relayDeviceTCP(stream agentpbv2.WendyTunnelService_TunnelServer, conn net.C
 				}
 			}
 			if errors.Is(err, io.EOF) || data.GetHalfClose() {
-				err := conn.(interface{ CloseWrite() error }).CloseWrite()
+				err := halfCloser.CloseWrite()
 				if err != nil {
 					err = status.Error(codes.Unavailable, "closing tunnel write side")
 				}
