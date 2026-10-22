@@ -94,6 +94,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceRenameCmd(),
 		newDevicePowerModeCmd(),
 		newDeviceUpdateCmd(),
+		newDeviceLocalMeshCmd(),
 		newDeviceSyncTimeCmd(),
 	)
 	addToGroup("hardware",
@@ -859,8 +860,8 @@ func newDeviceEnrollCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "enroll",
 		Annotations: map[string]string{"wendy.local-enrollment": "true"},
-		Short:       "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:        "Enrolls the selected device using your stored auth session. WendyOS uses agent gRPC provisioning; Wendy Lite requires USB for Class C enrollment and reboots to obtain its certificate from pki-core. Run 'wendy auth login' first.",
+		Short:       "Enroll this device in Wendy Cloud",
+		Long:        "Add the selected device to your organization using your saved sign-in. Run 'wendy cloud login' first. For Wendy Lite, connect over USB and keep it connected while the board reboots and completes enrollment.",
 		Hidden:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -887,7 +888,7 @@ func newDeviceEnrollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
 	cmd.Flags().StringVar(&acmeDirectoryURL, "acme-directory-url", "", "ACME directory URL override for custom PKI deployments (OIDC accounts only)")
 	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID override for legacy enrollment; OIDC enrollment uses the session's tenant")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use; limits the organization picker to this endpoint")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud API endpoint of the saved sign-in to use")
 	cmd.Flags().StringVar(&liteOptions.brokerHost, "broker-host", "", "WendyCom broker TLS hostname (defaults to the Lite relay for the selected Cloud session)")
 	cmd.Flags().Uint32Var(&liteOptions.brokerPort, "broker-port", 5055, "WendyCom broker TLS port for Wendy Lite")
 	cmd.Flags().StringVar(&liteOptions.csrURL, "csr-url", "", "CSR enrollment base URL override for Wendy Lite on self-hosted PKI")
@@ -2316,20 +2317,24 @@ type osUpdateOutcome struct {
 // device_type/storage_medium/os_version used for the decision are re-read from
 // the agent we just installed — a newer agent can report a corrected
 // device_type, so the pre-update snapshot may be stale. Non-WendyOS targets and
-// devices without an OTA backend are skipped silently, and any failure to
-// re-read or look up the OS is reported but non-fatal — `device update` still
-// succeeds as an agent-only update. Exception: when prNumber > 0 the OS
-// artifact resolves from that wendyos-builder PR's manifest, the already-current
-// skip is suppressed (a PR tag is constant across rebuilds), and failures on
-// the way to the install are hard errors instead — the PR OS install is the
-// explicitly requested outcome, so it must not degrade to an agent-only
-// success. The returned outcome reports whether an OTA was actually applied and
-// whether the device came back online in this run.
+// devices without an OTA backend are skipped silently for automatic updates,
+// and any failure to re-read or look up an automatic OS update is reported but
+// non-fatal. An explicit --artifact-url or --pr is different: failure before
+// the OS install is an error, so the command cannot claim agent-only success
+// when the requested OS artifact was never applied. The returned outcome
+// reports whether an OTA was applied and whether the device came back online.
 func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string, prNumber int) (osUpdateOutcome, error) {
+	explicitOS := artifactURLOverride != "" || prNumber > 0
 	if preUpdateVersion == nil {
+		if explicitOS {
+			return osUpdateOutcome{}, fmt.Errorf("cannot apply the requested OS artifact: device version is unavailable")
+		}
 		return osUpdateOutcome{}, nil
 	}
 	if !isWendyOSUpdateTarget(preUpdateVersion) || !hasOTABackend(preUpdateVersion) {
+		if explicitOS {
+			return osUpdateOutcome{}, fmt.Errorf("cannot apply the requested OS artifact: device is not a WendyOS OTA target with an update backend")
+		}
 		return osUpdateOutcome{}, nil
 	}
 	// A pre-0.17.0 device cannot apply the new OTA artifact format and must be
@@ -2347,8 +2352,8 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	fmt.Println("Checking for OS updates...")
 	conn, err := reconnectAgentAfterRestart(ctx, priorConn)
 	if err != nil {
-		if prNumber > 0 {
-			return osUpdateOutcome{}, fmt.Errorf("reconnecting for the PR %d OS update: %w", prNumber, err)
+		if explicitOS {
+			return osUpdateOutcome{}, fmt.Errorf("reconnecting for the requested OS update: %w", err)
 		}
 		fmt.Printf("Could not check for OS updates: %v\n", err)
 		return osUpdateOutcome{}, nil
@@ -2372,8 +2377,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		}
 		if !assumeYes {
 			if !isInteractiveTerminal() {
-				fmt.Printf("OS artifact specified (%s). Re-run with --yes to apply.\n", artifactURLOverride)
-				return osUpdateOutcome{}, nil
+				return osUpdateOutcome{}, fmt.Errorf("--artifact-url requires --yes when stdin is not a terminal")
 			}
 			if !confirmDefaultNoFn(fmt.Sprintf("Apply OS update from %s?", artifactURLOverride)) {
 				fmt.Println("Skipping OS update.")
@@ -2478,7 +2482,10 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		fmt.Println("OS update applied; the device is rebooting. Reconnect once it is back online.")
 		return osUpdateOutcome{applied: true}, nil
 	}
+	baseline := readOSUpdateBaseline(ctx, conn)
+	baseline.preVersion = preUpdateOSVersion
 	recordCleared, err := applyOSUpdate(ctx, conn, otaURL)
+	baseline.recordCleared = recordCleared
 	if err != nil {
 		return osUpdateOutcome{}, err
 	}
@@ -2491,7 +2498,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	// also reboots and reconnects. Query the recorded outcome and surface a
 	// rollback as an error so `wendy device update` exits non-zero instead of
 	// silently reporting success (mirrors `wendy os update`).
-	if err := reportOSUpdateOutcome(ctx, conn, preUpdateOSVersion, recordCleared); err != nil {
+	if err := reportOSUpdateOutcome(ctx, conn, preUpdateOSVersion, baseline); err != nil {
 		return osUpdateOutcome{applied: true, online: true}, err
 	}
 	return osUpdateOutcome{applied: true, online: true}, nil
@@ -2568,6 +2575,22 @@ func shouldReapplyBinary(binaryProvided bool, outcome osUpdateOutcome) bool {
 	return binaryProvided && outcome.applied && outcome.online
 }
 
+// The root command enables JSON automatically when there is no terminal.
+// Device update's JSON path reports agent status and intentionally stops before
+// OS work, so an explicitly requested artifact must use the full update path.
+// An explicit --json request cannot be silently overridden; fail before any
+// agent upload instead. --json=false remains an explicit way to select text.
+func prepareExplicitDeviceOSOutput(cmd *cobra.Command, artifactURL string) error {
+	if artifactURL == "" || !jsonOutput {
+		return nil
+	}
+	if cmd.Root().PersistentFlags().Changed("json") {
+		return fmt.Errorf("--artifact-url cannot be combined with --json: device update JSON mode skips OS updates")
+	}
+	jsonOutput = false
+	return nil
+}
+
 func newDeviceUpdateCmd() *cobra.Command {
 	var binaryPath string
 	var nightly bool
@@ -2579,7 +2602,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 		Use:   "update",
 		Short: "Update the agent binary and WendyOS on the target device",
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
-			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
+			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive automatic updates report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
 			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL). " +
 			"--pr N applies the OS image built by wendyos-builder PR #N instead of the manifest's latest — an unhardened debug build for testing PRs on hardware; it also works over the cloud tunnel. --pr cannot be combined with --artifact-url or --json. " +
@@ -2598,6 +2621,9 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("--pr cannot be combined with --json: the OS-update step is skipped in JSON mode")
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
+			}
+			if err := prepareExplicitDeviceOSOutput(cmd, artifactURL); err != nil {
+				return err
 			}
 
 			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), SuppressUpdateCheck())
@@ -2960,6 +2986,25 @@ func isELFBinary(data []byte) bool {
 	return len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
 }
 
+// isMachOBinary reports the thin and universal Mach-O magic values. A local
+// macOS CLI executable is not a Linux agent binary; accepting it as a generic
+// non-ELF payload would install bytes that systemd cannot execute and strand
+// the device's agent.
+func isMachOBinary(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	switch string(data[:4]) {
+	case "\xfe\xed\xfa\xce", "\xce\xfa\xed\xfe", // 32-bit thin, big/little endian
+		"\xfe\xed\xfa\xcf", "\xcf\xfa\xed\xfe", // 64-bit thin, big/little endian
+		"\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca", // 32-bit universal, big/little endian
+		"\xca\xfe\xba\xbf", "\xbf\xba\xfe\xca": // 64-bit universal, big/little endian
+		return true
+	default:
+		return false
+	}
+}
+
 // checkLocalAgentArtifact validates a --binary payload against the device OS,
 // so a mismatched artifact (a Linux ELF pushed to a Mac, or a macOS zip pushed
 // to a Linux box) is caught locally instead of failing deep inside the agent's
@@ -2978,6 +3023,13 @@ func checkLocalAgentArtifact(data []byte, deviceOS, deviceArch string) error {
 				"(build one with swift/Scripts/Build.sh), not a Linux agent binary", deviceArch)
 		}
 		return errors.New("this device runs macOS; --binary must be a wendy-agent-macos zip app bundle")
+	}
+	if isMachOBinary(data) {
+		osLabel := deviceOS
+		if osLabel == "" {
+			osLabel = "Linux"
+		}
+		return fmt.Errorf("--binary is a macOS Mach-O executable, but this device runs %s; provide the Wendy agent Linux ELF binary", osLabel)
 	}
 
 	if isZipArchive(data) {
@@ -3023,6 +3075,9 @@ func agentRestartTimeoutFor(osName string) time.Duration {
 func uploadAgentBinary(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string, jsonOutput bool) error {
 	if isInteractiveTerminal() && !jsonOutput {
 		s := tui.NewSpinner("Uploading agent binary...")
+		if progressHintsOff(ctx) {
+			s = s.WithoutHints()
+		}
 		p := tui.NewProgressProgram(s)
 
 		go func() {

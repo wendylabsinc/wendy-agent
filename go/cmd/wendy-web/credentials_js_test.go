@@ -28,6 +28,7 @@ globalThis.indexedDB = { open() {
       get: (k) => ({ result: structuredClone(fakeIDB.get(k)) }),
       put: (v, k) => { fakeIDB.set(k, structuredClone(v)); return { result: k }; },
       delete: (k) => { fakeIDB.delete(k); return { result: undefined }; },
+      getAllKeys: () => ({ result: [...fakeIDB.keys()] }),
     };
     request.result = { transaction() { const tx = { objectStore: () => store }; setTimeout(() => tx.oncomplete()); return tx; } };
     request.onsuccess();
@@ -46,7 +47,7 @@ func TestCredentialStoreWrapsTheSeed(t *testing.T) {
 	if err := st.SaveWrapped([]byte(`{"version":2}`), seed, aad); err != nil {
 		t.Fatal(err)
 	}
-	record := idb.Call("get", "session")
+	record := idb.Call("get", "tenant:operator")
 	key := record.Get("wrappingKey")
 	if record.Get("session").String() != `{"version":2}` || key.Get("extractable").Bool() || key.Get("algorithm").Get("name").String() != "AES-GCM" || record.Get("iv").Length() != 12 {
 		t.Fatal("record is not a session plus a non-extractable AES-GCM wrapped seed")
@@ -68,7 +69,7 @@ func TestCredentialStoreWrapsTheSeed(t *testing.T) {
 	if err := st.Save([]byte(`{"privateKey":"x"}`)); err == nil {
 		t.Fatal("saved a session that carries its key")
 	}
-	if err := st.Clear(); err != nil || idb.Call("has", "session").Bool() {
+	if err := st.Clear(); err != nil || idb.Call("has", "tenant:operator").Bool() {
 		t.Fatal("sign-out kept the record")
 	}
 }
@@ -76,7 +77,7 @@ func TestCredentialStoreWrapsTheSeed(t *testing.T) {
 func TestCredentialStoreReplacesAPlaintextRecord(t *testing.T) {
 	idb := loadCredentialScript(t)
 	st := browserCredentialStore{}
-	legacy := `{"version":1,"privateKey":"-----BEGIN PRIVATE KEY-----\ntest-only\n-----END PRIVATE KEY-----\n"}`
+	legacy := `{"version":1,"privateKey":"-----BEGIN PRIVATE KEY-----\ntest-only\n-----END PRIVATE KEY-----\n","profile":{"tenant":"tenant","subject":"operator"}}`
 	idb.Call("set", "session", legacy)
 	if raw, err := st.Load(); err != nil || string(raw) != legacy {
 		t.Fatalf("legacy record not readable for migration: %q, %v", raw, err)
@@ -87,7 +88,10 @@ func TestCredentialStoreReplacesAPlaintextRecord(t *testing.T) {
 	if err := st.SaveWrapped([]byte(`{"version":2}`), bytes.Repeat([]byte{1}, 32), "operator-key:tenant:operator"); err != nil {
 		t.Fatal(err)
 	}
-	if record := idb.Call("get", "session"); record.Type() == js.TypeString || strings.Contains(record.Get("session").String(), "PRIVATE KEY") {
+	if record := idb.Call("get", "tenant:operator"); record.Type() == js.TypeString || strings.Contains(record.Get("session").String(), "PRIVATE KEY") {
 		t.Fatal("plaintext record survived the rewrap")
+	}
+	if idb.Call("has", "session").Bool() {
+		t.Fatal("the single-slot record was not moved to its organization")
 	}
 }

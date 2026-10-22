@@ -300,7 +300,10 @@ func TestCloudDiscoverJSONV2(t *testing.T) {
 			if callErr != nil {
 				t.Fatal(callErr)
 			}
-			var infos []cloudDiscoverV2Info
+			var infos []struct {
+				cloudDiscoverV2Info
+				Selector string `json:"selector"`
+			}
 			if err := json.Unmarshal([]byte(out), &infos); err != nil {
 				t.Fatal(err)
 			}
@@ -315,6 +318,11 @@ func TestCloudDiscoverJSONV2(t *testing.T) {
 				}
 				if info.ID != wantID || info.Type != "macOS (arm64)" || info.Name != wantName {
 					t.Fatalf("unexpected info: %+v", info)
+				}
+				wantSelector := "cloud://" + auth.CloudGRPC + "/tenant/" + testOperatorTenant + "/asset/" + wantID
+				selector, matched, err := parseCloudDeviceSelector(info.Selector)
+				if info.Selector != wantSelector || err != nil || !matched || selector.String() != wantSelector {
+					t.Fatalf("discovery lost scoped UUID selector: %q, %v", info.Selector, err)
 				}
 			}
 		})
@@ -347,12 +355,20 @@ func TestCloudDiscoverJSONLegacy(t *testing.T) {
 	if callErr != nil {
 		t.Fatal(callErr)
 	}
-	var infos []discoverDeviceInfo
+	var infos []struct {
+		discoverDeviceInfo
+		Selector string `json:"selector"`
+	}
 	if err := json.Unmarshal([]byte(out), &infos); err != nil {
 		t.Fatal(err)
 	}
 	if len(infos) != 1 || infos[0].ID != 77 {
 		t.Fatalf("unexpected legacy results: %s", out)
+	}
+	wantSelector := "cloud://" + auth.CloudGRPC + "/org/7/asset/77"
+	selector, matched, err := parseCloudDeviceSelector(infos[0].Selector)
+	if infos[0].Selector != wantSelector || err != nil || !matched || selector.String() != wantSelector {
+		t.Fatalf("discovery lost scoped legacy selector: %q, %v", infos[0].Selector, err)
 	}
 }
 

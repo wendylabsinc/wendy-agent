@@ -35,6 +35,10 @@ import (
 type testRelay struct {
 	instruction    *pb.DialInstruction
 	refusePresence bool
+	rotateRoute    bool
+	renewLease     <-chan struct{}
+	reconnected    chan struct{}
+	registrations  int
 	renewOnly      bool
 	renewed        chan struct{}
 	pb.UnimplementedTunnelAuthorizationServiceServer
@@ -86,14 +90,26 @@ func (r *testRelay) IssuePresenceLease(ctx context.Context, req *pb.IssuePresenc
 		return nil, fmt.Errorf("reused signing/encryption keys")
 	}
 	r.mu.Lock()
+	if r.rotateRoute && r.leaseJWS != "" {
+		r.mu.Unlock()
+		select {
+		case <-r.renewLease:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		r.mu.Lock()
+	}
 	defer r.mu.Unlock()
 	r.signing = bytes.Clone(req.AgentSigningPublicKeySpkiDer)
 	r.encryption = bytes.Clone(req.AgentKeyAgreementPublicKeySpkiDer)
 	now := time.Now().Unix()
 	r.lease = claims{Iss: r.verifier.Issuer, Aud: r.broker().Audience, Iat: now, Exp: now + 300, JTI: uuid.NewString(), Correlation: req.CorrelationId, Route: "opaque-route", Signing: binding(r.signing), Encryption: binding(r.encryption)}
+	if r.rotateRoute {
+		r.lease.Route = uuid.NewString()
+	}
 	r.leaseJWS = r.artifact(r.lease, leaseType)
 	renewAfter := time.Now().Add(2 * time.Minute)
-	if r.renewOnly {
+	if r.renewOnly || r.rotateRoute {
 		renewAfter = time.Now().Add(time.Millisecond)
 	}
 	return &pb.IssuePresenceLeaseResponse{PresenceLeaseJws: r.leaseJWS, Broker: r.broker(), RenewAfter: timestamppb.New(renewAfter)}, nil
@@ -161,29 +177,17 @@ func (r *testRelay) RegisterPresence(s grpc.BidiStreamingServer[pb.RegisterPrese
 	if e = s.Send(&pb.RegisterPresenceResponse{Message: &pb.RegisterPresenceResponse_Accepted{Accepted: &pb.PresenceAccepted{LeaseExpiresAt: timestamppb.New(time.Unix(c.Exp, 0))}}}); e != nil {
 		return e
 	}
-	close(r.present)
-	if r.renewOnly {
-		m, e := s.Recv()
-		if e != nil {
-			return e
-		}
-		renewal := m.GetRenewal()
-		if renewal == nil {
-			return fmt.Errorf("expected renewal")
-		}
-		renewed, e := r.verifier.verify(s.Context(), renewal.PresenceLeaseJws, leaseType, c.Aud, time.Now())
-		if e != nil {
-			return e
-		}
-		if renewed.JTI == c.JTI || renewed.Route != c.Route || renewed.Signing != c.Signing || renewed.Encryption != c.Encryption {
-			return fmt.Errorf("invalid renewed lease bindings")
-		}
-		if e = s.Send(&pb.RegisterPresenceResponse{Message: &pb.RegisterPresenceResponse_Renewed{Renewed: &pb.PresenceRenewed{LeaseExpiresAt: timestamppb.New(time.Unix(renewed.Exp, 0))}}}); e != nil {
-			return e
-		}
-		close(r.renewed)
-		<-s.Context().Done()
-		return s.Context().Err()
+	r.mu.Lock()
+	r.registrations++
+	registration := r.registrations
+	r.mu.Unlock()
+	if registration == 1 {
+		close(r.present)
+	} else if registration == 2 {
+		close(r.reconnected)
+	}
+	if r.renewOnly || registration > 1 {
+		return r.renewPresence(s, c)
 	}
 	var offer *pb.SessionOffer
 	select {
@@ -205,6 +209,34 @@ func (r *testRelay) RegisterPresence(s grpc.BidiStreamingServer[pb.RegisterPrese
 	close(r.ack)
 	if e = s.Send(&pb.RegisterPresenceResponse{Message: &pb.RegisterPresenceResponse_OfferAcknowledged{OfferAcknowledged: &pb.PresenceOfferAcknowledged{OfferId: ack.OfferId, SessionId: ack.SessionId}}}); e != nil {
 		return e
+	}
+	if r.rotateRoute {
+		return r.renewPresence(s, c)
+	}
+	<-s.Context().Done()
+	return s.Context().Err()
+}
+func (r *testRelay) renewPresence(s grpc.BidiStreamingServer[pb.RegisterPresenceRequest, pb.RegisterPresenceResponse], c claims) error {
+	m, e := s.Recv()
+	if e != nil {
+		return e
+	}
+	renewal := m.GetRenewal()
+	if renewal == nil {
+		return fmt.Errorf("expected renewal")
+	}
+	renewed, e := r.verifier.verify(s.Context(), renewal.PresenceLeaseJws, leaseType, c.Aud, time.Now())
+	if e != nil {
+		return e
+	}
+	if renewed.JTI == c.JTI || renewed.Route != c.Route || renewed.Signing != c.Signing || renewed.Encryption != c.Encryption {
+		return fmt.Errorf("invalid renewed lease bindings")
+	}
+	if e = s.Send(&pb.RegisterPresenceResponse{Message: &pb.RegisterPresenceResponse_Renewed{Renewed: &pb.PresenceRenewed{LeaseExpiresAt: timestamppb.New(time.Unix(renewed.Exp, 0))}}}); e != nil {
+		return e
+	}
+	if r.renewed != nil {
+		close(r.renewed)
 	}
 	<-s.Context().Done()
 	return s.Context().Err()
@@ -396,11 +428,16 @@ func (r *testRelay) JoinSession(s grpc.BidiStreamingServer[pb.JoinSessionRequest
 }
 func TestAuthorizedRelayEndToEnd(t *testing.T) {
 	for _, protocol := range []string{"agent", "tcp", "udp"} {
-		t.Run(protocol, func(t *testing.T) { testAuthorizedRelay(t, protocol) })
+		t.Run(protocol, func(t *testing.T) { testAuthorizedRelay(t, protocol, false) })
 	}
 }
 
-func testAuthorizedRelay(t *testing.T, protocol string) {
+func TestAgentSessionSurvivesPresenceReconnect(t *testing.T) {
+	testAuthorizedRelay(t, "agent", true)
+}
+
+func testAuthorizedRelay(t *testing.T, protocol string, reconnect bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	key, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -413,6 +450,10 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 		t.Fatal(e)
 	}
 	r := &testRelay{t: t, endpoint: listener.Addr().String(), cloudKey: key, verifier: verifier, requested: make(chan *pb.RequestTunnelRequest, 1), offers: make(chan *pb.SessionOffer, 1), present: make(chan struct{}), ack: make(chan struct{}), paired: make(chan struct{}), joined: map[pb.JoinRole]bool{}, toCaller: make(chan *pb.TunnelFrame, 8), toAgent: make(chan *pb.TunnelFrame, 8)}
+	renewLease := make(chan struct{})
+	r.rotateRoute = reconnect
+	r.renewLease = renewLease
+	r.reconnected = make(chan struct{})
 	srv := grpc.NewServer()
 	pb.RegisterTunnelAuthorizationServiceServer(srv, r)
 	pb.RegisterTunnelBrokerV2ServiceServer(srv, r)
@@ -424,6 +465,7 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 	verifier.relayDial = dial
 	var echoPort int
 	service := "wendy-agent"
+	echoDone := make(chan struct{})
 	if protocol == "udp" {
 		echo, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		if err != nil {
@@ -435,6 +477,7 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 		}
 		echoPort = echo.LocalAddr().(*net.UDPAddr).Port
 		service = fmt.Sprintf("udp-%d", echoPort)
+		close(echoDone) // a UDP echo has no relay session to see closed
 		r.instruction = &pb.DialInstruction{Transport: pb.DialTransport_DIAL_TRANSPORT_DATAGRAM, ServiceDescriptor: []byte(service), AuthorizedDatagramDestinations: []*pb.AuthorizedDatagramDestination{{DestinationId: 1, LoopbackPort: uint32(echoPort)}}}
 		go func() {
 			buf := make([]byte, 65535)
@@ -460,6 +503,7 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 			r.instruction = &pb.DialInstruction{Transport: pb.DialTransport_DIAL_TRANSPORT_TCP, Host: "127.0.0.1", Port: uint32(echoPort), ServiceDescriptor: []byte(service)}
 		}
 		go func() {
+			defer close(echoDone)
 			c, err := echo.Accept()
 			if err != nil {
 				return
@@ -471,7 +515,13 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 	agent := &Agent{Endpoint: r.endpoint, Verifier: verifier, StateDir: t.TempDir(), Credentials: func() (string, string, []byte) { return "", "", nil }, Logger: zap.NewNop(), MTLSPort: echoPort, dialCloud: func(endpoint, _, _ string, _ []byte) (*grpc.ClientConn, error) { return dial(endpoint) }}
 	agentDone := make(chan error, 1)
 	go func() {
-		agentDone <- agent.runOnce(metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer device-test")))
+		agentCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer device-test"))
+		if reconnect {
+			agent.Run(agentCtx)
+			agentDone <- nil
+		} else {
+			agentDone <- agent.runOnce(agentCtx)
+		}
 	}()
 	select {
 	case <-r.present:
@@ -517,19 +567,36 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 			}
 		}
 		defer func() { _ = conn.Close() }()
-		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-		payload := bytes.Repeat([]byte("relay"), 30000)
-		sent := make(chan error, 1)
-		go func() { _, e := conn.Write(payload); sent <- e }()
-		got := make([]byte, len(payload))
-		if _, e = io.ReadFull(conn, got); e != nil {
-			t.Fatal(e)
+		exchange := func(phase string) {
+			t.Helper()
+			_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+			payload := bytes.Repeat([]byte("relay"), 30000)
+			sent := make(chan error, 1)
+			go func() { _, err := conn.Write(payload); sent <- err }()
+			got := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, got); err != nil {
+				t.Fatalf("%s: %v", phase, err)
+			}
+			if !bytes.Equal(got, payload) {
+				t.Fatal("relay corrupted payload")
+			}
+			if err := <-sent; err != nil {
+				t.Fatalf("%s: %v", phase, err)
+			}
 		}
-		if !bytes.Equal(got, payload) {
-			t.Fatal("relay corrupted payload")
-		}
-		if e = <-sent; e != nil {
-			t.Fatal(e)
+		exchange("before renewal")
+		if reconnect {
+			// The session has carried bytes before Cloud issues a new route. Wait
+			// for the new presence admission before exercising the same session.
+			close(renewLease)
+			select {
+			case <-r.reconnected:
+			case <-agentDone:
+				t.Fatal("agent stopped before presence reconnected")
+			case <-ctx.Done():
+				t.Fatal("presence did not reconnect after route renewal")
+			}
+			exchange("after presence reconnect")
 		}
 	}
 	// The offer was persisted before its receipt acknowledgement permitted join.
@@ -555,6 +622,11 @@ func testAuthorizedRelay(t *testing.T, protocol string) {
 	case <-agentDone:
 	case <-time.After(time.Second):
 		t.Fatal("presence did not stop on cancellation")
+	}
+	select {
+	case <-echoDone:
+	case <-time.After(time.Second):
+		t.Fatal("relay session did not close on agent cancellation")
 	}
 }
 

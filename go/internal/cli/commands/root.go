@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/permission"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -38,13 +39,16 @@ func NewRootCmd() *cobra.Command {
 			// answer to "which device": --device, else WENDY_DEVICE, else the
 			// saved default.
 			applyDeviceEnv()
+			// Progress tips never recommend the command already running.
+			tui.SetRunningCommand(cmd.CommandPath())
 
 			// Skip heavy init for commands that don't need device/cloud setup.
-			// __usb-setup and __t234-write run as root under sudo; skipping init
-			// avoids config/analytics writes (and an update check) as root, and
-			// keeps the first-run banner out of the helper's captured output.
+			// __usb-setup, __t234-write and __bmap-write run as root under sudo;
+			// skipping init avoids config/analytics writes (and an update check)
+			// as root, and keeps the first-run banner out of the helper's
+			// captured output.
 			switch cmd.Name() {
-			case permission.CheckArg, "__session-broker", "__usb-setup", "__t234-write", "open-browser":
+			case permission.CheckArg, "__session-broker", "__usb-setup", "__t234-write", "__bmap-write", "open-browser":
 				return nil
 			}
 

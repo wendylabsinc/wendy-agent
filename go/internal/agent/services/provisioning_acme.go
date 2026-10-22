@@ -36,6 +36,12 @@ func (s *ProvisioningServiceV2) StartACMEProvisioning(ctx context.Context, req *
 	if svc.resetRecoveryErr != nil {
 		return nil, status.Error(codes.FailedPrecondition, "explicit local recovery required before enrollment")
 	}
+	if svc.resetCleanupErr != nil {
+		return nil, status.Error(codes.FailedPrecondition, "reset resource cleanup must finish before enrollment")
+	}
+	if svc.resetRestartPending {
+		return nil, status.Error(codes.FailedPrecondition, "agent must restart after reset before enrollment")
+	}
 	if svc.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is already provisioned")
 	}
