@@ -45,8 +45,6 @@ type DeviceIdentity struct {
 	ID          string
 	Name        string
 	DisplayName string
-	// EnrolledDeviceID is the configured PKI identity, distinct from hardware ID.
-	EnrolledDeviceID string
 }
 
 type DeviceInfo struct {
@@ -288,7 +286,9 @@ func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientCo
 	if err != nil {
 		return err
 	}
-	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// The opaque relay can cross a BLE mesh uplink. Bound setup without
+	// assuming a direct Internet path; the caller can still cancel sooner.
+	handshakeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	conn := tls.Client(raw, cfg)
 	if err := conn.HandshakeContext(handshakeCtx); err != nil {
@@ -600,7 +600,7 @@ func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdent
 	if di == nil {
 		return nil, fmt.Errorf("device returned no identity")
 	}
-	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName(), EnrolledDeviceID: di.GetEnrolledDeviceId()}, nil
+	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName()}, nil
 }
 
 func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, error) {

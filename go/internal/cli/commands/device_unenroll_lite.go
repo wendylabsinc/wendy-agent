@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	litepb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
@@ -25,7 +26,7 @@ var (
 	connectLiteUnenrollmentFn = func(target models.ExternalDevice) (liteUnenrollmentDevice, error) {
 		return (&providers.MicroWendyProvider{}).ConnectEnrollment(target)
 	}
-	unenrollLiteCloudFn = runCloudDeviceUnenrollWithReset
+	unenrollLiteCloudFn = runCloudDeviceUnenrollWithResetForTenant
 )
 
 func runLiteDeviceUnenroll(cmd *cobra.Command, target models.ExternalDevice, cloudGRPC string, assumeYes bool) error {
@@ -54,13 +55,24 @@ func runLiteDeviceUnenroll(cmd *cobra.Command, target models.ExternalDevice, clo
 		return fmt.Errorf("this Wendy Lite firmware cannot clear its enrollment identity; update the firmware over USB before unenrolling, or use --cloud-only to revoke cloud access while keeping the local identity")
 	}
 
-	// Current firmware reports the configured enrollment identity even before
-	// issuance completes. Older firmware only reports the hardware ID.
-	deviceID := identity.EnrolledDeviceID
-	if deviceID == "" {
-		deviceID = "lite-" + strings.TrimPrefix(identity.ID, "lite-")
+	// New firmware reports the configured PKI identity, including pending
+	// enrollments. Older firmware used a hardware-derived identity.
+	deviceID, tenantID := challenge.GetDeviceId(), challenge.GetTenantId()
+	configured := deviceID != "" || tenantID != "" || challenge.GetEnrolled()
+	if challenge.GetUuidEnrollmentSupported() && configured && (deviceID == "" || tenantID == "") {
+		return fmt.Errorf("configured board did not report its complete PKI device and tenant identity; cloud enrollment was not changed")
 	}
-	return unenrollLiteCloudFn(cmd, cloudGRPC, deviceID, assumeYes, func() error {
+	if tenantID != "" {
+		if _, err := meshid.ParseTenant(tenantID); err != nil {
+			return fmt.Errorf("board returned an invalid PKI tenant identity; cloud enrollment was not changed: %w", err)
+		}
+	}
+	reportedDeviceID := deviceID
+	uuidIdentity := challenge.GetUuidEnrollmentSupported()
+	if deviceID == "" {
+		deviceID = "lite-" + identity.ID
+	}
+	return unenrollLiteCloudFn(cmd, cloudGRPC, deviceID, tenantID, assumeYes, func() error {
 		if err := cmd.Context().Err(); err != nil {
 			return err
 		}
@@ -74,6 +86,9 @@ func runLiteDeviceUnenroll(cmd *cobra.Command, target models.ExternalDevice, clo
 		if err != nil || len(nonce) != 32 || !challenge.GetEnrollmentResetSupported() {
 			return fmt.Errorf("Wendy Lite returned an invalid enrollment reset challenge")
 		}
+		if uuidIdentity && (challenge.GetDeviceId() != reportedDeviceID || challenge.GetTenantId() != tenantID) {
+			return fmt.Errorf("the board's configured PKI identity changed during cloud cleanup; its local identity was not reset")
+		}
 		if err := device.ResetEnrollment(identity.ID, challenge.NonceHex); err != nil {
 			return fmt.Errorf("clearing the board's enrollment: %w", err)
 		}
@@ -81,7 +96,7 @@ func runLiteDeviceUnenroll(cmd *cobra.Command, target models.ExternalDevice, clo
 		if err != nil {
 			return fmt.Errorf("verifying the board's cleared identity: %w", err)
 		}
-		if state == nil || state.Enrolled {
+		if state == nil || state.Enrolled || state.GetDeviceId() != "" || state.GetTenantId() != "" {
 			return fmt.Errorf("the board did not confirm that its enrollment identity was cleared")
 		}
 		if err := device.ResetTargetDevice(true, 0); err != nil {

@@ -719,7 +719,7 @@ jobs:
                       type: "header",
                       text: {
                         type: "plain_text",
-                        text: "⚠️ Swift E2E AI review subscription auth",
+                        text: "⚠️ Wendy E2E · AI review subscription auth",
                         emoji: true
                       }
                     },
@@ -1000,7 +1000,7 @@ jobs:
           jq -n \
             --arg channel "${SLACK_CHANNEL}" \
             --arg color "${status_color}" \
-            --arg title "${status_emoji} ${status_title}" \
+            --arg title "${status_emoji} Wendy E2E · ${status_title}" \
             --arg mode "${review_mode}" \
             --arg ref "${tested_ref}" \
             --arg sha "${short_sha}" \

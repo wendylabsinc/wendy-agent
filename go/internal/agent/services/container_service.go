@@ -685,8 +685,8 @@ func (s *ContainerService) guaranteeOutputDrain(appName string, outputCh <-chan 
 			for output := range outputCh {
 				s.logManager.Publish(appName, output)
 			}
-			// When the containerd channel closes, publish a Done marker.
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
+			// The producer sends its own terminal marker with run ownership.
+			// Channel closure alone must not end a replacement run's stream.
 		}()
 		return subCh, func() { s.logManager.Unsubscribe(appName, subID) }
 	}

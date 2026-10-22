@@ -163,13 +163,15 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 	for _, tc := range []struct {
 		name, principal           string
 		trusted, accept, fallback bool
+		delay                     time.Duration
 	}{
-		{"matching device", devicePrincipal, true, true, false},
-		{"wrong device", strings.Replace(devicePrincipal, "441bf6804ff8", "000000000000", 1), true, false, false},
-		{"wrong tenant", strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1), true, false, false},
-		{"untrusted issuer", devicePrincipal, false, false, false},
-		{"Lite CA under session trust", devicePrincipal, false, true, true},
-		{"self-signed Lite authority", devicePrincipal, false, false, true},
+		{"matching device", devicePrincipal, true, true, false, 0},
+		{"slow mesh relay", devicePrincipal, true, true, false, 11 * time.Second},
+		{"wrong device", strings.Replace(devicePrincipal, "441bf6804ff8", "000000000000", 1), true, false, false, 0},
+		{"wrong tenant", strings.Replace(devicePrincipal, "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", 1), true, false, false, 0},
+		{"untrusted issuer", devicePrincipal, false, false, false, 0},
+		{"Lite CA under session trust", devicePrincipal, false, true, true, 0},
+		{"self-signed Lite authority", devicePrincipal, false, false, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cert, chain, cfg, sessionCA, sessionKey := relayPKIWithCA(t, tc.principal, tc.trusted)
@@ -194,6 +196,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 			verified := make(chan error, 1)
 			relay.device = func(raw net.Conn) {
 				defer raw.Close()
+				time.Sleep(tc.delay)
 				raw.SetDeadline(time.Now().Add(5 * time.Second))
 				conn := tls.Server(raw, cfg)
 				err := conn.Handshake()
@@ -226,7 +229,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 				io.Copy(io.Discard, conn)
 			}
 			cc := dialFakeRelay(t, relay)
-			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer session"), 10*time.Second)
+			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer session"), 30*time.Second)
 			defer cancel()
 			c := NewWendyLiteClient()
 			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", options)

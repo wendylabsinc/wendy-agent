@@ -32,7 +32,7 @@ func (*enrollingLiteDevice) GetDeviceIdentity(time.Duration) (*liteclient.Device
 func (d *enrollingLiteDevice) EnrollmentChallenge(bool) (*litepb.WendyComEnrollmentChallenge, error) {
 	return &litepb.WendyComEnrollmentChallenge{
 		Enrolled: d.enrolled, NonceHex: strings.Repeat("12", 32),
-		BuiltinRootsReady: true, BuiltinTsaRootsReady: true,
+		BuiltinRootsReady: true, BuiltinTsaRootsReady: true, UuidEnrollmentSupported: true,
 	}, nil
 }
 
@@ -163,13 +163,14 @@ func TestLiteEnrollmentReportsRemainingIdentityBeforeNameOrTrustSetup(t *testing
 type unsupportedLiteEnrollmentDevice struct {
 	alreadyEnrolledLiteDevice
 	supported *bool
+	uuid      bool
 }
 
 func (d *unsupportedLiteEnrollmentDevice) EnrollmentChallenge(statusOnly bool) (*litepb.WendyComEnrollmentChallenge, error) {
 	if !statusOnly {
 		panic("unsupported firmware must not start an enrollment challenge")
 	}
-	return &litepb.WendyComEnrollmentChallenge{EnrollmentResetSupported: true, CloudEnrollmentSupported: d.supported}, nil
+	return &litepb.WendyComEnrollmentChallenge{EnrollmentResetSupported: true, CloudEnrollmentSupported: d.supported, UuidEnrollmentSupported: d.uuid}, nil
 }
 
 func TestLiteEnrollmentRejectsUnsupportedFirmwareBeforeSetup(t *testing.T) {
@@ -190,30 +191,64 @@ func TestLiteEnrollmentRejectsUnsupportedFirmwareBeforeSetup(t *testing.T) {
 	}
 }
 
-func TestLiteEnrollmentAllowsLegacyAndSupportedFirmware(t *testing.T) {
+func TestLiteEnrollmentRequiresUUIDFirmware(t *testing.T) {
 	old := connectLiteEnrollmentFn
 	t.Cleanup(func() { connectLiteEnrollmentFn = old })
 	for _, tc := range []struct {
 		name      string
 		supported *bool
+		uuid      bool
+		want      string
 	}{
-		{name: "legacy"},
-		{name: "supported", supported: proto.Bool(true)},
+		// Firmware that predates UUID identities is refused before a name,
+		// trust or Cloud asset; it is never enrolled under its hardware id.
+		{name: "no UUID support", supported: proto.Bool(true), want: "cannot enroll with a device UUID"},
+		{name: "no capability reports", want: "cannot enroll with a device UUID"},
+		// Reaching name validation proves UUID firmware may enroll; the
+		// invalid name keeps this test from contacting Cloud.
+		{name: "UUID firmware without enrollment report", uuid: true, want: "name may only contain"},
+		{name: "UUID firmware", supported: proto.Bool(true), uuid: true, want: "name may only contain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			device := &unsupportedLiteEnrollmentDevice{supported: tc.supported}
+			device := &unsupportedLiteEnrollmentDevice{supported: tc.supported, uuid: tc.uuid}
 			connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) { return device, nil }
 			cmd := &cobra.Command{}
 			cmd.SetContext(context.Background())
-			// Reaching name validation proves older firmware can still enroll;
-			// the invalid name keeps this test from contacting Cloud.
 			err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), &config.AuthConfig{}, "\x1b[A", liteEnrollmentOptions{})
-			if err == nil || !strings.Contains(err.Error(), "name may only contain") {
-				t.Fatalf("firmware was rejected before name validation: %v", err)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
 			}
 			if !device.closed {
 				t.Fatal("enrollment connection leaked")
 			}
 		})
+	}
+}
+
+type pendingLiteEnrollmentDevice struct{ alreadyEnrolledLiteDevice }
+
+func (*pendingLiteEnrollmentDevice) EnrollmentChallenge(bool) (*litepb.WendyComEnrollmentChallenge, error) {
+	return &litepb.WendyComEnrollmentChallenge{
+		UuidEnrollmentSupported: true,
+		DeviceId:                "44444444-4444-4444-8444-444444444444",
+		TenantId:                "11111111-1111-4111-8111-111111111111",
+	}, nil
+}
+
+func TestLiteEnrollmentPreservesPendingUUIDBeforeSetup(t *testing.T) {
+	old := connectLiteEnrollmentFn
+	t.Cleanup(func() { connectLiteEnrollmentFn = old })
+	device := &pendingLiteEnrollmentDevice{}
+	connectLiteEnrollmentFn = func(models.ExternalDevice) (liteEnrollmentDevice, error) { return device, nil }
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	// A failed first enrollment may still hold its token and UUID. Stop
+	// before even validating a new name, loading trust or reserving an asset.
+	err := runEnrollLiteDevice(cmd, liteUnenrollUSBTarget(), &config.AuthConfig{}, "\x1b[A", liteEnrollmentOptions{deviceRoots: "/missing.pem"})
+	if err == nil || !strings.Contains(err.Error(), "pending enrollment identity") || !strings.Contains(err.Error(), "wendy device unenroll") {
+		t.Fatalf("missing pending enrollment recovery instructions: %v", err)
+	}
+	if !device.closed {
+		t.Fatal("enrollment connection leaked")
 	}
 }

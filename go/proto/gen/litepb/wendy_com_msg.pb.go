@@ -1036,6 +1036,9 @@ type WendyComEnrollmentChallenge struct {
 	EnrollmentResetSupported   bool                   `protobuf:"varint,7,opt,name=enrollment_reset_supported,json=enrollmentResetSupported,proto3" json:"enrollment_reset_supported,omitempty"`             // physical USB reset with current nonce
 	CloudEnrollmentSupported   *bool                  `protobuf:"varint,8,opt,name=cloud_enrollment_supported,json=cloudEnrollmentSupported,proto3,oneof" json:"cloud_enrollment_supported,omitempty"`       // absent on older firmware
 	MldsaVerificationSupported *bool                  `protobuf:"varint,9,opt,name=mldsa_verification_supported,json=mldsaVerificationSupported,proto3,oneof" json:"mldsa_verification_supported,omitempty"` // wolfSSL ML-DSA CA and peer certificate verification
+	DeviceId                   string                 `protobuf:"bytes,10,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`                                                               // configured PKI identity; distinct from the USB hardware ID
+	TenantId                   string                 `protobuf:"bytes,11,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	UuidEnrollmentSupported    bool                   `protobuf:"varint,12,opt,name=uuid_enrollment_supported,json=uuidEnrollmentSupported,proto3" json:"uuid_enrollment_supported,omitempty"` // UUID discovery and enrollment identity reporting
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }
@@ -1129,6 +1132,27 @@ func (x *WendyComEnrollmentChallenge) GetCloudEnrollmentSupported() bool {
 func (x *WendyComEnrollmentChallenge) GetMldsaVerificationSupported() bool {
 	if x != nil && x.MldsaVerificationSupported != nil {
 		return *x.MldsaVerificationSupported
+	}
+	return false
+}
+
+func (x *WendyComEnrollmentChallenge) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *WendyComEnrollmentChallenge) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *WendyComEnrollmentChallenge) GetUuidEnrollmentSupported() bool {
+	if x != nil {
+		return x.UuidEnrollmentSupported
 	}
 	return false
 }
@@ -2847,7 +2871,7 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x1bWendyComGetDeviceInfoParams\"D\n" +
 	"!WendyComEnrollmentChallengeParams\x12\x1f\n" +
 	"\vstatus_only\x18\x01 \x01(\bR\n" +
-	"statusOnly\"\xa6\x04\n" +
+	"statusOnly\"\x9c\x05\n" +
 	"\x1bWendyComEnrollmentChallenge\x12\x1b\n" +
 	"\tnonce_hex\x18\x01 \x01(\tR\bnonceHex\x12\x1a\n" +
 	"\benrolled\x18\x02 \x01(\bR\benrolled\x12.\n" +
@@ -2857,7 +2881,11 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x17builtin_tsa_roots_ready\x18\x06 \x01(\bR\x14builtinTsaRootsReady\x12<\n" +
 	"\x1aenrollment_reset_supported\x18\a \x01(\bR\x18enrollmentResetSupported\x12A\n" +
 	"\x1acloud_enrollment_supported\x18\b \x01(\bH\x00R\x18cloudEnrollmentSupported\x88\x01\x01\x12E\n" +
-	"\x1cmldsa_verification_supported\x18\t \x01(\bH\x01R\x1amldsaVerificationSupported\x88\x01\x01B\x1d\n" +
+	"\x1cmldsa_verification_supported\x18\t \x01(\bH\x01R\x1amldsaVerificationSupported\x88\x01\x01\x12\x1b\n" +
+	"\tdevice_id\x18\n" +
+	" \x01(\tR\bdeviceId\x12\x1b\n" +
+	"\ttenant_id\x18\v \x01(\tR\btenantId\x12:\n" +
+	"\x19uuid_enrollment_supported\x18\f \x01(\bR\x17uuidEnrollmentSupportedB\x1d\n" +
 	"\x1b_cloud_enrollment_supportedB\x1f\n" +
 	"\x1d_mldsa_verification_supported\"j\n" +
 	"\x1dWendyComEnrollmentResetParams\x12,\n" +
