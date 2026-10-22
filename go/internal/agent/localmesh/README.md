@@ -686,6 +686,14 @@ admission accepts either a device or an operator in the same verified tenant.
 Service identities, legacy numeric identities, and other tenants remain refused.
 Devices must be updated to support these operator links.
 
+Operator links may cross routed Ethernet/Wi-Fi subnets. The CLI also uses
+ordinary `_wendyos._udp` discovery records as bounded, same-tenant dial hints,
+so a DNS-SD reflector can supply addresses across VLANs. It still dials the
+native mesh QUIC port and verifies the exact advertised device principal.
+Off-subnet incoming connections share the pre-authentication connection budget;
+after TLS, at least one endpoint must be an operator. Device-to-device LAN links
+remain on-link. Discovery hints never authorize routes or populate the roster.
+
 Operator endpoints preserve their complete SPIFFE principal. Their routing UUID
 is the first 16 bytes of SHA-256 over `wendy-net/operator-endpoint/1\0` followed by
 that principal; the existing mesh address rule uses the UUID's final ten bytes.
@@ -713,4 +721,6 @@ Babel next hop changes. This adds no host-wide routes or DNS settings.
 
 Tests cover operator ML-DSA admission, tenant gating, signed route ownership,
 three-node TLS routing with TCP failover, private IPC, and discovery lifecycle.
-Physical Ethernet/NAN/BLE combinations still require a hardware validation run.
+Routed Wi-Fi-to-Ethernet discovery and direct/multi-hop operator RPCs have also
+been verified on physical devices. NAN/BLE combinations still require hardware
+validation.

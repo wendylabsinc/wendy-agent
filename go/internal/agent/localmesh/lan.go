@@ -48,6 +48,42 @@ type LANConfig struct {
 	// Status receives local setup readiness/failure, not peer reachability.
 	// The optional callback must return promptly.
 	Status func(CarrierStatus)
+	// OperatorCandidates supplies untrusted agent-discovery hints to a desktop
+	// operator. Each hint still requires the native QUIC protocol and an exact
+	// same-tenant TLS principal before any mesh traffic is exchanged.
+	OperatorCandidates func() []LANPeer
+}
+
+type LANPeer struct {
+	Principal string
+	IP        net.IP
+}
+
+// Device-to-device links remain on-link. Operators may connect through routed
+// Ethernet/Wi-Fi networks, but only after TLS proves both identity and tenant.
+func lanPeerAddressAllowed(self, peer meshid.Device, ip net.IP, subnet *net.IPNet) bool {
+	return subnet != nil && ip.To4() != nil &&
+		self != peer && self.Tenant() == peer.Tenant() &&
+		(subnet.Contains(ip) || (ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() && (self.IsOperator() || peer.IsOperator())))
+}
+
+func operatorLANEntries(cfg LANConfig) []*mdns.ServiceEntry {
+	if !cfg.Credentials.Device.IsOperator() || cfg.OperatorCandidates == nil {
+		return nil
+	}
+	var entries []*mdns.ServiceEntry
+	for _, hint := range cfg.OperatorCandidates() {
+		peer, err := meshid.DeviceFromPrincipal(hint.Principal)
+		if err != nil || peer.Tenant() != cfg.Credentials.Device.Tenant() {
+			continue
+		}
+		entries = append(entries, &mdns.ServiceEntry{Port: LANPort, AddrV4: hint.IP,
+			InfoFields: []string{"principal=" + peer.Principal(), "mesh=" + lanMeshHash(peer.Tenant()), "protocol=" + lanProtocol}})
+		if len(entries) == 128 {
+			break
+		}
+	}
+	return entries
 }
 
 func (c LANConfig) allow(asset meshid.Device, cost uint16) bool {
@@ -189,11 +225,12 @@ func listenLANQUIC(ctx context.Context, selected lanInterface, address string) (
 // Reserve the shared LAN budget before TLS allocates a connection. The peer
 // stays unknown until verified TLS, so a spoofed hint cannot suppress its dials.
 // QUIC's connection context ends after failed handshakes and peer teardown.
+// Off-link sources must pass lanPeerAddressAllowed after TLS proves an operator.
 func lanIncomingContext(selected lanInterface, claims *lanClaims) func(context.Context, *quic.ClientInfo) (context.Context, error) {
 	return func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
 		source, ok := info.RemoteAddr.(*net.UDPAddr)
-		if !ok || selected.net == nil || !selected.net.Contains(source.IP) {
-			return nil, errors.New("LAN source outside selected interface subnet")
+		if !ok || selected.net == nil || source.IP.To4() == nil || (!selected.net.Contains(source.IP) && (!source.IP.IsGlobalUnicast() || source.IP.IsLinkLocalUnicast())) {
+			return nil, errors.New("LAN source is not an eligible IPv4 address")
 		}
 		lease := claims.policy.ReserveGroup(fmt.Sprintf("incoming:%d", claims.incoming.Add(1)), meshid.Device{}, false, strconv.Itoa(int(selected.cost)))
 		if lease == nil {
@@ -264,7 +301,8 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 			}
 			lease, _ := conn.Context().Value(connectionLeaseKey{}).(*ConnectionLease)
 			asset, err := lanAuthenticatedPeer(cfg.Credentials, conn.ConnectionState().TLS)
-			if err != nil || lease == nil || !cfg.allow(asset, selected.cost) {
+			remote, remoteOK := conn.RemoteAddr().(*net.UDPAddr)
+			if err != nil || lease == nil || !remoteOK || !lanPeerAddressAllowed(cfg.Credentials.Device, asset, remote.IP, selected.net) || !cfg.allow(asset, selected.cost) {
 				conn.CloseWithError(1, "LAN peer not admitted")
 				continue
 			}
@@ -302,11 +340,12 @@ func serveLANInterface(parent context.Context, cfg LANConfig, selected lanInterf
 		if err != nil && ctx.Err() == nil && cfg.Logger != nil {
 			cfg.Logger.Debug("LAN mDNS query failed", zap.String("interface", selected.iface.Name), zap.Error(err))
 		}
+		entries = append(operatorLANEntries(cfg), entries...)
 		byKey, keys := lanCandidateEntries(entries, cfg.Credentials.Device, selected.net)
 		for _, candidateKey := range claims.candidates.Order(keys, time.Now()) {
 			entry := byKey[candidateKey]
 			asset, ip, ok := parseLANEntry(entry, cfg.Credentials.Device)
-			if !ok || ctx.Err() != nil || selected.net == nil || !selected.net.Contains(ip) || cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) {
+			if !ok || ctx.Err() != nil || !lanPeerAddressAllowed(cfg.Credentials.Device, asset, ip, selected.net) || cfg.Node.HasCheaperLink(asset, selected.cost) || !cfg.allow(asset, selected.cost) {
 				continue
 			}
 			lease := claims.policy.ReserveGroup(asset.Principal()+"/"+strconv.Itoa(int(selected.cost)), asset, true, strconv.Itoa(int(selected.cost)))
@@ -574,7 +613,7 @@ func lanCandidateEntries(entries []*mdns.ServiceEntry, self meshid.Device, subne
 		asset, ip, ok := parseLANEntry(entry, self)
 		// Filter before deduplication: a later off-subnet advertisement for
 		// the same principal must not hide its usable local address.
-		if !ok || subnet == nil || !subnet.Contains(ip) {
+		if !ok || !lanPeerAddressAllowed(self, asset, ip, subnet) {
 			continue
 		}
 		key := asset.Principal()

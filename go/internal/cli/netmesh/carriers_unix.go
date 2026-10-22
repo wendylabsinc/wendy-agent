@@ -17,6 +17,9 @@ func (c *Client) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var wg sync.WaitGroup
+	hints := &lanHints{}
+	wg.Add(1)
+	go func() { defer wg.Done(); hints.run(ctx, c.credentials.Device) }()
 	start := func(name string, run func(context.Context) error) {
 		wg.Add(1)
 		go func() {
@@ -38,7 +41,7 @@ func (c *Client) Run(parent context.Context) error {
 	}
 	selection := localmesh.NewPeerSelection(c.node.Snapshot)
 	start("LAN", func(ctx context.Context) error {
-		return localmesh.RunLAN(ctx, localmesh.LANConfig{Credentials: c.credentials, Node: c.node, Ethernet: true, InfrastructureWiFi: true, Selection: selection, Status: c.carrierStatus("LAN")})
+		return localmesh.RunLAN(ctx, localmesh.LANConfig{Credentials: c.credentials, Node: c.node, Ethernet: true, InfrastructureWiFi: true, Selection: selection, Status: c.carrierStatus("LAN"), OperatorCandidates: hints.snapshot})
 	})
 	start("BLE", func(ctx context.Context) error {
 		return bleprovider.Run(ctx, bleprovider.Config{Credentials: c.credentials, Node: c.node, NetworkName: fmt.Sprintf("tenant:%s:default", c.credentials.Device.Tenant()), Selection: selection, Status: c.carrierStatus("BLE")})

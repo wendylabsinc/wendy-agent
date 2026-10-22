@@ -198,7 +198,7 @@ func ensureMeshSession(ctx context.Context) (string, config.CertificateInfo, err
 	}
 }
 func meshDeviceRow(d netmesh.Device) models.LANDevice {
-	return models.LANDevice{ID: d.ID.String(), DisplayName: discovery.SanitiseDisplayName(d.Name), Hostname: "mesh:" + d.ID.String(), IPAddress: d.Address.String(), Port: int(d.Port), IsMTLS: true, Mesh: true}
+	return models.LANDevice{ID: d.ID.String(), DisplayName: discovery.SanitiseDisplayName(d.Name), Hostname: "mesh:" + d.ID.String(), IPAddress: d.Address.String(), Port: int(d.Port), IsMTLS: true, IsWendyDevice: true, Mesh: true}
 }
 
 func meshDiscoveryStream(ctx context.Context) <-chan discovery.LANEvent {

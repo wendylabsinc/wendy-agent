@@ -65,6 +65,10 @@ The router uses carrier costs and can forward across multiple hops and switch
 paths when links fail. It does not combine link bandwidth. USB Ethernet is
 included when the operating system exposes it as an eligible network interface.
 LAN mesh discovery currently requires an IPv4 interface and multicast access.
+Operator connections also work across routed LAN subnets when ordinary device
+discovery supplies the addresses, for example through a DNS-SD reflector between
+VLANs. Devices must run an agent that supports routed operator links. Every link
+still verifies the exact same-organization device identity before joining.
 
 On Linux, Wi-Fi Aware requires compatible hardware, the existing Wendy NAN
 helper, and the permissions needed to manage the interface. BLE requires BlueZ

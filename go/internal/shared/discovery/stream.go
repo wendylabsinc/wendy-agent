@@ -739,8 +739,12 @@ func (s *lanStream) retireCachedHostAliases(key string, dev models.LANDevice) {
 		return
 	}
 	for oldKey, st := range s.states {
+		// Enrollment can change both the boot UUID and hostname. A stale
+		// cached record at the same IP and agent port is the same obsolete
+		// inventory entry; a responding version probe does not prove its ID.
+		sameEndpoint := dev.IPAddress != "" && dev.IPAddress == st.dev.IPAddress && dev.Port == st.dev.Port
 		if oldKey != key && st.fromCache && !st.sighted &&
-			st.dev.HostKey() == host && canonicalDiscoveryUUID(st.dev.ID) {
+			(st.dev.HostKey() == host || sameEndpoint) && canonicalDiscoveryUUID(st.dev.ID) {
 			s.retract(oldKey)
 		}
 	}
