@@ -45,7 +45,8 @@ func TestCompactSuccessPreservesDecisionsAndDefersOnlySavedProvenance(t *testing
 	for _, change := range []func(){
 		func() { full["reported_state"] = "failed" },
 		func() { full["reported_state"] = "completed"; full["artifact_error"] = "missing report" },
-		func() { delete(full, "artifact_error"); full["receipt_sha256"] = "" },
+		func() { delete(full, "artifact_error"); full["report_error"] = "changed manifest" },
+		func() { delete(full, "report_error"); full["receipt_sha256"] = "" },
 	} {
 		change()
 		if compactWorkflowResult(full)["runner_pid"] != 123 {

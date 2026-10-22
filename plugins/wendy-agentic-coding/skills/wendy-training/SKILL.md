@@ -139,9 +139,19 @@ projection. A saved workflow owns these options; do not also pass overrides.
 
 The `workflow` profile keeps successful replies compact: step exits/durations,
 selected values and explicit unknowns remain inline; process/spec/runner/report
-hashes and manifest references remain in the digest-bound local receipt. Other
+hashes remain in the digest-bound local receipt; the artifact manifest reference
+also remains inline so a needed detail does not require a receipt lookup. Other
 profiles and incomplete/error replies retain detailed evidence inline. Read the
 saved receipt when a provenance detail is needed instead of rerunning the job.
 Progress does not warn about metrics for steps that have not started. While a
 step runs, `recorded_execution_seconds` is the last saved worker timing, not a
 live elapsed timer; terminal observations expose `execution_seconds`.
+
+When the task explicitly needs selected file SHA-256 values, add
+`"artifact_digests": ["status.json", "evaluate/result.json"]` to the saved
+workflow. Select only collected files, at most16 unique names and4096 encoded
+reply bytes. These hashes are rechecked against local bytes and the verified
+manifest, returned inline and saved in the receipt. This avoids loading the
+whole manifest into context just to obtain a few hashes. Omit it otherwise.
+The full submission schema also accepts `artifact_digests`; CLI specs can use
+repeated `--artifact-digest <collected-relative-file>` flags.

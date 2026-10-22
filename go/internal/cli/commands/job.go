@@ -80,12 +80,13 @@ func newJobSubmitCmd() *cobra.Command {
 	var files []string
 	var output string
 	var fields []string
+	var digests []string
 	var workflow bool
 	cmd := &cobra.Command{Use: "submit <spec.json>", Short: "Start a named durable job; an identical retry returns the original receipt", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if wait < 0 || wait > 3600 {
 			return fmt.Errorf("wait must be 0..3600")
 		}
-		opts := jobops.SubmitOptions{WaitSeconds: wait, ArtifactFiles: files, ArtifactDestination: output}
+		opts := jobops.SubmitOptions{WaitSeconds: wait, ArtifactFiles: files, ArtifactDigests: digests, ArtifactDestination: output}
 		if len(fields) > 0 {
 			opts.ReportFields = map[string][]string{}
 		}
@@ -102,7 +103,7 @@ func newJobSubmitCmd() *cobra.Command {
 		var spec jobops.Spec
 		var err error
 		if workflow {
-			for _, flag := range []string{"wait", "artifact", "output", "report-field"} {
+			for _, flag := range []string{"wait", "artifact", "output", "report-field", "artifact-digest"} {
 				if cmd.Flags().Changed(flag) {
 					return fmt.Errorf("workflow file owns %s; do not also pass that flag", flag)
 				}
@@ -129,6 +130,7 @@ func newJobSubmitCmd() *cobra.Command {
 	cmd.Flags().IntVar(&wait, "wait", 0, "Wait up to 3600 seconds for terminal evidence through bounded host RPCs; expiry never cancels the job")
 	cmd.Flags().StringArrayVar(&files, "artifact", nil, "Selected relative report to retrieve after terminal evidence; repeat, requires --wait and --output")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Absolute local artifact directory; collection errors retain the confirmed job receipt")
+	cmd.Flags().StringArrayVar(&digests, "artifact-digest", nil, "Collected file whose verified SHA-256 should appear inline; repeat, at most 16 files/4096 bytes")
 	cmd.Flags().StringArrayVar(&fields, "report-field", nil, "Verified scalar field as relative.json#/pointer; repeat, requires --artifact, --wait and --output")
 	cmd.Flags().BoolVar(&workflow, "workflow", false, "Read a saved wendy.workflow.v1 execution/evidence contract instead of a plain job specification")
 	return cmd

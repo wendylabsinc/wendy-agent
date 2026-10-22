@@ -1,10 +1,17 @@
 package mcp
 
+import "strings"
+
 // compactWorkflowResult keeps decision facts in a successful saved-workflow
 // reply. The digest-bound receipt already holds the full process observation,
 // source/runner/spec/report hashes and artifact manifest references. Other
 // profiles and incomplete/error replies retain those details inline.
 func compactWorkflowResult(receipt map[string]any) map[string]any {
+	for key, value := range receipt {
+		if strings.HasSuffix(key, "_error") && value != nil {
+			return receipt
+		}
+	}
 	observation, ok := receipt["observation"].(map[string]any)
 	if !ok || receipt["reported_state"] != "completed" || observation["step_check"] != "passed" {
 		return receipt
@@ -19,7 +26,7 @@ func compactWorkflowResult(receipt map[string]any) map[string]any {
 		return receipt
 	}
 	out := map[string]any{}
-	for _, key := range []string{"reported_state", "job_path", "target", "reused", "receipt_path", "receipt_sha256", "source_check"} {
+	for _, key := range []string{"reported_state", "job_path", "target", "reused", "receipt_path", "receipt_sha256", "source_check", "artifact_digests"} {
 		if value, exists := receipt[key]; exists {
 			out[key] = value
 		}
@@ -32,7 +39,7 @@ func compactWorkflowResult(receipt map[string]any) map[string]any {
 	}
 	out["observation"] = obs
 	selected := map[string]any{}
-	for _, key := range []string{"complete", "verified_files", "unchanged_files"} {
+	for _, key := range []string{"complete", "verified_files", "unchanged_files", "manifest_path", "manifest_sha256"} {
 		if value, exists := artifacts[key]; exists {
 			selected[key] = value
 		}

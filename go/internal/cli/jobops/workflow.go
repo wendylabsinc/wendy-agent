@@ -14,6 +14,7 @@ import (
 type SubmitOptions struct {
 	WaitSeconds         int
 	ArtifactFiles       []string
+	ArtifactDigests     []string
 	ArtifactDestination string
 	ReportFields        map[string][]string
 	Target              string
@@ -24,13 +25,16 @@ func ValidateSubmitOptions(opts SubmitOptions) error {
 	if opts.WaitSeconds < 0 || opts.WaitSeconds > 3600 {
 		return fmt.Errorf("wait_seconds must be 0..3600")
 	}
-	if len(opts.ArtifactFiles) == 0 && opts.ArtifactDestination == "" && len(opts.ReportFields) == 0 {
+	if len(opts.ArtifactFiles) == 0 && opts.ArtifactDestination == "" && len(opts.ReportFields) == 0 && len(opts.ArtifactDigests) == 0 {
 		return nil
 	}
 	if opts.WaitSeconds == 0 || !filepath.IsAbs(opts.ArtifactDestination) {
 		return fmt.Errorf("artifact collection requires wait_seconds > 0 and an absolute local artifact_destination")
 	}
 	if err := validateArtifactFiles(opts.ArtifactFiles); err != nil {
+		return err
+	}
+	if err := validateArtifactDigests(opts.ArtifactFiles, opts.ArtifactDigests); err != nil {
 		return err
 	}
 	return validateReportFields(opts.ArtifactFiles, opts.ReportFields)
@@ -73,6 +77,15 @@ func SubmitWorkflow(ctx context.Context, conn *grpcclient.AgentConnection, spec 
 			receipt["reports"] = reports
 		}
 	}
+	if err == nil && len(opts.ArtifactDigests) > 0 {
+		digests, e := selectedArtifactDigests(opts.ArtifactDestination, artifacts, opts.ArtifactDigests)
+		if e != nil {
+			receipt["artifact_digest_error"] = e.Error()
+		} else {
+			receipt["artifact_digests"] = digests
+		}
+	}
+
 	target := opts.Target
 	if target == "" {
 		target, _ = obs["target"].(string)

@@ -26,6 +26,7 @@ func (s *mcpServer) registerJobTools(srv *server.MCPServer) {
 	submit = append(submit,
 		mcpgo.WithString("workflow_path", mcpgo.Description("Absolute local wendy.workflow.v1 file containing job, wait, selected artifacts and report fields. Supply this alone instead of other arguments.")),
 		mcpgo.WithArray("artifact_files", mcpgo.WithStringItems(), mcpgo.Description("Optional selected relative reports to retrieve after a terminal observation; requires wait_seconds and artifact_destination. Same 64-file/16-MiB limits as job_artifacts_pull.")),
+		mcpgo.WithArray("artifact_digests", mcpgo.WithStringItems(), mcpgo.Description("Optional subset of up to 16 collected files whose verified SHA-256 values should appear inline; at most 4096 encoded bytes. Avoids another manifest read when the task explicitly needs hashes.")),
 		mcpgo.WithString("artifact_destination", mcpgo.Description("Absolute local report directory. Collection failures preserve the receipt; running jobs return artifacts_pending.")),
 		mcpgo.WithObject("report_fields", mcpgo.Description("Optional retrieved JSON file paths mapped to RFC 6901 pointer arrays; up to eight reports/32 bounded scalar fields. Returns report hashes, values and explicit unavailable fields. A verified workflow receipt is saved with collected reports."), mcpgo.AdditionalProperties(map[string]any{"type": "array", "items": map[string]any{"type": "string"}})),
 	)
@@ -175,6 +176,12 @@ func (s *mcpServer) handleJobSubmit(ctx context.Context, req mcpgo.CallToolReque
 		encoded, e := json.Marshal(value)
 		if e != nil || json.Unmarshal(encoded, &opts.ArtifactFiles) != nil || len(opts.ArtifactFiles) == 0 {
 			return errResult(errCodeInvalidArgument, "artifact_files must be a nonempty string array"), nil
+		}
+	}
+	if value, exists := req.GetArguments()["artifact_digests"]; exists {
+		encoded, e := json.Marshal(value)
+		if e != nil || json.Unmarshal(encoded, &opts.ArtifactDigests) != nil || len(opts.ArtifactDigests) == 0 {
+			return errResult(errCodeInvalidArgument, "artifact_digests must be a nonempty string array"), nil
 		}
 	}
 	if value, exists := req.GetArguments()["artifact_destination"]; exists {

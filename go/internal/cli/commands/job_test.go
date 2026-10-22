@@ -43,7 +43,7 @@ func TestJobCommandsDocumentAgentFacingFlags(t *testing.T) {
 	if err := c.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--wait", "--artifact", "--output", "--report-field", "--workflow"} {
+	for _, flag := range []string{"--wait", "--artifact", "--output", "--report-field", "--artifact-digest", "--workflow"} {
 		if !strings.Contains(out.String(), flag) {
 			t.Fatal(out.String())
 		}
@@ -63,5 +63,13 @@ func TestCheckpointInspectValidatesRuntimeBeforeDeviceDiscovery(t *testing.T) {
 	cmd.SetArgs([]string{"checkpoint", "inspect", "/tmp/checkpoint.pt", "--sha256", strings.Repeat("a", 64), "--python", "python3"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "absolute remote paths") {
 		t.Fatalf("invalid runtime reached device discovery: %v", err)
+	}
+}
+
+func TestJobSubmitRejectsUncollectedDigestBeforeSpecOrDeviceAccess(t *testing.T) {
+	c := newJobCmd()
+	c.SetArgs([]string{"submit", "does-not-exist.json", "--artifact", "a", "--artifact-digest", "b", "--output", "/tmp/results", "--wait", "1"})
+	if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "artifact_digests") {
+		t.Fatalf("invalid digest selection reached file/device access: %v", err)
 	}
 }
