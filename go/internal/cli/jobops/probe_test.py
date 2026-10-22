@@ -138,6 +138,19 @@ class ProbeTests(unittest.TestCase):
             os.mkfifo(log)
             self.assertNotIn("excerpt", self.probe(until_terminal=True)["diagnostic"])
 
+    def test_future_metrics_are_not_warnings_but_missing_started_metrics_are(self):
+        status = {"state":"running", "stage":"current", "execution_seconds":2.5,
+                  "stages":[{"label":"finished", "returncode":0}],
+                  "progress_files":{label:label+"/output/metrics.jsonl" for label in ["finished","current","future"]}}
+        (self.root / "status.json").write_text(json.dumps(status))
+        result=self.probe()
+        self.assertEqual(result["warnings"], ["finished: declared progress file unavailable", "current: declared progress file unavailable"])
+        self.assertNotIn("execution_seconds",result)
+        self.assertEqual(result["recorded_execution_seconds"],2.5)
+        status["state"]="completed"
+        (self.root / "status.json").write_text(json.dumps(status))
+        self.assertEqual(self.probe()["execution_seconds"],2.5)
+
     def test_declared_nested_progress_stays_confined_and_bounded(self):
         directory = self.root / "train" / "output"
         directory.mkdir(parents=True)

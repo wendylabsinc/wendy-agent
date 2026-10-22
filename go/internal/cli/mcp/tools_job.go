@@ -227,6 +227,12 @@ func (s *mcpServer) submitWorkflow(ctx context.Context, spec jobops.Spec, opts j
 		return errResult(errCodeInternal, err.Error()), nil
 	}
 	receipt["target"] = opts.Target
+	s.mu.RLock()
+	compact := s.toolProfile == "workflow"
+	s.mu.RUnlock()
+	if compact {
+		receipt = compactWorkflowResult(receipt)
+	}
 	return jobJSON(receipt), nil
 }
 

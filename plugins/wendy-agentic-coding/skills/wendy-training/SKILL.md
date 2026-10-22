@@ -136,3 +136,12 @@ Add `--artifact status.json --artifact evaluate/result.json --output /local/repo
 to a plain spec submission with `--wait 660` to collect reports after terminal
 evidence. Add `--report-field evaluate/result.json#/successes` for a scalar
 projection. A saved workflow owns these options; do not also pass overrides.
+
+The `workflow` profile keeps successful replies compact: step exits/durations,
+selected values and explicit unknowns remain inline; process/spec/runner/report
+hashes and manifest references remain in the digest-bound local receipt. Other
+profiles and incomplete/error replies retain detailed evidence inline. Read the
+saved receipt when a provenance detail is needed instead of rerunning the job.
+Progress does not warn about metrics for steps that have not started. While a
+step runs, `recorded_execution_seconds` is the last saved worker timing, not a
+live elapsed timer; terminal observations expose `execution_seconds`.

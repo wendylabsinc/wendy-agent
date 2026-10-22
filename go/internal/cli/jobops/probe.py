@@ -142,6 +142,10 @@ def snapshot(root, target, include_steps=False):
     for directory in directories[:32]:
         if directory.name not in sources and len(sources) < 32:
             sources[directory.name] = directory / "metrics.jsonl"
+    started_labels = {data.get("stage")} if isinstance(data.get("stage"), str) else set()
+    stages = data.get("stages", [])
+    if isinstance(stages, list):
+        started_labels.update(step.get("label") for step in stages if isinstance(step, dict) and isinstance(step.get("label"), str))
     for label, path in sources.items():
         try:
             tail, mt = read_regular(path, MAX_TAIL, True, root)
@@ -176,7 +180,7 @@ def snapshot(root, target, include_steps=False):
                     and isinstance(v, (int, float, bool))
                 }
         except FileNotFoundError:
-            if label in declared:
+            if label in declared and (not started_labels or label in started_labels):
                 warnings.append(label + ": declared progress file unavailable")
         except (OSError, ValueError) as exc:
             warnings.append(label + ": " + str(exc)[:160])
@@ -206,7 +210,8 @@ def snapshot(root, target, include_steps=False):
     }
     duration = data.get("execution_seconds")
     if type(duration) in (int, float) and math.isfinite(duration) and duration >= 0:
-        out["execution_seconds"] = duration
+        key = "execution_seconds" if data.get("state") in ["completed", "failed", "stopped"] else "recorded_execution_seconds"
+        out[key] = duration
     for key in ["robot_commands_sent", "child_pid"]:
         if isinstance(data.get(key), int):
             out[key] = data[key]
