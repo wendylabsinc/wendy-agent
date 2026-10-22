@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudunenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
@@ -89,7 +90,7 @@ func cloudLiteSelectedDevice(auth *config.AuthConfig, asset *cloudpbv2.Asset, se
 				"assetId":  asset.GetId(),
 				"cloud":    auth.CloudGRPC,
 				"tenantId": auth.Certificates[0].TenantUUID(),
-				"deviceId": asset.GetPkiDeviceName(),
+				"deviceId": cloudunenroll.DeviceID(asset),
 			},
 			IsWendyDevice:   true,
 			OS:              asset.GetOsType(),

@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudunenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -137,10 +138,8 @@ func cloudDiscoveryIdentity(auth *config.AuthConfig, asset cloudDiscoveryDevice)
 	if asset.v2 != nil {
 		// Cloud routes by asset ID, but enrollment can bind that row to a
 		// different PKI device name. Verify the operator-set binding, never
-		// an identity learned from the peer. Older rows use their asset ID.
-		if deviceName := asset.v2.GetPkiDeviceName(); deviceName != "" {
-			identity.EntityID = deviceName
-		}
+		// an identity learned from the peer.
+		identity.EntityID = cloudunenroll.DeviceID(asset.v2)
 		identity.TenantUUID = cert.TenantUUID()
 		identity.Principal = certs.DeviceSPIFFEURI(identity.TenantUUID, identity.EntityID)
 	}

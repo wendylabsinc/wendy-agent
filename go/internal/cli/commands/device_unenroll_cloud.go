@@ -87,7 +87,7 @@ func resolveUnenrollDevice(devices []cloudDiscoveryDevice, selector, deviceID st
 	}
 	var matches []cloudDiscoveryDevice
 	for _, device := range devices {
-		identityMatch := device.v2 != nil && device.v2.GetPkiDeviceName() == identity
+		identityMatch := device.v2 != nil && cloudunenroll.DeviceID(device.v2) == identity
 		nameMatch := deviceID == "" && strings.EqualFold(device.GetName(), selector)
 		if identityMatch || nameMatch {
 			matches = append(matches, device)
@@ -233,7 +233,7 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 		if device.v2.GetOrganizationId() != auth.Certificates[0].TenantUUID() {
 			return fmt.Errorf("cloud asset does not belong to the selected organization")
 		}
-		if device.v2.GetPkiDeviceName() == "" {
+		if cloudunenroll.DeviceID(device.v2) == "" {
 			return fmt.Errorf("asset %s has no device enrollment binding", device.key)
 		}
 	}
