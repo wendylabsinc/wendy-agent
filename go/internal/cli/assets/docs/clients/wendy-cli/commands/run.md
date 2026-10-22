@@ -663,3 +663,14 @@ grant it in Cloud app settings.
 Registration errors stop deployment. Use `--skip-cloud-registration` for an
 offline deployment, then deploy again without it to register later. Unenrolled
 devices skip registration automatically.
+
+## Recording a release
+
+`--record-release <tag>` records the deploy in Cloud as a release of the app:
+the CLI creates the release under the tag before the deploy, the device labels
+the container with it, and the CLI stores the image digest the device reports.
+It is off by default. Without it nothing is recorded, and the device still
+reports the app, which Cloud keeps as an unassigned app. It needs an
+enrolled device and a single-container app, and does not combine with
+`--watch` or `--skip-cloud-registration`. To record a release without
+deploying, use [`wendy app release`](app/release.md).

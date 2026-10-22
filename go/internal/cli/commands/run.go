@@ -316,6 +316,7 @@ func createContainerWithProgressPlain(stream agentpb.WendyContainerService_Creat
 				cliLogln("Creating container...")
 			}
 		case *agentpb.CreateContainerProgressResponse_Completed:
+			noteImageDigest(stream.Context(), r.Completed.GetImageDigest())
 			completed = true
 		}
 
@@ -340,9 +341,11 @@ func isUnimplementedRPCError(err error) bool {
 }
 
 func createContainerWithoutProgress(ctx context.Context, svc agentpb.WendyContainerServiceClient, req *agentpb.CreateContainerRequest) error {
-	if _, err := svc.CreateContainer(ctx, req); err != nil {
+	resp, err := svc.CreateContainer(ctx, req)
+	if err != nil {
 		return fmt.Errorf("creating container: %w", err)
 	}
+	noteImageDigest(ctx, resp.GetImageDigest())
 	return nil
 }
 
@@ -418,6 +421,7 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 					}
 				}
 			case *agentpb.CreateContainerProgressResponse_Completed:
+				noteImageDigest(stream.Context(), r.Completed.GetImageDigest())
 				completed = true
 				if !progressDone {
 					progressDone = true
@@ -529,7 +533,12 @@ type runOptions struct {
 	debug                 bool
 	deploy                bool
 	skipCloudRegistration bool
-	detach                bool
+	// recordRelease is the tag of the release this deploy is recorded as
+	// (--record-release); empty records nothing. releaseID is that release,
+	// sent to the agent with the container.
+	recordRelease string
+	releaseID     *string
+	detach        bool
 	// detachedOutput enables the ordinary CLI run result. Fleet and internal
 	// provisioning callers own their output and leave this false.
 	detachedOutput       bool
@@ -687,6 +696,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.skipCloudRegistration, "skip-cloud-registration", false, "Deploy without registering apps in Cloud (offline use)")
+	cmd.Flags().StringVar(&opts.recordRelease, "record-release", "", "Record this deploy in Cloud as a release with this tag (off by default)")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs or opening the app URL; waits for readiness only with --wait-ready")
 	addReadinessFlags(cmd, &opts)
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
@@ -2190,10 +2200,27 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
 		return err
 	}
+	var release *deployRelease
+	if opts.recordRelease != "" {
+		// ponytail: one container per recorded deploy; multi-service apps and
+		// watch loops need a release per service or per cycle first.
+		if len(appCfg.Services) > 0 || opts.isWatch() || opts.skipCloudRegistration {
+			return usageErrorf("--record-release supports a single-container deploy without --watch or --skip-cloud-registration")
+		}
+		var err error
+		if release, err = startDeployRelease(ctx, conn, appCfg.AppID, opts.recordRelease); err != nil {
+			return err
+		}
+		opts.releaseID = &release.id
+		ctx = withImageDigestSink(ctx, &release.digest)
+	}
 	metrics := newDeployMetrics(opts)
 	metrics.ctx = ctx
 	err := runWithAgentRecorded(ctx, conn, cwd, appCfg, opts, metrics)
 	metrics.emit(err)
+	if err == nil && release != nil {
+		err = release.finish(ctx)
+	}
 	return err
 }
 
@@ -2772,10 +2799,10 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 // optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
 	activationStep(ctx, "deploy", nil)
+	createReq.ReleaseId = opts.releaseID
 	if opts.deploy {
-		_, err := conn.ContainerService.CreateContainer(ctx, createReq)
-		if err != nil {
-			return fmt.Errorf("creating container: %w", err)
+		if err := createContainerWithoutProgress(ctx, conn.ContainerService, createReq); err != nil {
+			return err
 		}
 		cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 		return nil
@@ -3606,6 +3633,7 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
+			noteImageDigest(stream.Context(), resp.GetStarted().GetImageDigest())
 			if !started {
 				started = true
 				if onStarted != nil && !opts.deploy {
@@ -4111,6 +4139,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:       opts.userArgs,
 		ImageSignature: imageSignature,
 		Env:            deployEnv,
+		ReleaseId:      opts.releaseID,
 	})
 	if err != nil {
 		return nil, hint, err
