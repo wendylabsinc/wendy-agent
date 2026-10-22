@@ -21,6 +21,48 @@ func parseXML(t *testing.T, b []byte) {
 	}
 }
 
+// jointsAndMotorBindings walks the scene and returns the set of joint names it
+// defines and the joint each motor binds to (empty string for a motor that
+// names none). MuJoCo refuses to compile a scene whose motor has no
+// transmission target or targets a joint the body does not define, so a test
+// can assert that structural rule without the mujoco library.
+func jointsAndMotorBindings(t *testing.T, b []byte) (map[string]bool, []string) {
+	t.Helper()
+	joints := map[string]bool{}
+	var motorBindings []string
+	dec := xml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			t.Fatalf("decode scene.xml: %v", err)
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		attr := func(name string) string {
+			for _, a := range start.Attr {
+				if a.Name.Local == name {
+					return a.Value
+				}
+			}
+			return ""
+		}
+		switch start.Name.Local {
+		case "joint":
+			if n := attr("name"); n != "" {
+				joints[n] = true
+			}
+		case "motor":
+			motorBindings = append(motorBindings, attr("joint"))
+		}
+	}
+	return joints, motorBindings
+}
+
 func TestRenderMJCFWellFormed(t *testing.T) {
 	env := Env{
 		SchemaVersion: SchemaVersion,
@@ -49,7 +91,7 @@ func TestRenderMJCFWellFormed(t *testing.T) {
 		`<camera name="camera_front"`,
 		`ctrlrange="-0.8 0.8"`,
 		`ctrllimited="true"`,
-		`PLACEHOLDER custom body`,
+		`PLACEHOLDER actuated body`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("scene.xml missing %q\n---\n%s", want, s)
@@ -58,6 +100,52 @@ func TestRenderMJCFWellFormed(t *testing.T) {
 	// One motor per action channel.
 	if got := strings.Count(s, "<motor "); got != 3 {
 		t.Fatalf("motor count = %d, want 3", got)
+	}
+}
+
+// TestRenderMJCFActuatorsBindDefinedJoints is the structural guard: every motor
+// must bind to a joint the scene defines. The first draft emitted motors with
+// no joint at all, which parses as XML but fails to compile in MuJoCo with
+// "missing transmission target for actuator".
+func TestRenderMJCFActuatorsBindDefinedJoints(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile string
+	}{
+		{"custom", ProfileCustom},
+		{"known go2", "go2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := Env{
+				SchemaVersion: SchemaVersion,
+				Campaign:      "demo",
+				Profile:       tc.profile,
+				Action: &Action{
+					Stream:   "cmd",
+					Channels: []string{"wheel_l", "wheel_r"},
+					Low:      []float64{-1, -1},
+					High:     []float64{1, 1},
+				},
+			}
+			out, err := RenderMJCF(env)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			parseXML(t, out)
+			joints, motorBindings := jointsAndMotorBindings(t, out)
+			if len(motorBindings) != 2 {
+				t.Fatalf("motor count = %d, want 2", len(motorBindings))
+			}
+			for i, j := range motorBindings {
+				if j == "" {
+					t.Fatalf("motor %d has no joint target", i)
+				}
+				if !joints[j] {
+					t.Fatalf("motor %d binds joint %q which the scene does not define; defined: %v", i, j, joints)
+				}
+			}
+		})
 	}
 }
 
@@ -79,17 +167,20 @@ func TestRenderMJCFKnownProfileDiffersFromCustom(t *testing.T) {
 	parseXML(t, knownOut)
 
 	custom, known := string(customOut), string(knownOut)
-	if !strings.Contains(custom, "PLACEHOLDER custom body") {
-		t.Fatalf("custom scene should carry a placeholder body:\n%s", custom)
+	// The scaffolds differ by the profile comment, not by an unverified model
+	// include: binding the campaign action to a real robot's joints needs a
+	// mapping the campaign does not carry, so neither scene includes a model.
+	if !strings.Contains(custom, "Custom profile") {
+		t.Fatalf("custom scene should name the custom profile:\n%s", custom)
 	}
-	if strings.Contains(custom, "<include") {
-		t.Fatalf("custom scene should not include a model:\n%s", custom)
+	if !strings.Contains(known, "Intended robot profile go2") || !strings.Contains(known, "go/simulator/go2") {
+		t.Fatalf("known scene should name the go2 model to wire in:\n%s", known)
 	}
-	if !strings.Contains(known, `<include file="go2/scene.xml"`) {
-		t.Fatalf("known scene should include the go2 model:\n%s", known)
+	if strings.Contains(custom, "<include") || strings.Contains(known, "<include") {
+		t.Fatalf("no scene should include an unverified model")
 	}
-	if strings.Contains(known, "PLACEHOLDER custom body") {
-		t.Fatalf("known scene should not carry a placeholder body:\n%s", known)
+	if custom == known {
+		t.Fatalf("custom and known scenes should differ")
 	}
 }
 

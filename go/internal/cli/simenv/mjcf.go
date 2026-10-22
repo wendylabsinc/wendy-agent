@@ -7,15 +7,17 @@ import (
 	"text/template"
 )
 
-// profileModelInclude maps a known robot profile to the MuJoCo model file the
-// generated scene includes. The paths are relative to the simulator model
-// trees under go/simulator/<kind>/; the generated scene is a scaffold meant to
-// sit beside that model, not a standalone world.
-var profileModelInclude = map[string]string{
-	"go2":          "go2/scene.xml",
-	"g1":           "g1/scene.xml",
-	"so101":        "so101/model/scene.xml",
-	"rosmaster-r2": "rosmaster_r2/scene.xml",
+// profileModelDir maps a known robot profile to the simulator model directory
+// under go/simulator/ whose model should replace the placeholder body. The
+// generated scene references this in a comment rather than including the model
+// directly: binding the campaign's action channels to a real robot's joints
+// needs a per-robot mapping the campaign does not carry, so the scaffold stays
+// loadable on its own and names the model to wire in by hand.
+var profileModelDir = map[string]string{
+	"go2":          "go2",
+	"g1":           "g1",
+	"so101":        "so101",
+	"rosmaster-r2": "rosmaster_r2",
 }
 
 // mjcfCamera is the template view of one image observation.
@@ -33,9 +35,18 @@ type mjcfSensor struct {
 	HasDim bool
 }
 
-// mjcfMotor is the template view of one action channel.
+// mjcfJoint is the placeholder joint an action channel actuates, so the scene
+// loads and the action interface is wired to something real.
+type mjcfJoint struct {
+	Name   string
+	Offset float64
+}
+
+// mjcfMotor is the template view of one action channel. Every motor names the
+// joint it drives; a MuJoCo motor with no transmission target does not compile.
 type mjcfMotor struct {
 	Name     string
+	Joint    string
 	CtrlLow  float64
 	CtrlHigh float64
 }
@@ -44,18 +55,20 @@ type mjcfView struct {
 	Model        string
 	Timestep     float64
 	Profile      string
-	ModelInclude string
+	ProfileDir   string
 	IsCustom     bool
 	Cameras      []mjcfCamera
 	Sensors      []mjcfSensor
+	Joints       []mjcfJoint
 	Motors       []mjcfMotor
 	ActionStream string
 }
 
-// mjcfTemplate renders a MuJoCo (MJCF) scene. The output is well-formed XML:
-// one <mujoco> root, balanced elements and quoted attributes. For a known
-// profile it includes the simulator's own model; for the custom profile it
-// emits a clearly marked placeholder body.
+// mjcfTemplate renders a MuJoCo (MJCF) scene. The output is well-formed XML and
+// loads with mujoco.MjModel: one <mujoco> root, a placeholder body carrying one
+// hinge joint per action channel, and one <motor> bound to each of those
+// joints. The body is a scaffold; the profile comment names the real robot
+// model to replace it with.
 var mjcfTemplate = template.Must(template.New("mjcf").Funcs(template.FuncMap{
 	"fmtFloat": formatFloat,
 }).Parse(`<?xml version="1.0" encoding="UTF-8"?>
@@ -63,22 +76,33 @@ var mjcfTemplate = template.Must(template.New("mjcf").Funcs(template.FuncMap{
 <mujoco model="{{.Model}}">
   <option timestep="{{fmtFloat .Timestep}}"/>
 {{- if .IsCustom}}
+  <!-- Custom profile: replace the placeholder body with the robot model for this campaign. -->
+{{- else}}
+  <!-- Intended robot profile {{.Profile}}: replace the placeholder body with the model from go/simulator/{{.ProfileDir}} and rebind the actuators to its joints. -->
+{{- end}}
   <worldbody>
-    <!-- PLACEHOLDER custom body: replace with the robot model for this campaign. -->
     <light pos="0 0 2" dir="0 0 -1"/>
     <geom name="floor" type="plane" size="2 2 0.05"/>
-    <body name="custom_root" pos="0 0 0.2">
-      <freejoint/>
-      <geom name="custom_placeholder" type="box" size="0.1 0.1 0.1" mass="1"/>
-    </body>
-{{- else}}
-  <!-- Known profile {{.Profile}}: include the simulator's own MuJoCo model. -->
-  <include file="{{.ModelInclude}}"/>
-  <worldbody>
-{{- end}}
 {{- range .Cameras}}
     <!-- image observation; simulated resolution {{.Resolution}}{{if .Format}}, pixel format {{.Format}}{{end}} (see env.json). -->
     <camera name="{{.Name}}" fovy="60"/>
+{{- end}}
+{{- if .Joints}}
+    <!-- PLACEHOLDER actuated body: one joint per action channel so the scene loads and the action interface is wired; replace with the real robot. -->
+    <body name="actuated_root" pos="0 0 0.2">
+{{- range .Joints}}
+      <body name="link_{{.Name}}" pos="0 0 {{fmtFloat .Offset}}">
+        <joint name="{{.Name}}" type="hinge" axis="0 0 1"/>
+        <geom name="geom_{{.Name}}" type="capsule" size="0.01" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+      </body>
+{{- end}}
+    </body>
+{{- else}}
+    <!-- PLACEHOLDER body: no action channels declared; replace with the robot model. -->
+    <body name="placeholder_root" pos="0 0 0.2">
+      <freejoint/>
+      <geom name="placeholder" type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
 {{- end}}
   </worldbody>
 {{- if .Sensors}}
@@ -92,7 +116,7 @@ var mjcfTemplate = template.Must(template.New("mjcf").Funcs(template.FuncMap{
 {{- if .Motors}}
   <actuator>
 {{- range .Motors}}
-    <motor name="{{.Name}}" ctrllimited="true" ctrlrange="{{fmtFloat .CtrlLow}} {{fmtFloat .CtrlHigh}}"/>
+    <motor name="{{.Name}}" joint="{{.Joint}}" ctrllimited="true" ctrlrange="{{fmtFloat .CtrlLow}} {{fmtFloat .CtrlHigh}}"/>
 {{- end}}
   </actuator>
 {{- end}}
@@ -100,7 +124,8 @@ var mjcfTemplate = template.Must(template.New("mjcf").Funcs(template.FuncMap{
 `))
 
 // RenderMJCF renders the MuJoCo scene scaffold for an environment. The result
-// is well-formed XML and parses with encoding/xml.
+// is well-formed XML that loads with mujoco.MjModel: every actuator is bound to
+// a placeholder joint it drives.
 func RenderMJCF(env Env) ([]byte, error) {
 	view := mjcfView{
 		Model:    mjcfModelName(env.Campaign),
@@ -109,11 +134,11 @@ func RenderMJCF(env Env) ([]byte, error) {
 		IsCustom: env.Profile == "" || env.Profile == ProfileCustom,
 	}
 	if !view.IsCustom {
-		include, ok := profileModelInclude[env.Profile]
+		dir, ok := profileModelDir[env.Profile]
 		if !ok {
-			return nil, fmt.Errorf("render scene.xml: no model include for profile %q", env.Profile)
+			return nil, fmt.Errorf("render scene.xml: no model directory for profile %q", env.Profile)
 		}
-		view.ModelInclude = include
+		view.ProfileDir = dir
 	}
 
 	for _, obs := range env.Observations {
@@ -137,7 +162,9 @@ func RenderMJCF(env Env) ([]byte, error) {
 	if env.Action != nil {
 		view.ActionStream = env.Action.Stream
 		for i, channel := range env.Action.Channels {
-			motor := mjcfMotor{Name: mjcfMotorName(env.Action.Stream, channel, i)}
+			jointName := mjcfJointName(env.Action.Stream, channel, i)
+			view.Joints = append(view.Joints, mjcfJoint{Name: jointName, Offset: 0.05 * float64(i)})
+			motor := mjcfMotor{Name: mjcfMotorName(env.Action.Stream, channel, i), Joint: jointName}
 			if i < len(env.Action.Low) {
 				motor.CtrlLow = env.Action.Low[i]
 			}
@@ -171,11 +198,22 @@ func mjcfModelName(campaign string) string {
 	return campaign + " simenv"
 }
 
+// mjcfMotorName and mjcfJointName derive stable, unique MuJoCo element names
+// from an action channel. The motor's joint attribute is mjcfJointName with the
+// same arguments, so a motor always references a joint the body defines.
 func mjcfMotorName(stream, channel string, index int) string {
+	return mjcfActionName("act", stream, channel, index)
+}
+
+func mjcfJointName(stream, channel string, index int) string {
+	return mjcfActionName("j", stream, channel, index)
+}
+
+func mjcfActionName(prefix, stream, channel string, index int) string {
 	if channel != "" {
-		return observationName("act", channel)
+		return observationName(prefix, channel)
 	}
-	return fmt.Sprintf("%s_%d", observationName("act", strings.TrimPrefix(stream, "/")), index)
+	return fmt.Sprintf("%s_%d", observationName(prefix, strings.TrimPrefix(stream, "/")), index)
 }
 
 // formatFloat renders a float without a trailing exponent or redundant zeros so
