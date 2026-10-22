@@ -54,9 +54,13 @@ message ProvisionedResponse {
     // that accepted caller-serialized deletion fields. Clients require this
     // before starting the UUID reset workflow; older Agents fail closed.
     bool cloud_authenticated_reset_supported = 6;
+    // The certificate's device UUID, also used as Cloud's asset UUID.
+    // Available immediately after enrollment, without a Cloud roster refresh.
+    // Empty for a legacy identity that has no UUID device principal.
+    string asset_uuid = 7;
     // Explicit local credential erasure authenticated by a same-tenant operator.
     // This does not revoke certificates or remove Cloud records.
-    bool local_reset_supported = 7;
+    bool local_reset_supported = 8;
 }
 
 message StartProvisioningRequest {

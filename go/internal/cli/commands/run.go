@@ -356,8 +356,12 @@ func progressModelUserCancelled(model tea.Model) bool {
 	return ok && pm.Err() == context.Canceled
 }
 
-func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.WendyContainerService_CreateContainerWithProgressClient) error {
-	prog := tui.NewProgressProgram(tui.NewProgress("Pulling image on device...").WithoutErrorView())
+func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.WendyContainerService_CreateContainerWithProgressClient, hints bool) error {
+	bar := tui.NewProgress("Pulling image on device...").WithoutErrorView()
+	if !hints {
+		bar = bar.WithoutHints()
+	}
+	prog := tui.NewProgressProgram(bar)
 
 	var (
 		createErr error
@@ -481,7 +485,7 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 		}
 		return fmt.Errorf("creating container: %w", err)
 	}
-	if err := createContainerWithProgressTUI(cancel, stream); err != nil {
+	if err := createContainerWithProgressTUI(cancel, stream, !progressHintsOff(ctx)); err != nil {
 		if isUnimplementedRPCError(err) {
 			return fallbackCreateContainerWithoutProgress(ctx, svc, req)
 		}
@@ -810,9 +814,9 @@ func cloudFallbackDeviceName(explicit, flagValue, configDefault string) string {
 	return configDefault
 }
 
-// A LAN hostname often differs from the Cloud display name. When the default
-// has a saved asset identity, look up that exact asset through Cloud; the
-// identity check still verifies the selected org and asset before connecting.
+// A LAN hostname often differs from the Cloud display name. When the name has
+// a saved asset identity, look up that exact asset through Cloud; the identity
+// check still verifies the selected org and asset before connecting.
 func cloudDefaultSelector(defaultName string, expected *certs.WendyIdentity) string {
 	if expected != nil && expected.EntityType == certs.EntityAsset && expected.EntityID != "" {
 		return expected.EntityID
@@ -849,8 +853,7 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 			if len(cfg.Auth) == 0 {
 				return nil, fmt.Errorf("no Wendy Cloud session available")
 			}
-			expected := expectedIdentityFor(pinKeyForAddr(defaultName))
-			conn, err := connectToCloudAgentExpecting(ctx, "", cloudDefaultSelector(defaultName, expected), "", expected)
+			conn, err := connectToPinnedCloudName(ctx, cfg, defaultName)
 			if err != nil {
 				return nil, err
 			}
@@ -867,8 +870,10 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 	if cloudCheckedBeforePicker {
 		return nil, err
 	}
-	// An MCP-spawned run deploys to the MCP session's device or fails.
-	if errors.Is(err, ErrUserCancelled) || cloudFallbackDisabled(cloudName) {
+	// An MCP-spawned run deploys to the MCP session's device or fails. An
+	// explicit name already checked in Cloud must keep that session's result.
+	var cloudNameErr *cloudNameResolutionError
+	if stopConnectionRecovery(err) || errors.As(err, &cloudNameErr) || cloudFallbackDisabled(cloudName) {
 		return nil, err
 	}
 	var stopped *defaultDeviceRecoveryStoppedError
@@ -891,11 +896,9 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 		return nil, err
 	}
 
-	var expected *certs.WendyIdentity
-	if cloudName == "" && deviceFlag == "" && deviceName == cfg.DefaultDevice {
-		expected = expectedIdentityFor(pinKeyForAddr(deviceName))
-	}
-	cloudConn, cloudErr := cloudFallbackConnectFn(ctx, "", cloudDefaultSelector(deviceName, expected), "", expected)
+	// An explicit --device or build host whose dial failed without a DNS miss
+	// is pinned here just as the default is.
+	cloudConn, cloudErr := cloudFallbackConnectFn(ctx, cfg, deviceName)
 	if cloudErr != nil {
 		if errors.Is(cloudErr, errDeviceIdentityRefused) {
 			return nil, cloudErr
@@ -2390,9 +2393,10 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 
 	// Fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
-	// just ensure the existing container is running. Best-effort — a missing or
-	// mismatched fingerprint, a missing app, or any RPC error falls through to
-	// the normal deploy below, so it can never deploy stale code.
+	// just ensure the existing container is running. A missing or mismatched
+	// fingerprint or failed device verification falls through to the normal
+	// deploy below. Once verified, lifecycle errors (including start failures)
+	// are returned directly without rebuilding or redeploying.
 	//
 	// The fingerprint feeds only this fast path and the one recorded when the
 	// chunk-diff deploy below starts. Both are off for darwin agents and
@@ -2407,11 +2411,13 @@ func runWithAgentRecorded(ctx context.Context, conn *grpcclient.AgentConnection,
 	}
 	mark("build-input fingerprint")
 	if fingerprintUsed && hashErr == nil {
+		// Started emits its progress event inside the fast path, before it returns.
+		metrics.transport = "fastpath"
 		if done, err := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
-			metrics.transport = "fastpath"
 			return err
 		}
+		metrics.transport = ""
 	}
 
 	// A build will run below (the no-build fast path returned above), so make

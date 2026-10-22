@@ -21,19 +21,21 @@ wendy cloud tunnel 2222:22 --device shop-floor-01
 
 Without a protocol suffix, the command uses TCP. A single port such as `9000/udp` uses that port at both ends. Keep the command running while using the service, then press Ctrl+C to close the forward. Closing it does not stop the remote app.
 
-> **Which remote ports and protocols are reachable depends on your session type.**
-> On a **cloud (OIDC) session**, Cloud brokers the connection through its
-> authorized service catalog, which today exposes only **TCP port 22 (`ssh`)
-> and TCP port 50052 (`wendy-agent`)**. Any other remote port fails with
-> `Cloud's authorized service catalog has no service for port <n>`, and `/udp`
-> fails with `Cloud's authorized service catalog does not expose UDP
-> forwarding`.
-> On a **legacy (non-OIDC) session**, any remote port and `/udp` still work, as
-> in the UDP example below:
->
-> ```sh
-> wendy cloud tunnel 9000:9000/udp --device shop-floor-01   # legacy sessions only
-> ```
+Cloud v2 supports any TCP or UDP port from 1 through 65535 on the device's
+loopback interface. For example:
+
+```sh
+wendy cloud tunnel 8080:3007 --device shop-floor-01
+wendy cloud tunnel 9000:9000/udp --device shop-floor-01
+```
+
+Arbitrary ports require an updated Cloud service, CLI, and agent. Older v2
+versions support only TCP ports 22 and 50052. Legacy sessions retain their
+existing TCP and UDP forwarding behavior.
+
+Each v2 UDP session authorizes one remote port. Separate local peers use
+separate flows, with up to 64 active flows and 16 new flows per second.
+Empty datagrams are supported; the maximum payload is 65507 bytes.
 
 The CLI:
 

@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"math/big"
 	"net"
 	"net/url"
@@ -23,7 +22,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -32,49 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/anypb"
 )
-
-func TestV2UnenrollOnlyBareCloudNotFoundAllowsLocalFallback(t *testing.T) {
-	deleted := testLifecycle(true).Deleted
-	tombstone, err := status.New(codes.NotFound, "deleted").WithDetails(deleted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unrelated, err := status.New(codes.NotFound, "not found").WithDetails(&errdetails.ErrorInfo{Reason: "UNKNOWN_ASSET"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	duplicate, err := status.New(codes.NotFound, "ambiguous").WithDetails(deleted, deleted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	malformed := status.New(codes.NotFound, "malformed").Proto()
-	malformed.Details = []*anypb.Any{{TypeUrl: "type.googleapis.com/wendy.cloud.services.v2.DeletedAsset", Value: []byte{0xff}}}
-	for _, tc := range []struct {
-		name         string
-		err          error
-		wantFallback bool
-	}{
-		{"bare not found", status.Error(codes.NotFound, "asset not found"), true},
-		{"bare with misleading message", status.Error(codes.NotFound, "deleted"), true},
-		{"authenticated deletion", tombstone.Err(), false},
-		{"unrelated details", unrelated.Err(), false},
-		{"duplicate deletion", duplicate.Err(), false},
-		{"malformed details", status.FromProto(malformed).Err(), false},
-		{"permission denied", status.Error(codes.PermissionDenied, "asset not found"), false},
-		{"unauthenticated", status.Error(codes.Unauthenticated, "asset not found"), false},
-		{"network failure", status.Error(codes.Unavailable, "asset not found"), false},
-		{"old Cloud", status.Error(codes.InvalidArgument, "asset ID required"), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := v2AssetLookupResult(nil, tc.err)
-			if got := errors.Is(err, errV2CloudAssetAbsent); got != tc.wantFallback {
-				t.Fatalf("local fallback = %v, want %v; error: %v", got, tc.wantFallback, err)
-			}
-		})
-	}
-}
 
 type localUnenrollTestServer struct {
 	agentpbv2.UnimplementedWendyProvisioningServiceServer

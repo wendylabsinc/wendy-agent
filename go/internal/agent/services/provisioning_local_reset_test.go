@@ -44,11 +44,12 @@ func TestLocalResetErasesCredentialsWithoutCloudEvidence(t *testing.T) {
 	}
 	key := svc.keyPEM
 	beforeCalled := false
-	svc.BeforeUnprovisioned = func() {
+	svc.BeforeUnprovisioned = func() error {
 		beforeCalled = true
 		if _, _, _, enrolled := svc.ProvisioningInfo(); enrolled {
 			t.Error("cleanup hook observed an enrolled device")
 		}
+		return nil
 	}
 	restarted := make(chan struct{})
 	svc.OnUnprovisioned = func() { close(restarted) }
@@ -86,8 +87,11 @@ func assertLocalResetClean(t *testing.T, svc *ProvisioningService) {
 		}
 	}
 	state, err := svc.readProvisioningState()
-	if err != nil || state.Enrolled || state.LocalReset != nil || state.Unenrollment != nil || state.PrincipalURI != "" || state.CloudHost != "" || state.CertPEM != "" || state.ChainPEM != "" {
+	if err != nil || state.Enrolled || state.Unenrollment != nil || state.PrincipalURI != "" || state.CloudHost != "" || state.CertPEM != "" || state.ChainPEM != "" {
 		t.Fatalf("reset retained enrollment state: %#v, %v", state, err)
+	}
+	if state.LocalReset == nil || *state.LocalReset != (localResetState{Version: 1, Status: unenrollmentCompleted}) || !svc.LocalResetCompleted() {
+		t.Fatalf("local reset left no identity-free completion marker for startup cleanup: %#v", state.LocalReset)
 	}
 	info, err := NewProvisioningServiceV2(svc).IsProvisioned(context.Background(), &agentpbv2.IsProvisionedRequest{})
 	if err != nil || info.GetNotProvisioned() == nil || len(info.GetNotProvisioned().GetUnenrollmentCompletion()) != 0 {
@@ -181,7 +185,7 @@ func TestLocalResetRetriesPartialCleanupWithoutRestart(t *testing.T) {
 	unblock := blockLocalResetCleanup(t, svc)
 	key := append([]byte(nil), svc.keyPEM...)
 	beforeCalled := false
-	svc.BeforeUnprovisioned = func() { beforeCalled = true }
+	svc.BeforeUnprovisioned = func() error { beforeCalled = true; return nil }
 	reply, err := v2.Unprovision(ctx, req)
 	if status.Code(err) != codes.Internal || reply.GetLocalResetCompleted() {
 		t.Fatalf("partial cleanup acknowledged a reset: %v, %v", reply, err)
@@ -210,7 +214,7 @@ func TestLocalResetRetriesPartialCleanupWithoutRestart(t *testing.T) {
 func blockLocalResetCleanup(t *testing.T, svc *ProvisioningService) func() {
 	t.Helper()
 	blocked := filepath.Join(svc.configPath, "device.pem")
-	if err := os.Remove(blocked); err != nil {
+	if err := os.Remove(blocked); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(blocked, 0700); err != nil {
@@ -236,7 +240,7 @@ func TestLocalResetRecoveryRejectsUntrustedOrChangedState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			state.LocalReset = &localResetState{Version: 1, Principal: req.ExpectedPrincipalUri, Fingerprint: req.ExpectedCertificateSha256}
+			state.LocalReset = &localResetState{Version: 1, Status: unenrollmentPending, Principal: req.ExpectedPrincipalUri, Fingerprint: req.ExpectedCertificateSha256}
 			switch failure {
 			case "version":
 				state.LocalReset.Version = 2

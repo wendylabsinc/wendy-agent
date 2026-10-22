@@ -205,6 +205,21 @@ func (s *ContainerService) CreateContainer(ctx context.Context, req *agentpb.Cre
 	return &agentpb.CreateContainerResponse{}, nil
 }
 
+// ValidateContainer reports whether CreateContainer would accept req, without
+// touching a running container of the same name (WDY-3850). A refusal is
+// FailedPrecondition, which callers tell apart from an older agent's
+// Unimplemented.
+func (s *ContainerService) ValidateContainer(ctx context.Context, req *agentpb.CreateContainerRequest) (*agentpb.ValidateContainerResponse, error) {
+	appCfg, err := parseAppConfig(req.GetAppConfig())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
+	}
+	if err := s.containerd.ValidateContainer(ctx, req, appCfg); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "container would fail to create: %v", err)
+	}
+	return &agentpb.ValidateContainerResponse{}, nil
+}
+
 func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContainerRequest, stream grpc.ServerStreamingServer[agentpb.CreateContainerProgressResponse]) error {
 	appCfg, err := parseAppConfig(req.GetAppConfig())
 	if err != nil {
@@ -670,8 +685,8 @@ func (s *ContainerService) guaranteeOutputDrain(appName string, outputCh <-chan 
 			for output := range outputCh {
 				s.logManager.Publish(appName, output)
 			}
-			// When the containerd channel closes, publish a Done marker.
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
+			// The producer sends its own terminal marker with run ownership.
+			// Channel closure alone must not end a replacement run's stream.
 		}()
 		return subCh, func() { s.logManager.Unsubscribe(appName, subID) }
 	}

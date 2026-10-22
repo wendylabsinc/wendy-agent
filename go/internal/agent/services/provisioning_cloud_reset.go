@@ -56,7 +56,7 @@ func (s *ProvisioningService) readProvisioningState() (*provisioningState, error
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return nil, err
 	}
-	if state.LocalReset != nil || (state.Unenrollment != nil && state.Unenrollment.Status == unenrollmentPending) {
+	if (state.LocalReset != nil && state.LocalReset.Status == unenrollmentPending) || (state.Unenrollment != nil && state.Unenrollment.Status == unenrollmentPending) {
 		file, fileErr := os.Lstat(s.statePath())
 		directory, directoryErr := os.Stat(s.configPath)
 		if fileErr != nil || directoryErr != nil || !trustedResetStorage(file, directory) {
@@ -165,7 +165,13 @@ func (s *ProvisioningService) recoverProvisioningReset() error {
 		return err
 	}
 	if state.LocalReset != nil {
-		return s.finishLocalReset()
+		if err := validateLocalResetState(state); err != nil {
+			return err
+		}
+		if state.LocalReset.Status == unenrollmentPending {
+			return s.finishLocalReset()
+		}
+		return syncResetDirectory(s.configPath)
 	}
 	if state.Unenrollment == nil {
 		return nil

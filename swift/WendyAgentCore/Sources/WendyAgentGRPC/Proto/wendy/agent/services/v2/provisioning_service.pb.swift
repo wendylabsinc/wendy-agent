@@ -125,6 +125,11 @@ public nonisolated struct Wendy_Agent_Services_V2_ProvisionedResponse: Sendable 
   /// before starting the UUID reset workflow; older Agents fail closed.
   public var cloudAuthenticatedResetSupported: Bool = false
 
+  /// The certificate's device UUID, also used as Cloud's asset UUID.
+  /// Available immediately after enrollment, without a Cloud roster refresh.
+  /// Empty for a legacy identity that has no UUID device principal.
+  public var assetUuid: String = String()
+
   /// Explicit local credential erasure authenticated by a same-tenant operator.
   /// This does not revoke certificates or remove Cloud records.
   public var localResetSupported: Bool = false
@@ -407,7 +412,7 @@ nonisolated extension Wendy_Agent_Services_V2_NotProvisionedResponse: SwiftProto
 
 nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProvisionedResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}cloud_host\0\u{3}organization_id\0\u{3}asset_id\0\u{3}principal_uri\0\u{3}cloud_unenrollment_supported\0\u{3}cloud_authenticated_reset_supported\0\u{3}local_reset_supported\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}cloud_host\0\u{3}organization_id\0\u{3}asset_id\0\u{3}principal_uri\0\u{3}cloud_unenrollment_supported\0\u{3}cloud_authenticated_reset_supported\0\u{3}asset_uuid\0\u{3}local_reset_supported\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -421,7 +426,8 @@ nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf
       case 4: try { try decoder.decodeSingularStringField(value: &self.principalUri) }()
       case 5: try { try decoder.decodeSingularBoolField(value: &self.cloudUnenrollmentSupported) }()
       case 6: try { try decoder.decodeSingularBoolField(value: &self.cloudAuthenticatedResetSupported) }()
-      case 7: try { try decoder.decodeSingularBoolField(value: &self.localResetSupported) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.assetUuid) }()
+      case 8: try { try decoder.decodeSingularBoolField(value: &self.localResetSupported) }()
       default: break
       }
     }
@@ -446,8 +452,11 @@ nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf
     if self.cloudAuthenticatedResetSupported != false {
       try visitor.visitSingularBoolField(value: self.cloudAuthenticatedResetSupported, fieldNumber: 6)
     }
+    if !self.assetUuid.isEmpty {
+      try visitor.visitSingularStringField(value: self.assetUuid, fieldNumber: 7)
+    }
     if self.localResetSupported != false {
-      try visitor.visitSingularBoolField(value: self.localResetSupported, fieldNumber: 7)
+      try visitor.visitSingularBoolField(value: self.localResetSupported, fieldNumber: 8)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -459,6 +468,7 @@ nonisolated extension Wendy_Agent_Services_V2_ProvisionedResponse: SwiftProtobuf
     if lhs.principalUri != rhs.principalUri {return false}
     if lhs.cloudUnenrollmentSupported != rhs.cloudUnenrollmentSupported {return false}
     if lhs.cloudAuthenticatedResetSupported != rhs.cloudAuthenticatedResetSupported {return false}
+    if lhs.assetUuid != rhs.assetUuid {return false}
     if lhs.localResetSupported != rhs.localResetSupported {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true

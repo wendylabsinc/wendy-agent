@@ -17,10 +17,13 @@ import (
 // localResetState is authority only inside the protected provisioning.json
 // written after an authenticated operator requested exact local credential
 // erasure. It carries no claim about Cloud deletion or certificate revocation.
+// A completed record keeps no identity; it only tells startup recovery that a
+// reset's dependent resources may still need reclaiming.
 type localResetState struct {
 	Version     int    `json:"version"`
-	Principal   string `json:"principal"`
-	Fingerprint string `json:"fingerprint"`
+	Status      string `json:"status"`
+	Principal   string `json:"principal,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 func validateLocalResetState(state *provisioningState) error {
@@ -28,23 +31,59 @@ func validateLocalResetState(state *provisioningState) error {
 	if record == nil || record.Version != 1 || state.Unenrollment != nil {
 		return fmt.Errorf("invalid local reset authorization")
 	}
-	identity, err := certs.ParsePrincipal(record.Principal)
-	if err != nil || identity.EntityType != certs.EntityAsset || !state.Enrolled || state.PrincipalURI != record.Principal || state.KeyPEM != "" {
-		return fmt.Errorf("local reset authorization disagrees with enrollment state")
-	}
-	leaves, err := certs.ParseCertsFromPEM([]byte(state.CertPEM))
-	if err != nil || len(leaves) == 0 || unenrollproof.Fingerprint(leaves[0]) != record.Fingerprint {
-		return fmt.Errorf("local reset authorization certificate changed")
+	switch record.Status {
+	case unenrollmentPending:
+		identity, err := certs.ParsePrincipal(record.Principal)
+		if err != nil || identity.EntityType != certs.EntityAsset || !state.Enrolled || state.PrincipalURI != record.Principal || state.KeyPEM != "" {
+			return fmt.Errorf("local reset authorization disagrees with enrollment state")
+		}
+		leaves, err := certs.ParseCertsFromPEM([]byte(state.CertPEM))
+		if err != nil || len(leaves) == 0 || unenrollproof.Fingerprint(leaves[0]) != record.Fingerprint {
+			return fmt.Errorf("local reset authorization certificate changed")
+		}
+	case unenrollmentCompleted:
+		if record.Principal != "" || record.Fingerprint != "" || state.Enrolled || state.CloudHost != "" || state.OrgID != 0 || state.AssetID != 0 || state.PrincipalURI != "" || state.KeyPEM != "" || state.CertPEM != "" || state.ChainPEM != "" || state.ACMEDirectoryURL != "" {
+			return fmt.Errorf("completed local reset retains enrollment state")
+		}
+	default:
+		return fmt.Errorf("unknown local reset status")
 	}
 	return nil
 }
 
-func (s *ProvisioningService) finishLocalReset() error {
+func (s *ProvisioningService) pendingLocalReset() (*localResetState, error) {
 	state, err := s.readProvisioningState()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateLocalResetState(state); err != nil {
+		return nil, err
+	}
+	if state.LocalReset.Status != unenrollmentPending {
+		return nil, fmt.Errorf("local reset is not pending")
+	}
+	return state.LocalReset, nil
+}
+
+func (s *ProvisioningService) localResetAuthorizedLocked() bool {
+	record, err := s.pendingLocalReset()
+	return err == nil && record.Principal == s.principalURI && record.Fingerprint == s.certificateFingerprintLocked()
+}
+
+// LocalResetCompleted reports a verified completed local-only reset. Startup
+// uses it, like a Cloud completion receipt, to reclaim dependent resources.
+func (s *ProvisioningService) LocalResetCompleted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.enrolled {
+		return false
+	}
+	state, err := s.readProvisioningState()
+	return err == nil && state.LocalReset != nil && validateLocalResetState(state) == nil && state.LocalReset.Status == unenrollmentCompleted
+}
+
+func (s *ProvisioningService) finishLocalReset() error {
+	if _, err := s.pendingLocalReset(); err != nil {
 		return err
 	}
 	// Keep the protected pending record until every credential removal is
@@ -58,12 +97,12 @@ func (s *ProvisioningService) finishLocalReset() error {
 	if err := syncResetDirectory(s.configPath); err != nil {
 		return err
 	}
-	return s.saveState(&provisioningState{})
+	return s.saveState(&provisioningState{LocalReset: &localResetState{Version: 1, Status: unenrollmentCompleted}})
 }
 
 func (s *ProvisioningServiceV2) localUnprovision(ctx context.Context, req *agentpbv2.UnprovisionRequest) (*agentpbv2.UnprovisionResponse, error) {
 	svc := s.v1
-	svc.unenrollmentMu.Lock()
+	svc.unenrollmentMu.Lock() // serialization only; no network I/O
 	defer svc.unenrollmentMu.Unlock()
 	svc.mu.Lock()
 	locked := true
@@ -95,7 +134,7 @@ func (s *ProvisioningServiceV2) localUnprovision(ctx context.Context, req *agent
 		return nil, status.Error(codes.FailedPrecondition, "Cloud reset is already pending; resume that operation")
 	}
 	state.KeyPEM = ""
-	state.LocalReset = &localResetState{Version: 1, Principal: svc.principalURI, Fingerprint: req.GetExpectedCertificateSha256()}
+	state.LocalReset = &localResetState{Version: 1, Status: unenrollmentPending, Principal: svc.principalURI, Fingerprint: req.GetExpectedCertificateSha256()}
 	if err := validateLocalResetState(state); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, "stored identity changed before local reset; keys retained")
 	}
@@ -104,14 +143,13 @@ func (s *ProvisioningServiceV2) localUnprovision(ctx context.Context, req *agent
 	}
 	caller, _ := peer.FromContext(ctx)
 	operator, _ := certs.TenantPrincipalFromCert(caller.AuthInfo.(credentials.TLSInfo).State.PeerCertificates[0])
-	svc.logger.Info("Operator requested local enrollment reset", zap.String("principal", svc.principalURI), zap.String("operator", operator))
-	if err := svc.finishLocalReset(); err != nil {
-		svc.logger.Error("Local enrollment cleanup incomplete; recovery will resume it", zap.Error(err))
-		return nil, status.Error(codes.Internal, "local credential cleanup incomplete; retry or restart the agent to resume")
-	}
-	before, cb := svc.clearEnrollmentLocked()
+	svc.logger.Warn("Operator forced local enrollment reset without Cloud unenrollment", zap.String("principal", svc.principalURI), zap.String("operator", operator))
+	// unprovision rechecks the exact identity against the pending record under
+	// its own locks, then shares Cloud reset's cleanup, hooks and restart.
 	locked = false
 	svc.mu.Unlock()
-	notifyUnprovisioned(before, cb)
+	if _, err := svc.unprovision(req.GetExpectedPrincipalUri(), req.GetExpectedCertificateSha256()); err != nil {
+		return nil, err
+	}
 	return &agentpbv2.UnprovisionResponse{LocalResetCompleted: true}, nil
 }
