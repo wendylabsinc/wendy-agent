@@ -42,9 +42,6 @@ func moduleVersion(info *debug.BuildInfo) string {
 		return sourceVersion(dependency.Version)
 	}
 	if info.Main.Path == coreModulePath {
-		if info.Main.Version != "" && info.Main.Version != "(devel)" {
-			return sourceVersion(info.Main.Version)
-		}
 		for _, setting := range info.Settings {
 			if setting.Key == "vcs.revision" && len(setting.Value) >= 7 && isHex(setting.Value) {
 				return developmentVersion + "+" + setting.Value[:7]

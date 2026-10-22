@@ -70,7 +70,8 @@ func TestMainModuleVersion(t *testing.T) {
 	}{
 		{"revision", coreModulePath, "(devel)", strings.Repeat("a", 40), developmentVersion + "+aaaaaaa", false},
 		{"dirty revision", coreModulePath, "(devel)", strings.Repeat("a", 40), developmentVersion + "+aaaaaaa", true},
-		{"tag", coreModulePath, "v0.1.0", strings.Repeat("a", 40), "0.1.0", false},
+		{"tagged checkout", coreModulePath, "v0.1.0", strings.Repeat("a", 40), developmentVersion + "+aaaaaaa", false},
+		{"toolchain dirty pseudo", coreModulePath, "v0.0.2-0.20261021200000-a0e8ddc88e76+dirty", "a0e8ddc88e768f29b07b401046f4caa2cc4dfa4d", developmentVersion + "+a0e8ddc", true},
 		{"missing revision", coreModulePath, "(devel)", "", developmentVersion, false},
 		{"short revision", coreModulePath, "(devel)", "abcdef", developmentVersion, false},
 		{"invalid revision", coreModulePath, "(devel)", "abcdefg", developmentVersion, false},
