@@ -7,11 +7,23 @@ MAX_STATUS = 262144
 MAX_TAIL = 65536
 
 
-def read_regular(path, limit, tail=False):
-    fd = os.open(
-        str(path),
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-    )
+def read_regular(path, limit, tail=False, confined_root=None):
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    if confined_root is None:
+        fd = os.open(str(path), flags)
+    else:
+        parts = path.relative_to(confined_root).parts
+        if not parts or any(part in [".", ".."] for part in parts):
+            raise ValueError("invalid job evidence path")
+        parent = os.open(confined_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                os.close(parent)
+                parent = following
+            fd = os.open(parts[-1], flags, dir_fd=parent)
+        finally:
+            os.close(parent)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -112,12 +124,27 @@ def snapshot(root, target, include_steps=False):
     # Never recurse into datasets or checkpoints. Only bounded scalar progress.
     entries = list(itertools.islice(root.iterdir(), 129))
     directories = sorted(p for p in entries if not p.is_symlink() and p.is_dir())
+    sources = {}
+    declared = data.get("progress_files", {})
+    if not isinstance(declared, dict):
+        declared = {}
+    if len(declared) > 32:
+        warnings.append("declared progress scan limited to 32 files")
+    if isinstance(declared, dict):
+        for label, relative in itertools.islice(declared.items(), 32):
+            if (not isinstance(label, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", label)
+                    or not isinstance(relative, str) or len(relative) > 1100
+                    or "\x00" in relative or Path(relative).is_absolute() or ".." in Path(relative).parts
+                    or not relative.startswith(label + "/")):
+                warnings.append("invalid declared progress path; no file opened")
+                continue
+            sources[label] = root / relative
     for directory in directories[:32]:
-        path = directory / "metrics.jsonl"
-        if not path.exists():
-            continue
+        if directory.name not in sources and len(sources) < 32:
+            sources[directory.name] = directory / "metrics.jsonl"
+    for label, path in sources.items():
         try:
-            tail, mt = read_regular(path, MAX_TAIL, True)
+            tail, mt = read_regular(path, MAX_TAIL, True, root)
             latest = max(latest, mt)
             rows = tail.splitlines()
             value = None
@@ -129,10 +156,10 @@ def snapshot(root, target, include_steps=False):
                         continue
                     break
                 except (ValueError, UnicodeError):
-                    warnings.append(directory.name + ": incomplete metrics record")
+                    warnings.append(label + ": incomplete metrics record")
             if value is not None:
-                progress_times[directory.name] = mt
-                progress[directory.name] = {
+                progress_times[label] = mt
+                progress[label] = {
                     k: v
                     for k, v in value.items()
                     if k
@@ -148,8 +175,11 @@ def snapshot(root, target, include_steps=False):
                     ]
                     and isinstance(v, (int, float, bool))
                 }
+        except FileNotFoundError:
+            if label in declared:
+                warnings.append(label + ": declared progress file unavailable")
         except (OSError, ValueError) as exc:
-            warnings.append(directory.name + ": " + str(exc)[:160])
+            warnings.append(label + ": " + str(exc)[:160])
     if len(directories) > 32 or len(entries) > 128:
         warnings.append("directory scan limited; detailed inventory required")
     observed = time.time()
@@ -203,7 +233,7 @@ def snapshot(root, target, include_steps=False):
                     log = root / (label + ".log")
                     diagnostic["log_path"] = str(log)
                     try:
-                        tail, _ = read_regular(log, 2048, True)
+                        tail, _ = read_regular(log, 2048, True, root)
                         excerpt = tail.decode("utf-8", errors="replace").encode("utf-8")[:2048].decode("utf-8", errors="ignore")
                         diagnostic["excerpt"] = excerpt
                         diagnostic["excerpt_sha256"] = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()

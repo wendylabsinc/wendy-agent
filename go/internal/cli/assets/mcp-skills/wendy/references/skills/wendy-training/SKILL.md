@@ -84,7 +84,19 @@ or ongoing jobs, subject to the same 64-file/16-MiB transfer limits.
 
 The spec has `name`, absolute `working_directory`, and 1–32 `steps`. Each step
 has a unique `name`, `argv` and `timeout_seconds` (1–86400). Optional
-`source_hashes` verify relative source/checkpoint files before launch. Use the
+`source_hashes` verify relative source/checkpoint files before a new launch.
+For large inventories, use `source_manifest: {"path": "sources.json", "sha256":
+"<digest>"}`. This references a remote JSON contract (at most 1 MiB):
+`{"schema":"wendy.sources.v1","files":{"project/train.py":"<sha256>"},
+"exact_directories":["project/rl"]}`. It verifies up to 4096 files without copying
+hash inventories into tool arguments. Each exact directory must contain exactly
+the declared direct files; subdirectories such as bytecode caches are ignored.
+Checks reject symlinks and run before allocating a new job. A retry retrieves
+the existing job and its original source-check evidence; it does not revalidate
+current files or launch again. Use a new name for a new source validation/run.
+A step can declare `metrics_file: "output/metrics.jsonl"`, relative to its own
+step directory, to expose nested trainer progress through `job_inspect` without
+extra raw reads. Use the
 existing project interpreter/venv; no implicit installation is performed.
 
 Job metadata and logs are stored under `<working_directory>/.wendy/jobs/<name>`.

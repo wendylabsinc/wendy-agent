@@ -25,6 +25,14 @@ type Step struct {
 	Name           string   `json:"name"`
 	Argv           []string `json:"argv"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
+	MetricsFile    string   `json:"metrics_file,omitempty"`
+}
+
+// SourceManifest references a hash-pinned remote source contract. File payloads
+// and large inventories stay outside tool arguments and model context.
+type SourceManifest struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 // Spec names a durable job and the source checks to perform before launch.
@@ -33,6 +41,7 @@ type Spec struct {
 	WorkingDirectory string            `json:"working_directory"`
 	Steps            []Step            `json:"steps"`
 	SourceHashes     map[string]string `json:"source_hashes,omitempty"`
+	SourceManifest   *SourceManifest   `json:"source_manifest,omitempty"`
 }
 
 var jobName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -48,6 +57,9 @@ func ValidateSpec(spec Spec) error {
 		if !jobName.MatchString(step.Name) || names[step.Name] || len(step.Argv) == 0 || step.Argv[0] == "" || step.TimeoutSeconds < 1 || step.TimeoutSeconds > 86400 {
 			return fmt.Errorf("each step needs a unique name, argv and timeout_seconds in 1..86400")
 		}
+		if name := step.MetricsFile; name != "" && (path.IsAbs(name) || path.Clean(name) != name || name == "." || name == ".." || len(name) > 1024 || strings.ContainsRune(name, 0) || strings.HasPrefix(name, "../")) {
+			return fmt.Errorf("metrics_file must be a safe path relative to its owned step directory")
+		}
 		names[step.Name] = true
 		for _, arg := range step.Argv {
 			size += len(arg)
@@ -58,6 +70,13 @@ func ValidateSpec(spec Spec) error {
 	}
 	if size > 65536 || len(spec.SourceHashes) > 64 {
 		return fmt.Errorf("job specification exceeds its argument or source-file limit")
+	}
+	if spec.SourceManifest != nil {
+		name := spec.SourceManifest.Path
+		raw, err := hex.DecodeString(spec.SourceManifest.SHA256)
+		if err != nil || len(raw) != 32 || path.IsAbs(name) || path.Clean(name) != name || name == "." || name == ".." || len(name) > 1024 || strings.ContainsRune(name, 0) || strings.HasPrefix(name, "../") {
+			return fmt.Errorf("source_manifest needs a safe relative path and SHA-256 digest")
+		}
 	}
 	for name, digest := range spec.SourceHashes {
 		raw, err := hex.DecodeString(digest)

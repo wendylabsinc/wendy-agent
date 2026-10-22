@@ -138,6 +138,24 @@ class ProbeTests(unittest.TestCase):
             os.mkfifo(log)
             self.assertNotIn("excerpt", self.probe(until_terminal=True)["diagnostic"])
 
+    def test_declared_nested_progress_stays_confined_and_bounded(self):
+        directory = self.root / "train" / "output"
+        directory.mkdir(parents=True)
+        (directory / "metrics.jsonl").write_text('{"iteration":65,"optimizer_steps_total":16512}\n')
+        status = {"state": "running", "progress_files": {"train":"train/output/metrics.jsonl"}}
+        (self.root / "status.json").write_text(json.dumps(status))
+        self.assertEqual(self.probe()["progress"]["train"]["iteration"], 65)
+        status["progress_files"]["train"] = "train/../../private.jsonl"
+        (self.root / "status.json").write_text(json.dumps(status))
+        self.assertNotIn("train", self.probe()["progress"])
+        (self.root / "train" / "alias").symlink_to(directory, target_is_directory=True)
+        status["progress_files"]["train"] = "train/alias/metrics.jsonl"
+        (self.root / "status.json").write_text(json.dumps(status))
+        self.assertNotIn("train", self.probe()["progress"])
+        status["progress_files"] = None
+        (self.root / "status.json").write_text(json.dumps(status))
+        self.assertEqual(self.probe()["progress"], {})
+
     @unittest.skipUnless(sys.platform == "linux", "Linux process identity contract")
     def test_linux_runner_pause_and_start_time_are_verified(self):
         runner = self.root / "runner.py"

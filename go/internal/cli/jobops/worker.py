@@ -16,6 +16,9 @@ state = {
     "started_unix": time.time(),
     "stages": [],
 }
+progress_files = {step["name"]: step["name"] + "/" + step["metrics_file"] for step in spec["steps"] if step.get("metrics_file")}
+if progress_files:
+    state["progress_files"] = progress_files
 child = None
 stopping = False
 
