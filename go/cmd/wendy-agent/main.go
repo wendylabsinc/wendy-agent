@@ -1213,6 +1213,18 @@ func main() {
 		meshRoster.RunSync(ctx, 5*time.Minute)
 	}()
 
+	// Report every app's state to cloud (apps spec section 2). Like the
+	// roster it starts unconditionally and stays silent until enrolled.
+	var reportedState *services.ReportedState
+	if ctrdErr == nil {
+		reportedState = services.NewReportedState(logger, ctrdClient, telemetryBuf, cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reportedState.Run(ctx)
+		}()
+	}
+
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
@@ -1363,6 +1375,9 @@ func main() {
 		// peer, until the agent is restarted — so swap in the freshly issued
 		// identity here.
 		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
+		if reportedState != nil {
+			reportedState.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
+		}
 		// The freshly issued identity may name a different tenant than the
 		// boot snapshot. Retire every VIP slot outside the new tenant (they
 		// are never re-allocated) and re-point DNS at the new scope.
@@ -1410,6 +1425,9 @@ func main() {
 		localMeshMu.Unlock()
 		meshDialer.UpdateIdentity("", "", "")
 		meshRoster.UpdateIdentity("", "", "", "")
+		if reportedState != nil {
+			reportedState.UpdateIdentity("", "", "", "")
+		}
 		_ = meshProxy.Close()
 		if udpProxy != nil {
 			_ = udpProxy.Close()

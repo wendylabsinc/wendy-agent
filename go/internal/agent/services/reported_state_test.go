@@ -58,9 +58,11 @@ func (f *fakeAppReporter) set(apps ...AppReport) {
 	f.mu.Unlock()
 }
 
-type fakeMetricsPublisher struct{ metrics chan *colmetricspb.ExportMetricsServiceRequest }
+type fakeMetricsPublisher struct {
+	metrics chan *colmetricspb.ExportMetricsServiceRequest
+}
 
-func (fakeMetricsPublisher) PublishLogs(*collogspb.ExportLogsServiceRequest)    {}
+func (fakeMetricsPublisher) PublishLogs(*collogspb.ExportLogsServiceRequest)     {}
 func (fakeMetricsPublisher) PublishTraces(*coltracepb.ExportTraceServiceRequest) {}
 func (f fakeMetricsPublisher) PublishMetrics(req *colmetricspb.ExportMetricsServiceRequest) {
 	f.metrics <- req
