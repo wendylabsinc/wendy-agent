@@ -105,6 +105,12 @@ The MCP server's equivalents for the rest of this workflow:
 
 - Before building: `project_validate(project_path=...)` (`setup` group).
 - `run(start=false)` matches `--deploy`.
+- `run(service="api", wait_ready=true, readiness_timeout_seconds=30)` deploys
+  that service and dependencies, then waits for configured TCP readiness or
+  process stability on a WendyOS target. `readiness: "passed"` is a TCP check,
+  not proof of application behavior. Local Docker/Podman do not support the wait.
+  Success returns a compact receipt. Read its `build_log_uri` only when needed
+  (last eight runs in this server session), or set `include_output=true`.
 - Inventory and control: `container_list`, `container_start`, `container_stop`,
   `container_delete` (`delete_image`, `delete_volumes`) and `container_stats`.
   `container_start` may restart a running app.
@@ -112,7 +118,9 @@ The MCP server's equivalents for the rest of this workflow:
   returns a bounded sample, not a live stream.
 - Service state, recorded exit, usage and recent errors: `app_inspect`
   (`observability` group). With `project_path` it also checks the project's
-  declared TCP readiness on a direct device.
+  declared TCP readiness on a direct device. Request `fields=["state","readiness"]`
+  to skip logs and usage. Repeated diagnostic rows include `repeat_count` and
+  their first/last observed timestamps.
 - A bounded command in a running app: `container_exec(app_name=...,
   command=[...])`, without shell expansion, TTY or stdin.
 
