@@ -1563,7 +1563,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:       address,
 				AgentVersion:  discovery.SanitiseDisplayName(d.AgentVersion),
 				AgentOutdated: agentBehindCLI(version.Version, d.AgentVersion),
-				OS:            d.OS,
+				OS:            d.DisplayOS(),
 				OSVersion:     d.OSVersion,
 				Provisioned:   provisioned,
 				Hint:          lanProbeHint(d.LAN),

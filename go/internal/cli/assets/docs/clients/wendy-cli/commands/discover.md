@@ -78,9 +78,10 @@ Windows retains ordinary discovery but does not join Wendy Net. A carrier that
 cannot start does not prevent other carriers from connecting.
 
 Mesh peers must run an agent version that admits operator mesh identities.
-Older agents continue to accept devices but reject operator joins. Before joining, the CLI uses the existing auth renewal and refresh workflow for
-the selected operator session. If it cannot obtain a current certificate, it
-reports the auth recovery command and leaves ordinary discovery running.
+Older agents continue to accept devices but reject operator joins. Before joining,
+the CLI uses the existing auth renewal and refresh workflow for the selected
+operator session. If it cannot obtain a current certificate, it reports the auth
+recovery command and leaves ordinary discovery running.
 
 ## Platform support
 

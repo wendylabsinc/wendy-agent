@@ -264,22 +264,27 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 		}
 	}
 	if d.Bluetooth != nil {
-		if d.Bluetooth.IsWendyAgent() {
-			types = append(types, "BLE")
-		} else {
-			types = append(types, "BLE (Lite)")
-		}
+		types = append(types, "BLE")
 	}
 	for _, ext := range d.Externals {
 		if ct := ext.ConnectionType(); ct != "" {
-			if ext.ProviderKey == "wendy-lite" {
-				types = append(types, ct+" (Lite)")
-			} else {
-				types = append(types, ct)
-			}
+			types = append(types, ct)
 		}
 	}
 	return strings.Join(types, ", ")
+}
+
+// DisplayOS identifies Lite devices even when discovery supplies no OS metadata.
+func (d *DiscoveredDevice) DisplayOS() string {
+	if d.WendyLite || (d.LAN != nil && d.LAN.WendyLite) || (d.Bluetooth != nil && !d.Bluetooth.IsWendyAgent()) {
+		return "Wendy Lite"
+	}
+	for _, ext := range d.Externals {
+		if ext.ProviderKey == "wendy-lite" {
+			return "Wendy Lite"
+		}
+	}
+	return d.OS
 }
 
 // Address returns the best available address for display purposes.

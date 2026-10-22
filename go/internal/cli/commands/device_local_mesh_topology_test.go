@@ -20,6 +20,52 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestLocalMeshTopologyAllowsTerminalSelection(t *testing.T) {
+	for _, test := range []struct {
+		name                            string
+		terminal, json, wantInteractive bool
+	}{
+		{"terminal", true, false, true},
+		{"JSON terminal", true, true, false},
+		{"redirected", false, false, false},
+		{"JSON redirected", false, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			previousConnect, previousJSON, previousTerminal := connectLocalMeshTopology, jsonOutput, isInteractiveTerminalFn
+			t.Cleanup(func() {
+				connectLocalMeshTopology, jsonOutput, isInteractiveTerminalFn = previousConnect, previousJSON, previousTerminal
+			})
+			jsonOutput = test.json
+			isInteractiveTerminalFn = func() bool { return test.terminal }
+			called := false
+			connectLocalMeshTopology = func(ctx context.Context, options ...resolveOption) (*grpcclient.AgentConnection, error) {
+				called = true
+				cfg := resolveConfig{}
+				for _, option := range options {
+					option(&cfg)
+				}
+				if cfg.nonInteractive == test.wantInteractive {
+					t.Fatalf("nonInteractive=%t, want interactive=%t", cfg.nonInteractive, test.wantInteractive)
+				}
+				if !cfg.readOnlyMonitoring || !cfg.suppressUpdateCheck || !cfg.disablePickerEnroll || !cfg.suppressProvisioningHint {
+					t.Fatal("topology lost its monitoring connection policy")
+				}
+				_, bounded := ctx.Deadline()
+				if bounded == test.wantInteractive {
+					t.Fatalf("connection deadline present=%t, want interactive=%t", bounded, test.wantInteractive)
+				}
+				return nil, ErrUserCancelled
+			}
+			cmd := newDeviceLocalMeshTopologyCmd()
+			cmd.SetArgs([]string{})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			if err := cmd.Execute(); !called || !errors.Is(err, ErrUserCancelled) {
+				t.Fatalf("called=%t, err=%v", called, err)
+			}
+		})
+	}
+}
+
 func TestLocalMeshTopologyReadsOnlySelectedAgent(t *testing.T) {
 	const principal = "spiffe://wendy.sh/tenant/5c9e14bb-49c0-4178-9cc5-493a151f9885/device/b1026a08-24e8-4563-acf8-4138cb5986cb"
 	identity, err := certs.ParsePrincipal(principal)
@@ -80,7 +126,7 @@ func TestLocalMeshTopologyReadsOnlySelectedAgent(t *testing.T) {
 				return &grpcclient.AgentConnection{Conn: connection}, nil
 			}
 			jsonOutput = true
-			root := newDeviceLocalMeshCmd()
+			root := newNetCmd()
 			root.SetContext(context.Background())
 			root.SetArgs([]string{"topology"})
 			var output bytes.Buffer

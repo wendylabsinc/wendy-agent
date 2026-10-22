@@ -3933,6 +3933,7 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 
 	// Rebuild the type string from the merged transports.
 	existing.Type = md.ConnectionTypes()
+	existing.OS = md.DisplayOS()
 
 	// Propagate security status: LAN probes determine mTLS, BLE doesn't. Once
 	// we know a device is insecure (or secure), update the existing item.
@@ -4022,11 +4023,11 @@ func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.Exter
 		item := tui.PickerItem{
 			Name:         dev.DisplayName,
 			DedupKey:     dev.ConnectionInfo["deviceId"],
-			Type:         dev.ConnectionType() + " (Lite)",
+			Type:         dev.ConnectionType(),
 			Address:      dev.ConnectionInfo["ip"],
 			Insecure:     liteExternalInsecure(dev),
 			AgentVersion: dev.AgentVersion,
-			OS:           dev.OS,
+			OS:           "Wendy Lite",
 			OSVersion:    dev.OSVersion,
 			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 				DisplayName:     dev.DisplayName,
@@ -4282,20 +4283,20 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 				if err == nil && len(bleDevices) > 0 {
 					var items []tui.PickerItem
 					for i := range bleDevices {
-						connType := "BLE"
+						os := bleDevices[i].OS
 						if !bleDevices[i].IsWendyAgent() {
-							connType = "BLE (Lite)"
+							os = "Wendy Lite"
 						}
 						items = append(items, tui.PickerItem{
 							Name:     bleDevices[i].DisplayName,
 							DedupKey: deviceDedupKey(bleDevices[i].HostKey(), bleDevices[i].DisplayName),
 							SortKey:  deviceSortKey(bleDevices[i].DisplayName, ""),
-							Type:     connType,
+							Type:     "BLE",
 							Address:  bleDevices[i].Address,
 							// A Lite device reports firmware here, not an agent version.
 							AgentVersion:  bleDevices[i].AgentVersion,
 							AgentOutdated: bleDevices[i].IsWendyAgent() && agentBehindCLI(version.Version, bleDevices[i].AgentVersion),
-							OS:            bleDevices[i].OS,
+							OS:            os,
 							OSVersion:     bleDevices[i].OSVersion,
 							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 								DisplayName:     bleDevices[i].DisplayName,
@@ -4407,6 +4408,10 @@ func lanPickerItem(dev models.LANDevice, insecure bool, probe tui.ProbeState) tu
 	if dev.Mesh {
 		kind = "Mesh"
 	}
+	os := dev.OS
+	if dev.WendyLite {
+		os = "Wendy Lite"
+	}
 	return tui.PickerItem{
 		Name:          dev.DisplayName,
 		Type:          kind,
@@ -4414,7 +4419,7 @@ func lanPickerItem(dev models.LANDevice, insecure bool, probe tui.ProbeState) tu
 		Address:       preferredLANAddress(dev),
 		AgentVersion:  dev.AgentVersion,
 		AgentOutdated: agentBehindCLI(version.Version, dev.AgentVersion),
-		OS:            dev.OS,
+		OS:            os,
 		OSVersion:     dev.OSVersion,
 		Provisioned:   lanProvisionedDisplay(&devCopy),
 		Hint:          hint,

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,16 +18,29 @@ import (
 )
 
 var connectLocalMeshTopology = connectToAgent
+var resolveLocalMeshTarget = resolveTarget
+var errNoLocalMeshSettings = errors.New("specify --participate, --roam, --share-uplink, --nan, --ble, --ethernet or --infrastructure-wifi; omitted flags preserve saved settings; run without flags in an interactive terminal to choose settings")
 var observedLocalMeshTopologyIdentity = func(conn *grpcclient.AgentConnection) (certs.WendyIdentity, bool) {
 	return conn.ObservedServerIdentity()
 }
 
 const localMeshTopologyTimeout = 15 * time.Second
 
-// Register this constructor under the device command's manage group.
-func newDeviceLocalMeshCmd() *cobra.Command {
-	root := &cobra.Command{Use: "wendy-net", Aliases: []string{"local-mesh", "nan-mesh"}, Short: "Configure Wendy Net carriers and Internet sharing"}
-	configure := &cobra.Command{Use: "configure", Short: "Update selected Wendy Net settings", Args: cobra.NoArgs}
+// Keep the previous path available to desktop clients and existing scripts.
+func newLegacyDeviceLocalMeshCmd() *cobra.Command {
+	cmd := newNetCmd()
+	cmd.Use = "wendy-net"
+	cmd.Aliases = []string{"local-mesh", "nan-mesh"}
+	cmd.Hidden = true
+	return cmd
+}
+
+func newNetCmd() *cobra.Command {
+	root := &cobra.Command{Use: "net", Short: "Inspect and configure Wendy Net"}
+	configure := &cobra.Command{
+		Use: "configure", Short: "Update selected Wendy Net settings", Args: cobra.NoArgs,
+		Long: "Update Wendy Net settings. Without settings flags, choose a device and edit its current settings interactively. Use arrows to navigate, space to toggle, and Enter to save. Explicit flags update only the specified settings.",
+	}
 	configure.Flags().Bool("participate", false, "Join and relay Wendy Net (false stops all carriers; saved carrier choices are retained)")
 	configure.Flags().Bool("roam", false, "Use Wendy Net Internet when an independent uplink is unavailable")
 	configure.Flags().Bool("share-uplink", false, "Offer an independent uplink to the net")
@@ -36,10 +50,11 @@ func newDeviceLocalMeshCmd() *cobra.Command {
 	configure.Flags().Bool("infrastructure-wifi", false, "Discover local net peers over infrastructure Wi-Fi")
 	configure.RunE = func(cmd *cobra.Command, _ []string) error {
 		req, err := localMeshRequest(cmd)
-		if err != nil {
+		interactive := errors.Is(err, errNoLocalMeshSettings) && !jsonOutput && isInteractiveTerminal()
+		if err != nil && !interactive {
 			return err
 		}
-		target, err := resolveTarget(cmd.Context(), SuppressUpdateCheck())
+		target, err := resolveLocalMeshTarget(cmd.Context(), SuppressUpdateCheck(), SuppressPickerEnroll())
 		if err != nil {
 			return err
 		}
@@ -48,6 +63,16 @@ func newDeviceLocalMeshCmd() *cobra.Command {
 			return fmt.Errorf("Wendy Net settings require a WendyOS agent")
 		}
 		client := pb.NewWendyLocalMeshAdminServiceClient(target.Agent.Conn)
+		if interactive {
+			req, err = interactiveLocalMeshRequest(cmd.Context(), client)
+			if err != nil {
+				return err
+			}
+			if req == nil {
+				cmd.Println("Wendy Net settings unchanged.")
+				return nil
+			}
+		}
 		response, err := client.ConfigureLocalMesh(cmd.Context(), req)
 		if err != nil {
 			return err
@@ -100,9 +125,18 @@ func newDeviceLocalMeshTopologyCmd() *cobra.Command {
 }
 
 func readLocalMeshTopology(parent context.Context) (*pb.LocalMeshTopology, error) {
-	ctx, cancel := context.WithTimeout(parent, localMeshTopologyTimeout)
-	defer cancel()
-	conn, err := connectLocalMeshTopology(ctx, ReadOnlyMonitoring())
+	interactive := !jsonOutput && isInteractiveTerminal()
+	connectCtx := parent
+	if !interactive {
+		var cancel context.CancelFunc
+		connectCtx, cancel = context.WithTimeout(parent, localMeshTopologyTimeout)
+		defer cancel()
+	}
+	// Allow initial device selection in a terminal. Named targets still use
+	// monitoring's connection policy, without updates or recovery to another device.
+	conn, err := connectLocalMeshTopology(connectCtx, ReadOnlyMonitoring(), func(c *resolveConfig) {
+		c.nonInteractive = !interactive
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +147,9 @@ func readLocalMeshTopology(parent context.Context) (*pb.LocalMeshTopology, error
 	if conn.Conn == nil {
 		return nil, fmt.Errorf("local topology requires a WendyOS agent")
 	}
+	// Choosing a device must not consume the snapshot's time budget.
+	ctx, cancel := context.WithTimeout(connectCtx, localMeshTopologyTimeout)
+	defer cancel()
 	client := pb.NewWendyLocalMeshAdminServiceClient(conn.Conn)
 	topology, err := client.GetLocalMeshTopology(ctx, &pb.GetLocalMeshTopologyRequest{})
 	if err != nil {
@@ -183,7 +220,7 @@ func localMeshRequest(cmd *cobra.Command) (*pb.ConfigureLocalMeshRequest, error)
 		}
 	}
 	if req.Participate == nil && req.Roam == nil && req.ShareUplink == nil && req.Nan == nil && req.Ble == nil && req.Ethernet == nil && req.InfrastructureWifi == nil {
-		return nil, fmt.Errorf("specify --participate, --roam, --share-uplink, --nan, --ble, --ethernet or --infrastructure-wifi; omitted flags preserve saved settings")
+		return nil, errNoLocalMeshSettings
 	}
 	return req, nil
 }

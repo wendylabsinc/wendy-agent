@@ -44,8 +44,8 @@ owned by the agent's system user and unwritable by other users. Restart
 ## Check the connection
 
 ```sh
-wendy device wendy-net status --device <wendyos-device>
-wendy device wendy-net topology --device <wendyos-device>
+wendy net status --device <wendyos-device>
+wendy net topology --device <wendyos-device>
 ```
 
 Check for an authenticated link to the Lite board. A running Bluetooth provider
