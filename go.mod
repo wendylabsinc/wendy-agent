@@ -26,7 +26,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/diskfs/go-diskfs v1.9.3
 	github.com/distribution/reference v0.6.0
-	github.com/docker/cli v29.6.2+incompatible
+	github.com/docker/cli v29.9.1+incompatible
 	github.com/dustin/go-humanize v1.0.1
 	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/ebitengine/purego v0.9.0
