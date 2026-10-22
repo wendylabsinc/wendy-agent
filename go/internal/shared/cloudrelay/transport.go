@@ -23,6 +23,10 @@ import (
 // can take well over 10s to read the ACK.
 var brokerKeepalive = keepalive.ClientParameters{Time: 30 * time.Second, Timeout: 20 * time.Second, PermitWithoutStream: true}
 
+// withKeepalive is grpc.WithKeepaliveParams; tests swap it to observe the
+// parameters each dial passes, since gRPC dial options are opaque.
+var withKeepalive = grpc.WithKeepaliveParams
+
 // DeviceEndpoint selects the end-to-end mTLS listener. The public API listener
 // authenticates operators and must not receive a fabricated device XFCC header.
 func DeviceEndpoint(cloud, override string) (string, error) {
@@ -145,7 +149,7 @@ func DialCloud(endpoint, certPEM, chainPEM string, keyPEM []byte) (*grpc.ClientC
 		}
 		return certs.VerifyPeerCertificateChain(leaf, cs.PeerCertificates[1:], trust, x509.ExtKeyUsageServerAuth, time.Now(), time.Now())
 	}
-	return grpc.NewClient(t, grpc.WithTransportCredentials(credentials.NewTLS(config)), grpc.WithKeepaliveParams(brokerKeepalive))
+	return grpc.NewClient(t, grpc.WithTransportCredentials(credentials.NewTLS(config)), withKeepalive(brokerKeepalive))
 }
 
 // DialBroker deliberately has no client certificate or identity metadata.
@@ -154,5 +158,5 @@ func DialBroker(endpoint string) (*grpc.ClientConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return grpc.NewClient(t, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13})), grpc.WithKeepaliveParams(brokerKeepalive))
+	return grpc.NewClient(t, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13})), withKeepalive(brokerKeepalive))
 }
