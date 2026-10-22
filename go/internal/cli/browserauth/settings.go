@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 )
 
 // Settings pins the identity, PKI and Cloud services for a deployment. Tool
@@ -66,4 +68,25 @@ func (s *Session) validIssuer(raw string) bool {
 // still the system realm.
 func (s *Session) orgIssuer(raw string) bool {
 	return s.validIssuer(raw) && !strings.EqualFold(raw, s.settings().AuthBase+"/realms/system")
+}
+
+// WebSocketURL selects a fixed route at the configured Cloud origin. The
+// verified grant still supplies the gRPC authority, never a relay destination.
+func (c Settings) WebSocketURL(endpoint string) (string, error) {
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	path := "/v2/transport/cloud"
+	if endpoint != c.CloudGRPC {
+		if _, err := cloudrelay.BrowserBrokerTarget(endpoint); err != nil {
+			return "", err
+		}
+		path = "/v2/transport/broker"
+	}
+	origin, err := url.Parse(c.RelayIssuer)
+	if err != nil {
+		return "", err
+	}
+	origin.Scheme, origin.Path = "wss", path
+	return origin.String(), nil
 }

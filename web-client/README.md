@@ -280,7 +280,7 @@ rejected, compared without case. The callback must return from that same realm;
 
 Each organization keeps its own saved sign-in, keyed by tenant and operator.
 The operator key never leaves the worker. Cloud device sessions still require
-the local browser relay.
+the local browser relay when `init` is omitted. An initialized worker uses the configured Cloud deployment's hosted WebSocket transport.
 
 Upgrading from an older wendy-web: its single `session` slot moves to its
 organization's slot on first load, and the old slot is removed. No action is
@@ -314,3 +314,18 @@ The agent worker integration fixture lives in `go/experiments/wasmgrpc`.
 
 Browser UI automation has not been run. Optional WebMCP read-only workspace and
 navigation tools are feature-detected; credentials are never exposed to them.
+
+### Hosted device transport
+
+After `init`, `cloud-discover` and `cloud-connect` use fixed WSS routes at
+`relay_issuer`: `/v2/transport/cloud` for the configured `cloud_grpc` authority,
+and `/v2/transport/broker` for an allowed broker endpoint from the verified grant.
+The server must implement the transport from Cloud PR #639 and allow the page's
+origin. The page CSP must permit WSS to that API origin. No query parameter or
+page-supplied relay URL chooses an upstream. Uninitialized localhost clients keep
+the existing development relay.
+
+The CLI still verifies tunnel grants and device certificates and signs its normal
+DPoP and operator requests. The gRPC authority remains the original API or broker
+endpoint. Hosted JWKS requests use HTTPS directly. Writes larger than 1 MiB are
+split into bounded binary WebSocket messages without changing the byte stream.
