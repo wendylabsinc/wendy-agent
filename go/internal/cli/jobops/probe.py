@@ -1,6 +1,6 @@
 """Fixed, read-only host-job probe. No user supplied code is evaluated."""
 
-import hashlib, itertools, json, math, os, socket, stat, sys, time
+import hashlib, itertools, json, math, os, re, socket, stat, sys, time
 from pathlib import Path
 
 MAX_STATUS = 262144
@@ -192,6 +192,25 @@ def snapshot(root, target, include_steps=False):
                 })
         out["step_outcomes"] = outcomes
         out["step_outcomes_omitted"] = max(0, len(stages) - len(outcomes)) if isinstance(stages, list) else 0
+        if out["reported_state"] == "failed":
+            failed = next((step for step in reversed(outcomes)
+                           if step["timed_out"] is True or (step["returncode"] is not None and step["returncode"] != 0)), None)
+            if failed is not None:
+                label = failed["label"]
+                diagnostic = {"step": label, "tail_max_bytes": 2048}
+                out["diagnostic"] = diagnostic
+                if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", label):
+                    log = root / (label + ".log")
+                    diagnostic["log_path"] = str(log)
+                    try:
+                        tail, _ = read_regular(log, 2048, True)
+                        excerpt = tail.decode("utf-8", errors="replace").encode("utf-8")[:2048].decode("utf-8", errors="ignore")
+                        diagnostic["excerpt"] = excerpt
+                        diagnostic["excerpt_sha256"] = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
+                    except (OSError, ValueError) as exc:
+                        diagnostic["unavailable"] = str(exc)[:160]
+                else:
+                    diagnostic["unavailable"] = "invalid step label; no log opened"
     if isinstance(stages, list) and stages and isinstance(stages[-1], dict):
         out["last_stage"] = {
             k: (v[:160] if isinstance(v, str) else v)
@@ -206,7 +225,7 @@ def snapshot(root, target, include_steps=False):
     # Cursor deliberately excludes wall-clock age. A poll sees changed process,
     # metrics, state, error or report content even when the stage is unchanged.
     cursor = hashlib.sha256(
-        json.dumps({key: value for key, value in out.items() if key not in ["step_outcomes", "step_outcomes_omitted"]}, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps({key: value for key, value in out.items() if key not in ["step_outcomes", "step_outcomes_omitted", "diagnostic"]}, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:24]
     out.update(
         cursor=cursor,

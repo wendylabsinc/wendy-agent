@@ -18,7 +18,7 @@ func TestSubmitWaitReturnsTerminalExitsAndRetryDoesNotRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := r["observation"].(map[string]any)
-	if obs["reported_state"] != "completed" || obs["last_stage"].(map[string]any)["returncode"] != float64(0) {
+	if r["reported_state"] != "completed" || obs["reported_state"] != "completed" || obs["last_stage"].(map[string]any)["returncode"] != float64(0) {
 		t.Fatalf("missing terminal evidence: %+v", r)
 	}
 	again, err := jobops.SubmitObserved(context.Background(), c, spec, 3)
@@ -31,7 +31,7 @@ func TestSubmitWaitReturnsTerminalExitsAndRetryDoesNotRerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r["observation"].(map[string]any)["reported_state"] != "failed" {
+	if r["reported_state"] != "failed" || r["observation"].(map[string]any)["reported_state"] != "failed" {
 		t.Fatalf("false successful outcome: %+v", r)
 	}
 }

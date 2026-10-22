@@ -33,6 +33,15 @@ func SubmitObserved(ctx context.Context, conn *grpcclient.AgentConnection, spec 
 		return receipt, nil
 	}
 	receipt["observation"] = observation
+	// The current observation supersedes the initial submission snapshot.
+	// Leaving "starting" at the top level after completed steps causes agents
+	// to inspect again despite already having terminal evidence.
+	if state, ok := observation["reported_state"].(string); ok && state != "" {
+		receipt["reported_state"] = state
+	}
+	if stage, ok := observation["stage"].(string); ok && stage != "" {
+		receipt["stage"] = stage
+	}
 	observation["expected_steps"] = len(spec.Steps)
 	observation["step_check"] = checkStepOutcomes(observation, spec)
 	return receipt, nil

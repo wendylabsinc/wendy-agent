@@ -110,6 +110,34 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("step-9", result["progress"])
         self.assertNotIn("step-0", result["progress"])
 
+    def test_failure_diagnostic_is_bounded_and_does_not_open_escaped_paths(self):
+        status = {"state": "failed", "stages": [{"label": "resume", "returncode": 1, "timed_out": False}]}
+        (self.root / "status.json").write_text(json.dumps(status))
+        (self.root / "resume.log").write_text("noise"*5000 + "\nAssertionError: Resume source mismatch\n")
+        result = self.probe(until_terminal=True)
+        diagnostic = result["diagnostic"]
+        self.assertIn("Resume source mismatch", diagnostic["excerpt"])
+        self.assertLessEqual(len(diagnostic["excerpt"].encode()), 2048)
+        self.assertEqual(self.probe(since=result["cursor"])["changed"], False)
+        status["stages"][0]["label"] = "../../private"
+        (self.root / "status.json").write_text(json.dumps(status))
+        result = self.probe(until_terminal=True)
+        self.assertNotIn("excerpt", result["diagnostic"])
+        self.assertIn("invalid step label", result["diagnostic"]["unavailable"])
+
+    def test_failure_diagnostic_refuses_symlinks_and_fifo(self):
+        status = {"state": "failed", "stages": [{"label": "resume", "returncode": 1, "timed_out": False}]}
+        (self.root / "status.json").write_text(json.dumps(status))
+        target = self.root / "target.txt"
+        target.write_text("private content")
+        log = self.root / "resume.log"
+        log.symlink_to(target)
+        self.assertNotIn("excerpt", self.probe(until_terminal=True)["diagnostic"])
+        log.unlink()
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(log)
+            self.assertNotIn("excerpt", self.probe(until_terminal=True)["diagnostic"])
+
     @unittest.skipUnless(sys.platform == "linux", "Linux process identity contract")
     def test_linux_runner_pause_and_start_time_are_verified(self):
         runner = self.root / "runner.py"

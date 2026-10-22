@@ -65,7 +65,10 @@ confirmed receipt and leave completion unknown.
 
 After terminal observation the response includes every declared step's exit
 and timeout outcome, plus `step_check`. A passed step check verifies process
-exits, not scientific success. Selected reports are retrieved with digest
+exits, not scientific success. The top-level state reflects the latest
+observation. Failed workflows include one bounded log tail (at most 2048 bytes)
+and its path/hash so the agent can diagnose ordinary failures without another
+log fetch; unavailable logs stay explicit. Selected reports are retrieved with digest
 verification; their bytes stay outside context. `report_fields` returns at most
 32 scalar JSON-pointer selections across eight files, with report hashes.
 Missing, compound, oversized or changed fields are explicitly unavailable;

@@ -100,3 +100,21 @@ func TestReportSelectionRefusedBeforeHostWork(t *testing.T) {
 		t.Fatal("invalid report selection reached host")
 	}
 }
+
+func TestFailedWorkflowReturnsBoundedDiagnosticWithoutExtraLogCall(t *testing.T) {
+	c := connection(t, &host{})
+	spec := jobops.Spec{Name: "diagnostic", WorkingDirectory: t.TempDir(), Steps: []jobops.Step{{Name: "resume", Argv: []string{"python3", "-c", "print('x'*10000);raise AssertionError('Resume source mismatch')"}, TimeoutSeconds: 2}}}
+	r, err := jobops.SubmitWorkflow(context.Background(), c, spec, jobops.SubmitOptions{WaitSeconds: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := r["observation"].(map[string]any)
+	diagnostic, ok := obs["diagnostic"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing failure diagnosis: %+v", r)
+	}
+	excerpt, _ := diagnostic["excerpt"].(string)
+	if r["reported_state"] != "failed" || diagnostic["step"] != "resume" || !strings.Contains(excerpt, "Resume source mismatch") || len(excerpt) > 2048 || diagnostic["excerpt_sha256"] == "" || !strings.HasSuffix(diagnostic["log_path"].(string), "resume.log") {
+		t.Fatalf("unbounded/missing diagnostic: %+v", r)
+	}
+}
