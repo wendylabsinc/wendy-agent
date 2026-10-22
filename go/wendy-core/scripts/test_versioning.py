@@ -90,7 +90,7 @@ class VersionTests(unittest.TestCase):
                 for key in ("version", "pythonVersion", "npmTag"):
                     self.assertEqual(actual[key], unchanged[key])
         for invalid in ("0.1.0-rc.1", "0.1.0-seed.0", "0.1.0-seed.01", "0.1.0-seed.-1",
-                        "0.1.0-seed.1.extra", "0.1.0-seed.1+abc", "0.1.0-pr.2"):
+                        "0.1.0-seed.1.extra", "0.1.0-seed.1+abc", "0.1.0-pr.2", "0.1.0-seed.1٢", "0.1.١"):
             with self.subTest(version=invalid), self.assertRaises(ValueError):
                 versioning.derive(invalid, "stable", source_sha=SHA)
         with patch.object(versioning, "base_version", return_value="0.1.0-seed.1"), \

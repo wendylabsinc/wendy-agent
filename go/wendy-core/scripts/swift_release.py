@@ -18,7 +18,7 @@ from versioning import RELEASE, STABLE
 BEGIN = "// BEGIN BINARY TARGETS\n"
 END = "// END BINARY TARGETS\n"
 ASSETS = {"CWendyCoreApple": "xcframework", "CWendyCoreLinux": "artifactbundle"}
-VERSION = RELEASE + r"|" + STABLE + r"-(?:dev(?:\+[0-9a-f]{7})?|nightly\.[1-9]\d*\.[1-9]\d*|pr\.(?:[1-9]\d*|manual)-[a-z0-9-]+\.[1-9]\d*\.[1-9]\d*)"
+VERSION = RELEASE + r"|" + STABLE + r"-(?:dev(?:\+[0-9a-f]{7})?|nightly\.[1-9][0-9]*\.[1-9][0-9]*|pr\.(?:[1-9][0-9]*|manual)-[a-z0-9-]+\.[1-9][0-9]*\.[1-9][0-9]*)"
 
 
 def asset(name, value):

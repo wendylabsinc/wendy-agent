@@ -7,8 +7,8 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STABLE = r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-RELEASE = STABLE + r"(?:-seed\.[1-9]\d*)?"
+STABLE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+RELEASE = STABLE + r"(?:-seed\.[1-9][0-9]*)?"
 SHA = r"[0-9a-f]{40}"
 
 
