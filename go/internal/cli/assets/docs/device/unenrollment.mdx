@@ -65,10 +65,20 @@ Read the error to see whether Cloud removal or the device reset completed.
 Keep using the same organization and selected device when retrying.
 
 For current WendyOS enrollments, rerun the same direct-LAN unenrollment command.
-If the agent has safely recorded an authorized reset, it can resume that reset
-after a restart. An unavailable authorization or time service can leave local
-credentials intact even after Cloud removal; restore connectivity and retry.
-For Lite, reconnect USB and rerun the same command.
+If Cloud has already removed the device but its local reset is unfinished, add
+`--asset-id` with the original asset ID from the removal output:
+
+```sh
+wendy device unenroll --device <device-address> --asset-id <original-asset-id>
+```
+
+The CLI requests fresh authorization for that removal before clearing local
+credentials. Keep the original asset ID with your error report; the deleted
+record no longer appears in discovery. An unavailable authorization or time
+service can leave local credentials intact even after Cloud removal; restore
+connectivity and retry. If the agent has safely recorded an authorized reset,
+it can resume that reset after a restart. For Lite, reconnect USB and rerun the
+same command.
 
 For older, numeric Cloud enrollments, local reset happens first. If later Cloud
 cleanup fails, use the exact Cloud cleanup command printed in the error. Do not
