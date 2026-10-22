@@ -362,6 +362,32 @@ func TestLiteGrantFramingKeyIDBounds(t *testing.T) {
 	}
 }
 
+func TestLiteGrantFramingAcceptsOnlyWLG3(t *testing.T) {
+	wlg3, err := relayGrantFixture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wlg2Hex, err := os.ReadFile("testdata/lite-grant-wlg2.hex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wlg2, err := hex.DecodeString(strings.TrimSpace(string(wlg2Hex)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wlg3[:4]) != "WLG3" || string(wlg2[:4]) != "WLG2" {
+		t.Fatal("fixtures carry the wrong magic")
+	}
+	if !validLiteGrantRecord(wlg3) {
+		t.Error("rejected the WLG3 conformance record")
+	}
+	// No dual-accept window: a real WLG2 record, or WLG3 bytes under its magic, is refused.
+	relabel := func(grant []byte, magic string) []byte { return append([]byte(magic), grant[4:]...) }
+	if validLiteGrantRecord(wlg2) || validLiteGrantRecord(relabel(wlg3, "WLG2")) || validLiteGrantRecord(relabel(wlg2, "WLG3")) {
+		t.Error("accepted a WLG2 or misframed record")
+	}
+}
+
 func relayGrantWithKeyID(grant []byte, kid string) []byte {
 	record := append(bytes.Clone(grant[:4]), byte(len(kid)))
 	record = append(record, kid...)
