@@ -353,14 +353,9 @@ func (d cloudDiscoveryDevice) openTunnel(ctx context.Context, brokerConn *grpc.C
 	if d.legacy != nil {
 		return openBrokerTunnel(ctx, brokerConn, auth, d.legacy.GetId(), remotePort)
 	}
-	service := ""
-	switch remotePort {
-	case 50052:
-		service = "wendy-agent"
-	case 22:
-		service = "ssh"
-	default:
-		return nil, fmt.Errorf("Cloud's authorized tunnel catalog has no service for port %d", remotePort)
+	service, err := cloudrelay.PortService("tcp", remotePort)
+	if err != nil {
+		return nil, err
 	}
 	signer, err := tunnelPrincipalSigner(auth)
 	if err != nil {

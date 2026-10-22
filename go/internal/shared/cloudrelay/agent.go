@@ -464,6 +464,9 @@ func (a *Agent) serve(ctx context.Context, broker *pb.BrokerInstance, o *pb.Sess
 		return err
 	}
 	defer session.Close()
+	if d.Transport == pb.DialTransport_DIAL_TRANSPORT_DATAGRAM {
+		return serveDatagrams(session, d)
+	}
 	port := int(d.Port)
 	if string(d.ServiceDescriptor) == "wendy-agent" && a.MTLSPort > 0 {
 		port = a.MTLSPort
