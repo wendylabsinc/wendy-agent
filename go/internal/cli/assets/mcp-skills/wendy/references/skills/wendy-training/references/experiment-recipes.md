@@ -43,8 +43,8 @@ the workflow job and use independent outcome checks. Recipe-authoring, setup,
 retries and missing-evidence handling belong in cold benchmark accounting.
 
 Axes sort by parameter name; values retain their declared order. Every axis
-must be used. Values are nonempty unique strings, at most160 bytes, with no
-braces/NUL. There are at most4 axes,32 combinations and32 total steps including
+must be used. Values are nonempty unique strings, at most 160 bytes, with no
+braces/NUL. There are at most 4 axes, 32 combinations and 32 total steps including
 before/after steps. Split larger studies into separately named explicit jobs;
 no silent truncation, budget reduction, parallel scheduling or best-seed choice.
 
@@ -53,7 +53,7 @@ pointers accept `{{parameter}}`. Job identity, source contracts, working directo
 local destination and before/after steps stay fixed. `{job_dir}`/`{step_dir}`
 remain runtime path tokens. Values are literal argv strings: there is no shell
 expansion or executable template code. Names must remain unique after expansion.
-The normal64-file/16-MiB collection and8-report/32-scalar projection bounds still
+The normal 64-file/16-MiB collection and 8-report/32-scalar projection bounds still
 apply. Static artifact names are included once. Conflicting projections fail.
 
 The recipe and destination must be absolute local paths. The parent directory

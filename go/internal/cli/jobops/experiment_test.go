@@ -2,6 +2,7 @@ package jobops
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -82,8 +83,8 @@ func TestExperimentRejectsAmbiguityAndOverflowWithoutCreatingOutput(t *testing.T
 			r.Parameters["large"] = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
 		},
 		"step_overflow": func(r *ExperimentRecipe) {
-			for i := 0; i < 10; i++ {
-				r.BeforeSteps = append(r.BeforeSteps, r.Workflow.Job.Steps...)
+			for i := 0; i < 30; i++ {
+				r.BeforeSteps = append(r.BeforeSteps, Step{Name: fmt.Sprintf("before-%d", i), Argv: []string{"true"}, TimeoutSeconds: 1})
 			}
 		},
 		"report_overflow":      func(r *ExperimentRecipe) { r.Parameters["seed"] = []string{"1", "2", "3", "4", "5"} },

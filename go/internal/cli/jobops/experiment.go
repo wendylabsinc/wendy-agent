@@ -48,7 +48,7 @@ func compileExperiment(data []byte) (WorkflowFile, int, error) {
 		seen := map[string]bool{}
 		for _, value := range values {
 			if len(value) == 0 || len(value) > 160 || strings.ContainsAny(value, "\x00{}") || seen[value] {
-				return WorkflowFile{}, 0, fmt.Errorf("parameter values must be unique nonempty strings, at most160 bytes, without braces or NUL")
+				return WorkflowFile{}, 0, fmt.Errorf("parameter values must be unique nonempty strings, at most 160 bytes, without braces or NUL")
 			}
 			seen[value] = true
 		}
@@ -58,7 +58,7 @@ func compileExperiment(data []byte) (WorkflowFile, int, error) {
 	variants := []map[string]string{{}}
 	for _, key := range keys {
 		if len(variants)*len(recipe.Parameters[key]) > 32 {
-			return WorkflowFile{}, 0, fmt.Errorf("parameter product exceeds32 variants")
+			return WorkflowFile{}, 0, fmt.Errorf("parameter product exceeds 32 variants")
 		}
 		var next []map[string]string
 		for _, prior := range variants {
@@ -149,7 +149,7 @@ func compileExperiment(data []byte) (WorkflowFile, int, error) {
 		return WorkflowFile{}, 0, fmt.Errorf("parameter tokens outside repeated steps/evidence are forbidden")
 	}
 	if len(encoded)+1 > 120000 {
-		return WorkflowFile{}, 0, fmt.Errorf("expanded workflow exceeds120000 bytes")
+		return WorkflowFile{}, 0, fmt.Errorf("expanded workflow exceeds 120000 bytes")
 	}
 	if err := ValidateSpec(w.Job); err != nil {
 		return WorkflowFile{}, 0, err
