@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -32,6 +33,8 @@ func Run(ctx context.Context, cfg Config) error {
 	var wg sync.WaitGroup
 	defer func() { cancel(); wg.Wait() }()
 	var candidates localmesh.CandidateQueue
+	var diagnosticMu sync.Mutex
+	lastError := ""
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	latest := map[string]scan.BLEDeviceInfo{}
@@ -52,6 +55,7 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		case <-ticker.C:
 			keys := []string{}
+			matches := 0
 			for address, d := range latest {
 				if time.Since(d.LastSeen) <= 30*time.Second {
 					keys = append(keys, address)
@@ -67,6 +71,7 @@ func Run(ctx context.Context, cfg Config) error {
 						continue
 					}
 				}
+				matches++
 				lease := policy.Reserve(address, meshid.Device{}, true)
 				if lease == nil {
 					continue
@@ -76,13 +81,29 @@ func Run(ctx context.Context, cfg Config) error {
 					defer wg.Done()
 					defer lease.Release()
 					err := dialDarwin(ctx, cfg, address, adv, lease)
+					diagnosticMu.Lock()
+					if err != nil {
+						lastError = err.Error()
+					} else {
+						lastError = ""
+					}
+					diagnosticMu.Unlock()
 					if err != nil {
 						candidates.Failed(address, time.Now())
 					} else {
 						candidates.Succeeded(address)
 					}
 				}()
-				break
+			}
+			if cfg.Status != nil {
+				counts := policy.Counts()
+				diagnosticMu.Lock()
+				detail := fmt.Sprintf("CoreBluetooth: %d mesh advertisements, %d links, %d connecting", matches, counts.Ready, counts.Attempts)
+				if lastError != "" {
+					detail += "; last link error: " + lastError
+				}
+				diagnosticMu.Unlock()
+				cfg.Status(localmesh.CarrierStatus{Ready: true, Detail: detail})
 			}
 		}
 	}
@@ -90,11 +111,11 @@ func Run(ctx context.Context, cfg Config) error {
 func dialDarwin(ctx context.Context, cfg Config, address string, adv Advertisement, lease *localmesh.ConnectionLease) error {
 	connection, err := central.Connect(address, 5)
 	if err != nil {
-		return err
+		return fmt.Errorf("connect: %w", err)
 	}
 	if err = connection.OpenL2CAP(adv.PSM, 5); err != nil {
 		connection.Close()
-		return err
+		return fmt.Errorf("open L2CAP: %w", err)
 	}
 	raw := central.NewL2CAPStream(connection)
 	defer raw.Close()
@@ -126,10 +147,13 @@ func dialDarwin(ctx context.Context, cfg Config, address string, adv Advertiseme
 	err = secure.HandshakeContext(handshake)
 	cancel()
 	if err != nil {
-		return err
+		return fmt.Errorf("TLS handshake: %w", err)
 	}
 	if cfg.Selection != nil && !cfg.Selection.AllowRadio(peer, localmesh.RadioBLE) {
 		return nil
 	}
-	return cfg.Node.AttachStream(localmesh.WithCarrier(localmesh.WithConnectionLease(ctx, lease), "ble"), peer, secure, LinkCost)
+	if err := cfg.Node.AttachStream(localmesh.WithCarrier(localmesh.WithConnectionLease(ctx, lease), "ble"), peer, secure, LinkCost); err != nil {
+		return fmt.Errorf("mesh stream: %w", err)
+	}
+	return nil
 }

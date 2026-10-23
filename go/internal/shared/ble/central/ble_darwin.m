@@ -335,7 +335,38 @@ didOpenL2CAPChannel:(CBL2CAPChannel *)channel
 
 // Performs a single write on the I/O thread, called via performSelector:onThread:waitUntilDone:YES.
 - (void)performL2CAPWrite:(NSData *)data {
-    self.l2capWriteResult = [self.l2capChannel.outputStream write:data.bytes maxLength:data.length];
+    // NSOutputStream may accept only part of a TLS record. Reporting success
+    // for that short write silently drops its tail and corrupts the TLS stream.
+    const uint8_t *bytes = data.bytes;
+    NSUInteger offset = 0;
+    NSDate *progressDeadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+    while (offset < data.length) {
+        if (!self.connected || !self.l2capIORunning || self.l2capError) {
+            self.l2capWriteResult = -1;
+            return;
+        }
+        if (self.l2capChannel.outputStream.hasSpaceAvailable) {
+            NSInteger count = [self.l2capChannel.outputStream write:bytes + offset
+                                                          maxLength:data.length - offset];
+            if (count < 0) {
+                self.l2capWriteResult = -1;
+                return;
+            }
+            if (count > 0) {
+                offset += (NSUInteger)count;
+                progressDeadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+                continue;
+            }
+        }
+        if ([progressDeadline timeIntervalSinceNow] <= 0) {
+            self.l2capWriteResult = -1;
+            return;
+        }
+        // Keep stream events flowing while waiting for output capacity.
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    self.l2capWriteResult = (NSInteger)offset;
 }
 
 // ── NSStreamDelegate (both L2CAP streams) ───────────────────────────
