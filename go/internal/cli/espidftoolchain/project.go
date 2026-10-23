@@ -2,6 +2,7 @@ package espidftoolchain
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ProjectToolchain selects an opt-in, digest-pinned ESP-IDF container. Projects
@@ -79,9 +81,19 @@ func (p *ProjectToolchain) Command(ctx context.Context, args ...string) *exec.Cm
 	if p == nil || p.Image == "" {
 		return IdfCommandContext(ctx, args...)
 	}
-	command := []string{"run", "--rm", "-v", p.root + ":/project", "-w", filepath.ToSlash(filepath.Join("/project", p.relative)), p.Image, "idf.py"}
+	name := "wendy-idf-" + rand.Text()
+	command := []string{"run", "--rm", "--name", name, "-v", p.root + ":/project", "-w", filepath.ToSlash(filepath.Join("/project", p.relative)), p.Image, "idf.py"}
 	if p.Preview {
 		command = append(command, "--preview")
 	}
-	return execCommandContext(ctx, "docker", append(command, args...)...)
+	cmd := execCommandContext(ctx, "docker", append(command, args...)...)
+	// Killing the docker client alone would leave its container building in
+	// the workspace, where a retried build would race it.
+	cmd.Cancel = func() error {
+		removeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_ = execCommandContext(removeCtx, "docker", "rm", "--force", name).Run()
+		return cmd.Process.Kill()
+	}
+	return cmd
 }

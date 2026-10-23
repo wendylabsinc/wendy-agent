@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -41,9 +42,13 @@ func TestProjectToolchain(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Command(context.Background(), "set-target", "esp32s31")
-	want := []string{"docker", "run", "--rm", "-v", p.root + ":/project", "-w", "/project/sample with spaces", image, "idf.py", "--preview", "set-target", "esp32s31"}
-	if !reflect.DeepEqual((*calls)[1], want) {
-		t.Fatalf("got %v want %v", (*calls)[1], want)
+	got := (*calls)[1]
+	if len(got) < 5 || got[3] != "--name" || !strings.HasPrefix(got[4], "wendy-idf-") {
+		t.Fatalf("container is not named for cancellation: %v", got)
+	}
+	want := []string{"docker", "run", "--rm", "--name", got[4], "-v", p.root + ":/project", "-w", "/project/sample with spaces", image, "idf.py", "--preview", "set-target", "esp32s31"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
 	}
 	if _, err := LoadProjectToolchain(project, "esp32s3"); err == nil {
 		t.Fatal("accepted mismatched target")
@@ -57,5 +62,31 @@ func TestProjectToolchain(t *testing.T) {
 		if _, err := LoadProjectToolchain(project, "esp32s31"); err == nil {
 			t.Fatalf("accepted %+v", bad)
 		}
+	}
+}
+
+func TestProjectToolchainCancelRemovesContainer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sleep")
+	}
+	calls := stubExecCommandContext(t, func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if args[0] == "run" {
+			return exec.CommandContext(ctx, "sleep", "30")
+		}
+		return exec.CommandContext(ctx, "true")
+	})
+	p := &ProjectToolchain{Image: "espressif/idf@sha256:" + strings.Repeat("a", 64), root: t.TempDir(), relative: "."}
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := p.Command(ctx, "build")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("cancelled build succeeded")
+	}
+	name := (*calls)[0][4]
+	if len(*calls) != 2 || !reflect.DeepEqual((*calls)[1], []string{"docker", "rm", "--force", name}) {
+		t.Fatalf("cancellation left the container running: %v", *calls)
 	}
 }
