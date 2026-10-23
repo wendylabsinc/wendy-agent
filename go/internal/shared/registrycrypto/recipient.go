@@ -2,6 +2,7 @@ package registrycrypto
 
 import (
 	"bytes"
+	"crypto/hpke"
 	"crypto/mldsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -14,7 +15,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
-	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -23,6 +24,12 @@ const (
 	registerUserKey         = "wendycloud.v2.KeyDirectoryService/RegisterUserEncryptionKey"
 	maxRegistrationJWS      = 32768
 )
+
+// Registration is the RegisterEncryptionKeyRequest that registers pub for
+// organizationID, the one shape the CLI and wendy-web sign.
+func Registration(organizationID string, pub hpke.PublicKey) *cloudpbv2.RegisterEncryptionKeyRequest {
+	return &cloudpbv2.RegisterEncryptionKeyRequest{OrganizationId: organizationID, Suite: cloudpbv2.KemSuite_KEM_SUITE_MLKEM768_X25519, PublicKey: pub.Bytes()}
+}
 
 // ErrRegistration is every refusal of a served key registration. Cloud
 // serves registrations and is untrusted, so the reason never matters to the
@@ -53,55 +60,29 @@ func VerifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x
 	return publicKey, nil
 }
 
-// registeredKey decodes a RegisterEncryptionKeyRequest (organization_id = 1,
-// suite = 2, public_key = 3) and checks it. Duplicate fields are refused so
-// no two parsers can read different keys from one signed payload.
-// TODO(T11 phase 2): decode with the generated type once registry.proto is
-// vendored.
+// registeredKey decodes a RegisterEncryptionKeyRequest and checks it. The
+// payload must be exactly the encoding of what it decodes to: a repeated
+// field, which two parsers could resolve to different keys, or any other
+// non-canonical encoding is refused. Every producer (CLI, wendy-web, agent)
+// encodes it with Go's proto.Marshal.
 func registeredKey(payload []byte, organizationID string) ([]byte, error) {
-	seen := map[protowire.Number]bool{}
-	var org string
-	var suite uint64
-	var publicKey []byte
-	for b := payload; len(b) > 0; {
-		num, typ, n := protowire.ConsumeTag(b)
-		if n < 0 {
-			return nil, protowire.ParseError(n)
-		}
-		b = b[n:]
-		if seen[num] && num <= 3 {
-			return nil, errors.New("duplicate registration field")
-		}
-		seen[num] = true
-		switch {
-		case num == 1 && typ == protowire.BytesType:
-			var v []byte
-			v, n = protowire.ConsumeBytes(b)
-			org = string(v)
-		case num == 2 && typ == protowire.VarintType:
-			suite, n = protowire.ConsumeVarint(b)
-		case num == 3 && typ == protowire.BytesType:
-			publicKey, n = protowire.ConsumeBytes(b)
-		case num <= 3:
-			return nil, errors.New("registration field has the wrong type")
-		default:
-			n = protowire.ConsumeFieldValue(num, typ, b)
-		}
-		if n < 0 {
-			return nil, protowire.ParseError(n)
-		}
-		b = b[n:]
-	}
-	if org != organizationID {
-		return nil, errors.New("registration is for another organization")
-	}
-	if suite != 1 { // KEM_SUITE_MLKEM768_X25519
-		return nil, errors.New("registration names an unknown suite")
-	}
-	if _, err := KEM.NewPublicKey(publicKey); err != nil {
+	var req cloudpbv2.RegisterEncryptionKeyRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, err
 	}
-	return publicKey, nil
+	if again, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&req); err != nil || !bytes.Equal(again, payload) {
+		return nil, errors.New("registration payload is not canonically encoded")
+	}
+	if req.GetOrganizationId() != organizationID {
+		return nil, errors.New("registration is for another organization")
+	}
+	if req.GetSuite() != cloudpbv2.KemSuite_KEM_SUITE_MLKEM768_X25519 {
+		return nil, errors.New("registration names an unknown suite")
+	}
+	if _, err := KEM.NewPublicKey(req.GetPublicKey()); err != nil {
+		return nil, err
+	}
+	return req.GetPublicKey(), nil
 }
 
 func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x509.Certificate, principal, organizationID string, now time.Time) ([]byte, error) {

@@ -373,37 +373,6 @@ func TestWrapAndSeal(t *testing.T) {
 	}
 }
 
-// RecipientKey and RegisterEncryptionKeyRequest are decoded field by field
-// until wendycloud/v2/registry.proto is vendored.
-func fields(t *testing.T, b []byte) map[protowire.Number][][]byte {
-	t.Helper()
-	out := map[protowire.Number][][]byte{}
-	for len(b) > 0 {
-		num, typ, n := protowire.ConsumeTag(b)
-		if n < 0 {
-			t.Fatal("bad tag")
-		}
-		b = b[n:]
-		var v []byte
-		switch typ {
-		case protowire.BytesType:
-			v, n = protowire.ConsumeBytes(b)
-		case protowire.VarintType:
-			var x uint64
-			x, n = protowire.ConsumeVarint(b)
-			v = protowire.AppendVarint(nil, x)
-		default:
-			t.Fatalf("unexpected wire type %d", typ)
-		}
-		if n < 0 {
-			t.Fatal("bad field")
-		}
-		out[num] = append(out[num], v)
-		b = b[n:]
-	}
-	return out
-}
-
 func TestRecipientKeyVectors(t *testing.T) {
 	var v struct {
 		Root    string `json:"root_cert_der_b64"`
@@ -425,12 +394,11 @@ func TestRecipientKeyVectors(t *testing.T) {
 		t.Fatalf("want 6 recipient key vectors, got %d", len(v.Vectors))
 	}
 	for _, rv := range v.Vectors {
-		f := fields(t, unb64(t, rv.RecipientKey))
-		var reg cloudpbv2.SignedRequest
-		if len(f[2]) != 1 || proto.Unmarshal(f[2][0], &reg) != nil {
+		var key cloudpbv2.RecipientKey
+		if err := proto.Unmarshal(unb64(t, rv.RecipientKey), &key); err != nil || key.GetRegistration() == nil {
 			t.Fatalf("%s: registration", rv.Name)
 		}
-		publicKey, err := VerifyRegistration(&reg, f[3], root, rv.Principal, rv.Organization)
+		publicKey, err := VerifyRegistration(key.GetRegistration(), key.GetChainDer(), root, rv.Principal, rv.Organization)
 		if (err == nil) != (rv.Expect == "valid") {
 			t.Errorf("%s: expect %s, got %v", rv.Name, rv.Expect, err)
 		}
@@ -484,18 +452,21 @@ func TestDeviceRegistrationVector(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := func(org string) []byte {
-			b := protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte(org))
-			b = protowire.AppendVarint(protowire.AppendTag(b, 2, protowire.VarintType), 1)
-			return protowire.AppendBytes(protowire.AppendTag(b, 3, protowire.BytesType), publicKey)
+		request := func(org string, suite cloudpbv2.KemSuite) []byte {
+			b, err := proto.Marshal(&cloudpbv2.RegisterEncryptionKeyRequest{OrganizationId: org, Suite: suite, PublicKey: publicKey})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
 		}
-		if _, err := registeredKey(request(dv.Tenant), dv.Tenant); err != nil {
+		if _, err := registeredKey(request(dv.Tenant, cloudpbv2.KemSuite_KEM_SUITE_MLKEM768_X25519), dv.Tenant); err != nil {
 			t.Fatalf("rebuilt request refused: %v", err)
 		}
 		for name, payload := range map[string][]byte{
-			"other organization": request("00000000-0000-4000-8000-000000000000"),
-			"duplicate key":      append(reg.GetPayload(), protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), make([]byte, 1216))...),
-			"unknown suite":      protowire.AppendVarint(protowire.AppendTag(append([]byte{}, reg.GetPayload()...), 2, protowire.VarintType), 9),
+			"other organization": request("00000000-0000-4000-8000-000000000000", cloudpbv2.KemSuite_KEM_SUITE_MLKEM768_X25519),
+			"unknown suite":      request(dv.Tenant, 9),
+			// Only raw wire bytes can repeat a field; proto.Unmarshal keeps the last.
+			"duplicate key": append(reg.GetPayload(), protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), publicKey)...),
 		} {
 			if _, err := registeredKey(payload, dv.Tenant); err == nil {
 				t.Errorf("%s: payload accepted", name)
@@ -505,4 +476,52 @@ func TestDeviceRegistrationVector(t *testing.T) {
 		return
 	}
 	t.Fatal("device registration vector missing")
+}
+
+// A known device opens its own wrap and wraps the same key onward; the new
+// recipient opens it, and an onward wrap naming another key is refused.
+func TestRewrap(t *testing.T) {
+	known, err := KEM.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newcomer, err := KEM.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := NewKey()
+	held := Wrap{OrganizationID: "org", Scope: ScopeRelease, ScopeID: "release", KeyID: KeyID(key), RecipientKind: 1, Recipient: "operator-a", RecipientKeyID: KeyID(known.PublicKey().Bytes())}
+	enc, ct, err := held.Seal(known.PublicKey().Bytes(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onward := held
+	onward.Recipient, onward.RecipientKeyID = "operator-a-laptop", KeyID(newcomer.PublicKey().Bytes())
+	enc2, ct2, err := Rewrap(known, held, enc, ct, onward, newcomer.PublicKey().Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := onward.Open(newcomer, enc2, ct2); err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("onward wrap: %v", err)
+	}
+	other := onward
+	other.KeyID = KeyID(NewKey())
+	if _, _, err := Rewrap(known, held, enc, ct, other, newcomer.PublicKey().Bytes()); err == nil {
+		t.Fatal("rewrapped under another key id")
+	}
+}
+
+// The registration the CLI and wendy-web sign is one the verifier accepts.
+func TestRegistrationRoundTrip(t *testing.T) {
+	priv, err := KEM.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := proto.Marshal(Registration("org", priv.PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := registeredKey(payload, "org"); err != nil || !bytes.Equal(got, priv.PublicKey().Bytes()) {
+		t.Fatalf("registration refused: %v", err)
+	}
 }

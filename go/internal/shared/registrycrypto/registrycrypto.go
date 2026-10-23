@@ -265,13 +265,13 @@ const (
 // wrapped key and the recipient. RecipientKind is the RecipientKind enum
 // value; Recipient is empty for the custodian.
 type Wrap struct {
-	OrganizationID string
-	Scope          byte
-	ScopeID        string
-	KeyID          string
-	RecipientKind  byte
-	Recipient      string
-	RecipientKeyID string
+	OrganizationID string `json:"organizationId"`
+	Scope          byte   `json:"scope"`
+	ScopeID        string `json:"scopeId"`
+	KeyID          string `json:"keyId"`
+	RecipientKind  byte   `json:"recipientKind"`
+	Recipient      string `json:"recipient"`
+	RecipientKeyID string `json:"recipientKeyId"`
 }
 
 // info = "wendy-registry-wrap-v1" ‖ lp(org) ‖ u8 scope kind ‖ lp(scope id) ‖
@@ -336,14 +336,26 @@ func (w Wrap) Open(priv hpke.PrivateKey, enc, ciphertext []byte) ([]byte, error)
 	return key, nil
 }
 
+// Rewrap opens a wrap this recipient holds and wraps the same key onward to
+// another recipient: how a known operator device grants a newly signed-in one
+// (GetMyWraps, then AddWraps). The key never leaves this function.
+func Rewrap(priv hpke.PrivateKey, held Wrap, enc, ciphertext []byte, onward Wrap, recipientPublicKey []byte) (onwardEnc, onwardCiphertext []byte, err error) {
+	key, err := held.Open(priv, enc, ciphertext)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer clear(key)
+	return onward.Seal(recipientPublicKey, key)
+}
+
 // SealedKey binds one SealedContentKey: the content key sealed under a
 // deployment key for one deployment and manifest.
 type SealedKey struct {
-	OrganizationID  string
-	DeploymentID    string
-	ManifestDigest  string
-	ContentKeyID    string
-	DeploymentKeyID string
+	OrganizationID  string `json:"organizationId"`
+	DeploymentID    string `json:"deploymentId"`
+	ManifestDigest  string `json:"manifestDigest"`
+	ContentKeyID    string `json:"contentKeyId"`
+	DeploymentKeyID string `json:"deploymentKeyId"`
 }
 
 // aad = "wendy-registry-seal-v1" ‖ lp(org) ‖ lp(deployment_id) ‖
