@@ -4,11 +4,9 @@ package commands
 import (
 	"context"
 	"os"
-	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
-	wendy "github.com/wendylabsinc/wendy-go"
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/permission"
@@ -322,19 +320,6 @@ func NewRootCmd() *cobra.Command {
 	markUsageErrors(root)
 
 	root.Version = version.Version
-	root.Flags().Bool("verbose", false, "Include Core and Go versions with --version")
-	root.Annotations = map[string]string{
-		"coreVersion": wendy.CoreVersion(),
-		"goVersion":   runtime.Version(),
-	}
-	// Cobra renders --version before running command hooks, preserving the
-	// existing startup and analytics behavior for version invocations.
-	root.SetVersionTemplate(`{{if .Flags.GetBool "json"}}{"cli":{{printf "%q" .Version}},"core":{{printf "%q" .Annotations.coreVersion}},"go":{{printf "%q" .Annotations.goVersion}}}
-{{else if .Flags.GetBool "verbose"}}CLI: {{.Version}}
-Core: {{.Annotations.coreVersion}}
-Go: {{.Annotations.goVersion}}
-{{else}}{{.Name}} version {{.Version}}
-{{end}}`)
 	return root
 }
 
