@@ -70,10 +70,19 @@ func NewL2CAPStream(c *Connection) net.Conn {
 	return &l2capNetConn{conn: c}
 }
 
+type l2capIO interface {
+	L2CAPRecv(int) ([]byte, error)
+	L2CAPSend([]byte) error
+	Close()
+}
+
 type l2capNetConn struct {
-	conn         *Connection
-	buf          []byte     // leftover from a previous L2CAPRecv
-	readDeadline time.Time  // zero means no deadline; owned by the single reader
+	conn         l2capIO
+	buf          []byte    // leftover from a previous L2CAPRecv
+	readDeadline time.Time // zero means no deadline; guarded by deadlineMu
+	deadlineMu   sync.RWMutex
+	readMu       sync.Mutex // serializes buffered reads
+	sendMu       sync.Mutex // protects native writes from Close
 	recvMu       sync.Mutex // held across L2CAPRecv so Close can't free under it
 	closed       atomic.Bool
 }
@@ -83,6 +92,11 @@ type l2capNetConn struct {
 // platform recv is polled in recvChunkSeconds slices and a slice that expires
 // with nothing to show is retried rather than reported.
 func (c *l2capNetConn) Read(b []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if len(b) == 0 {
+		return 0, nil
+	}
 	if len(c.buf) > 0 {
 		n := copy(b, c.buf)
 		c.buf = c.buf[n:]
@@ -91,8 +105,11 @@ func (c *l2capNetConn) Read(b []byte) (int, error) {
 
 	for {
 		chunk := recvChunkSeconds
-		if !c.readDeadline.IsZero() {
-			remaining := time.Until(c.readDeadline)
+		c.deadlineMu.RLock()
+		deadline := c.readDeadline
+		c.deadlineMu.RUnlock()
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				return 0, &timeoutErr{}
 			}
@@ -138,13 +155,18 @@ func (c *l2capNetConn) recv(chunkSeconds int) ([]byte, error) {
 }
 
 func (c *l2capNetConn) Write(b []byte) (int, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.closed.Load() {
+		return 0, net.ErrClosed
+	}
 	if err := c.conn.L2CAPSend(b); err != nil {
 		return 0, err
 	}
 	return len(b), nil
 }
 
-// Close waits out an in-flight Read, which takes at most recvChunkSeconds, so
+// Close waits out in-flight reads and writes so
 // the platform connection cannot be torn down while a reader is still inside
 // it. That is what matters on darwin, where wendy_ble_disconnect hands the
 // CoreBluetooth wrapper to ARC.
@@ -158,6 +180,8 @@ func (c *l2capNetConn) Close() error {
 	}
 	c.recvMu.Lock()
 	defer c.recvMu.Unlock()
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	c.conn.Close()
 	return nil
 }
@@ -167,11 +191,15 @@ func (c *l2capNetConn) RemoteAddr() net.Addr { return bleNetAddr{} }
 
 // WARNING: SetDeadline only ever bounds reads — see SetWriteDeadline.
 func (c *l2capNetConn) SetDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
 	c.readDeadline = t
+	c.deadlineMu.Unlock()
 	return nil
 }
 func (c *l2capNetConn) SetReadDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
 	c.readDeadline = t
+	c.deadlineMu.Unlock()
 	return nil
 }
 

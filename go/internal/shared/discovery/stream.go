@@ -1257,12 +1257,22 @@ func (s *supplementalRows) accept(event LANEvent, extra bool) (LANEvent, bool) {
 	}
 	switch event.Kind {
 	case LANFound, LANUpdated:
+		if event.Supersedes != "" && event.Supersedes != key {
+			delete(source, event.Supersedes)
+		}
 		source[key] = event
 	case LANRetracted, LANOffline:
 		delete(source, key)
 	}
 	if !extra {
-		if _, ok := s.extra[key]; ok {
+		if mesh, ok := s.extra[key]; ok {
+			// Keep the mesh selector, but still retire the LAN alias that the
+			// primary engine has replaced with this enrolled identity.
+			if event.Supersedes != "" && (event.Kind == LANFound || event.Kind == LANUpdated) {
+				mesh.Kind = LANUpdated
+				mesh.Supersedes = event.Supersedes
+				return mesh, true
+			}
 			return LANEvent{}, false
 		}
 	}
