@@ -1075,7 +1075,7 @@ func (c *WendyLiteClient) handshake() error {
 		},
 	}, 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("device may not support protocol v%d: %w", versionMajor, err)
+		return fmt.Errorf("WendyCom protocol exchange: %w", err)
 	}
 	hs := reply.GetHandshake()
 	switch {
