@@ -260,7 +260,7 @@ type unenrollConfirmationServer struct {
 	emptyLastPage bool
 	lastPageErr   error
 	listErr       error
-	revokeErr     error
+	pendingToken  bool
 	deleteErr     error
 	lists         atomic.Int32
 	gets          atomic.Int32
@@ -312,16 +312,29 @@ func (s *unenrollConfirmationServer) DeleteAsset(context.Context, *cloudpbv2.Sig
 }
 
 func (s *unenrollConfirmationServer) ListEnrollmentTokens(context.Context, *cloudpbv2.ListEnrollmentTokensRequest) (*pkicorepb.ListEnrollmentTokensResponse, error) {
+	if s.pendingToken {
+		return &pkicorepb.ListEnrollmentTokensResponse{Tokens: []*pkicorepb.EnrollmentTokenInfo{{TokenId: "pending", DeviceId: s.asset.GetPkiDeviceName()}}}, nil
+	}
 	return &pkicorepb.ListEnrollmentTokensResponse{}, nil
+}
+
+// The server answers PKI revocations as Cloud answers the default member role:
+// device:delete is held, pki:*-revoke is not (WDY-3939 #14).
+var errMemberRole = status.Error(codes.PermissionDenied, "insufficient role in organization test")
+
+func (s *unenrollConfirmationServer) RevokeEnrollmentToken(context.Context, *cloudpbv2.SignedRequest) (*pkicorepb.RevokeEnrollmentTokenResponse, error) {
+	return nil, errMemberRole
 }
 
 func (s *unenrollConfirmationServer) ListEABKeys(context.Context, *cloudpbv2.ListEABKeysRequest) (*pkicorepb.ListEABKeysResponse, error) {
 	return &pkicorepb.ListEABKeysResponse{}, nil
 }
 
+// DeleteAsset revokes the device certificates itself, so unenrollment must not
+// call this; the count stays to prove it.
 func (s *unenrollConfirmationServer) RevokePrincipalCertificates(context.Context, *cloudpbv2.SignedRequest) (*pkicorepb.RevokeByPrincipalResponse, error) {
 	s.revokes.Add(1)
-	return &pkicorepb.RevokeByPrincipalResponse{RevokedCount: 2}, s.revokeErr
+	return nil, errMemberRole
 }
 
 func TestCloudUnenrollConfirmsBeforeMutation(t *testing.T) {
@@ -472,8 +485,8 @@ func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
 					if service.revokes.Load() != 0 || service.deletes.Load() != 0 {
 						t.Fatal("recovery changed a different cloud enrollment")
 					}
-				} else if service.revokes.Load() != 1 || service.deletes.Load() != 1 {
-					t.Fatal("board reset before cloud revocation and deletion")
+				} else if service.revokes.Load() != 0 || service.deletes.Load() != 1 {
+					t.Fatalf("board reset before cloud deletion, or after a separate certificate revocation: revokes=%d deletes=%d", service.revokes.Load(), service.deletes.Load())
 				}
 				if tc.resetFailure {
 					return resetErr
@@ -504,9 +517,20 @@ func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
 				if result.DeviceReset == tc.resetFailure || result.AssetDeleted == tc.absent || result.AssetAlreadyAbsent != tc.absent || (result.ResetError != "") != tc.resetFailure || result.CloudError != "" {
 					t.Fatalf("inaccurate JSON completion: %+v", result)
 				}
+				// DeleteAssetResponse carries no certificate count to report.
+				var fields map[string]any
+				if err := json.Unmarshal(output.Bytes(), &fields); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := fields["certsRevoked"]; ok {
+					t.Fatalf("JSON claims a certificate count Cloud did not report: %s", output.String())
+				}
 			} else {
 				if strings.Contains(output.String(), "Cleared the board's enrollment identity") == tc.resetFailure {
 					t.Fatalf("inaccurate reset success output: %q", output.String())
+				}
+				if !tc.absent && (!strings.Contains(output.String(), "Unenrolled desk: revoked 0 enrollment credential(s); Cloud revoked the device certificates and deleted cloud asset "+liteTestAssetID+".") || strings.Contains(output.String(), "certificate(s)")) {
+					t.Fatalf("inaccurate cloud removal output: %q", output.String())
 				}
 				if tc.absent && !strings.Contains(output.String(), "selected organization") {
 					t.Fatalf("recovery did not scope absence: %q", output.String())
@@ -517,7 +541,7 @@ func TestCloudUnenrollWithResetOrdersCleanupAndReportsRecovery(t *testing.T) {
 }
 
 func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
-	for _, failure := range []string{"auth", "list", "incomplete list", "later page failure", "revoke", "delete", "ambiguous", "wrong organization"} {
+	for _, failure := range []string{"auth", "list", "incomplete list", "later page failure", "pending credential", "delete", "ambiguous", "wrong organization"} {
 		t.Run(failure, func(t *testing.T) {
 			preserveCloudUnenrollmentHooks(t)
 			service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2}
@@ -535,8 +559,8 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 					service.lastPageErr = cloudErr
 				}
 				service.extraAssets = []*cloudpbv2.Asset{unenrollTestCloudDevice("fc741e8b-4098-4830-bfa5-3f35c1aa0e60", "another", "lite-other").v2}
-			case "revoke":
-				service.revokeErr = cloudErr
+			case "pending credential":
+				service.pendingToken = true
 			case "delete":
 				service.deleteErr = cloudErr
 			case "ambiguous":
@@ -556,7 +580,7 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 			if err == nil {
 				t.Fatal("cloud failure accepted")
 			}
-			if failure == "revoke" || failure == "delete" {
+			if failure == "pending credential" || failure == "delete" {
 				var result struct {
 					DeviceReset  bool   `json:"deviceReset"`
 					AssetDeleted bool   `json:"assetDeleted"`
@@ -568,6 +592,9 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 				if result.DeviceReset || result.AssetDeleted || result.CloudError == "" {
 					t.Fatalf("cloud failure reported success: %+v", result)
 				}
+			}
+			if failure == "pending credential" && (service.deletes.Load() != 0 || !strings.Contains(err.Error(), "requires an owner or admin")) {
+				t.Fatalf("member with an unused credential: deletes=%d err=%v", service.deletes.Load(), err)
 			}
 		})
 	}
