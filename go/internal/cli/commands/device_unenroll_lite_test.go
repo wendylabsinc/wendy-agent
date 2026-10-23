@@ -67,6 +67,13 @@ func (d *fakeLiteUnenrollmentDevice) ResetTargetDevice(autoStart bool, delay tim
 	return d.rebootErr
 }
 
+func (d *fakeLiteUnenrollmentDevice) WaitReboot(context.Context) {
+	if d.closed {
+		panic("waited for reboot after close")
+	}
+	d.calls = append(d.calls, "wait")
+}
+
 func liteUnenrollUSBTarget() models.ExternalDevice {
 	return models.ExternalDevice{ID: "wendy-lite:discovery-id", ProviderKey: "wendy-lite", ConnectionInfo: map[string]string{"type": "USB"}}
 }
@@ -118,7 +125,7 @@ func TestLiteUnenrollResetsAfterCloudCleanup(t *testing.T) {
 			}
 			want := "preflight,cloud"
 			if mode == "success" {
-				want += ",challenge,reset,verify,reboot"
+				want += ",challenge,reset,verify,reboot,wait"
 			}
 			if strings.Join(device.calls, ",") != want || !device.closed {
 				t.Fatalf("reset ordering or close: %v, closed=%v", device.calls, device.closed)
@@ -154,7 +161,7 @@ func TestLiteUnenrollUsesReportedUUIDAndKeepsHardwareResetBinding(t *testing.T) 
 	if err := runLiteDeviceUnenroll(cmd, liteUnenrollUSBTarget(), "", true); err != nil {
 		t.Fatal(err)
 	}
-	if !called || strings.Join(d.calls, ",") != "preflight,challenge,reset,verify,reboot" {
+	if !called || strings.Join(d.calls, ",") != "preflight,challenge,reset,verify,reboot,wait" {
 		t.Fatalf("incomplete UUID unenrollment: %v", d.calls)
 	}
 	d.calls = nil
