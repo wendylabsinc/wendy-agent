@@ -196,7 +196,9 @@ done
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
 #
 # Pin: wendycloud/v2/*.proto and wendy/options.proto are service-protos master
-# cfa7f45d (merged #145, registry vectors). device_enrollment.proto is not in
+# cfa7f45d (merged #145, registry vectors), except postbox.proto,
+# deployments.proto and registry.proto: master 65830a0a (merged #151,
+# WDY-4015 operator CA and instruction validity). device_enrollment.proto is not in
 # service-protos: it is cloud #757 head 5e3003e4
 # (cloud-proto/device_enrollment.proto), including enrollment hardware.
 # Re-pin: copy those files from

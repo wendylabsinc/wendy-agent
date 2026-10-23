@@ -28,6 +28,15 @@ service DevicePostboxService {
   rpc AckHead(SignedRequest) returns (AckHeadResponse) {
     option (wendy.device_signed_request) = true;
   }
+  // WDY-4015 item 1 (sem 2026-10-23 22:27, corrected 22:30): the device asks
+  // for a CA it is missing, normally the Operator Authority CA that issued the
+  // `x5c` leaf of a PostboxEntry.request_jws. Nothing is attached to the entry.
+  // The tenant comes from the mTLS leaf, as for PullChanges. Cloud-asserted:
+  // the device caches a returned certificate only if it is a CA issued
+  // directly by the tenant CA the device already holds, and refuses any other.
+  // An entry whose issuer the device cannot resolve is held, not consumed.
+  // Vectors: conformance/postbox-entry.
+  rpc GetOrgCAs(GetOrgCAsRequest) returns (GetOrgCAsResponse);
 }
 
 // Operator-side read of a device's last signed head ack (Q8, sem 2026-10-19
@@ -44,6 +53,17 @@ service DevicePostboxService {
 // "wendycloud.v2.PostboxHeadAck"; body_sha256; then it decodes the payload.
 // The alarm runs on the signed PostboxHeadAck.observed_at, never on the
 // cloud-asserted fields. Vectors: conformance/reqsig (head_ack_read_vectors).
+//
+// Monotonicity (WDY-4014), per device: the client keeps (persisted per
+// device) the highest signed entry_id, its signed entry_hash and the highest
+// signed observed_at it has accepted for that device. A read whose signed
+// entry_id or observed_at is lower than the kept value is refused (a replayed
+// older ack or a rolled-back store), never displayed. An equal entry_id with
+// the same signed entry_hash is the same ack served again and is accepted; an
+// equal entry_id with a different signed entry_hash is refused (equivocation:
+// the device acked two different entries at one id, so the postbox forked). A
+// client that lost its kept values is at first contact: an older ack then
+// passes, and only the observed_at staleness alarm covers it.
 service PostboxAckService {
   // Gate: the caller is an operator of organization_id's tenant with read
   // access to the device, and the device's tenant equals organization_id. An
@@ -68,10 +88,27 @@ message GetLastHeadAckResponse {
   // CA, DER. The leaf itself is the `x5c` in `ack`.
   repeated bytes chain_der = 2;
   // Cloud-asserted, not signed: when cloud accepted the ack, and the device's
-  // current postbox head. Display hints only; a head above the acked entry_id
-  // shows how far the device is behind, and cloud can lie about both.
+  // current postbox head. Display hints; a head above the acked entry_id shows
+  // how far the device is behind, and cloud can lie about both. A head below
+  // the signed entry_id (0 included) contradicts the device's own statement:
+  // the client refuses the response.
   google.protobuf.Timestamp received_at = 3;
   int64 postbox_head_entry_id = 4;
+  // Cloud-asserted, not signed (WDY-4014): the entry_hash cloud holds for the
+  // entry the ack names (the signed PostboxHeadAck.entry_id). The client
+  // compares it with the signed PostboxHeadAck.entry_hash: byte-equal, or the
+  // client refuses the ack. Absent with `ack` set is a refusal too. Absent when
+  // `ack` is unset. This and postbox_head_entry_hash catch cloud's own store
+  // disagreeing with what the device acked, and a third party substituting
+  // either side; they do not catch a lying cloud, which copies the signed hash.
+  // The signed entry_hash is the authority.
+  optional bytes acked_entry_hash = 5;
+  // Cloud-asserted, not signed (WDY-4014): the entry_hash of the entry at
+  // postbox_head_entry_id. When postbox_head_entry_id equals the signed
+  // entry_id it must be byte-equal to the signed entry_hash, else the client
+  // refuses; above it, a display hint like the head id. Absent when `ack` is
+  // unset.
+  optional bytes postbox_head_entry_hash = 6;
 }
 
 // Neither the tenant nor the target is on the wire: both are derived from the
@@ -122,3 +159,18 @@ message PostboxHeadAck {
 }
 
 message AckHeadResponse {}
+
+message GetOrgCAsRequest {
+  // The DER issuer Name of the certificate the device cannot chain (the
+  // operator leaf's issuer; pki-core's ML-DSA leaves carry no authority key
+  // identifier, so the name is the lookup key). Empty: every CA the device's
+  // tenant CA has issued.
+  bytes issuer = 1;
+}
+
+message GetOrgCAsResponse {
+  // DER, each a CA issued by the device's tenant CA: those whose subject
+  // equals `issuer` (several across a rotation), or all of them. A non-empty
+  // `issuer` that matches none is NOT_FOUND, never an empty list.
+  repeated bytes ca_der = 1;
+}

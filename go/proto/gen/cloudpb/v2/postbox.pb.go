@@ -83,12 +83,29 @@ type GetLastHeadAckResponse struct {
 	// CA, DER. The leaf itself is the `x5c` in `ack`.
 	ChainDer [][]byte `protobuf:"bytes,2,rep,name=chain_der,json=chainDer,proto3" json:"chain_der,omitempty"`
 	// Cloud-asserted, not signed: when cloud accepted the ack, and the device's
-	// current postbox head. Display hints only; a head above the acked entry_id
-	// shows how far the device is behind, and cloud can lie about both.
+	// current postbox head. Display hints; a head above the acked entry_id shows
+	// how far the device is behind, and cloud can lie about both. A head below
+	// the signed entry_id (0 included) contradicts the device's own statement:
+	// the client refuses the response.
 	ReceivedAt         *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
 	PostboxHeadEntryId int64                  `protobuf:"varint,4,opt,name=postbox_head_entry_id,json=postboxHeadEntryId,proto3" json:"postbox_head_entry_id,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Cloud-asserted, not signed (WDY-4014): the entry_hash cloud holds for the
+	// entry the ack names (the signed PostboxHeadAck.entry_id). The client
+	// compares it with the signed PostboxHeadAck.entry_hash: byte-equal, or the
+	// client refuses the ack. Absent with `ack` set is a refusal too. Absent when
+	// `ack` is unset. This and postbox_head_entry_hash catch cloud's own store
+	// disagreeing with what the device acked, and a third party substituting
+	// either side; they do not catch a lying cloud, which copies the signed hash.
+	// The signed entry_hash is the authority.
+	AckedEntryHash []byte `protobuf:"bytes,5,opt,name=acked_entry_hash,json=ackedEntryHash,proto3,oneof" json:"acked_entry_hash,omitempty"`
+	// Cloud-asserted, not signed (WDY-4014): the entry_hash of the entry at
+	// postbox_head_entry_id. When postbox_head_entry_id equals the signed
+	// entry_id it must be byte-equal to the signed entry_hash, else the client
+	// refuses; above it, a display hint like the head id. Absent when `ack` is
+	// unset.
+	PostboxHeadEntryHash []byte `protobuf:"bytes,6,opt,name=postbox_head_entry_hash,json=postboxHeadEntryHash,proto3,oneof" json:"postbox_head_entry_hash,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GetLastHeadAckResponse) Reset() {
@@ -147,6 +164,20 @@ func (x *GetLastHeadAckResponse) GetPostboxHeadEntryId() int64 {
 		return x.PostboxHeadEntryId
 	}
 	return 0
+}
+
+func (x *GetLastHeadAckResponse) GetAckedEntryHash() []byte {
+	if x != nil {
+		return x.AckedEntryHash
+	}
+	return nil
+}
+
+func (x *GetLastHeadAckResponse) GetPostboxHeadEntryHash() []byte {
+	if x != nil {
+		return x.PostboxHeadEntryHash
+	}
+	return nil
 }
 
 // Neither the tenant nor the target is on the wire: both are derived from the
@@ -469,6 +500,101 @@ func (*AckHeadResponse) Descriptor() ([]byte, []int) {
 	return file_wendycloud_v2_postbox_proto_rawDescGZIP(), []int{6}
 }
 
+type GetOrgCAsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The DER issuer Name of the certificate the device cannot chain (the
+	// operator leaf's issuer; pki-core's ML-DSA leaves carry no authority key
+	// identifier, so the name is the lookup key). Empty: every CA the device's
+	// tenant CA has issued.
+	Issuer        []byte `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOrgCAsRequest) Reset() {
+	*x = GetOrgCAsRequest{}
+	mi := &file_wendycloud_v2_postbox_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOrgCAsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOrgCAsRequest) ProtoMessage() {}
+
+func (x *GetOrgCAsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendycloud_v2_postbox_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOrgCAsRequest.ProtoReflect.Descriptor instead.
+func (*GetOrgCAsRequest) Descriptor() ([]byte, []int) {
+	return file_wendycloud_v2_postbox_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GetOrgCAsRequest) GetIssuer() []byte {
+	if x != nil {
+		return x.Issuer
+	}
+	return nil
+}
+
+type GetOrgCAsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// DER, each a CA issued by the device's tenant CA: those whose subject
+	// equals `issuer` (several across a rotation), or all of them. A non-empty
+	// `issuer` that matches none is NOT_FOUND, never an empty list.
+	CaDer         [][]byte `protobuf:"bytes,1,rep,name=ca_der,json=caDer,proto3" json:"ca_der,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOrgCAsResponse) Reset() {
+	*x = GetOrgCAsResponse{}
+	mi := &file_wendycloud_v2_postbox_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOrgCAsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOrgCAsResponse) ProtoMessage() {}
+
+func (x *GetOrgCAsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendycloud_v2_postbox_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOrgCAsResponse.ProtoReflect.Descriptor instead.
+func (*GetOrgCAsResponse) Descriptor() ([]byte, []int) {
+	return file_wendycloud_v2_postbox_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetOrgCAsResponse) GetCaDer() [][]byte {
+	if x != nil {
+		return x.CaDer
+	}
+	return nil
+}
+
 var File_wendycloud_v2_postbox_proto protoreflect.FileDescriptor
 
 const file_wendycloud_v2_postbox_proto_rawDesc = "" +
@@ -476,13 +602,17 @@ const file_wendycloud_v2_postbox_proto_rawDesc = "" +
 	"\x1bwendycloud/v2/postbox.proto\x12\rwendycloud.v2\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x13wendy/options.proto\x1a\"wendycloud/v2/signed_request.proto\"X\n" +
 	"\x15GetLastHeadAckRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12\x16\n" +
-	"\x06device\x18\x02 \x01(\tR\x06device\"\xd5\x01\n" +
+	"\x06device\x18\x02 \x01(\tR\x06device\"\xf1\x02\n" +
 	"\x16GetLastHeadAckResponse\x12.\n" +
 	"\x03ack\x18\x01 \x01(\v2\x1c.wendycloud.v2.SignedRequestR\x03ack\x12\x1b\n" +
 	"\tchain_der\x18\x02 \x03(\fR\bchainDer\x12;\n" +
 	"\vreceived_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"receivedAt\x121\n" +
-	"\x15postbox_head_entry_id\x18\x04 \x01(\x03R\x12postboxHeadEntryId\"P\n" +
+	"\x15postbox_head_entry_id\x18\x04 \x01(\x03R\x12postboxHeadEntryId\x12-\n" +
+	"\x10acked_entry_hash\x18\x05 \x01(\fH\x00R\x0eackedEntryHash\x88\x01\x01\x12:\n" +
+	"\x17postbox_head_entry_hash\x18\x06 \x01(\fH\x01R\x14postboxHeadEntryHash\x88\x01\x01B\x13\n" +
+	"\x11_acked_entry_hashB\x1a\n" +
+	"\x18_postbox_head_entry_hash\"P\n" +
 	"\x12PullChangesRequest\x12$\n" +
 	"\x0eafter_entry_id\x18\x01 \x01(\x03R\fafterEntryId\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\"\x87\x01\n" +
@@ -508,10 +638,15 @@ const file_wendycloud_v2_postbox_proto_rawDesc = "" +
 	"entry_hash\x18\x02 \x01(\fR\tentryHash\x12;\n" +
 	"\vobserved_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"observedAt\"\x11\n" +
-	"\x0fAckHeadResponse2\xbb\x01\n" +
+	"\x0fAckHeadResponse\"*\n" +
+	"\x10GetOrgCAsRequest\x12\x16\n" +
+	"\x06issuer\x18\x01 \x01(\fR\x06issuer\"*\n" +
+	"\x11GetOrgCAsResponse\x12\x15\n" +
+	"\x06ca_der\x18\x01 \x03(\fR\x05caDer2\x8b\x02\n" +
 	"\x14DevicePostboxService\x12T\n" +
 	"\vPullChanges\x12!.wendycloud.v2.PullChangesRequest\x1a\".wendycloud.v2.PullChangesResponse\x12M\n" +
-	"\aAckHead\x12\x1c.wendycloud.v2.SignedRequest\x1a\x1e.wendycloud.v2.AckHeadResponse\"\x04\x90\xb5\x18\x012p\n" +
+	"\aAckHead\x12\x1c.wendycloud.v2.SignedRequest\x1a\x1e.wendycloud.v2.AckHeadResponse\"\x04\x90\xb5\x18\x01\x12N\n" +
+	"\tGetOrgCAs\x12\x1f.wendycloud.v2.GetOrgCAsRequest\x1a .wendycloud.v2.GetOrgCAsResponse2p\n" +
 	"\x11PostboxAckService\x12[\n" +
 	"\x0eGetLastHeadAck\x12\x1c.wendycloud.v2.SignedRequest\x1a%.wendycloud.v2.GetLastHeadAckResponse\"\x04\x88\xb5\x18\x01b\x06proto3"
 
@@ -527,7 +662,7 @@ func file_wendycloud_v2_postbox_proto_rawDescGZIP() []byte {
 	return file_wendycloud_v2_postbox_proto_rawDescData
 }
 
-var file_wendycloud_v2_postbox_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_wendycloud_v2_postbox_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_wendycloud_v2_postbox_proto_goTypes = []any{
 	(*GetLastHeadAckRequest)(nil),  // 0: wendycloud.v2.GetLastHeadAckRequest
 	(*GetLastHeadAckResponse)(nil), // 1: wendycloud.v2.GetLastHeadAckResponse
@@ -536,25 +671,29 @@ var file_wendycloud_v2_postbox_proto_goTypes = []any{
 	(*PostboxEntry)(nil),           // 4: wendycloud.v2.PostboxEntry
 	(*PostboxHeadAck)(nil),         // 5: wendycloud.v2.PostboxHeadAck
 	(*AckHeadResponse)(nil),        // 6: wendycloud.v2.AckHeadResponse
-	(*SignedRequest)(nil),          // 7: wendycloud.v2.SignedRequest
-	(*timestamppb.Timestamp)(nil),  // 8: google.protobuf.Timestamp
+	(*GetOrgCAsRequest)(nil),       // 7: wendycloud.v2.GetOrgCAsRequest
+	(*GetOrgCAsResponse)(nil),      // 8: wendycloud.v2.GetOrgCAsResponse
+	(*SignedRequest)(nil),          // 9: wendycloud.v2.SignedRequest
+	(*timestamppb.Timestamp)(nil),  // 10: google.protobuf.Timestamp
 }
 var file_wendycloud_v2_postbox_proto_depIdxs = []int32{
-	7, // 0: wendycloud.v2.GetLastHeadAckResponse.ack:type_name -> wendycloud.v2.SignedRequest
-	8, // 1: wendycloud.v2.GetLastHeadAckResponse.received_at:type_name -> google.protobuf.Timestamp
-	4, // 2: wendycloud.v2.PullChangesResponse.entries:type_name -> wendycloud.v2.PostboxEntry
-	8, // 3: wendycloud.v2.PostboxHeadAck.observed_at:type_name -> google.protobuf.Timestamp
-	2, // 4: wendycloud.v2.DevicePostboxService.PullChanges:input_type -> wendycloud.v2.PullChangesRequest
-	7, // 5: wendycloud.v2.DevicePostboxService.AckHead:input_type -> wendycloud.v2.SignedRequest
-	7, // 6: wendycloud.v2.PostboxAckService.GetLastHeadAck:input_type -> wendycloud.v2.SignedRequest
-	3, // 7: wendycloud.v2.DevicePostboxService.PullChanges:output_type -> wendycloud.v2.PullChangesResponse
-	6, // 8: wendycloud.v2.DevicePostboxService.AckHead:output_type -> wendycloud.v2.AckHeadResponse
-	1, // 9: wendycloud.v2.PostboxAckService.GetLastHeadAck:output_type -> wendycloud.v2.GetLastHeadAckResponse
-	7, // [7:10] is the sub-list for method output_type
-	4, // [4:7] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	9,  // 0: wendycloud.v2.GetLastHeadAckResponse.ack:type_name -> wendycloud.v2.SignedRequest
+	10, // 1: wendycloud.v2.GetLastHeadAckResponse.received_at:type_name -> google.protobuf.Timestamp
+	4,  // 2: wendycloud.v2.PullChangesResponse.entries:type_name -> wendycloud.v2.PostboxEntry
+	10, // 3: wendycloud.v2.PostboxHeadAck.observed_at:type_name -> google.protobuf.Timestamp
+	2,  // 4: wendycloud.v2.DevicePostboxService.PullChanges:input_type -> wendycloud.v2.PullChangesRequest
+	9,  // 5: wendycloud.v2.DevicePostboxService.AckHead:input_type -> wendycloud.v2.SignedRequest
+	7,  // 6: wendycloud.v2.DevicePostboxService.GetOrgCAs:input_type -> wendycloud.v2.GetOrgCAsRequest
+	9,  // 7: wendycloud.v2.PostboxAckService.GetLastHeadAck:input_type -> wendycloud.v2.SignedRequest
+	3,  // 8: wendycloud.v2.DevicePostboxService.PullChanges:output_type -> wendycloud.v2.PullChangesResponse
+	6,  // 9: wendycloud.v2.DevicePostboxService.AckHead:output_type -> wendycloud.v2.AckHeadResponse
+	8,  // 10: wendycloud.v2.DevicePostboxService.GetOrgCAs:output_type -> wendycloud.v2.GetOrgCAsResponse
+	1,  // 11: wendycloud.v2.PostboxAckService.GetLastHeadAck:output_type -> wendycloud.v2.GetLastHeadAckResponse
+	8,  // [8:12] is the sub-list for method output_type
+	4,  // [4:8] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_wendycloud_v2_postbox_proto_init() }
@@ -564,13 +703,14 @@ func file_wendycloud_v2_postbox_proto_init() {
 	}
 	file_wendy_options_proto_init()
 	file_wendycloud_v2_signed_request_proto_init()
+	file_wendycloud_v2_postbox_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendycloud_v2_postbox_proto_rawDesc), len(file_wendycloud_v2_postbox_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

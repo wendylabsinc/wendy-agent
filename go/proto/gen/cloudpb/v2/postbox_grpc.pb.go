@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	DevicePostboxService_PullChanges_FullMethodName = "/wendycloud.v2.DevicePostboxService/PullChanges"
 	DevicePostboxService_AckHead_FullMethodName     = "/wendycloud.v2.DevicePostboxService/AckHead"
+	DevicePostboxService_GetOrgCAs_FullMethodName   = "/wendycloud.v2.DevicePostboxService/GetOrgCAs"
 )
 
 // DevicePostboxServiceClient is the client API for DevicePostboxService service.
@@ -47,6 +48,15 @@ type DevicePostboxServiceClient interface {
 	// which must be the mTLS peer. payload_type "wendycloud.v2.PostboxHeadAck".
 	// Operators read the stored ack with PostboxAckService.GetLastHeadAck.
 	AckHead(ctx context.Context, in *SignedRequest, opts ...grpc.CallOption) (*AckHeadResponse, error)
+	// WDY-4015 item 1 (sem 2026-10-23 22:27, corrected 22:30): the device asks
+	// for a CA it is missing, normally the Operator Authority CA that issued the
+	// `x5c` leaf of a PostboxEntry.request_jws. Nothing is attached to the entry.
+	// The tenant comes from the mTLS leaf, as for PullChanges. Cloud-asserted:
+	// the device caches a returned certificate only if it is a CA issued
+	// directly by the tenant CA the device already holds, and refuses any other.
+	// An entry whose issuer the device cannot resolve is held, not consumed.
+	// Vectors: conformance/postbox-entry.
+	GetOrgCAs(ctx context.Context, in *GetOrgCAsRequest, opts ...grpc.CallOption) (*GetOrgCAsResponse, error)
 }
 
 type devicePostboxServiceClient struct {
@@ -77,6 +87,16 @@ func (c *devicePostboxServiceClient) AckHead(ctx context.Context, in *SignedRequ
 	return out, nil
 }
 
+func (c *devicePostboxServiceClient) GetOrgCAs(ctx context.Context, in *GetOrgCAsRequest, opts ...grpc.CallOption) (*GetOrgCAsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOrgCAsResponse)
+	err := c.cc.Invoke(ctx, DevicePostboxService_GetOrgCAs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DevicePostboxServiceServer is the server API for DevicePostboxService service.
 // All implementations must embed UnimplementedDevicePostboxServiceServer
 // for forward compatibility.
@@ -101,6 +121,15 @@ type DevicePostboxServiceServer interface {
 	// which must be the mTLS peer. payload_type "wendycloud.v2.PostboxHeadAck".
 	// Operators read the stored ack with PostboxAckService.GetLastHeadAck.
 	AckHead(context.Context, *SignedRequest) (*AckHeadResponse, error)
+	// WDY-4015 item 1 (sem 2026-10-23 22:27, corrected 22:30): the device asks
+	// for a CA it is missing, normally the Operator Authority CA that issued the
+	// `x5c` leaf of a PostboxEntry.request_jws. Nothing is attached to the entry.
+	// The tenant comes from the mTLS leaf, as for PullChanges. Cloud-asserted:
+	// the device caches a returned certificate only if it is a CA issued
+	// directly by the tenant CA the device already holds, and refuses any other.
+	// An entry whose issuer the device cannot resolve is held, not consumed.
+	// Vectors: conformance/postbox-entry.
+	GetOrgCAs(context.Context, *GetOrgCAsRequest) (*GetOrgCAsResponse, error)
 	mustEmbedUnimplementedDevicePostboxServiceServer()
 }
 
@@ -116,6 +145,9 @@ func (UnimplementedDevicePostboxServiceServer) PullChanges(context.Context, *Pul
 }
 func (UnimplementedDevicePostboxServiceServer) AckHead(context.Context, *SignedRequest) (*AckHeadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AckHead not implemented")
+}
+func (UnimplementedDevicePostboxServiceServer) GetOrgCAs(context.Context, *GetOrgCAsRequest) (*GetOrgCAsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOrgCAs not implemented")
 }
 func (UnimplementedDevicePostboxServiceServer) mustEmbedUnimplementedDevicePostboxServiceServer() {}
 func (UnimplementedDevicePostboxServiceServer) testEmbeddedByValue()                              {}
@@ -174,6 +206,24 @@ func _DevicePostboxService_AckHead_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DevicePostboxService_GetOrgCAs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOrgCAsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DevicePostboxServiceServer).GetOrgCAs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DevicePostboxService_GetOrgCAs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DevicePostboxServiceServer).GetOrgCAs(ctx, req.(*GetOrgCAsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DevicePostboxService_ServiceDesc is the grpc.ServiceDesc for DevicePostboxService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -188,6 +238,10 @@ var DevicePostboxService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AckHead",
 			Handler:    _DevicePostboxService_AckHead_Handler,
+		},
+		{
+			MethodName: "GetOrgCAs",
+			Handler:    _DevicePostboxService_GetOrgCAs_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -216,6 +270,17 @@ const (
 // "wendycloud.v2.PostboxHeadAck"; body_sha256; then it decodes the payload.
 // The alarm runs on the signed PostboxHeadAck.observed_at, never on the
 // cloud-asserted fields. Vectors: conformance/reqsig (head_ack_read_vectors).
+//
+// Monotonicity (WDY-4014), per device: the client keeps (persisted per
+// device) the highest signed entry_id, its signed entry_hash and the highest
+// signed observed_at it has accepted for that device. A read whose signed
+// entry_id or observed_at is lower than the kept value is refused (a replayed
+// older ack or a rolled-back store), never displayed. An equal entry_id with
+// the same signed entry_hash is the same ack served again and is accepted; an
+// equal entry_id with a different signed entry_hash is refused (equivocation:
+// the device acked two different entries at one id, so the postbox forked). A
+// client that lost its kept values is at first contact: an older ack then
+// passes, and only the observed_at staleness alarm covers it.
 type PostboxAckServiceClient interface {
 	// Gate: the caller is an operator of organization_id's tenant with read
 	// access to the device, and the device's tenant equals organization_id. An
@@ -261,6 +326,17 @@ func (c *postboxAckServiceClient) GetLastHeadAck(ctx context.Context, in *Signed
 // "wendycloud.v2.PostboxHeadAck"; body_sha256; then it decodes the payload.
 // The alarm runs on the signed PostboxHeadAck.observed_at, never on the
 // cloud-asserted fields. Vectors: conformance/reqsig (head_ack_read_vectors).
+//
+// Monotonicity (WDY-4014), per device: the client keeps (persisted per
+// device) the highest signed entry_id, its signed entry_hash and the highest
+// signed observed_at it has accepted for that device. A read whose signed
+// entry_id or observed_at is lower than the kept value is refused (a replayed
+// older ack or a rolled-back store), never displayed. An equal entry_id with
+// the same signed entry_hash is the same ack served again and is accepted; an
+// equal entry_id with a different signed entry_hash is refused (equivocation:
+// the device acked two different entries at one id, so the postbox forked). A
+// client that lost its kept values is at first contact: an older ack then
+// passes, and only the observed_at staleness alarm covers it.
 type PostboxAckServiceServer interface {
 	// Gate: the caller is an operator of organization_id's tenant with read
 	// access to the device, and the device's tenant equals organization_id. An
