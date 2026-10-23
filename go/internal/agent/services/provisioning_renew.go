@@ -45,6 +45,13 @@ const (
 	renewCheckInterval  = 6 * time.Hour
 	renewRequestTimeout = 30 * time.Second
 
+	// renewClockSkew is how far a renewed leaf's NotBefore may run ahead of the
+	// time read before the request. pki-core stamps NotBefore with its own
+	// clock at issuance and does not backdate, and a device clock may lag
+	// (boards without an RTC); the mTLS verifier allows the same for a lagging
+	// clock (maxClockSkewTolerance).
+	renewClockSkew = 24 * time.Hour
+
 	// pendingDeviceKeyFile holds the renewal key until the renewed certificate
 	// and device-key.pem are both durable; see finishInterruptedRenewal.
 	pendingDeviceKeyFile = "device-key.pem.next"
@@ -258,6 +265,11 @@ func checkRenewedIdentity(bundle, newKey, principal, currentChainPEM string, now
 	if got, _ := certs.TenantPrincipalFromCert(parsed); got != principal {
 		return "", "", fmt.Errorf("renewed certificate names %q, want %q", got, principal)
 	}
+	leafNow := now.Add(renewClockSkew)
+	if parsed.NotBefore.After(leafNow) {
+		return "", "", fmt.Errorf("renewed certificate is not valid until %s; the device clock read %s",
+			parsed.NotBefore.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+	}
 	current, err := certs.ParseCertsFromPEM([]byte(currentChainPEM))
 	if err != nil || len(current) == 0 {
 		return "", "", fmt.Errorf("device holds no CA chain to check the renewal against: %v", err)
@@ -271,14 +283,14 @@ func checkRenewedIdentity(bundle, newKey, principal, currentChainPEM string, now
 		return "", "", fmt.Errorf("parsing renewed chain: %w", err)
 	}
 	anchor := []*x509.Certificate{current[len(current)-1]}
-	if err := certs.VerifyPeerCertificateChain(parsed, issued, anchor, x509.ExtKeyUsageClientAuth, now, now); err != nil {
+	if err := certs.VerifyPeerCertificateChain(parsed, issued, anchor, x509.ExtKeyUsageClientAuth, now, leafNow); err != nil {
 		return "", "", fmt.Errorf("renewed certificate does not chain to the device's trust anchor: %w", err)
 	}
 	for _, ca := range issued {
 		if ca.Equal(anchor[0]) {
 			continue
 		}
-		if err := certs.VerifyPeerCertificateChain(ca, issued, anchor, x509.ExtKeyUsageClientAuth, now, now); err != nil {
+		if err := certs.VerifyPeerCertificateChain(ca, issued, anchor, x509.ExtKeyUsageClientAuth, now, leafNow); err != nil {
 			return "", "", fmt.Errorf("renewed chain carries %q, which does not chain to the device's trust anchor: %w", ca.Subject.CommonName, err)
 		}
 	}

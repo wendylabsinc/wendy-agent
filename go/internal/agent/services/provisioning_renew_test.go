@@ -304,6 +304,39 @@ func TestRenewalNotDueOrExpired(t *testing.T) {
 	}
 }
 
+// pki-core stamps NotBefore with its own clock at issuance and does not
+// backdate, so a renewed leaf can start after the time the agent read before
+// the request: the request takes time, X.509 counts whole seconds, and the
+// device clock may run behind pki-core's.
+func TestRenewalAcceptsLeafStampedByPKICoreClock(t *testing.T) {
+	ca := newRenewCA(t)
+	_, endpoint, roots := startFakeRenew(t, func(w http.ResponseWriter, csr *x509.CertificateRequest) {
+		leaf := ca.issue(t, csr.PublicKey, time.Now().Add(2*time.Second), time.Now().Add(90*24*time.Hour))
+		renewJSON(t, w, http.StatusOK, map[string]string{"certificate": leaf + ca.pem})
+	})
+	svc, _, _ := enrolledForRenewal(t, ca, endpoint, roots)
+	if ok, err := svc.RenewIfDue(context.Background(), time.Now()); !ok || err != nil {
+		t.Fatalf("RenewIfDue = %v, %v; want renewed", ok, err)
+	}
+}
+
+// A leaf that starts days ahead is refused for that reason, and the device
+// keeps the identity it has.
+func TestRenewalRefusesLeafNotYetValid(t *testing.T) {
+	ca := newRenewCA(t)
+	_, endpoint, roots := startFakeRenew(t, func(w http.ResponseWriter, csr *x509.CertificateRequest) {
+		leaf := ca.issue(t, csr.PublicKey, time.Now().Add(48*time.Hour), time.Now().Add(90*24*time.Hour))
+		renewJSON(t, w, http.StatusOK, map[string]string{"certificate": leaf + ca.pem})
+	})
+	svc, dir, oldLeaf := enrolledForRenewal(t, ca, endpoint, roots)
+	if ok, err := svc.RenewIfDue(context.Background(), time.Now()); ok || err == nil || !strings.Contains(err.Error(), "not valid until") {
+		t.Fatalf("RenewIfDue = %v, %v; want a not-yet-valid refusal", ok, err)
+	}
+	if certPEM, _, _ := NewProvisioningService(zap.NewNop(), dir).ProvisioningCerts(); certPEM != oldLeaf {
+		t.Fatal("refused renewal changed the stored certificate")
+	}
+}
+
 // A crash after the renewed certificate was saved but before device-key.pem
 // was replaced is finished at the next start; a pending key that never
 // committed is dropped.
