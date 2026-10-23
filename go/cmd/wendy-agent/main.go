@@ -1452,6 +1452,15 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Renew the device certificate before it expires, with a fresh ML-DSA-65
+	// key. The renewed identity loads through the same clean restart.
+	// ponytail: restart per renewal (once per lifetime/3); swap in place if
+	// restarts start to hurt.
+	go provisioningSvc.RunRenewal(ctx, func() {
+		logger.Info("Device certificate renewed — restarting agent to load the new identity")
+		os.Exit(0)
+	})
+
 	// Enrollment is non-blocking and begins only after callbacks are installed.
 	// A baked ACME credential must not fall through to legacy enrollment when
 	// invalid or already attempted. Conflicting handoffs require operator recovery.
