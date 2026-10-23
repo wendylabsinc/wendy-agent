@@ -110,6 +110,9 @@ static BOOL wendyBLECopyOut(const void *bytes, NSUInteger n, uint8_t **outData, 
 // Target peripheral UUID for scanning
 @property (strong) NSString *targetUUID;
 
+// Marks the L2CAP channel dead, stops the I/O thread and wakes a blocked reader.
+- (void)failL2CAP;
+
 @end
 
 @implementation WendyBLEConnection
@@ -381,11 +384,15 @@ didOpenL2CAPChannel:(CBL2CAPChannel *)channel
     if (request.error != WENDY_BLE_OK) {
         // A prefix may already be on the wire. No later write may reuse this
         // stream as if the failed record had never been sent.
-        self.l2capError = YES;
-        self.l2capIORunning = NO;
-        dispatch_semaphore_signal(self.l2capRecvSema);
+        [self failL2CAP];
     }
     dispatch_semaphore_signal(request.completed);
+}
+
+- (void)failL2CAP {
+    self.l2capError = YES;
+    self.l2capIORunning = NO;
+    dispatch_semaphore_signal(self.l2capRecvSema);
 }
 
 // ── NSStreamDelegate (both L2CAP streams) ───────────────────────────
@@ -395,9 +402,7 @@ didOpenL2CAPChannel:(CBL2CAPChannel *)channel
         if (eventCode == NSStreamEventHasSpaceAvailable) {
             self.l2capOutputReady = YES;
         } else if (eventCode == NSStreamEventErrorOccurred || eventCode == NSStreamEventEndEncountered) {
-            self.l2capError = YES;
-            self.l2capIORunning = NO;
-            dispatch_semaphore_signal(self.l2capRecvSema);
+            [self failL2CAP];
         }
         return;
     }
@@ -661,19 +666,35 @@ static WendyBLEError wendyBLEL2CAPSend(WendyBLEConn handle, const uint8_t *data,
                  onThread:conn.l2capIOThread
                withObject:request
             waitUntilDone:NO];
-    if (dispatch_semaphore_wait(request.completed,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC))) != 0) {
-        request.cancelled = YES;
-        conn.l2capError = YES;
-        conn.l2capIORunning = NO;
-        dispatch_semaphore_signal(conn.l2capRecvSema);
-        return WENDY_BLE_ERR_TIMEOUT;
+    // Wait in short slices. The I/O thread can exit between the check above
+    // and the perform being queued; the request then never runs, and waiting
+    // out the whole timeout would hold Close for as long.
+    for (;;) {
+        NSTimeInterval remaining = request.deadline - NSProcessInfo.processInfo.systemUptime;
+        NSTimeInterval slice = MAX(0.0, MIN(remaining, 0.05));
+        if (dispatch_semaphore_wait(request.completed,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(slice * NSEC_PER_SEC))) == 0) {
+            return request.error;
+        }
+        BOOL stranded = [conn.l2capIOThread isFinished];
+        if (stranded && dispatch_semaphore_wait(request.completed, DISPATCH_TIME_NOW) == 0) {
+            return request.error; // the thread ran the request just before it exited
+        }
+        if (stranded || remaining <= slice) {
+            request.cancelled = YES;
+            [conn failL2CAP];
+            return stranded ? WENDY_BLE_ERR_DISCONNECTED : WENDY_BLE_ERR_TIMEOUT;
+        }
     }
-    return request.error;
 }
 
 WendyBLEError wendy_ble_l2cap_send(WendyBLEConn handle, const uint8_t *data, int length) {
     return wendyBLEL2CAPSend(handle, data, length, kWendyBLEWriteTimeout);
+}
+
+void wendy_ble_l2cap_abort(WendyBLEConn handle) {
+    if (!handle) return;
+    [(__bridge WendyBLEConnection *)handle failL2CAP];
 }
 
 WendyBLEL2CAPRecvResult wendy_ble_l2cap_recv(WendyBLEConn handle, int timeout_seconds) {

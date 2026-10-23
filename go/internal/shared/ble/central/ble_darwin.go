@@ -18,8 +18,8 @@ import (
 )
 
 type Connection struct {
-	// Keep the native handle alive throughout L2CAP I/O. Close waits for the
-	// bounded native calls before releasing it.
+	// Keep the native handle alive throughout L2CAP I/O. Close aborts the
+	// bounded native calls, then waits for them to return before releasing it.
 	ioMu   sync.RWMutex
 	sendMu sync.Mutex
 	handle C.WendyBLEConn
@@ -207,7 +207,17 @@ func (c *Connection) ListServices() string {
 }
 
 // Close disconnects and frees all BLE resources.
+//
+// It aborts the L2CAP channel before taking ioMu, so a send stalled under
+// backpressure fails at its next poll instead of holding Close for the whole
+// native write timeout; Linux shuts its socket down first for the same reason.
+// Only Close writes handle, so reading it here unlocked is safe as long as
+// Close is not called concurrently with itself (l2capNetConn.Close guarantees
+// that).
 func (c *Connection) Close() {
+	if c.handle != nil {
+		C.wendy_ble_l2cap_abort(c.handle)
+	}
 	c.ioMu.Lock()
 	defer c.ioMu.Unlock()
 	if c.handle != nil {

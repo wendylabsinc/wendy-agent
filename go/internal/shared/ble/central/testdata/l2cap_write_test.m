@@ -115,17 +115,34 @@ int main(void) {
         exercise(@[@3, @0], NO, NO, WENDY_BLE_ERR_TIMEOUT, @"abc");
         exercise(@[@2, @0], NO, YES, WENDY_BLE_ERR_DISCONNECTED, @"ab");
 
-        // A request queued onto an I/O thread that has already exited must
-        // return within its deadline even though no selector runs.
+        // A request queued onto an I/O thread that has already exited never
+        // runs. The sender must notice the dead thread long before its deadline.
         FakeOutput *output = [FakeOutput new];
         FakeConnection *conn = start(output);
         stop(conn);
         conn.l2capIORunning = YES;
         NSTimeInterval before = NSProcessInfo.processInfo.systemUptime;
-        assert(wendyBLEL2CAPSend((__bridge WendyBLEConn)conn, (const uint8_t *)"x", 1, 0.02)
-               == WENDY_BLE_ERR_TIMEOUT);
+        assert(wendyBLEL2CAPSend((__bridge WendyBLEConn)conn, (const uint8_t *)"x", 1, 5.0)
+               == WENDY_BLE_ERR_DISCONNECTED);
         assert(NSProcessInfo.processInfo.systemUptime - before < 1.0);
         assert(output.received.length == 0);
+        assert(conn.l2capError);
+
+        // Close aborts a send stalled under backpressure rather than waiting
+        // out the write timeout.
+        FakeOutput *stalled = [FakeOutput new];
+        stalled.writes = @[@3, @0];
+        FakeConnection *stalledConn = start(stalled);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
+                       dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+            wendy_ble_l2cap_abort((__bridge WendyBLEConn)stalledConn);
+        });
+        before = NSProcessInfo.processInfo.systemUptime;
+        assert(wendyBLEL2CAPSend((__bridge WendyBLEConn)stalledConn, (const uint8_t *)"abcdefgh", 8, 5.0)
+               == WENDY_BLE_ERR_DISCONNECTED);
+        assert(NSProcessInfo.processInfo.systemUptime - before < 1.0);
+        assert([stalled.received isEqualToData:[@"abc" dataUsingEncoding:NSUTF8StringEncoding]]);
+        stop(stalledConn);
     }
     return 0;
 }
