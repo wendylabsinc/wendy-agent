@@ -129,6 +129,43 @@ func TestProjectRejectsInvalidEditsWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestProjectRejectsMalformedSectionsWithoutWriting(t *testing.T) {
+	for _, test := range []struct {
+		name, manifest string
+		args           []string
+		want           string
+	}{
+		{"frameworks string", `{"appId":"robot","frameworks":"future-format"}`, []string{"add", "ros2"}, "frameworks must be an object"},
+		{"entitlements object on add", `{"appId":"robot","entitlements":{"type":"camera"}}`, []string{"add", "http", "--port", "8080"}, "entitlements must be an array"},
+		{"entitlements object on edit", `{"appId":"robot","entitlements":{"type":"camera"}}`, []string{"edit", "camera", "--allowlist", "front"}, "entitlements must be an array"},
+		{"service entitlements object", `{"appId":"robot","services":{"vision":{"entitlements":{"type":"camera"}}}}`, []string{"add", "http", "--port", "8080", "--service", "vision"}, "services.vision.entitlements must be an array"},
+		{"services array", `{"appId":"robot","services":["vision"]}`, []string{"add", "camera", "--service", "vision"}, "services must be an object"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir, path := projectTestSetup(t, test.manifest)
+			if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services:\n  vision:\n    image: python\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := projectTestCommand(t, append(test.args, "--file", path)...)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "--raw") {
+				t.Fatalf("error = %v, want %q with a pointer to --raw", err, test.want)
+			}
+			if readProjectTestFile(t, path) != test.manifest {
+				t.Fatal("malformed section was overwritten")
+			}
+		})
+	}
+}
+
+func TestProjectTreatsNullSectionsAsAbsent(t *testing.T) {
+	_, path := projectTestSetup(t, `{"appId":"robot","entitlements":null,"frameworks":null}`)
+	for _, args := range [][]string{{"add", "http", "--port", "8080"}, {"add", "ros2"}} {
+		if _, err := projectTestCommand(t, append(args, "--file", path)...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+}
+
 func TestProjectROS2ScopeWritesCurrentKey(t *testing.T) {
 	_, path := projectTestSetup(t, `{"appId":"robot"}`)
 	if _, err := projectTestCommand(t, "add", "ros2", "--scope", "network", "--file", path); err != nil {

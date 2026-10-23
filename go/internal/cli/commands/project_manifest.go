@@ -94,7 +94,10 @@ func (d *projectManifest) scope(service string) (projectObject, error) {
 	if service == "" {
 		return d.root, nil
 	}
-	services, _ := d.root["services"].(map[string]any)
+	services, ok := d.root["services"].(map[string]any)
+	if !ok && d.root["services"] != nil {
+		return nil, fmt.Errorf("services must be an object; use `wendy project edit --raw` to repair it")
+	}
 	if raw, exists := services[service]; exists {
 		obj, ok := raw.(map[string]any)
 		if !ok {

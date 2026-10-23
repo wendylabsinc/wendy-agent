@@ -243,6 +243,9 @@ func changeProjectFeature(cmd *cobra.Command, doc *projectManifest, action, name
 	if err != nil {
 		return false, err
 	}
+	if err := checkProjectSections(scope, service); err != nil {
+		return false, err
+	}
 	interactive := projectInteractive()
 	guided := name == ""
 	if name == "" {
@@ -389,6 +392,26 @@ func projectHasFeature(scope projectObject, name string) bool {
 		}
 	}
 	return false
+}
+
+// checkProjectSections rejects an entitlements or frameworks value of the wrong
+// type. Treating it as absent would let an edit replace it and lose its contents.
+func checkProjectSections(scope projectObject, service string) error {
+	prefix := ""
+	if service != "" {
+		prefix = "services." + service + "."
+	}
+	if raw := scope["entitlements"]; raw != nil {
+		if _, ok := raw.([]any); !ok {
+			return fmt.Errorf("%sentitlements must be an array; use `wendy project edit --raw` to repair it", prefix)
+		}
+	}
+	if raw := scope["frameworks"]; raw != nil {
+		if _, ok := raw.(map[string]any); !ok {
+			return fmt.Errorf("%sframeworks must be an object; use `wendy project edit --raw` to repair it", prefix)
+		}
+	}
+	return nil
 }
 
 func projectFeatureTarget(scope projectObject, name, action string, selected int, interactive bool) (projectObject, func(projectObject) error, error) {
