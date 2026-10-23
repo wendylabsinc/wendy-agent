@@ -12,11 +12,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -108,9 +111,10 @@ func enrolledForRenewal(t *testing.T, ca renewCA, endpoint string, roots *x509.C
 // fakeRenew is pki-core's renew frontend: it records the presented leaf and
 // the CSR, and answers with respond.
 type fakeRenew struct {
-	requests  atomic.Int32
-	presented []*x509.Certificate
-	csr       *x509.CertificateRequest
+	requests    atomic.Int32
+	closedConns atomic.Int32
+	presented   []*x509.Certificate
+	csr         *x509.CertificateRequest
 }
 
 func startFakeRenew(t *testing.T, respond func(w http.ResponseWriter, csr *x509.CertificateRequest)) (*fakeRenew, string, *x509.CertPool) {
@@ -133,6 +137,11 @@ func startFakeRenew(t *testing.T, respond func(w http.ResponseWriter, csr *x509.
 		respond(w, csr)
 	}))
 	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			f.closedConns.Add(1)
+		}
+	}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	roots := x509.NewCertPool()
@@ -447,6 +456,79 @@ func TestRenewalRefusesForeignTrust(t *testing.T) {
 				t.Fatal("refused renewal changed the stored identity or trust")
 			}
 		})
+	}
+}
+
+// A device whose only route out is the proxy set in /etc/default/wendy-agent
+// (HTTPS_PROXY) renews through it, as ACME enrollment already does. Go reads
+// the proxy environment once per process, so the renewal runs in a fresh test
+// process.
+func TestRenewalUsesConfiguredProxy(t *testing.T) {
+	if os.Getenv("WENDY_RENEW_PROXY_HELPER") != "1" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRenewalUsesConfiguredProxy$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "WENDY_RENEW_PROXY_HELPER=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("helper process: %v: %s", err, out)
+		}
+		return
+	}
+	ca := newRenewCA(t)
+	_, fakeEndpoint, roots := startFakeRenew(t, renewed(t, ca))
+	upstream, _ := url.Parse(fakeEndpoint)
+	var tunnelled atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+			return
+		}
+		tunnelled.Store(r.Host)
+		server, err := net.Dial("tcp", upstream.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer server.Close()
+		client, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer client.Close()
+		_, _ = io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n")
+		go func() { _, _ = io.Copy(server, client) }()
+		_, _ = io.Copy(client, server)
+	}))
+	t.Cleanup(proxy.Close)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	// The fake's certificate names example.com; only the proxy routes it there.
+	svc, _, _ := enrolledForRenewal(t, ca, "https://example.com/v1/renew", roots)
+	if ok, err := svc.RenewIfDue(context.Background(), time.Now()); !ok || err != nil {
+		t.Fatalf("RenewIfDue = %v, %v; want renewed through the proxy", ok, err)
+	}
+	if got, _ := tunnelled.Load().(string); got != "example.com:443" {
+		t.Fatalf("proxy tunnelled %q, want example.com:443", got)
+	}
+}
+
+// An attempt leaves no idle connection behind that still authenticates with
+// the device's current leaf; the next attempt is hours away.
+func TestRenewalClosesItsConnection(t *testing.T) {
+	ca := newRenewCA(t)
+	f, endpoint, roots := startFakeRenew(t, func(w http.ResponseWriter, _ *x509.CertificateRequest) {
+		renewJSON(t, w, http.StatusForbidden, map[string]string{"detail": "principal disabled"})
+	})
+	svc, _, _ := enrolledForRenewal(t, ca, endpoint, roots)
+	if _, err := svc.RenewIfDue(context.Background(), time.Now()); err == nil {
+		t.Fatal("RenewIfDue succeeded against a refusal")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for f.closedConns.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("renewal left its connection open after the attempt")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

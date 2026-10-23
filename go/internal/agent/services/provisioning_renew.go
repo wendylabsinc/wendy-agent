@@ -193,9 +193,16 @@ func postRenewal(ctx context.Context, endpoint, certPEM, chainPEM, keyPEM, csrPE
 		Timeout: renewRequestTimeout,
 		// Never re-send the CSR or present the leaf to another host.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}, RootCAs: renewRootCAs,
-		}},
+		Transport: &http.Transport{
+			// The proxy from the agent's environment, as ACME enrollment uses.
+			Proxy: http.ProxyFromEnvironment,
+			// One request per attempt; keep no connection that authenticates
+			// with the current leaf until the next attempt hours later.
+			DisableKeepAlives: true,
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}, RootCAs: renewRootCAs,
+			},
+		},
 	}
 	body, _ := json.Marshal(map[string]string{"csr": csrPEM})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
