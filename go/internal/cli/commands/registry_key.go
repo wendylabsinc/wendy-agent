@@ -22,7 +22,8 @@ import (
 // the operator's signature. Wraps to it open on this machine only. A known
 // device re-wraps onward for a new one with registrycrypto.Rewrap (T12/T8).
 //
-// TODO(WDY-4007): pin the dev custodian key id here once the dev KMS key exists.
+// Every wrap also goes to the custodian (registrycrypto.CustodianKey, recipient
+// kind RecipientCustodian): dev is pinned, prod is refused until its key exists.
 
 func newRegistryCmd() *cobra.Command {
 	cmd := &cobra.Command{

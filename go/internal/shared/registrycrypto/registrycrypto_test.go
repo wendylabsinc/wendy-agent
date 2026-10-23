@@ -527,3 +527,21 @@ func TestRegistrationRoundTrip(t *testing.T) {
 		t.Fatalf("registration refused: %v", err)
 	}
 }
+
+// The dev custodian pin parses as an MLKEM768X25519 key whose key id is the
+// one cloud-info read from KMS; prod is refused, never defaulted.
+func TestCustodianKey(t *testing.T) {
+	pub, keyID, err := CustodianKey(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := KEM.NewPublicKey(pub); err != nil {
+		t.Fatalf("dev custodian pin is not an MLKEM768X25519 key: %v", err)
+	}
+	if sum := sha256.Sum256(pub); keyID != hex.EncodeToString(sum[:]) || keyID != "b98c5d3b9da8d92be5a1c6f2277f05490fa1ea7a5be269e2b30808e22d3dae10" {
+		t.Fatalf("dev custodian key id %s", keyID)
+	}
+	if _, _, err := CustodianKey(false); !errors.Is(err, ErrNoCustodian) {
+		t.Fatalf("prod custodian key: %v, want ErrNoCustodian", err)
+	}
+}
