@@ -522,7 +522,9 @@ func (s *ProvisioningService) loadState() {
 			s.keyPEM = keyData
 		} else if state.KeyPEM != "" {
 			s.keyPEM = []byte(state.KeyPEM)
-			if writeErr := os.WriteFile(keyPath, s.keyPEM, 0o400); writeErr == nil {
+			// The key must be durable before the rewrite below drops the
+			// only other copy of it.
+			if writeErr := syncWriteFile(keyPath, s.keyPEM, 0o400); writeErr == nil {
 				s.logger.Info("Migrated device key from provisioning.json to device-key.pem")
 				// Rewrite provisioning.json without the now-migrated key.
 				if err := s.saveState(state); err != nil {
