@@ -145,3 +145,35 @@ func TestRegistryKeyRegistrationShape(t *testing.T) {
 		t.Fatalf("bound key registered again: %v, %d calls", err, dir.calls)
 	}
 }
+
+// A re-login by the same operator on the same session keeps the registry key
+// and its bound marker; a different operator on that session gets a new key.
+func TestRegistryKeyKeptOnlyForSamePrincipal(t *testing.T) {
+	prior := tenantOperatorSession(t, "cloud.example:443")
+	priv, err := sessionRegistryKey(&prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior.RegistryKeyID = registrycrypto.KeyID(priv.PublicKey().Bytes())
+	cfg := &config.Config{Auth: []config.AuthConfig{prior}}
+
+	same := tenantOperatorSession(t, "cloud.example:443")
+	keepRegistryKey(cfg, &same)
+	if same.RegistryPrivateKey != prior.RegistryPrivateKey || same.RegistryKeyID != prior.RegistryKeyID {
+		t.Fatal("same operator lost its registry key or bound marker")
+	}
+
+	other := tenantOperatorSession(t, "cloud.example:443")
+	other.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/someone-else"
+	keepRegistryKey(cfg, &other)
+	if other.RegistryKeyID != "" {
+		t.Fatalf("other operator inherited bound marker %q", other.RegistryKeyID)
+	}
+	fresh, err := sessionRegistryKey(&other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(fresh.PublicKey().Bytes(), priv.PublicKey().Bytes()) {
+		t.Fatal("other operator reused the prior operator's registry key")
+	}
+}

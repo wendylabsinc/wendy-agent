@@ -272,12 +272,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		DPoPPrivateKey: privateKeyPEM,
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
-	// This machine keeps its registry key across sign-ins of the same operator.
-	for _, prior := range cfg.Auth {
-		if sameOAuthSession(&prior, &authEntry) && len(prior.Certificates) > 0 && prior.Certificates[0].PrincipalURI == certInfo.PrincipalURI {
-			authEntry.RegistryPrivateKey, authEntry.RegistryKeyID = prior.RegistryPrivateKey, prior.RegistryKeyID
-		}
-	}
+	keepRegistryKey(cfg, &authEntry)
 	registerRegistryKeyAfterMint(ctx, &authEntry)
 	cfg.AddAuth(authEntry)
 	// Name the new session as a context; the first login becomes "default" and
@@ -293,6 +288,16 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	fmt.Println(sessionKeyLine(keyAlgorithmName(key.Public()), "OIDC"))
 	clitimesync.CacheProof(ctx)
 	return nil
+}
+
+// keepRegistryKey keeps this machine's registry key across sign-ins of the
+// same operator on the same session; another principal starts without one.
+func keepRegistryKey(cfg *config.Config, entry *config.AuthConfig) {
+	for _, prior := range cfg.Auth {
+		if sameOAuthSession(&prior, entry) && len(prior.Certificates) > 0 && prior.Certificates[0].PrincipalURI == entry.Certificates[0].PrincipalURI {
+			entry.RegistryPrivateKey, entry.RegistryKeyID = prior.RegistryPrivateKey, prior.RegistryKeyID
+		}
+	}
 }
 
 type oidcHTTPDoer interface {

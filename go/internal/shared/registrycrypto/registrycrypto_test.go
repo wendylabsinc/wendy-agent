@@ -467,6 +467,8 @@ func TestDeviceRegistrationVector(t *testing.T) {
 			"unknown suite":      request(dv.Tenant, 9),
 			// Only raw wire bytes can repeat a field; proto.Unmarshal keeps the last.
 			"duplicate key": append(reg.GetPayload(), protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), publicKey)...),
+			// Field 3 as a varint is an unknown field to proto.Unmarshal, not a second key.
+			"wrong-type key": protowire.AppendVarint(protowire.AppendTag(append([]byte(nil), reg.GetPayload()...), 3, protowire.VarintType), 1),
 		} {
 			if _, err := registeredKey(payload, dv.Tenant); err == nil {
 				t.Errorf("%s: payload accepted", name)

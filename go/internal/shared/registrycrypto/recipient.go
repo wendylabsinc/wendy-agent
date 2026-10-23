@@ -70,6 +70,11 @@ func registeredKey(payload []byte, organizationID string) ([]byte, error) {
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, err
 	}
+	// A field of the wrong wire type lands in unknown fields and re-marshals
+	// byte-identically, so the round trip alone does not catch it.
+	if len(req.ProtoReflect().GetUnknown()) != 0 {
+		return nil, errors.New("registration payload carries unknown fields")
+	}
 	if again, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&req); err != nil || !bytes.Equal(again, payload) {
 		return nil, errors.New("registration payload is not canonically encoded")
 	}
