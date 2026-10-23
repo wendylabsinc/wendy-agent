@@ -59,6 +59,9 @@ func reissueCurrentCertificate(ctx context.Context, auth *config.AuthConfig) err
 	automaticCertReissue.attempted = true
 	reissueCtx, cancel := context.WithTimeout(ctx, certificateReissueTimeout)
 	defer cancel()
+	// Post-expiry re-issuance goes ahead of Sem agreeing the AAA §5.2 contract sentence.
+	// If he objects, follow up: renew only before expiry, otherwise ask the user to sign in again.
+	// https://linear.app/wendylabsinc/issue/WDY-4006
 	err = refreshDefaultCloudCertificateFn(reissueCtx, auth)
 	// Auth may have rotated the handle before issuance or validation failed.
 	// A persistence failure must remain fatal even if the held leaf is valid.
