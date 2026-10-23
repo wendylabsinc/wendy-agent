@@ -83,7 +83,7 @@ func TestResetMeshRecoveryRetriesBeforeReadiness(t *testing.T) {
 	failure := errors.New("owned rule removal failed")
 	var attempts atomic.Int32
 	states := make(chan error, 4)
-	done := recoverCompletedResetMesh(ctx, []byte("verified completion"), time.Millisecond, func(context.Context) error {
+	done := recoverCompletedResetMesh(ctx, true, time.Millisecond, func(context.Context) error {
 		if attempts.Add(1) == 1 {
 			return failure
 		}
@@ -103,10 +103,8 @@ func TestResetMeshRecoveryRetriesBeforeReadiness(t *testing.T) {
 }
 
 func TestResetMeshRecoverySkipsHostsWithoutVerifiedCompletion(t *testing.T) {
-	for _, receipt := range [][]byte{nil, {}} {
-		<-recoverCompletedResetMesh(context.Background(), receipt, time.Millisecond, func(context.Context) error {
-			t.Fatal("host without a reset receipt attempted mesh cleanup or dependency checks")
-			return nil
-		}, func(error) { t.Fatal("fresh enrollment readiness changed") }, func(error) {})
-	}
+	<-recoverCompletedResetMesh(context.Background(), false, time.Millisecond, func(context.Context) error {
+		t.Fatal("host without a completed reset attempted mesh cleanup or dependency checks")
+		return nil
+	}, func(error) { t.Fatal("fresh enrollment readiness changed") }, func(error) {})
 }

@@ -156,6 +156,14 @@ func TestDevicePickerSelectsV2UUID(t *testing.T) {
 }
 
 func TestCloudDiscoveryV2DoesNotUseRetiredRelay(t *testing.T) {
+	for _, udp := range []bool{false, true} {
+		for _, port := range []uint32{1, 3007, 50052, 65535} {
+			t.Run(fmt.Sprintf("udp=%t/port=%d", udp, port), func(t *testing.T) { testCloudDiscoveryV2Port(t, udp, port) })
+		}
+	}
+}
+
+func testCloudDiscoveryV2Port(t *testing.T, udp bool, port uint32) {
 	// The v2 relay path dials the live wendycloud.tunnel.v2 authorization
 	// service (cloudrelay.OpenTCP → RequestTunnel); it must never dial the
 	// retired wendycloud.v2.TunnelBrokerService. That retired server stub is
@@ -194,7 +202,11 @@ func TestCloudDiscoveryV2DoesNotUseRetiredRelay(t *testing.T) {
 	// operator credential is ML-DSA now, so signing succeeds and the call
 	// reaches the dial — the point guarded here: whatever it dials, never the
 	// retired relay.
-	_, err = d.openTunnel(ctx, nil, auth, 50052)
+	if udp {
+		_, err = d.openDatagram(ctx, nil, auth, port)
+	} else {
+		_, err = d.openTunnel(ctx, nil, auth, port)
+	}
 	if err == nil {
 		t.Fatal("expected the tunnel dial to fail against the stub cloud endpoint")
 	}

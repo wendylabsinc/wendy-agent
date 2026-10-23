@@ -10,6 +10,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudunenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
@@ -94,7 +95,7 @@ func cloudDeviceIdentity(asset *cloudpbv2.Asset, id, tenant string) (*certs.Wend
 	if asset.GetId() != id || asset.GetOrganizationId() != tenant {
 		return nil, fmt.Errorf("Cloud returned a device belonging to a different asset or tenant")
 	}
-	name := asset.GetPkiDeviceName()
+	name := cloudunenroll.DeviceID(asset)
 	if name == "" {
 		return nil, fmt.Errorf("Cloud has no certificate identity recorded for this device")
 	}

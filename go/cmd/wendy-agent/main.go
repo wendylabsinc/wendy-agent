@@ -16,11 +16,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	wendy "github.com/wendylabsinc/wendy-go"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -149,7 +152,7 @@ func main() {
 	telemetryCore := services.NewTelemetryCore(telemetryBuf, zapcore.DebugLevel)
 	logger = zap.New(zapcore.NewTee(logger.Core(), telemetryCore))
 
-	logger.Info("Starting wendy-agent", zap.String("version", version.Version))
+	logger.Info("Starting wendy-agent", zap.String("version", version.Version), zap.String("core_version", wendy.CoreVersion()))
 
 	configPath := "/etc/wendy-agent"
 	if envPath := os.Getenv("WENDY_CONFIG_PATH"); envPath != "" {
@@ -383,10 +386,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	// A verified completed reset, including a recovered pending reset, has
 	// already erased its credentials. Reclaim owned kernel policy before
-	// exposing its receipt. A fresh unenrolled host has no such receipt and
+	// exposing its receipt. A local-only reset has no receipt but leaves a
+	// verified completion marker. A fresh unenrolled host has neither and
 	// must not require mesh firewall tools just to begin enrollment.
 	if resetStatus, err := provisioningSvcV2.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{}); err == nil {
-		recoverCompletedResetMesh(ctx, resetStatus.GetNotProvisioned().GetUnenrollmentCompletion(), 5*time.Second,
+		completed := len(resetStatus.GetNotProvisioned().GetUnenrollmentCompletion()) != 0 || provisioningSvc.LocalResetCompleted()
+		recoverCompletedResetMesh(ctx, completed, 5*time.Second,
 			cleanupResetMesh, provisioningSvc.SetResetCleanupError, func(err error) {
 				logger.Error("Reset net cleanup incomplete; completion and enrollment remain unavailable", zap.Error(err))
 			})
@@ -1762,7 +1767,11 @@ func handleUtilityCommand(args []string) (bool, int) {
 	}
 
 	if args[0] == "--version" || args[0] == "-v" {
-		fmt.Println(version.Version)
+		if slices.Contains(args[1:], "--verbose") {
+			fmt.Printf("Agent: %s\nCore: %s\nGo: %s\n", version.Version, wendy.CoreVersion(), runtime.Version())
+		} else {
+			fmt.Println(version.Version)
+		}
 		return true, 0
 	}
 
