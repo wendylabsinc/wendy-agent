@@ -491,6 +491,43 @@ func TestRenewalCommittedCertificateSurvivesKeyWriteFailure(t *testing.T) {
 	}
 }
 
+// Cloud unenrollment saves a pending receipt bound to the installed leaf, then
+// releases the lock before it clears the enrollment. A renewal that commits in
+// that gap would leave the receipt naming a replaced leaf, and the device in
+// local reset recovery: it must discard the renewed certificate instead.
+func TestRenewalDoesNotCommitOverPendingUnenrollment(t *testing.T) {
+	ca := newRenewCA(t)
+	_, endpoint, roots := startFakeRenew(t, renewed(t, ca))
+	svc, dir, oldLeaf := enrolledForRenewal(t, ca, endpoint, roots)
+	_, _, oldKey := svc.ProvisioningCerts()
+	statePath := filepath.Join(dir, "provisioning.json")
+	data, _ := os.ReadFile(statePath)
+	var state provisioningState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state.Unenrollment = &unenrollmentState{Status: unenrollmentPending, Receipt: []byte("receipt")}
+	data, _ = json.Marshal(state)
+	if err := WriteProvisioningState(dir, data); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, err := svc.RenewIfDue(context.Background(), time.Now()); ok || err == nil {
+		t.Fatalf("RenewIfDue = %v, %v; want the renewal discarded", ok, err)
+	}
+	data, _ = os.ReadFile(statePath)
+	var after provisioningState
+	if err := json.Unmarshal(data, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.CertPEM != oldLeaf || after.Unenrollment == nil {
+		t.Fatal("renewal replaced the leaf a pending unenrollment is bound to")
+	}
+	if stored, _ := os.ReadFile(filepath.Join(dir, "device-key.pem")); string(stored) != string(oldKey) {
+		t.Fatal("renewal replaced the device key during a pending unenrollment")
+	}
+}
+
 // A pending key that outlived an unenrollment is removed at the next start.
 func TestPendingKeyDroppedOnUnenrolledDevice(t *testing.T) {
 	dir := t.TempDir()

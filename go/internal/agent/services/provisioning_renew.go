@@ -163,7 +163,10 @@ func (s *ProvisioningService) RenewIfDue(ctx context.Context, now time.Time) (bo
 	if err != nil {
 		return false, err
 	}
-	return true, s.commitRenewal(certPEM, newLeaf, newChain, []byte(newKey))
+	if err := s.commitRenewal(certPEM, newLeaf, newChain, []byte(newKey)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func storedDeviceLeaf(certPEM string) (*x509.Certificate, error) {
@@ -298,9 +301,11 @@ func checkRenewedIdentity(bundle, newKey, principal, currentChainPEM string, now
 }
 
 // commitRenewal persists the renewed identity unless it changed meanwhile
-// (unenrollment, re-enrollment). Order: certificate first, then
-// device-key.pem, then the pending key goes; a crash in between is finished
-// by finishInterruptedRenewal at the next start.
+// (unenrollment, re-enrollment) or a Cloud unenrollment is pending: that
+// saves a receipt bound to the current leaf before it clears the enrollment,
+// so replacing the leaf in between would strand the reset. Order: certificate
+// first, then device-key.pem, then the pending key goes; a crash in between
+// is finished by finishInterruptedRenewal at the next start.
 func (s *ProvisioningService) commitRenewal(previousCertPEM, certPEM, chainPEM string, keyPEM []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -314,6 +319,9 @@ func (s *ProvisioningService) commitRenewal(previousCertPEM, certPEM, chainPEM s
 	var state provisioningState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("parsing provisioning state: %w", err)
+	}
+	if state.Unenrollment != nil {
+		return errors.New("device unenrollment is pending; renewed certificate discarded")
 	}
 	state.CertPEM, state.ChainPEM = certPEM, chainPEM
 	if err := s.saveState(&state); err != nil {
