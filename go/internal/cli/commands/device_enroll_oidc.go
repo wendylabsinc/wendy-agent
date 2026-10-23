@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
@@ -38,19 +39,13 @@ func runOIDCEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, 
 		return fmt.Errorf("OIDC session has no Cloud gRPC endpoint")
 	}
 
+	if err := cloudenroll.CheckAgentEnrollment(ctx, conn.Conn); err != nil {
+		return err
+	}
 	agent := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn)
-	provisioned, err := agent.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{})
-	if status.Code(err) == codes.Unimplemented {
-		return fmt.Errorf("this agent does not support direct PKI enrollment; update the agent and retry")
-	}
+	hw, err := cloudenroll.ReadHardware(ctx, conn.Conn)
 	if err != nil {
-		return fmt.Errorf("checking device enrollment: %w", err)
-	}
-	if provisioned.GetProvisioned() != nil {
-		return fmt.Errorf("device is already enrolled; unprovision it before enrolling again")
-	}
-	if provisioned.GetNotProvisioned() == nil {
-		return fmt.Errorf("agent returned an unknown enrollment state")
+		fmt.Fprintf(os.Stderr, "Warning: %v; enrolling without hardware details.\n", err)
 	}
 
 	tokenCtx, err := cloudContext(ctx, auth)
@@ -63,8 +58,8 @@ func runOIDCEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	defer cloudConn.Close()
 
-	fmt.Printf("Enrolling %s as %s with PKI...\n", name, deviceID)
-	cfg, assetID, err := cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, name)
+	fmt.Printf("Enrolling %s with PKI...\n", name)
+	cfg, assetID, err := cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, name, hw)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -19,9 +21,13 @@ import (
 )
 
 // transportForDevice returns the sensor pairing transport to use for a
-// discovered source: "grpc" for an mTLS agent advertising the "sensors"
-// capability, "tcp" for a legacy/MCU sensorlink device.
+// discovered source: "wendycom" for a Wendy Lite board (WendyCom, never
+// gRPC or raw sensorlink), "grpc" for a WendyOS mTLS agent advertising the
+// "sensors" capability, "tcp" for a legacy/MCU sensorlink device.
 func transportForDevice(d models.DiscoveredDevice) string {
+	if d.WendyLite {
+		return "wendycom"
+	}
 	if d.IsMTLS {
 		for _, c := range d.Caps {
 			if c == "sensors" {
@@ -48,7 +54,7 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	sort.Ints(have)
 	labels := make([]string, len(have))
 	for i, org := range have {
-		labels[i] = fmt.Sprintf("%d", org)
+		labels[i] = orgLabel("", int32(org))
 	}
 	yours := "no organizations"
 	if len(labels) == 1 {
@@ -56,19 +62,60 @@ func orgAllowed(cliOrgs map[int32]bool, sourceOrg int32) error {
 	} else if len(labels) > 1 {
 		yours = "organizations " + strings.Join(labels, ", ")
 	}
-	return fmt.Errorf("device is in organization %d, but you are logged in to %s; pairing is only allowed within an organization you belong to", sourceOrg, yours)
+	return fmt.Errorf("device is in organization %s, but you are logged in to %s; pairing is only allowed within an organization you belong to", orgLabel("", sourceOrg), yours)
 }
 
-// discoverSensorSources runs LAN discovery and returns the merged device list
-// for the caller to filter down to sensor sources.
-func discoverSensorSources(ctx context.Context) ([]models.DiscoveredDevice, error) {
-	collection, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
-		Types: []models.InterfaceType{models.InterfaceLAN},
-	})
+// discoverLocalSensorSources scans this computer's network for sensor sources:
+// WendyOS agents (_wendyos._udp) and Wendy Lite boards (_wendy-lite._tcp). The
+// SensorLink tab uses it only when the device's agent predates
+// DiscoverSensorSources. Its results may name sources the device cannot
+// reach, so the tab labels them.
+func discoverLocalSensorSources(ctx context.Context) ([]models.DiscoveredDevice, error) {
+	lan, err := discovery.DiscoverSensorSources(ctx, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("discovering devices: %w", err)
 	}
-	return collection.MergedDevices(), nil
+	return (&models.DevicesCollection{LANDevices: lan}).MergedDevices(), nil
+}
+
+// sensorSourcesFromDevice maps a DiscoverSensorSources reply into the shape
+// the SensorLink tab consumes, exactly as if the device's sightings had been
+// found locally. The tenant and principal hints are rechecked with the
+// helpers discovery.LANDeviceFromWendyLiteService uses, so the tenant gate in
+// sensorPairHandler.pair always compares the tenant the principal names.
+func sensorSourcesFromDevice(sources []*agentpbv2.DiscoveredSensorSource) []models.DiscoveredDevice {
+	lan := make([]models.LANDevice, 0, len(sources))
+	for _, s := range sources {
+		if s == nil {
+			continue
+		}
+		d := models.LANDevice{
+			ID:            s.GetId(),
+			DisplayName:   s.GetDisplayName(),
+			Hostname:      s.GetHostname(),
+			IPAddress:     s.GetIpAddress(),
+			Addresses:     s.GetAddresses(),
+			Port:          int(s.GetPort()),
+			IsMTLS:        s.GetIsMtls(),
+			Caps:          s.GetCaps(),
+			WendyLite:     s.GetWendyLite(),
+			InterfaceType: string(models.InterfaceLAN),
+			IsWendyDevice: true,
+		}
+		d.Sensorlink = slices.Contains(d.Caps, "sensors")
+		if s.GetAssetId() > 0 {
+			d.AssetID = s.GetAssetId()
+		}
+		if s.GetOrgId() > 0 {
+			d.OrgID = s.GetOrgId()
+		}
+		d.TenantUUID = discovery.CanonicalTenantUUID(s.GetTenantUuid())
+		if d.TenantUUID != "" && discovery.DevicePrincipalInTenant(s.GetPrincipalUri(), d.TenantUUID) {
+			d.PrincipalURI = s.GetPrincipalUri()
+		}
+		lan = append(lan, d)
+	}
+	return (&models.DevicesCollection{LANDevices: lan}).MergedDevices()
 }
 
 // runPicker shows an interactive picker over items and returns the selection,
@@ -147,16 +194,41 @@ func pairingName(name string, source *models.DiscoveredDevice) string {
 
 func newDevicePairCmd() *cobra.Command {
 	var (
-		listOnly bool
-		name     string
-		sensors  []string
+		listOnly                    bool
+		name                        string
+		sensors                     []string
+		unitreeTab                  bool
+		unitreeIP                   string
+		unitreeRegion               string
+		usbArms                     bool
+		bindArm, forgetArm, armName string
+		allowLocation               bool
 	)
 	cmd := &cobra.Command{
 		Use:   "pair",
-		Short: "Pair or forget Bluetooth, SensorLink, and IP camera devices",
-		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, and IP Cameras tabs. Bluetooth and IP cameras are discovered on the target device; SensorLink discovers sources on your local network. SensorLink devices must be in an organization you belong to.",
+		Short: "Pair or forget Bluetooth, SensorLink, IP cameras, USB arms, and Unitree robots",
+		Long:  "Discover, pair, and forget devices in the Bluetooth, SensorLink, IP Cameras, USB Arms, and Unitree tabs. Bluetooth, SensorLink sources, IP cameras, and Unitree Go2 robots are discovered on the selected WendyOS device's network, so you can pair from anywhere; if the device's agent is too old to scan for SensorLink sources, that tab scans your local network instead and says so. Unitree login retrieves your robot's key, which the selected WendyOS device stores and uses to connect. Use --ip to enter a robot's IPv4 address. USB arm pairing saves an unverified host-local binding on the target Agent; it does not bond Bluetooth or start telemetry/control. SensorLink devices must be in an organization you belong to.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateArmPairFlags(usbArms, listOnly, bindArm, forgetArm, armName, allowLocation, cmd.Flags().Changed("name") || cmd.Flags().Changed("sensors"), jsonOutput); err != nil {
+				return err
+			}
+			if usbArms && (unitreeTab || cmd.Flags().Changed("ip") || cmd.Flags().Changed("unitree-region")) {
+				return fmt.Errorf("--usb-arms cannot be combined with Unitree flags")
+			}
+			if cmd.Flags().Changed("ip") {
+				var err error
+				unitreeIP, err = unitreePairIPv4(unitreeIP)
+				if err != nil {
+					return fmt.Errorf("--ip: %w", err)
+				}
+			}
+			if unitreeRegion != "global" && unitreeRegion != "cn" {
+				return fmt.Errorf("--unitree-region must be global or cn")
+			}
+			if listOnly && (unitreeTab || cmd.Flags().Changed("ip") || cmd.Flags().Changed("unitree-region")) {
+				return fmt.Errorf("--list prints SensorLink pairings and cannot be combined with Unitree flags")
+			}
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
 			if err != nil {
@@ -164,6 +236,9 @@ func newDevicePairCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
+			if usbArms && (listOnly || bindArm != "" || forgetArm != "" || jsonOutput) {
+				return runArmPair(ctx, conn.RobotArmService, bindArm, forgetArm, armName, allowLocation, jsonOutput, cmd.OutOrStdout())
+			}
 			if listOnly {
 				resp, err := conn.SensorPairingService.ListSensorPairings(ctx, &agentpbv2.ListSensorPairingsRequest{})
 				if err != nil {
@@ -174,7 +249,7 @@ func newDevicePairCmd() *cobra.Command {
 					if p.Connected {
 						state = "connected"
 					}
-					cliLogln("%-20s asset %d  %s", p.Name, p.SourceAssetId, state)
+					cliLogln("%-20s %s  %s", p.Name, sensorPairLabel(p.SourceAssetId, p.SourcePrincipalUri), state)
 				}
 				return nil
 			}
@@ -185,13 +260,23 @@ func newDevicePairCmd() *cobra.Command {
 				&btTUIHandler{ctx: pairCtx, agent: conn.AgentService},
 				&sensorPairHandler{
 					ctx: pairCtx, client: conn.SensorPairingService,
-					discover: discoverSensorSources, orgIDs: cliOrgIDs,
+					discoverLocal: discoverLocalSensorSources, orgIDs: cliOrgIDs, tenantIDs: cliTenantIDs,
 					name: name, sensors: sensors,
 				},
-				&cameraPairHandler{ctx: pairCtx, client: conn.VideoService},
+				&cameraPairHandler{ctx: pairCtx, client: conn.VideoService, preflight: func(ctx context.Context) error {
+					return cameraServicePreflight(ctx, conn, cameraNetworkManagement)
+				}},
+				&unitreePairHandler{ctx: pairCtx, client: conn.UnitreeService, region: unitreeRegion, initialIP: unitreeIP, transportError: unitreePairTransportError(conn)},
 			)
+			model.arm = newArmPairModel(&armPairHandler{ctx: pairCtx, client: conn.RobotArmService, name: armName})
+			if usbArms {
+				model.active = pairArmTab
+			}
 			if cmd.Flags().Changed("name") || cmd.Flags().Changed("sensors") {
 				model.active = pairSensorLinkTab
+			}
+			if unitreeTab || cmd.Flags().Changed("ip") || cmd.Flags().Changed("unitree-region") {
+				model.active = pairUnitreeTab
 			}
 			if _, err := tea.NewProgram(model, tea.WithContext(pairCtx)).Run(); err != nil {
 				return fmt.Errorf("device pairing: %w", err)
@@ -199,10 +284,41 @@ func newDevicePairCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&listOnly, "list", false, "list current SensorLink pairings")
+	cmd.Flags().BoolVar(&listOnly, "list", false, "list current SensorLink pairings (or USB inventory/bindings with --usb-arms)")
 	cmd.Flags().StringVar(&name, "name", "", "friendly name for a SensorLink pairing")
 	cmd.Flags().StringSliceVar(&sensors, "sensors", nil, "limit a SensorLink pairing to these sensor names (default: all)")
+	cmd.Flags().BoolVar(&unitreeTab, "unitree", false, "open the Unitree Go2 pairing tab")
+	cmd.Flags().StringVar(&unitreeIP, "ip", "", "Unitree Go2 IPv4 address on the selected WendyOS device's network")
+	cmd.Flags().StringVar(&unitreeRegion, "unitree-region", "global", "Unitree account region: global or cn")
+	cmd.Flags().BoolVar(&usbArms, "usb-arms", false, "select USB arm bindings on the target Agent")
+	cmd.Flags().StringVar(&bindArm, "bind", "", "with --usb-arms, bind this inventory ID as an unverified SO-101")
+	cmd.Flags().StringVar(&forgetArm, "forget", "", "with --usb-arms, forget this saved binding ID")
+	cmd.Flags().StringVar(&armName, "arm-name", "", "friendly name for a USB arm binding")
+	cmd.Flags().BoolVar(&allowLocation, "allow-location-binding", false, "acknowledge a USB binding without serial ID follows its port, including replacements")
 	return cmd
+}
+
+func validateArmPairFlags(usb, list bool, bind, forget, name string, allowLocation, sensorFlags, jsonOut bool) error {
+	if !usb && (bind != "" || forget != "" || name != "" || allowLocation) {
+		return fmt.Errorf("USB arm options require --usb-arms")
+	}
+	if !usb {
+		return nil
+	}
+	if sensorFlags {
+		return fmt.Errorf("--usb-arms cannot be combined with SensorLink --name or --sensors")
+	}
+	if bind != "" && forget != "" || list && (bind != "" || forget != "") {
+		return fmt.Errorf("choose one USB arm operation: --list, --bind or --forget")
+	}
+	if allowLocation && bind == "" {
+		return fmt.Errorf("--allow-location-binding requires --bind")
+	}
+	// --json without --bind lists, which has nothing to name.
+	if name != "" && bind == "" && (list || forget != "" || jsonOut) {
+		return fmt.Errorf("--arm-name applies to binding only")
+	}
+	return nil
 }
 
 // newDeviceUnpairCmd removes a sensor pairing. With no argument it shows a
@@ -211,7 +327,7 @@ func newDevicePairCmd() *cobra.Command {
 func newDeviceUnpairCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Hidden: true,
-		Use:    "unpair [source-asset-id]",
+		Use:    "unpair [source-asset-id-or-principal]",
 		Short:  "Remove a sensor-source pairing",
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -223,8 +339,14 @@ func newDeviceUnpairCmd() *cobra.Command {
 			defer conn.Close()
 
 			var assetID int32
+			var principal string
 			if len(args) == 1 {
-				if _, err := fmt.Sscanf(args[0], "%d", &assetID); err != nil {
+				if strings.HasPrefix(args[0], "spiffe://") {
+					if _, err := certs.ParseDevicePrincipal(args[0]); err != nil {
+						return err
+					}
+					principal = args[0]
+				} else if _, err := fmt.Sscanf(args[0], "%d", &assetID); err != nil {
 					return fmt.Errorf("invalid source asset id %q: %w", args[0], err)
 				}
 			} else {
@@ -244,26 +366,46 @@ func newDeviceUnpairCmd() *cobra.Command {
 					}
 					items = append(items, tui.PickerItem{
 						Name:     p.Name,
-						Address:  fmt.Sprintf("asset %d · %s", p.SourceAssetId, state),
-						DedupKey: fmt.Sprintf("asset-%d", p.SourceAssetId),
-						Value:    p.SourceAssetId,
+						Address:  fmt.Sprintf("%s · %s", sensorPairLabel(p.SourceAssetId, p.SourcePrincipalUri), state),
+						DedupKey: sensorPairKey(p.SourceAssetId, p.SourcePrincipalUri),
+						Value:    p,
 					})
 				}
 				sel, err := runPicker("Select a pairing to remove", items)
 				if err != nil {
 					return err
 				}
-				assetID = sel.Value.(int32)
+				selected := sel.Value.(*agentpbv2.SensorPairing)
+				assetID, principal = selected.SourceAssetId, selected.SourcePrincipalUri
 			}
 
 			if _, err := conn.SensorPairingService.RemoveSensorPairing(ctx, &agentpbv2.RemoveSensorPairingRequest{
-				SourceAssetId: assetID,
+				SourceAssetId: assetID, SourcePrincipalUri: principal,
 			}); err != nil {
 				return cleanRPCError(err)
 			}
-			cliSuccess("Unpaired asset %d.", assetID)
+			cliSuccess("Unpaired %s.", sensorPairLabel(assetID, principal))
 			return nil
 		},
 	}
 	return cmd
+}
+
+func cliTenantIDs() (map[string]bool, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	tenants := make(map[string]bool)
+	for _, auth := range cfg.Auth {
+		for _, cert := range auth.Certificates {
+			if tenant := cert.TenantUUID(); tenant != "" {
+				tenants[tenant] = true
+			}
+		}
+	}
+	if len(tenants) == 0 {
+		return nil, config.ErrNotLoggedIn
+	}
+	return tenants, nil
 }

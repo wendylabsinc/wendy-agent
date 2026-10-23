@@ -77,7 +77,7 @@ func selectEnrollmentAuth(cfg *config.Config, cloudGRPC string, interactive bool
 		}
 		desc := a.CloudGRPC
 		if len(a.Certificates) > 0 {
-			desc = fmt.Sprintf("org %d — %s", a.Certificates[0].OrganizationID, a.CloudGRPC)
+			desc = fmt.Sprintf("org %s — %s", config.OrganizationLabel(a.CloudGRPC, a.OrganizationKey()), a.CloudGRPC)
 		}
 		items = append(items, tui.PickerItem{Name: name, Description: desc, Value: strconv.Itoa(i)})
 	}
@@ -232,7 +232,7 @@ func resolveACMEPreEnrollment(ctx context.Context, cfg *config.Config, opts preE
 	fmt.Println("Pre-enrolling device with Wendy Cloud...")
 	state, enrollErr := preEnrollACMEFn(ctx, auth, deviceName)
 	if enrollErr == nil {
-		fmt.Println("Device pre-enrolled. It will ACME-enroll from its baked credential on first boot.")
+		fmt.Println("Cloud enrollment reserved; credential staged for first boot. Automatic ACME enrollment requires an image with a compatible agent; device enrollment and Cloud presence are not yet verified.")
 		return state, nil
 	}
 	if !interactive {

@@ -3,6 +3,7 @@ package mcusource
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/audioloop"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
+	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	sensorlinkpb "github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
 	"go.uber.org/zap"
 )
@@ -39,35 +41,39 @@ type Supervisor struct {
 	audioLoop    AudioLoop
 
 	statusMu  sync.Mutex
-	connected map[int32]bool
+	connected map[string]bool
 
 	nodeIDsMu sync.Mutex
-	nodeIDs   map[string]uint32 // "sourceAssetID:channelID" -> MCU-band node id
+	nodeIDs   map[string]uint32 // "pairing key:channelID" -> MCU-band node id
 }
 
 // transportFor is called once per streamOnce attempt (not cached) so each
-// pairing's mTLS handshake pins that specific source's asset identity,
+// pairing's mTLS handshake pins that specific source's identity,
 // mirroring mesh_dialer.go's per-target pinning — a single shared transport
-// cannot do that across pairings with different SourceAssetID/OrgID.
+// cannot do that across pairings with different source identities.
 func NewSupervisor(logger *zap.Logger, lb Loopback, transportFor TransportFactory, newWriter func(path string) ros2camera.CameraWriter, audioLoop AudioLoop) *Supervisor {
-	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, audioLoop: audioLoop, nodeIDs: make(map[string]uint32), connected: make(map[int32]bool)}
+	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, audioLoop: audioLoop, nodeIDs: make(map[string]uint32), connected: make(map[string]bool)}
 }
 
 // IsConnected reports whether the current stream has delivered a frame to a
 // mounted sensor. A retrying supervisor alone is not a live connection.
 func (s *Supervisor) IsConnected(sourceAssetID int32) bool {
-	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	return s.connected[sourceAssetID]
+	return s.IsPairingConnected(SensorPairing{SourceAssetID: sourceAssetID})
 }
 
-func (s *Supervisor) setConnected(sourceAssetID int32, connected bool) {
+func (s *Supervisor) IsPairingConnected(p SensorPairing) bool {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.connected[p.Key()]
+}
+
+func (s *Supervisor) setConnected(p SensorPairing, connected bool) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	if connected {
-		s.connected[sourceAssetID] = true
+		s.connected[p.Key()] = true
 	} else {
-		delete(s.connected, sourceAssetID)
+		delete(s.connected, p.Key())
 	}
 }
 
@@ -76,7 +82,11 @@ func (s *Supervisor) setConnected(sourceAssetID int32, connected bool) {
 // key across reconnects (even after the source reorders its manifest) always
 // returns the same id, and different sources never collide on one id.
 func (s *Supervisor) nodeID(sourceAssetID int32, channelID uint32) (uint32, error) {
-	key := fmt.Sprintf("%d:%d", sourceAssetID, channelID)
+	return s.nodeIDForKey((SensorPairing{SourceAssetID: sourceAssetID}).Key(), channelID)
+}
+
+func (s *Supervisor) nodeIDForKey(sourceKey string, channelID uint32) (uint32, error) {
+	key := fmt.Sprintf("%s:%d", sourceKey, channelID)
 	s.nodeIDsMu.Lock()
 	defer s.nodeIDsMu.Unlock()
 	if id, ok := s.nodeIDs[key]; ok {
@@ -99,12 +109,20 @@ func (s *Supervisor) nodeID(sourceAssetID int32, channelID uint32) (uint32, erro
 // nodes still held open by consumers remain reserved if removal fails, so a
 // different source cannot reuse a node that still belongs to the old one.
 func (s *Supervisor) releaseSource(sourceAssetID int32) {
+	s.releasePairing(SensorPairing{SourceAssetID: sourceAssetID})
+}
+
+func (s *Supervisor) releasePairing(p SensorPairing) {
 	if s.audioLoop != nil {
-		s.audioLoop.ReleaseSource(sourceAssetID)
+		if p.SourcePrincipalURI == "" {
+			s.audioLoop.ReleaseSource(p.SourceAssetID)
+		} else if loop, ok := s.audioLoop.(interface{ ReleasePrincipal(string) }); ok {
+			loop.ReleasePrincipal(p.SourcePrincipalURI)
+		}
 	}
 	s.nodeIDsMu.Lock()
 	defer s.nodeIDsMu.Unlock()
-	prefix := fmt.Sprintf("%d:", sourceAssetID)
+	prefix := p.Key() + ":"
 	for key, id := range s.nodeIDs {
 		if !strings.HasPrefix(key, prefix) {
 			continue
@@ -149,13 +167,13 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 		dialAddrs := []string{addr}
 		if !pinned {
 			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-			resolved, ok := resolveLANAddrs(rctx, p.SourceAssetID, p.Transport)
+			resolved, ok := resolvePairingLANAddrs(rctx, p)
 			rcancel()
 			if !ok {
 				// Source not (yet) on the LAN — boot-resume before it's up, or
 				// mid-move between addresses. Back off on the same schedule as
 				// a failed stream and retry the browse.
-				s.logger.Warn("sensor source not found on LAN, retrying", zap.Int32("source", p.SourceAssetID))
+				s.logger.Warn("sensor source not found on LAN, retrying", zap.String("source", p.Key()))
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -180,7 +198,7 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 			return ctx.Err()
 		}
 		if err != nil {
-			s.logger.Warn("sensor source stream ended", zap.Int32("source", p.SourceAssetID), zap.Error(err))
+			s.logger.Warn("sensor source stream ended", zap.String("source", p.Key()), zap.Error(err))
 		}
 		if delivered {
 			// A healthy stream delivered at least one frame before ending;
@@ -203,13 +221,21 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 // delivered reports whether at least one frame was written, so the caller
 // can reset its reconnect backoff after a stream that was actually healthy.
 func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr string) (delivered bool, err error) {
-	s.setConnected(p.SourceAssetID, false)
-	defer s.setConnected(p.SourceAssetID, false)
+	s.setConnected(p, false)
+	defer s.setConnected(p, false)
 	tr, err := s.transportFor(p, addr)
 	if err != nil {
-		return false, fmt.Errorf("mcusource: resolving transport for source %d: %w", p.SourceAssetID, err)
+		return false, fmt.Errorf("mcusource: resolving transport for source %s: %w", p.Key(), err)
 	}
 	defer tr.Close()
+	// WendyCom keeps one connection for the manifest and stream. Its TLS and
+	// protocol handshakes have their own timeout, separate from the manifest
+	// round trip, which starts once the connection is ready.
+	if connector, ok := tr.(interface{ Connect(context.Context) error }); ok {
+		if err := connector.Connect(ctx); err != nil {
+			return false, err
+		}
+	}
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
 	manifestCtx, cancelManifest := context.WithTimeout(ctx, 3*time.Second)
 	manifest, err := tr.FetchManifest(manifestCtx)
@@ -217,16 +243,17 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	if err != nil {
 		return false, err
 	}
-	// Defense-in-depth: the mTLS handshake already pins the source's asset
-	// identity, but a compromised/misconfigured relay could still present a
-	// manifest for a different device than the one we dialed. Refuse rather
-	// than mount a stranger's cameras under this pairing's node ids.
-	if manifest.GetDeviceAssetId() != p.SourceAssetID {
-		return false, fmt.Errorf("mcusource: manifest device asset id %d does not match pairing source %d",
-			manifest.GetDeviceAssetId(), p.SourceAssetID)
-	}
 	cams := cameraChannels(manifest, p.SensorAllowlist)
 	mics := microphoneChannels(manifest, p.SensorAllowlist)
+	// Lite channels sharing an input are mutually exclusive, including camera
+	// and microphone channels. Prefer cameras, then the lowest channel ID so
+	// manifest reordering does not change the selected mode. Older agent-hosted
+	// sources leave every input ID at zero despite supporting concurrent streams.
+	exclusiveInputs := p.Transport == "wendycom"
+	if exclusiveInputs {
+		sort.Slice(cams, func(i, j int) bool { return cams[i].ChannelId < cams[j].ChannelId })
+		sort.Slice(mics, func(i, j int) bool { return mics[i].ChannelId < mics[j].ChannelId })
+	}
 	if len(cams) == 0 && len(mics) == 0 {
 		return false, nil // nothing to mount; caller backs off and retries
 	}
@@ -246,38 +273,47 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		}
 	}()
 	subs := make([]uint32, 0, len(cams)+len(mics))
+	usedInputs := make(map[uint32]bool)
 	for _, ch := range cams {
-		id, err := s.nodeID(p.SourceAssetID, ch.ChannelId)
+		if exclusiveInputs && usedInputs[ch.InputId] {
+			continue
+		}
+		id, err := s.nodeIDForKey(p.Key(), ch.ChannelId)
 		if err != nil {
-			s.logger.Warn("skipping sensor channel", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			s.logger.Warn("skipping sensor channel", zap.String("source", p.Key()), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
 			continue
 		}
 		if err := s.lb.EnsureNode(ctx, id, nodeLabel(p, ch)); err != nil {
 			// Per-channel isolation: a camera that can't be mounted (e.g. the
 			// consumer kernel lacks v4l2loopback) must not tear down the whole
 			// pairing — skip it so other sensors (mic) still mount.
-			s.logger.Warn("skipping camera channel (loopback node unavailable)", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			s.logger.Warn("skipping camera channel (loopback node unavailable)", zap.String("source", p.Key()), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
 			continue
 		}
 		path, _ := s.lb.NodePath(id)
 		writers[ch.ChannelId] = s.newWriter(path)
 		subs = append(subs, ch.ChannelId)
+		usedInputs[ch.InputId] = true
 	}
 	for _, ch := range mics {
-		sub, err := s.audioLoop.Allocate(p.SourceAssetID, ch.ChannelId, ch.GetName())
+		if exclusiveInputs && usedInputs[ch.InputId] {
+			continue
+		}
+		sub, err := s.allocateAudio(p, ch.ChannelId, ch.GetName())
 		if err != nil {
-			s.logger.Warn("skipping sensor channel", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			s.logger.Warn("skipping sensor channel", zap.String("source", p.Key()), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
 			continue
 		}
 		aw, err := s.audioLoop.OpenWriter(ctx, sub, audioloop.PCMFormat{SampleRate: ch.GetAudio().GetSampleRate(), Channels: ch.GetAudio().GetChannels()})
 		if err != nil {
 			// Per-channel isolation: a mic that can't be mounted (e.g. no
 			// snd-aloop) must not tear down the pairing — skip it.
-			s.logger.Warn("skipping microphone channel (audio loopback unavailable)", zap.Int32("source", p.SourceAssetID), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
+			s.logger.Warn("skipping microphone channel (audio loopback unavailable)", zap.String("source", p.Key()), zap.Uint32("channel", ch.ChannelId), zap.Error(err))
 			continue
 		}
 		audioWriters[ch.ChannelId] = aw
 		subs = append(subs, ch.ChannelId)
+		usedInputs[ch.InputId] = true
 	}
 	if len(subs) == 0 {
 		return false, nil
@@ -303,20 +339,20 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 		}
 	}()
 	for f := range frames {
-		if w := writers[f.ChannelId]; w != nil {
+		if w := writers[f.ChannelID]; w != nil {
 			if err := w.WriteFrame(frameToCamera(f, cams)); err != nil {
 				return delivered, err
 			}
 			if !delivered {
-				s.setConnected(p.SourceAssetID, true)
+				s.setConnected(p, true)
 			}
 			delivered = true
-		} else if aw := audioWriters[f.ChannelId]; aw != nil {
+		} else if aw := audioWriters[f.ChannelID]; aw != nil {
 			if err := aw.WritePCM(f.Payload); err != nil {
 				return delivered, err
 			}
 			if !delivered {
-				s.setConnected(p.SourceAssetID, true)
+				s.setConnected(p, true)
 			}
 			delivered = true
 		}
@@ -324,10 +360,12 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	return delivered, nil
 }
 
+// cameraChannels returns the manifest's video channels. The descriptor's
+// format says what kind of sensor it is.
 func cameraChannels(m *sensorlinkpb.SensorManifest, allow []string) []*sensorlinkpb.SensorDescriptor {
 	var out []*sensorlinkpb.SensorDescriptor
 	for _, d := range m.GetSensors() {
-		if d.Kind != sensorlinkpb.SensorDescriptor_CAMERA {
+		if d.GetVideo() == nil {
 			continue
 		}
 		if len(allow) > 0 && !contains(allow, d.Name) {
@@ -338,10 +376,11 @@ func cameraChannels(m *sensorlinkpb.SensorManifest, allow []string) []*sensorlin
 	return out
 }
 
+// microphoneChannels returns the manifest's audio channels.
 func microphoneChannels(m *sensorlinkpb.SensorManifest, allow []string) []*sensorlinkpb.SensorDescriptor {
 	var out []*sensorlinkpb.SensorDescriptor
 	for _, d := range m.GetSensors() {
-		if d.Kind != sensorlinkpb.SensorDescriptor_MICROPHONE {
+		if d.GetAudio() == nil {
 			continue
 		}
 		if len(allow) > 0 && !contains(allow, d.Name) {
@@ -352,11 +391,11 @@ func microphoneChannels(m *sensorlinkpb.SensorManifest, allow []string) []*senso
 	return out
 }
 
-func frameToCamera(f *sensorlinkpb.SensorFrame, cams []*sensorlinkpb.SensorDescriptor) ros2camera.Frame {
+func frameToCamera(f *sensorlink.SensorFrame, cams []*sensorlinkpb.SensorDescriptor) ros2camera.Frame {
 	codec := ros2camera.CodecMJPEG
 	w, h := 0, 0
 	for _, c := range cams {
-		if c.ChannelId == f.ChannelId {
+		if c.ChannelId == f.ChannelID {
 			if v := c.GetVideo(); v != nil {
 				if v.Codec == sensorlinkpb.VideoFormat_H264 {
 					codec = ros2camera.CodecH264
@@ -382,4 +421,20 @@ func contains(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Supervisor) allocateAudio(p SensorPairing, channel uint32, name string) (int, error) {
+	if s.audioLoop == nil {
+		return 0, fmt.Errorf("audio loopback unavailable")
+	}
+	if p.SourcePrincipalURI == "" {
+		return s.audioLoop.Allocate(p.SourceAssetID, channel, name)
+	}
+	loop, ok := s.audioLoop.(interface {
+		AllocatePrincipal(string, uint32, string) (int, error)
+	})
+	if !ok {
+		return 0, fmt.Errorf("audio loopback does not support PKI source identities")
+	}
+	return loop.AllocatePrincipal(p.SourcePrincipalURI, channel, name)
 }

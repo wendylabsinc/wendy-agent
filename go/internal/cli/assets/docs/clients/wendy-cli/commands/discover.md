@@ -36,8 +36,10 @@ Local discovery combines these mechanisms and merges their results:
 mDNS discovery works on all platforms. On Linux, the CLI performs an mDNS browse
 that requires UDP port 5353 open on the host firewall (e.g., `sudo ufw allow 5353/udp`).
 On macOS, the CLI browses through mDNSResponder in-process and requires Local Network TCC permission.
-For USB-connected devices on Linux, run `wendy device usb-setup` first to bring up
-the interface.
+For a USB-C-connected device on Linux, `wendy discover` notices when the host's
+link to it isn't configured yet and offers to set it up before scanning (it needs
+sudo). The offer only appears in an interactive terminal; with `--json` or
+without a terminal, `wendy discover` prints a notice on stderr instead.
 
 Headless Mac advertises the same `_wendyos._udp` service. When discovery
 succeeds, Mac agents appear under `lanDevices` in JSON output with
@@ -65,7 +67,7 @@ WENDY_SHOW_LOCAL_DEVICES=1 wendy discover
 |------|---------|-------------|
 | `--type` | `all` | Local discovery type: `usb`, `lan`, `bluetooth`, `external`, or `all`. Does not affect the Cloud tab. |
 | `--timeout` | `5s` | Scan local devices once for this duration, print the results, and exit. When omitted, the live tabbed TUI runs until quit. |
-| `--json` | `false` | Output results as a JSON array instead of a table |
+| `--json` | `false` | Output discovery results as JSON instead of a table |
 
 ## Environment variables
 
@@ -88,7 +90,9 @@ current default device or organization.
 | `enter` | Copy the selected device as JSON; when logged out in Cloud, start login |
 | `a` | Copy all devices in the active tab as JSON |
 | `u` | Update the selected device's agent |
-| `d` / `x` | Set or clear the default device in Nearby |
+| `d` | Make the selected device the default; press it again on the default to clear it |
+| `s` / `x` | Start or stop the selected VM in Simulator |
+| `c` / `r` | Create a VM, or remove the selected one and its disk (asks first), in Simulator |
 | `o` | Switch the active organization in Cloud |
 | `q` / `Ctrl+C` | Quit |
 
@@ -122,6 +126,10 @@ yet have credentials.
 
 ### Nearby table columns
 
+LAN devices appear after their mDNS service resolves or their agent answers a
+probe. Cached devices are checked in the background and stay hidden until
+confirmed during the current scan.
+
 | Column | Description |
 |--------|-------------|
 | Name | Device display name |
@@ -131,21 +139,10 @@ yet have credentials.
 | OS | OS version reported by the agent |
 | Provisioned | `Provisioned` or `Unprovisioned` for LAN devices, from the mDNS-advertised mTLS state; blank for transports that don't report it (BLE-only, USB, external providers) |
 
-### No-access hint
+### Connection hints
 
-When the highlighted row is a provisioned LAN device whose agent metadata could
-not be read — the signature of an unprovisioned CLI, or one logged in with
-credentials that don't have access to the device — an amber hint appears below
-the table:
-
-```
-⚠  This device is provisioned and this CLI does not have access, so agent details cannot be read. Run 'wendy auth login' with an account that can access it.
-```
-
-The hint clears automatically once a probe succeeds (for example, after
-`wendy auth login` with an authorized account). If a version is already known
-from an earlier successful probe or another transport, it stays in the table
-and the hint is suppressed.
+If the CLI cannot verify a device's agent, select its row to see what went
+wrong and what to try next.
 
 ### Clipboard JSON
 
@@ -160,3 +157,8 @@ devices as a JSON array. Each object contains:
 | `address` | string | IP address (or hostname) and port |
 | `version` | string | Agent version (omitted when unknown) |
 | `provisioned` | string | `Provisioned` or `Unprovisioned` for LAN devices (omitted for other transports) |
+| `probeFailure` | object (optional) | Details of a failed connection and suggested recovery steps |
+
+When provided, `probeFailure` contains a `code` identifying the failure, a
+`message` explaining it, and optional `next_steps` listing suggested actions.
+The same object is included in `--json` output.

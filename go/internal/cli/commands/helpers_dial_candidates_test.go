@@ -32,7 +32,7 @@ func TestLanDialCandidatesIncludesEverySightedAddress(t *testing.T) {
 		Port:      50051,
 	}
 
-	cands := lanDialCandidates(dev)
+	cands := lanDialCandidates(context.Background(), dev)
 
 	wantAddrs := []string{"192.168.1.69", "169.254.1.2"}
 	for _, want := range wantAddrs {
@@ -49,7 +49,7 @@ func TestLanDialCandidatesIncludesEverySightedAddress(t *testing.T) {
 		}
 	}
 	// A single-address device must still work (fall back to the primary path).
-	single := lanDialCandidates(models.LANDevice{Hostname: "n.local", IPAddress: "10.0.0.5", Port: 50051})
+	single := lanDialCandidates(context.Background(), models.LANDevice{Hostname: "n.local", IPAddress: "10.0.0.5", Port: 50051})
 	if len(single) == 0 {
 		t.Fatal("single-address device produced no dial candidates")
 	}
@@ -239,8 +239,13 @@ func TestLadderStopsAtIdentityRefusalWithoutTryingMoreAddresses(t *testing.T) {
 // discarded the rest, which is what made one stale record fatal — ordered so the
 // most likely to work is dialled first.
 func TestResolveAddrCandidates_ReturnsEveryAddressIPv4First(t *testing.T) {
-	orig := osLookupHostFn
-	t.Cleanup(func() { osLookupHostFn = orig })
+	orig, origBrowse := osLookupHostFn, lanBrowseFn
+	t.Cleanup(func() { osLookupHostFn, lanBrowseFn = orig, origBrowse })
+	// The user's discovery cache can request an interface browse even after a
+	// successful OS lookup. Keep this unit test independent of live LAN devices.
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return nil, nil
+	}
 	osLookupHostFn = func(context.Context, string) ([]string, error) {
 		return []string{"fdc5:7daa::1", "fdc5:7daa::2", "192.168.0.107"}, nil
 	}
@@ -338,7 +343,7 @@ func TestOrderRoutedDialCandidatesPrefersEthernetBeforeCandidateCap(t *testing.T
 	}
 	t.Cleanup(func() { dialCandidateRoutePreferenceFn = original })
 
-	got := orderRoutedDialCandidates([]string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"})
+	got := orderRoutedDialCandidates([]string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}, nil)
 	want := []string{"10.0.0.4", "10.0.0.1", "10.0.0.2"}
 	if len(got) != len(want) {
 		t.Fatalf("orderRoutedDialCandidates = %v, want %v", got, want)

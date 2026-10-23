@@ -1,24 +1,32 @@
 package liteclient
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"net"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
 	"go.bug.st/serial"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -97,6 +105,12 @@ type subscription struct {
 	ch     chan *wendypb.WendyComMessage
 }
 
+// sensorDataListener boxes a listener so registrations have an identity:
+// func values are not comparable, so the slice could not be pruned otherwise.
+type sensorDataListener struct {
+	fn func(*sensorlinkpb.SensorData)
+}
+
 // WendyLiteClient drives one connection to one device: connect once, then
 // Close is terminal — create a new client to reconnect.
 type WendyLiteClient struct {
@@ -105,25 +119,57 @@ type WendyLiteClient struct {
 	requestIdGen        atomic.Uint32
 	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
+	peerCert            *x509.Certificate // set by a verified connect; see PeerCertificate
 
 	closeOnce sync.Once
 	closeErr  error
 	readDone  sync.WaitGroup // tracks the readLoop goroutine
+	done      chan struct{}  // closed once the read loop exits; see Done
 
 	mu      sync.Mutex // guards subs and readErr
 	subs    []*subscription
 	readErr error // set once the read loop dies; refuses new subscriptions
+
+	// Sensor data is delivered straight from the read loop, so its listeners
+	// must not wait on mu. The stored slice is never mutated once published:
+	// dispatch loads and ranges over it lock-free, and registration swaps in
+	// a fresh copy under listenerMu.
+	listenerMu          sync.Mutex
+	sensorDataListeners atomic.Pointer[[]*sensorDataListener]
 }
 
 func NewWendyLiteClient() *WendyLiteClient {
-	return &WendyLiteClient{}
+	return &WendyLiteClient{done: make(chan struct{})}
+}
+
+// Done returns a channel that is closed once the connection is gone: lost, or
+// torn down by Close. It lets a caller that only listens — sensor data reaches
+// their listeners with no end-of-stream marker — notice the device dropping
+// off. It never closes on a client that never connected.
+func (c *WendyLiteClient) Done() <-chan struct{} {
+	return c.done
+}
+
+// PeerCertificate returns the device's leaf certificate, or nil when the
+// connection did not verify it. Authenticated LAN, BLE, and Cloud relay
+// connections set it; serial and unverified connections return nil.
+func (c *WendyLiteClient) PeerCertificate() *x509.Certificate {
+	return c.peerCert
 }
 
 func (c *WendyLiteClient) ConnectInsecure(address string) error {
-	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec — device uses self-signed certs
+	return c.ConnectInsecureContext(context.Background(), address)
+}
+
+// ConnectInsecureContext bounds both TLS and WendyCom handshakes.
+func (c *WendyLiteClient) ConnectInsecureContext(ctx context.Context, address string) error {
+	dialer := tls.Dialer{Config: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec -- unprovisioned devices use self-signed certificates
+	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
+	stopCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopCancel()
 	c.link = newDirectLink(conn)
 	err = c.handshake()
 	if err != nil {
@@ -136,6 +182,12 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 }
 
 func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs x509.CertPool) error {
+	return c.ConnectWithMutualAuthenticationContext(context.Background(), address, cert, rootCAs)
+}
+
+// ConnectWithMutualAuthenticationContext bounds the TCP, TLS, and WendyCom
+// handshakes by ctx.
+func (c *WendyLiteClient) ConnectWithMutualAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, rootCAs x509.CertPool) error {
 	// Verify the certificate chain against our root CAs but skip hostname
 	// checking — devices on a local network don't have SANs.
 	tlsCfg := &tls.Config{
@@ -164,22 +216,18 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 			return nil
 		},
 	}
-	conn, err := tls.Dial("tcp", address, tlsCfg)
-	if err != nil {
-		return fmt.Errorf("connect (mTLS): %w", err)
-	}
-	c.link = newDirectLink(conn)
-	err = c.handshake()
-	if err != nil {
-		c.link.close()
-		c.link = nil
-		return fmt.Errorf("handshake: %w", err)
-	}
-	c.startReadLoop()
-	return nil
+	return c.connectTLSContext(ctx, address, tlsCfg)
 }
 
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
+	return c.ConnectToSerialContext(context.Background(), device)
+}
+
+// ConnectToSerialContext allows cancellation of the serial WendyCom handshake.
+func (c *WendyLiteClient) ConnectToSerialContext(ctx context.Context, device string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lock, err := seriallock.Acquire(device)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrSerialPortUnavailable, err)
@@ -195,10 +243,11 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		lock.Release()
 		return fmt.Errorf("%w: open serial: %w", ErrSerialPortUnavailable, err)
 	}
-	c.link = newSerialLink(port)
+	link := newSerialLink(port)
+	c.link = link
 	c.serialLock = lock
-	if err := c.handshake(); err != nil {
-		c.link.close() // also stops the keep-alive loop linkHandshake may have started
+	if err := c.handshakeSerialContext(ctx, link); err != nil {
+		link.close() // also stops the keep-alive loop linkHandshake may have started
 		lock.Release()
 		c.link = nil
 		c.serialLock = nil
@@ -208,26 +257,90 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	return nil
 }
 
-// ConnectViaCloudInsecure reaches a device through a cloud tunnel-broker
-// server (dev server: self-signed cert, verification skipped). The WendyCom
-// handshake runs end-to-end through the broker to the device identified by
-// assetID.
-// SECURITY: This should be used in development tools only. Warn if it's not
-// the case.
-func (c *WendyLiteClient) ConnectViaCloudInsecure(serverAddr string, assetID uint32) error {
-	link, err := dialTunnelLinkInsecure(serverAddr, assetID)
+func (c *WendyLiteClient) handshakeSerialContext(ctx context.Context, link *directLink) error {
+	stopCancel := context.AfterFunc(ctx, func() { link.close() })
+	err := c.handshake()
+	if !stopCancel() {
+		// close is idempotent and joins the cancellation callback's teardown.
+		// Never return a live client while cancellation still closes its port.
+		link.close()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+// ConnectViaRelay authenticates directly to the device over an opaque broker
+// stream. The supplied Cloud connection and metadata retain their normal auth.
+// cert carries the operator's presentation chain; deviceTrustChain verifies
+// the device, whose issuing authority can differ from the operator's.
+// This method owns cc on every path, including invalid local credentials.
+func (c *WendyLiteClient) ConnectViaRelay(ctx context.Context, cc *grpc.ClientConn, assetID string,
+	cert tls.Certificate, deviceTrustChain, deviceID string, options RelayOptions) error {
+	cfg, err := deviceTLSConfig(ctx, cert, deviceTrustChain, deviceID, options.DeviceTrustFallback)
+	if err != nil {
+		cc.Close()
+		return err
+	}
+	raw, err := openRelayConn(ctx, cc, assetID, options)
 	if err != nil {
 		return err
 	}
-	c.link = link
+	// The opaque relay can cross a BLE mesh uplink. Bound setup without
+	// assuming a direct Internet path; the caller can still cancel sooner.
+	handshakeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	conn := tls.Client(raw, cfg)
+	if err := conn.HandshakeContext(handshakeCtx); err != nil {
+		raw.Close()
+		return fmt.Errorf("device mTLS over relay: %w", err)
+	}
+	deadline, _ := handshakeCtx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		raw.Close()
+		return err
+	}
+	if _, err := conn.Write(raw.grant); err != nil {
+		raw.Close()
+		return fmt.Errorf("forward Lite grant: %w", err)
+	}
+	var ack [4]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil {
+		raw.Close()
+		return fmt.Errorf("device refused Lite session grant: %w", err)
+	}
+	if string(ack[:]) != "WLA2" {
+		raw.Close()
+		return fmt.Errorf("device refused Lite session grant")
+	}
+	if err := raw.established(); err != nil {
+		raw.Close()
+		return err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		raw.Close()
+		return err
+	}
+	// Close the raw pipe first so TLS shutdown cannot block behind a stalled
+	// broker write. No application message is sent until mTLS succeeds.
+	c.link = newDirectLink(&relayTLSConn{Conn: conn, raw: raw})
 	if err := c.handshake(); err != nil {
-		link.close()
+		c.link.close()
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
+	c.peerCert = conn.ConnectionState().PeerCertificates[0]
 	c.startReadLoop()
 	return nil
 }
+
+type relayTLSConn struct {
+	*tls.Conn
+	raw *relayConn
+}
+
+func (c *relayTLSConn) Close() error { return c.raw.Close() }
 
 func (c *WendyLiteClient) Close() error {
 	if c.link == nil {
@@ -519,6 +632,67 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 	}, nil
 }
 
+// GetSensorManifest asks the device for its sensor-link manifest. The
+// returned type is the generated wendypb type directly, not a mirrored
+// client-package struct: sensor-link is a wire contract shared across
+// modules beyond this console, so there's no reason to hide it behind a
+// second type.
+func (c *WendyLiteClient) GetSensorManifest(timeout time.Duration) (*sensorlinkpb.SensorManifest, error) {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_SensorLinkGetManifest{
+			SensorLinkGetManifest: &sensorlinkpb.GetSensorManifest{},
+		},
+	}, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return nil, fmt.Errorf("device returned error: %w", err)
+	}
+	m := resp.GetSensorLinkManifest()
+	if m == nil {
+		return nil, fmt.Errorf("device returned no manifest")
+	}
+	return m, nil
+}
+
+// SensorLinkSubscribe asks the device to start streaming SensorData for
+// the given channel IDs.
+func (c *WendyLiteClient) SensorLinkSubscribe(channelIDs []uint32, timeout time.Duration) error {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_SensorLinkSubscribe{
+			SensorLinkSubscribe: &sensorlinkpb.Subscribe{ChannelId: channelIDs},
+		},
+	}, timeout)
+	if err != nil {
+		return err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
+	}
+	return nil
+}
+
+// SensorLinkUnsubscribe asks the device to stop streaming SensorData for
+// the given channel IDs.
+func (c *WendyLiteClient) SensorLinkUnsubscribe(channelIDs []uint32, timeout time.Duration) error {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_SensorLinkUnsubscribe{
+			SensorLinkUnsubscribe: &sensorlinkpb.Unsubscribe{ChannelId: channelIDs},
+		},
+	}, timeout)
+	if err != nil {
+		return err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
+	}
+	return nil
+}
+
 // ConsoleAttach asks the device to stream its console output and returns the
 // chunk channel plus an idempotent detach function. The channel is closed on
 // detach and on connection loss. detach stops local delivery, then tells the
@@ -742,6 +916,43 @@ func (c *WendyLiteClient) unsubscribe(s *subscription) {
 	}
 }
 
+// AddSensorDataListener registers fn for every SensorData the device sends —
+// one chunk of a frame, which the caller reassembles — and returns a function
+// that unregisters it, idempotently and safely after the connection has died.
+//
+// fn is called on the client's read loop — one chunk at a time, in arrival
+// order, with no goroutine hop and no lock held. It therefore sits on the
+// critical path of the whole connection: it must not block, and it must not
+// call anything that waits for a device reply, since the read loop is busy
+// running fn instead of reading that reply. The chunk and its payload belong
+// to fn and stay valid after it returns.
+func (c *WendyLiteClient) AddSensorDataListener(fn func(*sensorlinkpb.SensorData)) func() {
+	l := &sensorDataListener{fn: fn}
+
+	c.listenerMu.Lock()
+	defer c.listenerMu.Unlock()
+	next := append(c.loadSensorDataListeners(), l)
+	c.sensorDataListeners.Store(&next)
+
+	return func() {
+		c.listenerMu.Lock()
+		defer c.listenerMu.Unlock()
+		next := slices.DeleteFunc(c.loadSensorDataListeners(),
+			func(x *sensorDataListener) bool { return x == l })
+		c.sensorDataListeners.Store(&next)
+	}
+}
+
+// loadSensorDataListeners returns a copy the caller may append to or prune:
+// the published slice is shared with a dispatch that holds no lock, so it can
+// never be modified in place. Callers hold listenerMu.
+func (c *WendyLiteClient) loadSensorDataListeners() []*sensorDataListener {
+	if listeners := c.sensorDataListeners.Load(); listeners != nil {
+		return slices.Clone(*listeners)
+	}
+	return nil
+}
+
 // startReadLoop hands c.link to the read loop goroutine and registers it with
 // readDone so Close can wait for it to exit.
 func (c *WendyLiteClient) startReadLoop() {
@@ -759,6 +970,7 @@ func (c *WendyLiteClient) readLoop(link wcomLink) {
 		msg, err := link.recv(0)
 		if err != nil {
 			c.failAll(err)
+			close(c.done) // after failAll, so readErr is set when Done fires
 			return
 		}
 		c.dispatch(msg)
@@ -766,6 +978,20 @@ func (c *WendyLiteClient) readLoop(link wcomLink) {
 }
 
 func (c *WendyLiteClient) dispatch(msg *wendypb.WendyComMessage) {
+	// Sensor data arrives at video rates and goes to its listeners right
+	// here, on this goroutine: the subscription path below would put a mutex
+	// and a blocking channel send in front of every chunk. Handling it before
+	// the lock also keeps it away from the log line at the bottom, which
+	// would print a whole payload per chunk.
+	if data := msg.GetSensorData(); data != nil {
+		if listeners := c.sensorDataListeners.Load(); listeners != nil {
+			for _, l := range *listeners {
+				l.fn(data)
+			}
+		}
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i := len(c.subs) - 1; i >= 0; i-- {
@@ -865,5 +1091,195 @@ func (c *WendyLiteClient) handshake() error {
 	}
 	ver := hs.GetVersion()
 	c.peerProtocolVersion = protocolVersion{Major: ver.GetMajor(), Minor: ver.GetMinor()}
+	return nil
+}
+
+// EnrollmentChallenge requests enrollment state over the active connection.
+// Firmware controls which transports support bootstrap challenges.
+// statusOnly observes completion without replacing the bootstrap nonce.
+func (c *WendyLiteClient) EnrollmentChallenge(statusOnly bool) (*wendypb.WendyComEnrollmentChallenge, error) {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_EnrollmentChallenge{
+			EnrollmentChallenge: &wendypb.WendyComEnrollmentChallengeParams{StatusOnly: statusOnly},
+		},
+	}, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return nil, fmt.Errorf("firmware rejected the PKI enrollment challenge (%s): %w; the device needs PKI-enabled Wendy Lite firmware with enrollment support on the selected transport; for a simulator, use a PKI-enabled ESP32-C6 image", resp.Result.String(), err)
+	}
+	challenge := resp.GetEnrollmentChallenge()
+	if challenge == nil {
+		return nil, fmt.Errorf("device returned no enrollment challenge")
+	}
+	return challenge, nil
+}
+
+// ResetEnrollment clears enrollment over physical USB. Firmware validates the
+// hardware ID and its current challenge, and preserves unrelated configuration.
+// The caller must revoke Cloud credentials first and reboot after confirmation.
+func (c *WendyLiteClient) ResetEnrollment(deviceID, nonceHex string) error {
+	if strings.TrimSpace(deviceID) == "" {
+		return fmt.Errorf("missing device ID for enrollment reset")
+	}
+	nonce, err := hex.DecodeString(nonceHex)
+	if err != nil || len(nonce) != 32 {
+		return fmt.Errorf("invalid enrollment reset nonce")
+	}
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_EnrollmentReset{
+			EnrollmentReset: &wendypb.WendyComEnrollmentResetParams{ExpectedDeviceId: deviceID, NonceHex: nonceHex},
+		},
+	}, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("firmware rejected enrollment reset (%s): %w", resp.Result.String(), err)
+	}
+	return nil
+}
+
+// deviceTLSConfig verifies the device against chain and presents cert unchanged.
+// Callers supply the operator's own intermediates in cert; the device trust
+// bundle may belong to a different authority and must not be sent as that chain.
+// It is the one device verifier for relay, LAN and BLE. A non-nil lite starts
+// here, before dialing, in its own goroutine under ctx; only a board issued by
+// the Lite Device CA waits for it, so a board under the session CA never waits
+// on PKI reachability.
+func deviceTLSConfig(ctx context.Context, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) (*tls.Config, error) {
+	if len(cert.Certificate) == 0 {
+		return nil, fmt.Errorf("missing client certificate")
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, err
+	}
+	opts := certs.ServerVerifyOpts{ChainPEM: chain}
+	identity, hasIdentity, err := certs.IdentityFromCert(leaf)
+	if err != nil {
+		return nil, err
+	}
+	if !hasIdentity || identity.TenantUUID == "" || !strings.HasPrefix(identity.Principal, "spiffe://wendy.sh/tenant/"+identity.TenantUUID+"/operator/") {
+		return nil, fmt.Errorf("Wendy Lite PKI requires a tenant-scoped operator identity")
+	}
+	if deviceID == "" {
+		return nil, fmt.Errorf("missing Wendy Lite device identity")
+	}
+	// A Lite board's one id is a canonical device UUID. Any other pin, such as
+	// a pre-UUID lite- identity, is refused rather than used verbatim.
+	if id, err := uuid.Parse(deviceID); err != nil || id.String() != deviceID {
+		return nil, fmt.Errorf("Wendy Lite device identity %q is not a device UUID; update the board's firmware, then unenroll and re-enroll it over USB", deviceID)
+	}
+	opts.ExpectedIdentity = &certs.WendyIdentity{
+		EntityType: certs.EntityAsset, EntityID: deviceID, TenantUUID: identity.TenantUUID,
+		Principal: "spiffe://wendy.sh/tenant/" + identity.TenantUUID + "/device/" + deviceID,
+	}
+
+	verify, err := certs.BuildServerVerifyConnection(opts)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
+		InsecureSkipVerify: true, // Verification and device identity checks are performed below.
+		VerifyConnection:   verify,
+	}
+	if lite != nil {
+		type loaded struct {
+			chain string
+			err   error
+		}
+		result := make(chan loaded, 1)
+		go func() {
+			chainPEM, err := lite(ctx)
+			result <- loaded{chainPEM, err}
+		}()
+		addLiteDeviceTrust(cfg, cert, chain, deviceID, sync.OnceValues(func() (string, error) {
+			r := <-result
+			return r.chain, r.err
+		}))
+	}
+	return cfg, nil
+}
+
+func (c *WendyLiteClient) ConnectWithPKIAuthentication(address string, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) error {
+	return c.ConnectWithPKIAuthenticationContext(context.Background(), address, cert, chain, deviceID, lite)
+}
+
+// ConnectWithPKIAuthenticationContext bounds connection establishment and both
+// the TLS and WendyCom handshakes by ctx. lite may be nil (see deviceTLSConfig).
+func (c *WendyLiteClient) ConnectWithPKIAuthenticationContext(ctx context.Context, address string, cert tls.Certificate, chain, deviceID string, lite LiteDeviceCAChain) error {
+	cfg, err := deviceTLSConfig(ctx, cert, chain, deviceID, lite)
+	if err != nil {
+		return err
+	}
+	return c.connectTLSContext(ctx, address, cfg)
+}
+
+// connectTLSContext uses an already configured verifier for the TLS handshake,
+// then establishes WendyCom under the same cancellation context.
+func (c *WendyLiteClient) connectTLSContext(ctx context.Context, address string, cfg *tls.Config) error {
+	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 15 * time.Second}, Config: cfg}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return fmt.Errorf("connect (mTLS): %w", err)
+	}
+	stopCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopCancel()
+	c.link = newDirectLink(conn)
+	if err := c.handshake(); err != nil {
+		c.link.close()
+		c.link = nil
+		return fmt.Errorf("handshake: %w", err)
+	}
+	c.peerCert = conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
+	c.startReadLoop()
+	return nil
+}
+
+// ConnectSensorSource authenticates a pinned SensorLink source using this
+// consumer's device identity. The source limits device callers to SensorLink.
+func (c *WendyLiteClient) ConnectSensorSource(ctx context.Context, address string, cert tls.Certificate, chain, principal string) error {
+	if len(cert.Certificate) == 0 {
+		return fmt.Errorf("missing consumer certificate")
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return err
+	}
+	own, ok, err := certs.IdentityFromCert(leaf)
+	if err != nil || !ok || own.EntityType != certs.EntityAsset || own.TenantUUID == "" {
+		return fmt.Errorf("SensorLink requires a tenant-scoped consumer device identity")
+	}
+	expected, err := certs.ParseDevicePrincipal(principal)
+	if err != nil || principal != certs.DeviceSPIFFEURI(expected.TenantUUID, expected.EntityID) || !expected.Scope().Matches(own.Scope()) {
+		return fmt.Errorf("SensorLink source must be a device in the consumer's tenant")
+	}
+	verify, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{ChainPEM: chain, ExpectedIdentity: &expected})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
+		InsecureSkipVerify: true, // VerifyConnection authenticates the full chain and exact device principal.
+		VerifyConnection:   verify}
+	conn, err := (&tls.Dialer{Config: cfg}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return fmt.Errorf("connect SensorLink (mTLS): %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	c.link = newDirectLink(conn)
+	if err := c.handshake(); err != nil {
+		c.link.close()
+		c.link = nil
+		return fmt.Errorf("SensorLink handshake: %w", err)
+	}
+	c.peerCert = conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
+	c.startReadLoop()
 	return nil
 }

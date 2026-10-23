@@ -263,6 +263,10 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	buildCtx, cancelBuild := context.WithCancel(ctx)
 	defer cancelBuild()
 	buildCtx = withComposePrepareLimiter(buildCtx)
+	// Tag the context so ociLayoutBuildWaitNotice knows quietBuild routes every
+	// worker's logOutput into a failure-only buffer below, regardless of
+	// terminal interactivity (see quietBuildLogKey).
+	buildCtx = contextWithQuietBuildLog(buildCtx, quietBuild)
 
 	names := make([]string, 0, len(jobs))
 	for name := range jobs {
@@ -288,7 +292,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	sem := make(chan struct{}, concurrency)
 
 	var prog *tea.Program
-	if !quietBuild && isInteractiveTerminal() {
+	if !quietBuild && isInteractiveTerminal() && !detachedJSONRun(ctx) {
 		prog = tui.NewProgressProgram(tui.NewMultiSpinner(fmt.Sprintf("Building %d Compose service(s)...", len(names)), names))
 	}
 
@@ -318,7 +322,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 
 			start := time.Now()
 			var logBuf bytes.Buffer
-			var buildOut io.Writer = os.Stdout
+			var buildOut io.Writer = runProgressWriter(ctx)
 			var logOut io.Writer = os.Stderr
 			var layerDiffIDs []string
 			var tally func() tui.BuildTally = func() tui.BuildTally { return tui.BuildTally{} }
@@ -1252,6 +1256,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		// and global CLI values are applied last to every service.
 		serviceEnvs[name] = mergeEnvEntries(expandServiceEnv(companion, nil), composeEnv(svc), expandServiceEnv(nil, serviceConfig), opts.env)
 	}
+	var appIDs []string
+	for _, cfg := range svcCfgs {
+		appIDs = append(appIDs, cfg.AppID)
+	}
+	sort.Strings(appIDs)
+	if err := registerCloudApps(ctx, conn, appIDs, opts.skipCloudRegistration); err != nil {
+		return err
+	}
 	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
 	portConfigs := []*appconfig.AppConfig{companion}
 	for _, svc := range svcCfgs {
@@ -1322,17 +1334,21 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...); err != nil {
 				return fmt.Errorf("service %s: %w", name, err)
 			}
-			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, resolvedStagefileBackend(ctx), allBuildArgs, serviceEnvs[name])
+			// Only a service with digest-pinned bases can skip its build, so an
+			// unpinned one never hashes its context (WDY-3216).
+			var inputHash string
+			inputHash, contentPinned, err = pinnedBuildInputHash(ctxDir, dockerfile, platform, resolvedStagefileBackend(ctx), allBuildArgs, serviceEnvs[name])
+			if err != nil && !contentPinned {
+				return fmt.Errorf("checking service %s base images: %w", name, err)
+			}
 			if err != nil {
 				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
 			}
-			// The prepared image name is part of the desired identity. A project
-			// directory rename changes the Compose repository even when its source
-			// bytes do not, so reusing the old preparation would be unsafe.
-			imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, imageIdentity)
-			contentPinned, err = dockerfileBasesContentPinned(ctxDir, dockerfile)
-			if err != nil {
-				return fmt.Errorf("checking service %s base images: %w", name, err)
+			if contentPinned {
+				// The prepared image name is part of the desired identity. A project
+				// directory rename changes the Compose repository even when its source
+				// bytes do not, so reusing the old preparation would be unsafe.
+				imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, inputHash)
 			}
 		}
 
@@ -1378,6 +1394,9 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("%d of %d Compose services unchanged and already on device; skipping image preparation.", n, len(cfg.Services))
 	}
 
+	if len(jobs) > 0 {
+		noteEmulatedBuild(platform, false)
+	}
 	failedBuilds, preparedContent, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, opts.chunking, jobs, opts.maxConcurrency, opts.quietBuild)
 	if err != nil {
 		return err
@@ -1421,7 +1440,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 	}
 
-	for _, name := range ordered {
+	composeCreateRequest := func(name string) (*agentpb.CreateContainerRequest, error) {
 		svc := cfg.Services[name]
 		appCfg := svcCfgs[name]
 
@@ -1436,12 +1455,12 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		} else if svc.Image != "" {
 			imageName = normalizeImageRef(svc.Image)
 		} else {
-			return fmt.Errorf("service %s: no image or build directive", name)
+			return nil, fmt.Errorf("service %s: no image or build directive", name)
 		}
 
 		appConfigData, err := json.Marshal(appCfg)
 		if err != nil {
-			return fmt.Errorf("marshaling config for service %s: %w", name, err)
+			return nil, fmt.Errorf("marshaling config for service %s: %w", name, err)
 		}
 
 		// Split the compose command into argv: the first token becomes Cmd
@@ -1457,12 +1476,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			restartPolicy = composeRestartPolicy(svc.Restart)
 		}
 
-		if warns := unsupportedComposeWarnings(svc); len(warns) > 0 {
-			cliLogln("warning: service %q uses unsupported Compose fields (ignored by Wendy): %s",
-				name, strings.Join(warns, ", "))
-		}
-
-		createReq := &agentpb.CreateContainerRequest{
+		return &agentpb.CreateContainerRequest{
 			ImageName:     imageName,
 			AppName:       appCfg.ContainerName(),
 			AppConfig:     appConfigData,
@@ -1470,6 +1484,25 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			RestartPolicy: restartPolicy,
 			UserArgs:      extraArgs,
 			Env:           serviceEnvs[name],
+		}, nil
+	}
+
+	if err := validateServicesBeforeReplace(ctx, conn.ContainerService, ordered, composeCreateRequest); err != nil {
+		return err
+	}
+
+	for _, name := range ordered {
+		svc := cfg.Services[name]
+		appCfg := svcCfgs[name]
+
+		if warns := unsupportedComposeWarnings(svc); len(warns) > 0 {
+			cliLogln("warning: service %q uses unsupported Compose fields (ignored by Wendy): %s",
+				name, strings.Join(warns, ", "))
+		}
+
+		createReq, err := composeCreateRequest(name)
+		if err != nil {
+			return err
 		}
 
 		cliLogln("Creating container for service %s (%s)...", name, appCfg.ContainerName())
@@ -1534,6 +1567,19 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if runErr != nil {
 		return runErr
 	}
+	if opts.detach {
+		configs := []*appconfig.AppConfig{appLevelCfg}
+		for _, name := range ordered {
+			configs = append(configs, svcLifecycleCfgs[name])
+		}
+		appID := projectName
+		if companion != nil && companion.AppID != "" {
+			appID = companion.AppID
+		}
+		if err := opts.reportDetachedRun(ctx, conn, appID, configs...); err != nil {
+			return err
+		}
+	}
 	if ctx.Err() == nil {
 		for _, name := range ordered {
 			if h := desiredHashes[name]; h != "" {
@@ -1550,8 +1596,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 // Each start carries the service's agent-side postStart hook as gRPC metadata,
 // so in-container hooks still run on the device.
 //
-// No host-side lifecycle work: detached runs do not wait for readiness,
-// announce the app URL, or fire host postStart hooks — see
+// Detached runs do not wait for readiness or fire host postStart hooks — see
 // runPostStartIfReady's doc comment (WDY-2041).
 func composeStartDetached(ctx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, projectName string) error {
 	for _, name := range ordered {
@@ -1562,7 +1607,7 @@ func composeStartDetached(ctx context.Context, conn *grpcclient.AgentConnection,
 		if err != nil {
 			return fmt.Errorf("starting service %s: %w", name, err)
 		}
-		if _, err := stream.Recv(); err != nil && err != io.EOF {
+		if err := awaitStarted(stream); err != nil {
 			return fmt.Errorf("waiting for service %s start: %w", name, err)
 		}
 		cliLogln("Service %s started.", name)

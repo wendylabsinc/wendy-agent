@@ -2,10 +2,11 @@ package mcusource
 
 import (
 	"context"
-	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"net"
 	"strconv"
 	"sync"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/sensorlink"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -21,25 +22,66 @@ import (
 // d.Port is NOT the right port — it's the agent's own gRPC port, not the
 // sensorlink port the source's SensorPairing service listens on — so dial
 // the well-known sensorlink.Port instead, agreeing with the address the CLI
-// builds on `device pair`.
+// builds on `device pair`. "wendycom" pairings (Wendy Lite boards) are not
+// WendyOS agents at all: they are found on their own _wendy-lite._tcp
+// service (see discoverWendyLiteLANDevices), whose d.Port is the WendyCom port.
 // discoverFn is a seam over discovery.Discover so resolveLANAddrs's own
 // transport→port selection logic can be exercised with a fake device list,
 // without a real mDNS browse.
 var discoverFn = discovery.Discover
 
-var resolveLANAddrs = func(ctx context.Context, sourceAssetID int32, transport string) ([]string, bool) {
-	devices, err := discoverFn(ctx, discovery.DiscoveryOptions{Types: []models.InterfaceType{models.InterfaceLAN}})
+// browseContinuousFn is the same seam for the browse behind
+// discoverWendyLiteLANDevices, so tests can script the sightings it sees.
+var browseContinuousFn = discovery.BrowseMDNSServicesContinuous
+
+// discoverWendyLiteLANDevices browses _wendy-lite._tcp until the board with
+// sourceAssetID answers, and returns that sighting. The browse stops right
+// there: a one-shot browse would wait for the network to go quiet instead,
+// and could conclude before a slow board answers when others answer first.
+// ok is false if ctx ends before the board answers.
+func discoverWendyLiteLANDevices(ctx context.Context, sourceAssetID int32) (models.LANDevice, bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // ends the browse once the board has answered
+	svcs, err := browseContinuousFn(ctx, discovery.WendyLiteServiceType)
 	if err != nil {
-		return nil, false
+		return models.LANDevice{}, false
+	}
+	for svc := range svcs {
+		d := discovery.LANDeviceFromWendyLiteService(svc)
+		// A sighting resolveLANAddrs could not dial does not count as found.
+		if d.AssetID == sourceAssetID && d.IPAddress != "" && d.Port > 0 {
+			return d, true
+		}
+	}
+	return models.LANDevice{}, false
+}
+
+var resolveLANAddrs = func(ctx context.Context, sourceAssetID int32, transport string) ([]string, bool) {
+	var lanDevices []models.LANDevice
+	if transport == "wendycom" {
+		d, ok := discoverWendyLiteLANDevices(ctx, sourceAssetID)
+		if !ok {
+			return nil, false
+		}
+		lanDevices = []models.LANDevice{d}
+	} else {
+		devices, err := discoverFn(ctx, discovery.DiscoveryOptions{Types: []models.InterfaceType{models.InterfaceLAN}})
+		if err != nil {
+			return nil, false
+		}
+		lanDevices = devices.LANDevices
 	}
 	var addresses []string
 	seen := make(map[string]bool)
-	for _, d := range devices.LANDevices {
-		if d.AssetID != sourceAssetID || !d.IsMTLS {
+	for _, d := range lanDevices {
+		if d.AssetID != sourceAssetID {
+			continue
+		}
+		if !d.IsMTLS {
 			continue
 		}
 		port := sensorlink.Port
-		if transport == "grpc" {
+		if transport == "grpc" || transport == "wendycom" {
 			port = d.Port
 		}
 		if port <= 0 {
@@ -59,6 +101,26 @@ var resolveLANAddrs = func(ctx context.Context, sourceAssetID int32, transport s
 	return addresses, len(addresses) > 0
 }
 
+func resolvePairingLANAddrs(ctx context.Context, p SensorPairing) ([]string, bool) {
+	if p.SourcePrincipalURI == "" {
+		return resolveLANAddrs(ctx, p.SourceAssetID, p.Transport)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	svcs, err := browseContinuousFn(ctx, discovery.WendyLiteServiceType)
+	if err != nil {
+		return nil, false
+	}
+	for svc := range svcs {
+		d := discovery.LANDeviceFromWendyLiteService(svc)
+		if d.PrincipalURI != p.SourcePrincipalURI || !d.IsMTLS || d.IPAddress == "" || d.Port <= 0 {
+			continue
+		}
+		return []string{net.JoinHostPort(d.IPAddress, strconv.Itoa(d.Port))}, true
+	}
+	return nil, false
+}
+
 // Runner owns one cancelable goroutine per active pairing, all driven through
 // the single shared Supervisor (its node-id allocator must stay shared across
 // every pairing on the agent).
@@ -67,11 +129,11 @@ type Runner struct {
 	sup    *Supervisor
 
 	mu   sync.Mutex
-	runs map[int32]pairingRun
+	runs map[string]pairingRun
 }
 
 func NewRunner(logger *zap.Logger, sup *Supervisor) *Runner {
-	return &Runner{logger: logger, sup: sup, runs: make(map[int32]pairingRun)}
+	return &Runner{logger: logger, sup: sup, runs: make(map[string]pairingRun)}
 }
 
 // Start (re)launches the supervisor goroutine for p. If a goroutine is
@@ -85,14 +147,14 @@ func (r *Runner) Start(p SensorPairing, addr string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// A restart retains allocations but must not overlap the previous writers.
-	r.stopLocked(p.SourceAssetID)
+	r.stopLocked(p.Key())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	r.runs[p.SourceAssetID] = pairingRun{cancel: cancel, done: done}
+	r.runs[p.Key()] = pairingRun{cancel: cancel, done: done}
 	go func() {
 		defer close(done)
 		if err := r.sup.RunPairing(ctx, p, addr); err != nil && ctx.Err() == nil {
-			r.logger.Warn("sensor pairing supervisor exited", zap.Int32("source", p.SourceAssetID), zap.Error(err))
+			r.logger.Warn("sensor pairing supervisor exited", zap.String("source", p.Key()), zap.Error(err))
 		}
 	}()
 }
@@ -106,16 +168,20 @@ type pairingRun struct {
 // slots available to other sources. Start and Stop are serialized so a new
 // generation cannot race cleanup of the old one.
 func (r *Runner) Stop(sourceAssetID int32) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stopLocked(sourceAssetID)
-	r.sup.releaseSource(sourceAssetID)
+	r.StopPairing(SensorPairing{SourceAssetID: sourceAssetID})
 }
 
-func (r *Runner) stopLocked(sourceAssetID int32) {
-	if run, ok := r.runs[sourceAssetID]; ok {
+func (r *Runner) StopPairing(p SensorPairing) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopLocked(p.Key())
+	r.sup.releasePairing(p)
+}
+
+func (r *Runner) stopLocked(key string) {
+	if run, ok := r.runs[key]; ok {
 		run.cancel()
 		<-run.done
-		delete(r.runs, sourceAssetID)
+		delete(r.runs, key)
 	}
 }

@@ -27,6 +27,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -103,20 +104,20 @@ Flags can be provided progressively — omitted values trigger interactive picke
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rootfsOnly && len(args) > 0 {
-				return fmt.Errorf("--rootfs-only cannot be combined with positional [image] [drive] arguments")
+				return usageErrorf("--rootfs-only cannot be combined with positional [image] [drive] arguments")
 			}
 			if prNumber > 0 {
 				if nightly || versionFlag != "" || len(args) > 0 {
-					return fmt.Errorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
+					return usageErrorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
 			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
-				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
+				return usageErrorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
 			}
 			if nightly && versionFlag != "" {
-				return fmt.Errorf("--nightly and --version are mutually exclusive")
+				return usageErrorf("--nightly and --version are mutually exclusive")
 			}
 
 			opts := wifiCLIOptions{
@@ -127,7 +128,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 
 			if len(args) == 2 {
-				return runOSInstallDirect(args[0], args[1], force, yesOverwriteInternal)
+				return runOSInstallDirect(cmd.Context(), args[0], args[1], force, yesOverwriteInternal)
 			}
 			mode := preEnrollAuto
 			if cmd.Flags().Changed("pre-enroll") {
@@ -159,11 +160,14 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
 	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "Install the image built by wendyos-builder PR #N (debug build; mutually exclusive with --nightly, --version, and positional [image] [drive])")
+	cmd.AddCommand(newOSInstallPlanCmd(), newOSInstallVerifyCmd(), newOSInstallJobsCmd())
 
 	return cmd
 }
 
-func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwriteInternal bool) error {
+func runOSInstallDirect(ctx context.Context, imagePath string, driveID string, force bool, yesOverwriteInternal bool) (retErr error) {
+	ctx, finish := startActivationOperation(ctx, "install", "wendy install")
+	defer func() { finish(retErr) }()
 	// Verify the image file exists.
 	if _, err := os.Stat(imagePath); err != nil {
 		return fmt.Errorf("image file: %w", err)
@@ -172,6 +176,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	// Authenticate elevation before any disk-listing or write work. On
 	// Windows this offers a UAC re-launch when the current process isn't
 	// elevated; on Unix it pre-caches the sudo timestamp.
+	activationStep(ctx, "permission", nil)
 	if err := preAuthElevation(); err != nil {
 		return err
 	}
@@ -204,7 +209,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 		}
 		if !confirmed {
 			fmt.Println("Cancelled.")
-			return nil
+			return ErrUserCancelled
 		}
 	}
 
@@ -214,12 +219,30 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	}
 	defer stream.Close()
 
+	if stream.uncompressedSize == 0 && stream.sourcePath != "" {
+		if err := measureImageWithProgress(stream); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			fmt.Printf("Could not determine image size: %v\n", err)
+		}
+	}
+	if err := checkImageFitsDrive(stream.uncompressedSize, *targetDrive); err != nil {
+		return err
+	}
+
+	activationStep(ctx, "flash", map[string]string{"target_selected": "true"})
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
+	if err := unmountBeforeWrite(*targetDrive); err != nil {
+		return err
+	}
 	if err := writeImageToDisk(stream, stream.uncompressedSize, *targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
 	}
+	markFATVolumes(*targetDrive)
 
+	analytics.TrackStage(ctx, "image_written", "wendy install", "completed", "", nil)
 	fmt.Printf("\nSuccessfully installed image on %s.\n", targetDrive.Name)
 	return nil
 }
@@ -261,8 +284,12 @@ func installedFromFlashBundle(dev deviceInfo) bool {
 
 // isFlashBundleDeviceType reports whether a device type is flashed from a bundle
 // whatever its manifest says. The publisher does not yet write install_mode for
-// the EDL boards it already ships, so the device type has to carry the rule.
+// the EDL boards it already ships, so the device type has to carry the rule: the
+// prefix, or the registry for a board published under its own name.
 func isFlashBundleDeviceType(deviceType string) bool {
+	if _, ok := dragonwingBoardFor(deviceType); ok {
+		return true
+	}
 	return strings.HasPrefix(deviceType, dragonwingDeviceTypePrefix)
 }
 
@@ -328,7 +355,15 @@ func pickWendyLiteBoard(target string, nightly bool) (string, error) {
 	return pickFromItems("Select your board model", items)
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) (retErr error) {
+	ctx, finish := startActivationOperation(ctx, "install", "wendy install")
+	defer func() { finish(retErr) }()
+	// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
+	// Rejected before any manifest fetch: the answer never depends on it.
+	switch flagDeviceType {
+	case "esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3":
+		return fmt.Errorf("--device-type does not support ESP32 targets; use the interactive picker for Wendy Lite devices")
+	}
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
 	}
@@ -481,11 +516,6 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// Resolve device — use flag or interactive picker.
 	var selected string
 	if flagDeviceType != "" {
-		// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
-		switch flagDeviceType {
-		case "esp32-c5", "esp32-c6", "esp32-c61", "esp32-p4", "esp32-s3":
-			return fmt.Errorf("--device-type does not support ESP32 targets; use the interactive picker for Wendy Lite devices")
-		}
 		if _, ok := deviceMap[flagDeviceType]; !ok {
 			var available []string
 			for k, d := range deviceMap {
@@ -768,6 +798,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
 	// pre-caches the sudo timestamp.
+	activationStep(ctx, "permission", nil)
 	if err := preAuthElevation(); err != nil {
 		return err
 	}
@@ -788,6 +819,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		selectedVersion = flagVersion
 	}
 
+	activationStep(ctx, "select_target", nil)
 	// Step 2: Resolve target drive — use flag or interactive picker.
 	var targetDrive drive
 	if flagDrive != "" {
@@ -827,25 +859,8 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 		if !confirmed {
 			fmt.Println("Cancelled.")
-			return nil
+			return ErrUserCancelled
 		}
-	}
-
-	provCreds, err := resolveWiFiCredentialsList(wifi)
-	if err != nil {
-		return err
-	}
-
-	provDeviceName, err := resolveDeviceName(deviceName)
-	if err != nil {
-		return err
-	}
-
-	// Resolve pre-enrollment before provisioning — the config partition is mounted
-	// and unmounted inside provisionConfigWithRetry below.
-	provisioningJSON, err := resolveProvisioningJSON(ctx, preOpts, provDeviceName)
-	if err != nil {
-		return err
 	}
 
 	// Step 5: Resolve image metadata for the target storage. A USB-attached
@@ -883,6 +898,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	var imgInfo *imageInfo
+	var err error
 	if rootfsOnly && ver.InstallMode == "recovery" {
 		imgInfo, err = getRootfsOnlyImageInfo(device.Manifest, selectedVersion, storage)
 	} else {
@@ -892,12 +908,35 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
+	// Refuse a too-small drive before the prompts, pre-enrollment and download.
+	if err := preflightImageFits(deviceKey, selectedVersion, storage, imgInfo, targetDrive, noBmap); err != nil {
+		return err
+	}
+
+	provCreds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+
+	provDeviceName, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+
+	// Resolve pre-enrollment before provisioning — the config partition is mounted
+	// and unmounted inside provisionConfigWithRetry below.
+	provisioningJSON, err := resolveProvisioningJSON(ctx, preOpts, provDeviceName)
+	if err != nil {
+		return err
+	}
+
+	activationStep(ctx, "download", map[string]string{"target_selected": "true"})
 	// Step 5a: Prefer the seekable-zstd fast path. When the manifest advertises a
 	// .zst for this storage plus a usable bmap (and --no-bmap wasn't passed), we
 	// download only the .zst + bmap and write mapped ranges, skipping holes —
 	// and crucially we do NOT download the full .zip image at all.
 	var seekableZst, seekableBmap string
-	var seekableTotal int64
+	var seekableTotal, imageSize int64
 	if !noBmap && imgInfo.ZstURL != "" && imgInfo.BmapURL != "" {
 		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, storage, imgInfo.ZstURL)
 		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion, storage)
@@ -913,14 +952,15 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
 			} else {
 				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
+				imageSize = parsed.ImageSize
 			}
 		}
 	}
 
 	// Step 5b: Fallback path — resolve the .zip/.img stream only when NOT using
 	// the seekable path (so the seekable path never downloads the .zip). For
-	// compressed images, measure the size (skipped when a bmap is present, since
-	// the bmap's ImageSize is the exact total) and prepare the legacy block map.
+	// compressed images, prepare the legacy block map and measure the size when
+	// no bmap is used (a usable bmap's ImageSize is the exact total).
 	var stream *imageStream
 	var bmapPath string
 	if seekableZst == "" {
@@ -929,15 +969,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			return fmt.Errorf("opening OS image: %w", err)
 		}
 		defer stream.Close()
-
-		if stream.uncompressedSize == 0 && stream.sourcePath != "" && imgInfo.BmapURL == "" {
-			if err := measureImageWithProgress(stream); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return err
-				}
-				fmt.Printf("Could not determine image size: %v\n", err)
-			}
-		}
 
 		if !noBmap && imgInfo.BmapURL != "" {
 			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion, storage)
@@ -951,15 +982,39 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 				fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
 			} else {
 				bmapPath = candidate
+				imageSize = parsed.ImageSize
 			}
+		}
+
+		// Without a usable bmap the full image is written, so its size must be known.
+		if bmapPath == "" && stream.uncompressedSize == 0 && stream.sourcePath != "" {
+			if err := measureImageWithProgress(stream); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+				fmt.Printf("Could not determine image size: %v\n", err)
+			}
+		}
+		if stream.uncompressedSize > 0 {
+			imageSize = stream.uncompressedSize
 		}
 	}
 
+	// Step 5c: Refuse a drive too small for the image before anything is written.
+	if err := checkImageFitsDrive(imageSize, targetDrive); err != nil {
+		return err
+	}
+
+	if err := unmountBeforeWrite(targetDrive); err != nil {
+		return err
+	}
+
+	activationStep(ctx, "flash", nil)
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 	if seekableZst != "" || bmapPath != "" {
-		// bmap failures fall back silently; suppress the TUI error render
+		// a bmap failure falls back and its reason is printed then; suppress the TUI error render
 		writeProg = writeProg.WithoutErrorView()
 	}
 	wp := tui.NewProgressProgram(writeProg)
@@ -979,12 +1034,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	go func() {
-		var writeErr error
-		switch {
-		case seekableZst != "":
-			fmt.Println("Using seekable block map for faster flashing.")
-			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, func(written int64) {
-				lastWritten.Store(written)
+		progress := func(written int64) {
+			lastWritten.Store(written)
+			if seekableZst != "" {
 				var pct float64
 				if seekableTotal > 0 {
 					pct = float64(written) / float64(seekableTotal)
@@ -994,22 +1046,20 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 					Written: written,
 					Total:   seekableTotal,
 				})
-			})
+			} else if msg, ok := stream.writeProgressMsg(written); ok {
+				wp.Send(msg)
+			}
+		}
+		var writeErr error
+		switch {
+		case seekableZst != "":
+			fmt.Println("Using seekable block map for faster flashing.")
+			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, progress)
 		case bmapPath != "":
 			fmt.Println("Using block map for faster flashing.")
-			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, func(written int64) {
-				lastWritten.Store(written)
-				if msg, ok := stream.writeProgressMsg(written); ok {
-					wp.Send(msg)
-				}
-			})
+			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, progress)
 		default:
-			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
-				lastWritten.Store(written)
-				if msg, ok := stream.writeProgressMsg(written); ok {
-					wp.Send(msg)
-				}
-			})
+			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, progress)
 		}
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
 	}()
@@ -1069,6 +1119,10 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			return primary
 		}
 		defer fallbackCloser.Close()
+		if err := checkImageFitsDrive(fallbackSize, targetDrive); err != nil {
+			return fmt.Errorf("%w; full-image fallback skipped: %v", primary, err)
+		}
+		announceFastWriteFallback(os.Stdout, primary)
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
@@ -1093,6 +1147,8 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
+	analytics.TrackStage(ctx, "image_written", "wendy install", "completed", "", nil)
+	activationStep(ctx, "provision", nil)
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
 	var provisionErr error
 
@@ -1116,6 +1172,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		provisionErr = provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
 	}
 
+	markFATVolumes(targetDrive)
 	ejectDisk(targetDrive)
 
 	// Requested provisioning that never reached the card is a failed install:
@@ -1129,6 +1186,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	fmt.Printf("\nSuccessfully installed %s %s on %s.\n", device.Name, imgInfo.Version, targetDrive.Name)
 	fmt.Println("You can now insert the drive into your device and power it on.")
+	printFirstBootVerification(deviceKey, imgInfo.Version)
 	return nil
 }
 
@@ -1233,7 +1291,11 @@ const parallelDownloadWorkers = 8
 // downloadChunk fetches the byte range [start, end] from url, writes it to dst
 // at the correct offset via WriteAt, and atomically increments *downloaded.
 func downloadChunk(client *http.Client, url string, start, end int64, dst *os.File, downloaded *int64, total int64, sendProgress func(int64, int64)) error {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	return downloadChunkContext(context.Background(), client, url, start, end, dst, downloaded, total, sendProgress)
+}
+
+func downloadChunkContext(ctx context.Context, client *http.Client, url string, start, end int64, dst *os.File, downloaded *int64, total int64, sendProgress func(int64, int64)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
@@ -1253,6 +1315,9 @@ func downloadChunk(client *http.Client, url string, start, end int64, dst *os.Fi
 	offset := start
 	for {
 		n, readErr := resp.Body.Read(buf)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if n > 0 {
 			if _, writeErr := dst.WriteAt(buf[:n], offset); writeErr != nil {
 				return fmt.Errorf("writing at offset %d: %w", offset, writeErr)
@@ -1273,6 +1338,10 @@ func downloadChunk(client *http.Client, url string, start, end int64, dst *os.Fi
 // downloadParallel downloads url into dst using parallelDownloadWorkers concurrent
 // range requests. dst must already be truncated to contentLength bytes.
 func downloadParallel(client *http.Client, url string, contentLength int64, dst *os.File, sendProgress func(int64, int64)) error {
+	return downloadParallelContext(context.Background(), client, url, contentLength, dst, sendProgress)
+}
+
+func downloadParallelContext(ctx context.Context, client *http.Client, url string, contentLength int64, dst *os.File, sendProgress func(int64, int64)) error {
 	chunkSize := (contentLength + parallelDownloadWorkers - 1) / parallelDownloadWorkers
 
 	var wg sync.WaitGroup
@@ -1292,7 +1361,7 @@ func downloadParallel(client *http.Client, url string, contentLength int64, dst 
 		wg.Add(1)
 		go func(start, end int64) {
 			defer wg.Done()
-			if err := downloadChunk(client, url, start, end, dst, &downloaded, contentLength, sendProgress); err != nil {
+			if err := downloadChunkContext(ctx, client, url, start, end, dst, &downloaded, contentLength, sendProgress); err != nil {
 				errCh <- err
 			}
 		}(start, end)
@@ -1311,7 +1380,15 @@ func downloadParallel(client *http.Client, url string, contentLength int64, dst 
 // success. Falls back to img.ImageSize if Content-Length is absent.
 // Returns 0, false if ranges are unsupported or content length is unknown.
 func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64, ok bool) {
-	resp, err := client.Head(img.DownloadURL)
+	return probeRangeSupportContext(context.Background(), client, img)
+}
+
+func probeRangeSupportContext(ctx context.Context, client *http.Client, img *imageInfo) (contentLength int64, ok bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, img.DownloadURL, nil)
+	if err != nil {
+		return 0, false
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, false
 	}
@@ -1337,8 +1414,17 @@ func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64
 // progress-bar TUI. Prefer downloadImageInto when embedding the download inside
 // another progress UI (it takes a plain byte callback and owns no TUI).
 func downloadImage(img *imageInfo) (string, error) {
+	return downloadImageContext(context.Background(), img)
+}
+
+func downloadImageContext(ctx context.Context, img *imageInfo, opts ...tea.ProgramOption) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	downloadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tui.NewProgressProgram(prog)
+	p := tui.NewProgressProgram(prog, append([]tea.ProgramOption{tea.WithContext(downloadCtx)}, opts...)...)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	type result struct {
@@ -1347,16 +1433,28 @@ func downloadImage(img *imageInfo) (string, error) {
 	}
 	resC := make(chan result, 1)
 	go func() {
-		path, err := downloadImageInto(img, sendProgress)
+		path, err := downloadImageIntoContext(downloadCtx, img, sendProgress)
 		resC <- result{path, err}
 		p.Send(tui.ProgressDoneMsg{Err: err})
 	}()
 
-	if _, err := p.Run(); err != nil {
+	model, runErr := p.Run()
+	var uiErr error
+	if err := ctx.Err(); err != nil {
+		uiErr = err
+	} else if runErr != nil {
+		uiErr = fmt.Errorf("progress TUI: %w", runErr)
+	} else if progress, ok := model.(tui.ProgressModel); ok {
+		uiErr = progress.Err()
+	}
+	if uiErr != nil {
+		// q, Ctrl-C and a failed TUI must stop network workers before waiting
+		// for their result, including a response body that has stopped sending.
+		cancel()
 		if r := <-resC; r.path != "" {
 			os.Remove(r.path)
 		}
-		return "", fmt.Errorf("progress TUI: %w", err)
+		return "", uiErr
 	}
 	r := <-resC
 	return r.path, r.err
@@ -1369,6 +1467,13 @@ func downloadImage(img *imageInfo) (string, error) {
 // supports HTTP range requests it downloads in parallel across
 // parallelDownloadWorkers connections; otherwise it streams sequentially.
 func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64)) (string, error) {
+	return downloadImageIntoContext(context.Background(), img, onProgress)
+}
+
+func downloadImageIntoContext(ctx context.Context, img *imageInfo, onProgress func(downloaded, total int64)) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if onProgress == nil {
 		onProgress = func(int64, int64) {}
 	}
@@ -1385,17 +1490,22 @@ func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64))
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	contentLength, supportsRanges := probeRangeSupport(client, img)
+	contentLength, supportsRanges := probeRangeSupportContext(ctx, client, img)
 	var dlErr error
-	if supportsRanges {
+	if ctx.Err() != nil {
+		dlErr = ctx.Err()
+	} else if supportsRanges {
 		if err := tmpFile.Truncate(contentLength); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpFile.Name())
 			return "", fmt.Errorf("pre-allocating: %w", err)
 		}
-		dlErr = downloadParallel(client, img.DownloadURL, contentLength, tmpFile, onProgress)
+		dlErr = downloadParallelContext(ctx, client, img.DownloadURL, contentLength, tmpFile, onProgress)
 	} else {
-		dlErr = downloadSequential(client, img, tmpFile, onProgress)
+		dlErr = downloadSequentialContext(ctx, client, img, tmpFile, onProgress)
+	}
+	if dlErr == nil {
+		dlErr = ctx.Err()
 	}
 	if dlErr != nil {
 		tmpFile.Close()
@@ -1412,7 +1522,15 @@ func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64))
 // downloadSequential streams img into dst over a single connection, reporting
 // progress via onProgress. Used when the server does not support range requests.
 func downloadSequential(client *http.Client, img *imageInfo, dst *os.File, onProgress func(downloaded, total int64)) error {
-	resp, err := client.Get(img.DownloadURL)
+	return downloadSequentialContext(context.Background(), client, img, dst, onProgress)
+}
+
+func downloadSequentialContext(ctx context.Context, client *http.Client, img *imageInfo, dst *os.File, onProgress func(downloaded, total int64)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, img.DownloadURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloading: %w", err)
 	}
@@ -1428,6 +1546,9 @@ func downloadSequential(client *http.Client, img *imageInfo, dst *os.File, onPro
 	var downloaded int64
 	for {
 		n, readErr := resp.Body.Read(buf)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if n > 0 {
 			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
 				return writeErr
@@ -1644,7 +1765,7 @@ func streamZipImageEntry(zipPath string) (*imageStream, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(f.Name))
-		// .sdimg is the A/B disk image RPi targets now produce.
+		// .sdimg is the disk image older Raspberry Pi releases shipped.
 		if ext != ".img" && ext != ".raw" && ext != ".wic" && ext != ".sdimg" {
 			continue
 		}
@@ -2058,6 +2179,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			} else if isInteractiveTerminal() {
 				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
+					if errors.Is(perr, tui.ErrCancelled) {
+						return nil, ErrUserCancelled
+					}
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
 				c.Password = pw
@@ -2074,6 +2198,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 	// Interactive path: Y/N → loop until the user declines another network.
 	enable, err := tui.ConfirmDefaultYes("Set up WiFi on first boot?")
 	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
 		return nil, err
 	}
 	if !enable {
@@ -2092,6 +2219,9 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 
 		more, err := tui.Confirm("Add another WiFi network?")
 		if err != nil {
+			if errors.Is(err, tui.ErrCancelled) {
+				return nil, ErrUserCancelled
+			}
 			return nil, err
 		}
 		if !more {
@@ -2192,53 +2322,25 @@ type wifiScanSelection struct {
 	ScanErr     error  // scan failure recorded while the picker was open
 }
 
-// selectWifiNetworkStreaming shows the WiFi picker immediately and streams
-// the scan results in: the CoreWLAN/nmcli/netsh scan can take several
-// seconds, and a visible "Scanning..." list reads better than blocking
-// before any UI appears.
+// selectWifiNetworkStreaming shows cached results while the first scan runs,
+// then refreshes the list until the user selects a network or exits.
 func selectWifiNetworkStreaming() (wifiScanSelection, error) {
-	var sel wifiScanSelection
-
-	picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
-	picker.Filterable = true
-	p := tea.NewProgram(picker)
-
-	// The user can quit the picker before the scan goroutine finishes, so
-	// every access to sel is mutex-guarded.
-	var mu sync.Mutex
-	go func() {
-		defer p.Send(tui.PickerDoneMsg{})
-		// Stream the host scan: cached results paint the picker instantly, then
-		// the fresh rescan fills it in — so SSIDs trickle in rather than the
-		// picker sitting on "Scanning..." until the whole scan completes
-		// (matching the device-side picker in pickWifiNetwork).
-		hadNetworks := false
-		err := streamLocalWifiScan(func(batch []localWifiNetwork) {
-			if len(batch) > 0 {
-				hadNetworks = true
-			}
-			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
-		})
-		mu.Lock()
-		sel.ScanErr = err
-		sel.HadNetworks = hadNetworks
-		mu.Unlock()
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := tea.NewProgram(newLocalWifiPickerModel(ctx))
 	fmt.Println()
 	finalModel, runErr := p.Run()
+	if errors.Is(runErr, tea.ErrInterrupted) {
+		return wifiScanSelection{}, ErrUserCancelled
+	}
 	if runErr != nil {
 		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: %w", runErr)
 	}
-	pm, ok := finalModel.(tui.PickerModel)
+	pm, ok := finalModel.(localWifiPickerModel)
 	if !ok {
 		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: unexpected picker model %T", finalModel)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if picked := pm.Selected(); picked != nil {
-		sel.SSID, _ = picked.Value.(string)
-	}
-	return sel, nil
+	return pm.result()
 }
 
 // promptAddOneCredential runs the local scan + picker + password prompt to
@@ -2246,8 +2348,12 @@ func selectWifiNetworkStreaming() (wifiScanSelection, error) {
 // already collected (used to suggest a descending priority). Returns
 // added=false (with nil error) when the user chooses to skip WiFi setup
 // after a failed or empty scan (WDY-1474).
-func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
-	var c wendyconf.WifiCredential
+func promptAddOneCredential(index int) (c wendyconf.WifiCredential, added bool, err error) {
+	defer func() {
+		if errors.Is(err, tui.ErrCancelled) {
+			err = ErrUserCancelled
+		}
+	}()
 
 	sel, err := selectWifiNetworkFromScan()
 	if err != nil {
@@ -2429,6 +2535,35 @@ func confirmOverwriteInternalDrive(d drive, force bool, yesOverwriteInternal boo
 	return nil
 }
 
+// checkImageFitsDrive refuses a write the drive cannot hold: the image's
+// partition table spans its full size, so a truncated copy never boots.
+// An unknown size on either side skips the check.
+func checkImageFitsDrive(imageSize int64, d drive) error {
+	if imageSize <= 0 || d.SizeBytes <= 0 || imageSize <= d.SizeBytes {
+		return nil
+	}
+	return fmt.Errorf("%s (%s) is too small for this image: it holds %s but the image needs %s; use a larger SD card or drive",
+		d.Name, d.DevicePath, formatBytes(d.SizeBytes), formatBytes(imageSize))
+}
+
+// preflightImageFits checks the drive against the published bmap's image size,
+// which is known before the image is downloaded. Any fetch or parse failure is
+// ignored; the check before the write still applies.
+func preflightImageFits(deviceKey, version, storage string, img *imageInfo, d drive, noBmap bool) error {
+	if noBmap || img.BmapURL == "" || d.SizeBytes <= 0 {
+		return nil
+	}
+	path, err := osCachedBmapPath(deviceKey, version, storage)
+	if err != nil || downloadBmap(img.BmapURL, path) != nil {
+		return nil
+	}
+	parsed, err := parseBmap(readFileOrNil(path))
+	if err != nil {
+		return nil
+	}
+	return checkImageFitsDrive(parsed.ImageSize, d)
+}
+
 // provisionConfigPartitionFn is the provisioning entry point used by
 // provisionConfigWithRetry. It is a package var so tests can stub the real
 // network + disk work it performs.
@@ -2585,11 +2720,11 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 		return fmt.Errorf("this device only supports one Wi-Fi network")
 	}
 
-	// An empty serial device means "find it for me", which stays true across
-	// retries below: a reset re-enumerates the USB device and the node can
-	// come back under a different path. An explicitly supplied device is used
-	// verbatim on every attempt.
+	// An explicitly supplied device is used verbatim on every attempt. For
+	// discovered devices, preserve the selected port across retries and ask
+	// again if it disappears, since a different port may be another board.
 	autoDiscoverPort := serialDevice.Port == ""
+	interactive := !jsonOutput && isInteractiveTerminal()
 	if autoDiscoverPort {
 		fmt.Println("\nScanning for ESP32 devices...")
 
@@ -2597,8 +2732,12 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 		// the USB bus as it re-enumerates, so a single scan can miss it.
 		// Retry briefly rather than failing on the very first attempt.
 		deadline := time.Now().Add(1 * time.Second)
+		var devices []discovery.SerialPortInfo
 		for {
-			serialDevice, err = discovery.ResolveESP32InstallSerialPort()
+			devices, err = discovery.ResolveESP32InstallSerialPorts()
+			if err == nil && len(devices) == 0 {
+				err = fmt.Errorf("no ESP32 serial port found")
+			}
 			if err == nil || time.Now().After(deadline) {
 				break
 			}
@@ -2610,16 +2749,13 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 			fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
 			return fmt.Errorf("ESP32 not found: %w", err)
 		}
+		serialDevice, err = selectESP32InstallDevice(devices, discovery.SerialPortInfo{}, interactive, pickFromItems)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Println(esp32InstallCandidateMessage(serialDevice))
-	if serialDevice.Transport == discovery.SerialTransportUARTBridge {
-		fmt.Fprintln(os.Stderr, tui.WarningMessage(esp32UARTBridgeInstallWarning(len(provCreds) > 0)))
-		if requiresESP32UARTConfirmation(serialDevice, len(provCreds) > 0, isInteractiveTerminal()) &&
-			!confirmDefaultNoFn("Continue flashing through USB-UART without WiFi?") {
-			return ErrUserCancelled
-		}
-	}
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
 	firmwareID, err := WendyLiteFirmwareID(board)
@@ -2664,7 +2800,6 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 	// gets the plain retry prompt. Prompting is skipped entirely when the run
 	// isn't interactive or is producing JSON, so those fail immediately on the
 	// first attempt, unchanged from before this loop existed.
-	interactive := !jsonOutput && isInteractiveTerminal()
 	for attempt := 1; ; attempt++ {
 		// Native USB reset can re-enumerate at a different path (macOS:
 		// /dev/cu.usbmodem101 → /dev/cu.usbmodem1101). Re-scan install-capable
@@ -2672,9 +2807,23 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 		// A failed re-scan keeps the last known candidate and lets the attempt
 		// report the real error.
 		if attempt > 1 && autoDiscoverPort {
-			if rescanned, rescanErr := discovery.ResolveESP32InstallSerialPort(); rescanErr == nil && rescanned != serialDevice {
-				fmt.Printf("ESP32 reappeared at %s\n", rescanned.Port)
-				serialDevice = rescanned
+			if devices, rescanErr := discovery.ResolveESP32InstallSerialPorts(); rescanErr == nil && len(devices) > 0 {
+				selected, selectErr := selectESP32InstallDevice(devices, serialDevice, interactive, pickFromItems)
+				if selectErr != nil {
+					return selectErr
+				}
+				if selected.Port != serialDevice.Port {
+					fmt.Println(esp32InstallCandidateMessage(selected))
+				}
+				serialDevice = selected
+			}
+		}
+
+		if serialDevice.Transport == discovery.SerialTransportUARTBridge {
+			fmt.Fprintln(os.Stderr, tui.WarningMessage(esp32UARTBridgeInstallWarning(len(provCreds) > 0)))
+			if requiresESP32UARTConfirmation(serialDevice, len(provCreds) > 0, interactive) &&
+				!confirmDefaultNoFn("Continue flashing through USB-UART without WiFi?") {
+				return ErrUserCancelled
 			}
 		}
 

@@ -8,6 +8,56 @@ GEN_DIR="$GO_DIR/proto/gen"
 
 export PATH="$PATH:$(go env GOPATH)/bin"
 
+# ---- Pinned generator versions ----
+#
+# The generated tree is committed, and every generator stamps its own version into a
+# comment in each file. So a mismatch does not fail — it rewrites files that nobody
+# meant to touch, and the real change disappears into the noise. Before this check the
+# tree had drifted across four protoc versions (v5.28.3, v7.34.0, v7.35.1, v7.36.0),
+# each left behind by whoever last regenerated a subset.
+#
+# To upgrade deliberately: change these pins, regenerate everything, and commit the
+# result on its own. WENDY_PROTO_SKIP_VERSION_CHECK=1 bypasses this for a one-off.
+REQUIRED_PROTOC="34.0"
+REQUIRED_PROTOC_GEN_GO="v1.36.11"
+REQUIRED_PROTOC_GEN_GO_GRPC="1.6.2"
+
+check_version() {
+    local tool="$1" want="$2" got="$3" install="$4"
+    if [ -z "$got" ]; then
+        echo "error: $tool not found on PATH" >&2
+        echo "  install: $install" >&2
+        return 1
+    fi
+    if [ "$got" != "$want" ]; then
+        echo "error: $tool is $got, this tree is generated with $want" >&2
+        echo "  install: $install" >&2
+        echo "  (or set WENDY_PROTO_SKIP_VERSION_CHECK=1 to proceed anyway)" >&2
+        return 1
+    fi
+    printf '  %-20s %s\n' "$tool" "$got"
+}
+
+if [ "${WENDY_PROTO_SKIP_VERSION_CHECK:-0}" != "1" ]; then
+    echo "Checking generator versions..."
+    failed=0
+    check_version protoc "$REQUIRED_PROTOC" \
+        "$(protoc --version 2>/dev/null | awk '{print $2}')" \
+        "https://github.com/protocolbuffers/protobuf/releases/tag/v$REQUIRED_PROTOC (no brew formula for this version)" || failed=1
+    check_version protoc-gen-go "$REQUIRED_PROTOC_GEN_GO" \
+        "$(protoc-gen-go --version 2>/dev/null | awk '{print $2}')" \
+        "go install google.golang.org/protobuf/cmd/protoc-gen-go@$REQUIRED_PROTOC_GEN_GO" || failed=1
+    check_version protoc-gen-go-grpc "$REQUIRED_PROTOC_GEN_GO_GRPC" \
+        "$(protoc-gen-go-grpc --version 2>/dev/null | awk '{print $2}')" \
+        "go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v$REQUIRED_PROTOC_GEN_GO_GRPC" || failed=1
+    if [ "$failed" -ne 0 ]; then
+        echo "" >&2
+        echo "Refusing to generate: a mismatch rewrites every generated file with a new" >&2
+        echo "version stamp, burying the change you actually made." >&2
+        exit 1
+    fi
+fi
+
 # Clean previous generated code
 rm -rf "$GEN_DIR"
 
@@ -53,10 +103,15 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/telemetry_service.proto"
     "wendy/agent/services/v2/file_sync_service.proto"
     "wendy/agent/services/v2/mesh_service.proto"
+    "wendy/agent/services/v2/local_mesh_admin_service.proto"
     "wendy/agent/services/v2/ros2_service.proto"
     "wendy/agent/services/v2/timesync_service.proto"
     "wendy/agent/services/v2/build_service.proto"
+    "wendy/agent/services/v2/calibrated_frame_service.proto"
+    "wendy/agent/services/v2/robot_arm_service.proto"
     "wendy/agent/services/v2/sensor_pairing_service.proto"
+    "wendy/agent/services/v2/unitree_service.proto"
+    "wendy/agent/services/v2/unitree_robot_service.proto"
     "wendy/agent/services/v2/sensor_service.proto"
     "wendy/agent/services/v2/tunnel_service.proto"
     "wendy/agent/services/v2/data_service.proto"
@@ -68,9 +123,15 @@ for p in "${V2_AGENT_PROTOS[@]}"; do
     V2_AGENT_M_OPTS="$V2_AGENT_M_OPTS --go-grpc_opt=M${p}=${V2_AGENT_PKG}"
 done
 
+# calibrated_frame_service.proto (v2) imports the v1 video service proto for
+# RawFormat: a colour plane's layout is exactly what a raw tap subscriber
+# already receives, and two descriptions of the same bytes drift apart. The v1
+# file is mapped by AGENT_M_OPTS (folded into ALL_M_OPTS below), so the
+# generated v2 package imports agentpb rather than re-declaring the message.
+
 # sensor_service.proto (v2) imports wendy/lite/sensorlink.proto; map that
 # import to the existing sensorlinkpb package so the v2 service reuses the
-# shared SensorManifest/SensorFrame types instead of duplicating them.
+# shared SensorManifest/SensorData types instead of duplicating them.
 SENSORLINK_PKG="$MODULE/go/proto/gen/sensorlinkpb"
 V2_AGENT_M_OPTS="$V2_AGENT_M_OPTS --go_opt=Mwendy/lite/sensorlink.proto=${SENSORLINK_PKG}"
 V2_AGENT_M_OPTS="$V2_AGENT_M_OPTS --go-grpc_opt=Mwendy/lite/sensorlink.proto=${SENSORLINK_PKG}"
@@ -133,9 +194,22 @@ done
 # wire contract until the fleet has crossed over (WDY-2824). Paths match
 # service-protos exactly so a re-copy is a plain cp and the imports need no
 # rewriting -- DeviceEnrollmentService included, Cloud-owned though it is.
+#
+# Pin: wendycloud/v2/*.proto and wendy/options.proto are service-protos master
+# 32981db4 (merged #142, reported state v2). device_enrollment.proto is not in
+# service-protos: it is cloud #757 head 5e3003e4
+# (cloud-proto/device_enrollment.proto), including enrollment hardware.
+# Re-pin: copy those files from
+# the new heads with `git show <sha>:<path>`, run `make proto`, and update the
+# SHAs here. wendy/options.proto (the signed_request method option) generates
+# into cloudpbv2 too, so the option and SignedRequest live in one Go package.
 CLOUD_V2_PKG="$MODULE/go/proto/gen/cloudpb/v2"
 CLOUD_V2_PROTOS=(
+    "wendy/options.proto"
+    "wendycloud/v2/signed_request.proto"
+    "wendycloud/v2/relay_mcp.proto"
     "wendycloud/v2/device_enrollment.proto"
+    "wendycloud/v2/pki_admin.proto"
     "wendycloud/v2/apps.proto"
     "wendycloud/v2/assets.proto"
     "wendycloud/v2/certificates.proto"
@@ -155,6 +229,25 @@ for p in "${CLOUD_V2_PROTOS[@]}"; do
     CLOUD_V2_M_OPTS="$CLOUD_V2_M_OPTS --go-grpc_opt=M${p}=${CLOUD_V2_PKG};cloudpbv2"
 done
 
+# PKIAdminService returns the PKI ledger's own response messages. These four
+# complete contracts are vendored from service-protos
+# 6ad12f11bc3359ff902d586fd601a5530792febe, the Cloud API's protocol pin.
+PKI_PKG="$MODULE/go/proto/gen/pkicorepb"
+AUTH_PKG="$MODULE/go/proto/gen/wendyauthpb"
+PKI_PROTOS=(
+    "pkicore/v1/types.proto"
+    "pkicore/v1/engine.proto"
+    "pkicore/v1/fabric_management.proto"
+    "pkicore/v1/fabric_relay.proto"
+)
+PKI_M_OPTS="--go_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG} --go-grpc_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG}"
+PKI_GO_M_OPTS="--go_opt=Mwendyauth/v1/envelope.proto=${AUTH_PKG}"
+for p in "${PKI_PROTOS[@]}"; do
+    PKI_M_OPTS="$PKI_M_OPTS --go_opt=M${p}=${PKI_PKG};pkicorepb"
+    PKI_M_OPTS="$PKI_M_OPTS --go-grpc_opt=M${p}=${PKI_PKG};pkicorepb"
+    PKI_GO_M_OPTS="$PKI_GO_M_OPTS --go_opt=M${p}=${PKI_PKG};pkicorepb"
+done
+
 # ---- Wendy System API protos ----
 SYSTEM_PKG="$MODULE/go/proto/gen/systempb"
 SYSTEM_PROTOS=(
@@ -168,7 +261,7 @@ for p in "${SYSTEM_PROTOS[@]}"; do
 done
 
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $SYSTEM_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $CLOUD_V2_M_OPTS $PKI_M_OPTS $SYSTEM_M_OPTS"
 
 echo "Generating Wendy Agent protos..."
 mkdir -p "$GEN_DIR/agentpb"
@@ -214,6 +307,17 @@ protoc \
     --go-grpc_opt=module="$CLOUD_V2_PKG" \
     ${CLOUD_V2_PROTOS[@]}
 
+echo "Generating PKI administration protos..."
+mkdir -p "$GEN_DIR/pkicorepb"
+# Cloud is the only client transport; PKI files supply message descriptors,
+# not direct engine or fabric clients.
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/pkicorepb" \
+    --go_opt=module="$PKI_PKG" \
+    $PKI_GO_M_OPTS \
+    "${PKI_PROTOS[@]}"
+
 echo "Generating Wendy System API protos..."
 mkdir -p "$GEN_DIR/systempb"
 protoc \
@@ -225,35 +329,27 @@ protoc \
     --go-grpc_opt=module="$SYSTEM_PKG" \
     ${SYSTEM_PROTOS[@]}
 
+# wendy_com_msg.proto imports sensorlink.proto by bare filename, for the same
+# reason the relay protos do: in the wendy-lite project the two sit side by
+# side in one directory, and the file is shared with that project verbatim. So
+# proto_path points inside wendy/lite here too. sensorlink.proto is an input
+# only -- its Go code comes from the sensorlinkpb generation further down,
+# which the agent's v2 sensor service shares. The wendy-lite project generates
+# it into a sensorlinkpb package of its own under the same import path, so the
+# client code shared with that project names these types identically on both
+# sides.
 echo "Generating Wendy Lite protos..."
 LITE_PKG="$MODULE/go/proto/gen/litepb"
 mkdir -p "$GEN_DIR/litepb"
 protoc \
-    --proto_path="$PROTO_DIR" \
+    --proto_path="$PROTO_DIR/wendy/lite" \
     --go_out="$GEN_DIR/litepb" \
     --go_opt=module="$LITE_PKG" \
-    --go_opt=Mwendy/lite/wendy_com_msg.proto="$LITE_PKG" \
-    --go_opt=Mwendy/lite/wendy_conf.proto="$LITE_PKG" \
-    wendy/lite/wendy_com_msg.proto \
-    wendy/lite/wendy_conf.proto
-
-# The tunnel protos import each other by bare filename so they can be moved
-# to another project as-is; proto_path points inside wendy/lite accordingly.
-echo "Generating Wendy Lite tunnel protos..."
-TUNNEL_PKG="$MODULE/go/proto/gen/tunnelpb"
-mkdir -p "$GEN_DIR/tunnelpb"
-protoc \
-    --proto_path="$PROTO_DIR/wendy/lite" \
-    --go_out="$GEN_DIR/tunnelpb" \
-    --go_opt=module="$TUNNEL_PKG" \
-    --go_opt=Mwendy_com_tunnel_msg.proto="$TUNNEL_PKG" \
-    --go_opt=Mwendy_com_tunnel_service.proto="$TUNNEL_PKG" \
-    --go-grpc_out="$GEN_DIR/tunnelpb" \
-    --go-grpc_opt=module="$TUNNEL_PKG" \
-    --go-grpc_opt=Mwendy_com_tunnel_msg.proto="$TUNNEL_PKG" \
-    --go-grpc_opt=Mwendy_com_tunnel_service.proto="$TUNNEL_PKG" \
-    wendy_com_tunnel_msg.proto \
-    wendy_com_tunnel_service.proto
+    --go_opt=Mwendy_com_msg.proto="$LITE_PKG" \
+    --go_opt=Mwendy_conf.proto="$LITE_PKG" \
+    --go_opt=Msensorlink.proto="$SENSORLINK_PKG" \
+    wendy_com_msg.proto \
+    wendy_conf.proto
 
 echo "Generating Wendy Lite sensorlink protos..."
 SENSORLINK_PKG="$MODULE/go/proto/gen/sensorlinkpb"
@@ -262,6 +358,7 @@ protoc \
     --proto_path="$PROTO_DIR" \
     --go_out="$GEN_DIR/sensorlinkpb" \
     --go_opt=module="$SENSORLINK_PKG" \
+    --go_opt=Mwendy/lite/sensorlink.proto="$SENSORLINK_PKG" \
     "$PROTO_DIR/wendy/lite/sensorlink.proto"
 
 echo "Proto generation complete!"
@@ -278,6 +375,19 @@ protoc --proto_path="$PROTO_DIR" \
     --go-grpc_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
     --go-grpc_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
     wendycloud/tunnel/v2/tunnel.proto wendyauth/v1/envelope.proto
+
+# Packaged Lite relay contract from service-protos.
+WCOMRELAY_PKG="$MODULE/go/proto/gen/wcomrelaypb"
+protoc --proto_path="$PROTO_DIR" \
+    --go_out="$GO_DIR" --go_opt=module="$MODULE/go" \
+    --go_opt=Mwendycloud/tunnel/lite/v1/relay.proto="$WCOMRELAY_PKG" \
+    --go_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
+    --go_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
+    --go-grpc_out="$GO_DIR" --go-grpc_opt=module="$MODULE/go" \
+    --go-grpc_opt=Mwendycloud/tunnel/lite/v1/relay.proto="$WCOMRELAY_PKG" \
+    --go-grpc_opt=Mwendycloud/tunnel/v2/tunnel.proto="$RELAY_PKG" \
+    --go-grpc_opt=Mwendyauth/v1/envelope.proto="$AUTH_PKG" \
+    wendycloud/tunnel/lite/v1/relay.proto
 
 # App recording envelopes (no generated SDK is needed for lightweight streams).
 protoc --proto_path="$PROTO_DIR" --go_out="$GO_DIR" --go_opt=module="$MODULE/go" \

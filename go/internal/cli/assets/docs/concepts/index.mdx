@@ -5,6 +5,32 @@ description: Understand targets, app configuration, and the build and deploy loo
 
 Start with the [quickstart](/docs/) if you have not run an app yet.
 
+## Wendy in 60 seconds
+
+```text
+YOUR DEVELOPMENT MACHINE
+  Wendy CLI / editor
+          |
+          | build, run, debug
+          v
+YOUR TARGET
+  WendyOS, or an existing machine with Wendy Agent
+    Your app
+    Camera / GPU / GPIO / ROS 2
+          |
+          | optional enrollment
+          v
+  Wendy Cloud: fleet management and remote deployment
+```
+
+| Name | What it does |
+| --- | --- |
+| Wendy CLI | The `wendy` tool on your development machine. |
+| WendyOS | Wendy's Linux OS for supported hardware and the simulator. It includes the agent. |
+| Wendy Agent | Runs on the target and manages your apps. Install it on an existing Linux or supported Mac machine. |
+| Wendy Cloud | Optional remote access and fleet management. |
+| `wendy.json` | Your app's configuration, including its target platform and hardware permissions. |
+
 ## Your development machine and your target
 
 The CLI runs on your development machine. A target is the machine that runs your app. WendyOS includes Wendy Agent; existing Linux and supported Mac machines can run the agent without replacing their OS. A simulator is a local VM running WendyOS.
@@ -15,11 +41,11 @@ Linux targets run containers. Mac targets run native macOS apps. ESP32 uses Wend
 
 ## App configuration
 
-[`wendy.json`](/docs/advanced/apps/wendy.json) names your app, chooses its platform, and declares the capabilities it needs. Entitlements grant access to hardware and other resources. A simulator can exercise the software deployment path but does not provide physical hardware access.
+[`wendy.json`](/docs/advanced/apps/wendy.json) names your app, chooses its platform, and declares the capabilities it needs. Entitlements grant access to hardware and other resources. A simulator can exercise the software deployment path. Physical hardware access is limited to opt-in [serial passthrough](/docs/installation/wendyos-virtual-machine#serial-passthrough); other peripherals need a real device.
 
 ## Optional cloud management
 
-You can develop locally without enrolling in Wendy Cloud. [Cloud](/docs/cloud) adds remote access and fleet management when you need to deploy beyond your local network.
+You can develop locally without enrolling in Wendy Cloud. [Cloud](https://cloud.wendy.dev/login) adds remote access and fleet management when you need to deploy beyond your local network.
 
 ## Deeper explanations
 

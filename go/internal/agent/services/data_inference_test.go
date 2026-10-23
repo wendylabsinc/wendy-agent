@@ -110,7 +110,7 @@ func inferenceTestYAML(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	raw = []byte(strings.ReplaceAll(string(raw), "buffer: 10s", "buffer: 0s\n  drain: 0s"))
-	raw = []byte(strings.ReplaceAll(string(raw), "  on: episode_committed", "  on: event\n  event: person_detected\n  webhook: https://notifications.example/detections"))
+	raw = []byte(strings.ReplaceAll(string(raw), "  on: event\n  event: person_detected", "  on: event\n  event: person_detected\n  webhook: https://notifications.example/detections"))
 	return raw
 }
 
@@ -174,10 +174,17 @@ func TestAgentInferenceAllCamerasRecordAndNotify(t *testing.T) {
 	}
 	session.results <- result(first)
 	notification1 := receiveInference(t, sender.requests)
+	if len(notification1.Detections) != 1 || notification1.Detections[0] != (data.NotificationDetection{Label: "person", Score: .99}) {
+		t.Fatalf("detection notification lacks its detections: %+v", notification1.Detections)
+	}
 	session.results <- result(second)
 	notification2 := receiveInference(t, sender.requests)
 	if notification1.ID == notification2.ID {
 		t.Fatal("different cameras shared a notification ID")
+	}
+	retained, _, _, err := service.manager.Notifications("", "", "", true)
+	if err != nil || len(retained) != 2 || retained[0].ID != notification1.ID || retained[1].ID != notification2.ID || retained[0].OccurredAt == "" {
+		t.Fatalf("detection notifications were not durably retained: %v %v", retained, err)
 	}
 
 	episodes := service.manager.ActiveEpisodeKeys()
@@ -275,6 +282,62 @@ func TestAgentInferenceRedeployStopsOldRevision(t *testing.T) {
 	}
 }
 
+func TestInferenceDisabledWaitsForRetiredWorker(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := data.ParseCampaign(inferenceTestYAML(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Notify = &data.CampaignNotify{On: data.NotifyOnDetection}
+	disabled := old
+	config := *old.Inference
+	enabled := false
+	config.Enabled = &enabled
+	disabled.Inference = &config
+	raw, err := yaml.Marshal(disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err = manager.DeployCampaign(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, done := make(chan struct{}), make(chan struct{})
+	service := NewDataService(manager)
+	service.inference = &campaignInferenceManager{service: service, jobs: map[string]*campaignInferenceJob{
+		old.Name: {campaign: old, cancel: func() { close(canceled) }, done: done, status: data.InferenceStatus{State: "running"}},
+	}}
+	state := func() string {
+		t.Helper()
+		message, err := service.campaignMessage(disabled)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan data.Campaign
+		if err := json.Unmarshal(message.PlanJson, &plan); err != nil {
+			t.Fatal(err)
+		}
+		return plan.InferenceStatus.State
+	}
+	if got := state(); got != "stopping" {
+		t.Fatalf("before cancellation: %s", got)
+	}
+	reconciled := make(chan struct{})
+	go func() { defer close(reconciled); service.inference.reconcile(context.Background()) }()
+	receiveInference(t, canceled)
+	if got := state(); got != "stopping" {
+		t.Fatalf("before process exit: %s", got)
+	}
+	close(done)
+	receiveInference(t, reconciled)
+	if got := state(); got != "disabled" {
+		t.Fatalf("after process exit: %s", got)
+	}
+}
+
 func TestAgentInferencePresenceAndFiltering(t *testing.T) {
 	campaign, err := data.ParseCampaign(inferenceTestYAML(t))
 	if err != nil {
@@ -338,6 +401,7 @@ func TestAgentInferenceCloudCommitNotificationStaysInManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw = []byte(strings.ReplaceAll(string(raw), "  on: event\n  event: person_detected", "  on: episode_committed"))
 	if _, err := service.CampaignDeploy(context.Background(), &agentpbv2.DataCampaignDeployRequest{CampaignYaml: raw}); err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +444,7 @@ func TestAgentInferenceNotificationRetryKeepsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := &campaignInferenceJob{owner: &campaignInferenceManager{service: NewDataService(manager), sender: sender}, campaign: campaign}
-	request := detectionNotification(campaign, "v4l2:/dev/video0", 1)
+	request := detectionNotification(campaign, "v4l2:/dev/video0", []inference.Detection{{Label: "person", Score: .9}})
 	queue := make(chan DetectionNotification, 1)
 	queue <- request
 	ctx, cancel := context.WithCancel(context.Background())
@@ -499,6 +563,10 @@ func TestAgentInferenceEventNotificationWithoutModelOrUpload(t *testing.T) {
 	if len(manager.ActiveEpisodeKeys()) != 0 {
 		t.Fatal("notification created an episode")
 	}
+	retained, _, _, err := manager.Notifications("", "", "", true)
+	if err != nil || len(retained) != 1 || retained[0].Event != "person_detected" || retained[0].OccurredAt == "" {
+		t.Fatalf("named event notification was not durably retained: %v %v", retained, err)
+	}
 }
 
 func TestModelFreeCampaignInspectIncludesNotificationError(t *testing.T) {
@@ -523,5 +591,29 @@ func TestModelFreeCampaignInspectIncludesNotificationError(t *testing.T) {
 	}
 	if inspected.InferenceStatus == nil || inspected.InferenceStatus.NotificationError != "delivery failed" || inspected.InferenceStatus.State != "running" {
 		t.Fatalf("missing model-free notification status: %+v", inspected.InferenceStatus)
+	}
+}
+
+func TestDetectionNotificationKeepsTopFiveByScore(t *testing.T) {
+	campaign, err := data.ParseCampaign(inferenceTestYAML(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detections []inference.Detection
+	for _, score := range []float64{.5, .9, .7, .95, .6, .8, .55} {
+		detections = append(detections, inference.Detection{Label: "person", Score: score, Box: [4]float64{1, 2, 3, 4}})
+	}
+	notification := detectionNotification(campaign, "v4l2:/dev/video0", detections)
+	if notification.Count != 7 {
+		t.Fatalf("count = %d, want every accepted detection", notification.Count)
+	}
+	want := []float64{.95, .9, .8, .7, .6}
+	if len(notification.Detections) != len(want) {
+		t.Fatalf("kept %d detections, want 5", len(notification.Detections))
+	}
+	for i, detection := range notification.Detections {
+		if detection.Label != "person" || detection.Score != want[i] {
+			t.Fatalf("detections[%d] = %+v, want person %.2f", i, detection, want[i])
+		}
 	}
 }

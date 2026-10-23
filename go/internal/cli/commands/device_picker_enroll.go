@@ -25,19 +25,16 @@ func enrollLocalPickerDevice(ctx context.Context, item *tui.PickerItem, auth *co
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
 	}
 
-	target, err := connectPickerEnrollmentFn(ctx, item, suppressUpdateCheck)
-	if err != nil {
-		return err
-	}
-	defer target.Close()
-
-	// The selected LAN connection retains its device pin checks. If dialing
-	// fell back to BLE, reject it just as device enroll does: enrollment needs
-	// the agent's gRPC provisioning service.
-	conn, err := connectFromSelectedDevice(target, resolveConfig{suppressProvisioningHint: true})
-	if err != nil {
-		return err
-	}
-	promptPickerEnrollmentWifiFn(ctx, conn)
-	return runPickerEnrollmentFn(ctx, conn, auth, "", 0)
+	return runWithEnrollmentTarget(ctx, func() (*SelectedDevice, error) {
+		return connectPickerEnrollmentFn(ctx, item, suppressUpdateCheck)
+	}, func(target *SelectedDevice) error {
+		conn, err := connectFromSelectedDevice(target, resolveConfig{suppressProvisioningHint: true})
+		if err != nil {
+			return err
+		}
+		if err := promptPickerEnrollmentWifiFn(ctx, conn); err != nil {
+			return err
+		}
+		return runPickerEnrollmentFn(ctx, conn, auth, "", 0)
+	})
 }

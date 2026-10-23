@@ -12,13 +12,18 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -84,11 +89,32 @@ func resolveAndValidateRunBuildHost(flagValue, builder string) (string, error) {
 	return host, nil
 }
 
+// rejectUnsupportedBuildHostProject refuses --build-host for a project shape the
+// remote path cannot build. What is left after WDY-3120 is the set that never
+// produces a container image from a build context: Compose, provider targets,
+// Xcode, and host-toolchain Swift. Multi-service projects are NOT in it —
+// each service is an ordinary container image build and goes remote like any
+// other (see buildServicesRemote).
 func rejectUnsupportedBuildHostProject(host, project string) error {
 	if strings.TrimSpace(host) == "" {
 		return nil
 	}
-	return fmt.Errorf("build host %s cannot build %s; remote builds currently support single-service container image projects only (remove --build-host or clear defaultBuildHost to build locally)", host, project)
+	return fmt.Errorf("build host %s cannot build %s; remote builds support Dockerfile/Stagefile container image projects only (remove --build-host or clear defaultBuildHost to build locally)", host, project)
+}
+
+// rejectMultiServiceFleetRun refuses a fleet deploy of a service group.
+//
+// A fleet run delivers ONE image to several devices from a single build, and
+// the whole group lifecycle — dependency order, shared namespaces, readiness,
+// hooks — is orchestrated against one connection in runMultiServiceWithAgent.
+// Neither generalises to N devices yet, so a fleet flag here would deploy the
+// group to the primary and silently ignore the rest. That is the wrong-machine
+// failure --build-host's design refuses elsewhere, so it is refused here too.
+func rejectMultiServiceFleetRun(opts runOptions) error {
+	if len(opts.fleetDevices) == 0 {
+		return nil
+	}
+	return fmt.Errorf("a multi-service project cannot be deployed to several devices in one run (%s): its services are created and started as a group against one device; run it per device", strings.Join(opts.fleetDevices, ", "))
 }
 
 // splitFleetDevices reads a comma-separated --device value into the primary
@@ -156,25 +182,26 @@ func checkFleetDeliverySupported(host string, resp *agentpbv2.GetBuildCapabiliti
 	return fmt.Errorf("build host %s cannot deliver one build to several devices; update its agent, or deploy to one device at a time", host)
 }
 
-// checkChunkDeliverySupported refuses --chunking=force against a build host
-// whose agent predates chunked delivery: it would discard the mode and push
-// through the registry, which is the silent fallback force exists to forbid.
-// auto and off need nothing new from the host — an older one pushes through
-// the registry, which is what off asks for and what auto accepts, though auto
-// is told.
+// checkChunkDeliverySupported refuses force and auto against a build host
+// whose agent predates chunked delivery.
+//
+// force would be silently discarded there — the host would push through the
+// registry, the exact fallback force exists to forbid. auto used to accept
+// that fallback with a notice, but the registry route rarely completes from a
+// build host: the mesh cannot reach the device's registry port, so the build
+// succeeded and every delivery failed with an error naming the device
+// (WDY-3093). Refusing up front replaces that dead end with the command that
+// fixes it. off stays allowed: it is an explicit request for the registry
+// route, which can work when the host reaches the device directly rather
+// than over the mesh.
 func checkChunkDeliverySupported(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, mode string) error {
-	if resp.GetChunkDelivery() {
+	if resp.GetChunkDelivery() || mode == chunkingOff {
 		return nil
 	}
-	switch mode {
-	case chunkingForce:
-		return fmt.Errorf("build host %s predates chunked delivery, so --chunking=force cannot be honoured there; update its agent, or use --chunking=auto or off", host)
-	case chunkingOff:
-		return nil
-	default:
-		cliNotice("build host %s predates chunked delivery; the image will be pushed through the device's registry", host)
-		return nil
+	if mode == chunkingForce {
+		return fmt.Errorf("build host %s predates chunked delivery, so --chunking=force cannot be honoured there; update its agent (wendy device update --device %s)", host, host)
 	}
+	return fmt.Errorf("build host %s predates chunked delivery, which remote builds need: its registry fallback cannot reach the device over the wendy net, so the build would succeed and the delivery fail; update its agent (wendy device update --device %s), or pass --chunking=off to attempt the registry route anyway", host, host)
 }
 
 // buildChunkingMode carries --chunking to the build host, so the flag means the
@@ -196,7 +223,7 @@ func buildChunkingMode(mode string) agentpbv2.ChunkingMode {
 // than an error.
 func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, platform string) error {
 	if !resp.GetBuilderEnabled() {
-		return fmt.Errorf("%s is not configured as a build host; enable the builder role on that device, or omit --build-host to build locally", host)
+		return fmt.Errorf("%s is not configured as a build host; run `wendy device build-host enable --device <build-host>` to enable it, or omit --build-host to build locally", host)
 	}
 	if !resp.GetBuildkitAvailable() {
 		// On darwin this is a design fact, not a misconfiguration: the Mac agent
@@ -221,6 +248,38 @@ func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitie
 		host, platform,
 		formatPlatformList(resp.GetNativePlatforms()),
 		formatPlatformList(resp.GetEmulatedPlatforms()))
+}
+
+// prepareBuildHost offers to enable remote builds before validating the host.
+// A nil confirmation function leaves a disabled host unchanged.
+func prepareBuildHost(ctx context.Context, service agentpbv2.WendyBuildServiceClient, host, platform string, confirm func(string) (bool, error)) (*agentpbv2.GetBuildCapabilitiesResponse, error) {
+	caps, err := service.GetBuildCapabilities(ctx, &agentpbv2.GetBuildCapabilitiesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("querying build host %s: %w", host, err)
+	}
+	if !caps.GetBuilderEnabled() && confirm != nil {
+		accepted, err := confirm(fmt.Sprintf("%s is not configured as a build host. Enable it to accept remote builds?", host))
+		if err != nil {
+			return nil, err
+		}
+		if accepted {
+			resp, err := service.SetBuildHostEnabled(ctx, &agentpbv2.SetBuildHostEnabledRequest{Enabled: true})
+			if err != nil {
+				return nil, fmt.Errorf("enabling build host %s: %w", host, err)
+			}
+			if !resp.GetEnabled() {
+				return nil, fmt.Errorf("%s did not enable the builder role", host)
+			}
+			caps, err = service.GetBuildCapabilities(ctx, &agentpbv2.GetBuildCapabilitiesRequest{})
+			if err != nil {
+				return nil, fmt.Errorf("querying build host %s after enabling it: %w", host, err)
+			}
+		}
+	}
+	if err := checkBuildHostCapabilities(host, caps, platform); err != nil {
+		return nil, err
+	}
+	return caps, nil
 }
 
 func formatPlatformList(platforms []string) string {
@@ -291,11 +350,14 @@ func runRemoteBuild(
 	defer builder.Close()
 	host = buildHostDisplayName(host, builder)
 
-	caps, err := builder.BuildService.GetBuildCapabilities(ctx, &agentpbv2.GetBuildCapabilitiesRequest{})
-	if err != nil {
-		return fmt.Errorf("querying build host %s: %w", host, err)
+	var confirm func(string) (bool, error)
+	if opts.yes {
+		confirm = func(string) (bool, error) { return true, nil }
+	} else if !jsonOutput && isInteractiveTerminal() {
+		confirm = func(question string) (bool, error) { return tui.Confirm(question) }
 	}
-	if err := checkBuildHostCapabilities(host, caps, platform); err != nil {
+	caps, err := prepareBuildHost(ctx, builder.BuildService, host, platform, confirm)
+	if err != nil {
 		return err
 	}
 	if err := checkChunkDeliverySupported(host, caps, opts.chunking); err != nil {
@@ -321,7 +383,7 @@ func runRemoteBuild(
 		return err
 	}
 
-	pushTarget, err := targetPushTarget(ctx, target, appCfg)
+	pushTarget, err := targetPushTarget(ctx, target, appRepository(appCfg))
 	if err != nil {
 		return err
 	}
@@ -331,7 +393,7 @@ func runRemoteBuild(
 	// tested.
 	pushTargets := []*agentpbv2.PushTarget{pushTarget}
 	// Names for the report. The primary is whatever --device resolved to.
-	nameOf := map[int32]string{pushTarget.GetAssetId(): deviceFlag}
+	nameOf := map[string]string{pushTarget.GetAssetUuid(): deviceFlag}
 
 	// Resolve every extra device BEFORE building. A fleet member that cannot be
 	// reached is worth an error now, not after the build host has spent minutes
@@ -348,6 +410,9 @@ func runRemoteBuild(
 			return fmt.Errorf("connecting to %s: %w", name, err)
 		}
 		fleetConns = append(fleetConns, conn)
+		if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
+			return fmt.Errorf("registering deployment on %s: %w", name, err)
+		}
 
 		// One build produces one image for one platform. A device of a different
 		// architecture cannot run it, and finding that out after delivery would
@@ -355,12 +420,12 @@ func runRemoteBuild(
 		if err := assertSamePlatform(ctx, name, conn, platform); err != nil {
 			return err
 		}
-		t, err := targetPushTarget(ctx, conn, appCfg)
+		t, err := targetPushTarget(ctx, conn, appRepository(appCfg))
 		if err != nil {
 			return fmt.Errorf("resolving %s as a delivery target: %w", name, err)
 		}
 		pushTargets = append(pushTargets, t)
-		nameOf[t.GetAssetId()] = name
+		nameOf[t.GetAssetUuid()] = name
 	}
 
 	if err := checkFleetDeliverySupported(host, caps, len(pushTargets)); err != nil {
@@ -416,7 +481,7 @@ func runRemoteBuild(
 		Env:           deployEnv,
 	}
 	if len(fleetConns) == 0 {
-		if err := reportedDeliveryError(buildResult, pushTargets[0].GetAssetId()); err != nil {
+		if err := reportedDeliveryError(buildResult, pushTargets[0].GetAssetUuid()); err != nil {
 			return fmt.Errorf("image built on %s but could not be delivered to %s: %w", host, deviceFlag, err)
 		}
 		return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
@@ -426,10 +491,10 @@ func runRemoteBuild(
 	// created, and one device failing that must not strand the others -- the
 	// image is already on them.
 	report := make([]*agentpbv2.DeliveryResult, 0, len(pushTargets))
-	primaryErr := startAfterReportedDelivery(buildResult, pushTargets[0].GetAssetId(), func() error {
+	primaryErr := startAfterReportedDelivery(buildResult, pushTargets[0].GetAssetUuid(), func() error {
 		return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
 	})
-	report = append(report, deliveryOutcome(pushTargets[0].GetAssetId(), primaryErr))
+	report = append(report, deliveryOutcome(pushTargets[0].GetAssetUuid(), primaryErr))
 
 	for i, conn := range fleetConns {
 		req := &agentpb.CreateContainerRequest{
@@ -441,7 +506,7 @@ func runRemoteBuild(
 			UserArgs:      opts.userArgs,
 			Env:           deployEnv,
 		}
-		assetID := pushTargets[i+1].GetAssetId()
+		assetID := pushTargets[i+1].GetAssetUuid()
 		targetErr := startAfterReportedDelivery(buildResult, assetID, func() error {
 			return startAndStreamContainer(ctx, conn, appCfg, req, opts)
 		})
@@ -459,7 +524,7 @@ func runRemoteBuild(
 	return nil
 }
 
-func startAfterReportedDelivery(result *agentpbv2.BuildImageResult, assetID int32, start func() error) error {
+func startAfterReportedDelivery(result *agentpbv2.BuildImageResult, assetID string, start func() error) error {
 	if err := reportedDeliveryError(result, assetID); err != nil {
 		return err
 	}
@@ -474,12 +539,12 @@ func startAfterReportedDelivery(result *agentpbv2.BuildImageResult, assetID int3
 // Once a host sends any per-target results, absence is a failure. Failing
 // closed prevents the CLI from creating a container from an older image that
 // happens to remain registered under the same :latest name.
-func reportedDeliveryError(result *agentpbv2.BuildImageResult, assetID int32) error {
+func reportedDeliveryError(result *agentpbv2.BuildImageResult, assetID string) error {
 	if result == nil || len(result.GetDeliveries()) == 0 {
 		return nil
 	}
 	for _, delivery := range result.GetDeliveries() {
-		if delivery.GetAssetId() != assetID {
+		if delivery.GetAssetUuid() != assetID {
 			continue
 		}
 		if delivery.GetDelivered() {
@@ -491,17 +556,17 @@ func reportedDeliveryError(result *agentpbv2.BuildImageResult, assetID int32) er
 		}
 		return errors.New(reason)
 	}
-	return fmt.Errorf("build host returned no delivery result for asset %d", assetID)
+	return fmt.Errorf("build host returned no delivery result for asset %s", assetID)
 }
 
 // deliveryOutcome records what happened to one device without collapsing a
 // failure into the run's overall status. See fleetDeliveryReport for why a
 // partial fleet deploy must not read as success.
-func deliveryOutcome(assetID int32, err error) *agentpbv2.DeliveryResult {
+func deliveryOutcome(assetID string, err error) *agentpbv2.DeliveryResult {
 	if err != nil {
-		return &agentpbv2.DeliveryResult{AssetId: assetID, Error: err.Error()}
+		return &agentpbv2.DeliveryResult{AssetUuid: assetID, Error: err.Error()}
 	}
-	return &agentpbv2.DeliveryResult{AssetId: assetID, Delivered: true}
+	return &agentpbv2.DeliveryResult{AssetUuid: assetID, Delivered: true}
 }
 
 // fleetDeliveryReport turns the agent's per-device outcomes into what the
@@ -513,11 +578,11 @@ func deliveryOutcome(assetID int32, err error) *agentpbv2.DeliveryResult {
 // right one, and a fleet deploy is the easiest place yet to hide one — the
 // build succeeds, most devices update, and nobody looks at the tail of the
 // output.
-func fleetDeliveryReport(deliveries []*agentpbv2.DeliveryResult, nameOf map[int32]string) (lines []string, failed int) {
+func fleetDeliveryReport(deliveries []*agentpbv2.DeliveryResult, nameOf map[string]string) (lines []string, failed int) {
 	for _, d := range deliveries {
-		name := nameOf[d.GetAssetId()]
+		name := nameOf[d.GetAssetUuid()]
 		if name == "" {
-			name = fmt.Sprintf("asset %d", d.GetAssetId())
+			name = fmt.Sprintf("asset %s", d.GetAssetUuid())
 		}
 		if d.GetDelivered() {
 			lines = append(lines, fmt.Sprintf("  %-24s delivered", name))
@@ -578,14 +643,37 @@ func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnec
 // resolves where the mesh DNS server runs, which excludes adopted Linux hosts
 // whose resolver already owns 127.0.0.53 — so a reachable peer looked
 // unreachable. The build host's peer dialer needs only the id (WDY-2356).
-func targetPushTarget(ctx context.Context, target *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (*agentpbv2.PushTarget, error) {
-	resp, err := target.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
+// repository is "name:tag" — appRepository for a single-service app, the
+// per-service repo for one service of a group.
+func targetPushTarget(ctx context.Context, target *grpcclient.AgentConnection, repository string) (*agentpbv2.PushTarget, error) {
+	t, err := targetPushTargetBase(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("determining the target device's mesh identity: %w", err)
+		return nil, err
 	}
-	prov, ok := resp.GetResponse().(*agentpb.IsProvisionedResponse_Provisioned)
+	t.Repository = repository
+	return t, nil
+}
+
+// targetPushTargetBase is targetPushTarget without the repository: everything
+// that says WHERE a finished image goes, for a caller delivering several images
+// to the one device (a service group) that should resolve that once rather than
+// re-querying the device's mesh identity, OS and port per image.
+func targetPushTargetBase(ctx context.Context, target *grpcclient.AgentConnection) (*agentpbv2.PushTarget, error) {
+	var remote peer.Peer
+	resp, err := agentpbv2.NewWendyProvisioningServiceClient(target.Conn).IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{}, grpc.Peer(&remote))
+	if err != nil {
+		return nil, fmt.Errorf("determining the target device's wendy net identity: %w", err)
+	}
+	prov, ok := resp.GetResponseType().(*agentpbv2.IsProvisionedResponse_Provisioned)
 	if !ok {
-		return nil, fmt.Errorf("the target device is not provisioned, so a build host cannot reach its registry; provision it or omit --build-host")
+		return nil, fmt.Errorf("the target device is not enrolled, so a build host cannot reach its registry; run 'wendy device enroll' for the target or omit --build-host")
+	}
+	if _, err := meshid.ParseDeviceUUID(prov.Provisioned.GetAssetUuid()); err != nil {
+		return nil, fmt.Errorf("the target agent does not report a certificate device UUID; update and enroll it before remote delivery: %w", err)
+	}
+	device, err := verifiedBuildDeliveryDevice(target, &remote, prov.Provisioned)
+	if err != nil {
+		return nil, err
 	}
 	agentOS, err := targetAgentOS(ctx, target)
 	if err != nil {
@@ -596,11 +684,46 @@ func targetPushTarget(ctx context.Context, target *grpcclient.AgentConnection, a
 		return nil, fmt.Errorf("determining the target device's agent port: %w", err)
 	}
 	return &agentpbv2.PushTarget{
-		AssetId:      prov.Provisioned.GetAssetId(),
+		AssetUuid:    device.UUID().String(),
 		RegistryPort: uint32(registryPort(agentOS)),
-		Repository:   strings.ToLower(appCfg.AppID) + ":latest",
 		AgentPort:    agentPort,
 	}, nil
+}
+
+// verifiedBuildDeliveryDevice binds the destination to the peer the CLI
+// actually reached before sending its UUID to a build host. The RPC response
+// cannot redirect delivery to another device, even in the same tenant.
+func verifiedBuildDeliveryDevice(conn *grpcclient.AgentConnection, remote *peer.Peer, reported *agentpbv2.ProvisionedResponse) (meshid.Device, error) {
+	identity, verified := conn.ObservedServerIdentity()
+	if !verified && remote != nil {
+		if info, ok := remote.AuthInfo.(credentials.TLSInfo); ok && info.State.HandshakeComplete && len(info.State.PeerCertificates) != 0 {
+			var err error
+			identity, verified, err = certs.IdentityFromCert(info.State.PeerCertificates[0])
+			if err != nil {
+				return meshid.Device{}, fmt.Errorf("invalid authenticated delivery target: %w", err)
+			}
+		}
+	}
+	device, err := meshid.DeviceFromPrincipal(identity.Principal)
+	if !verified || err != nil {
+		return meshid.Device{}, errors.New("authenticated device UUID unavailable for remote delivery")
+	}
+	if reported.GetPrincipalUri() != device.Principal() || reported.GetAssetUuid() != device.UUID().String() {
+		return meshid.Device{}, errors.New("delivery target enrollment disagrees with its authenticated device")
+	}
+	if conn.CertInfo != nil {
+		if tenant := conn.CertInfo.TenantUUID(); tenant != "" && tenant != device.Tenant().String() {
+			return meshid.Device{}, errors.New("delivery target is outside the connection operator's tenant")
+		}
+	}
+	return device, nil
+}
+
+// appRepository is the image name a single-service app's remote build pushes
+// to. It must match the reference the deploy path then creates the container
+// from (localRegistryReference), so it is derived rather than formatted twice.
+func appRepository(appCfg *appconfig.AppConfig) string {
+	return strings.ToLower(appCfg.AppID) + ":latest"
 }
 
 // connectedTargetAgentPort reports the mTLS endpoint the CLI actually used.

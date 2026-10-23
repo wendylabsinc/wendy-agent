@@ -2,9 +2,9 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"time"
 
@@ -61,13 +61,28 @@ func readinessState(ctx context.Context, conn *grpcclient.AgentConnection, cfg *
 	}
 }
 
+// readinessObserveFactor bounds how long an attached run keeps observing a
+// slow-starting app after its first readiness timeout: this many probe
+// timeouts in total — 5 minutes at the default 30 s (the agent's
+// restartBackoffCap), 30 minutes for an app that declares 180 s. Observation
+// used to continue for as long as the app ran, polling forever for an app that
+// never listens on its port (or a port this machine cannot reach).
+const readinessObserveFactor = 10
+
+// errReadinessObserveLimit is continueReadiness's result when its deadline
+// fires before the probe passes.
+var errReadinessObserveLimit = errors.New("readiness observation limit reached")
+
 // continueReadiness is clock/probe/status injectable so slow-start and
 // cancellation races can be tested without sleeping through real deadlines.
-func continueReadiness(ctx context.Context, tick <-chan time.Time, probe func(context.Context) bool, running func(context.Context) (bool, error), unavailable func(error)) error {
+// deadline may be nil (never fires).
+func continueReadiness(ctx context.Context, tick, deadline <-chan time.Time, probe func(context.Context) bool, running func(context.Context) (bool, error), unavailable func(error)) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-deadline:
+			return errReadinessObserveLimit
 		case <-tick:
 		}
 		alive, err := running(ctx)
@@ -90,11 +105,17 @@ func continueReadiness(ctx context.Context, tick <-chan time.Time, probe func(co
 	}
 }
 
-func waitForAttachedReadiness(ctx context.Context, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, hostname string) error {
+// waitForAttachedReadiness waits for an attached run's app to pass its
+// readiness probe. timeoutOverride (--readiness-timeout) is the whole deadline
+// when set; otherwise a probe that times out while the app is still running
+// keeps being observed for up to readinessObserveFactor probe timeouts.
+func waitForAttachedReadiness(ctx context.Context, conn *grpcclient.AgentConnection, cfg *appconfig.AppConfig, hostname string, timeoutOverride time.Duration) error {
 	started := time.Now()
 	readiness := effectiveReadiness(cfg)
-	err := waitForReadiness(ctx, readiness, hostname)
-	if err == nil || ctx.Err() != nil {
+	httpPort := cloudHTTPReadinessPort(conn, cfg, readiness, hostname)
+	timeout := readinessProbeTimeout(readiness, timeoutOverride)
+	err := waitForReadinessWithin(ctx, readiness, hostname, httpPort, timeout)
+	if err == nil || ctx.Err() != nil || timeoutOverride > 0 {
 		return err
 	}
 	running := func(ctx context.Context) (bool, error) { return readinessState(ctx, conn, cfg) }
@@ -108,26 +129,29 @@ func waitForAttachedReadiness(ctx context.Context, conn *grpcclient.AgentConnect
 	if !alive {
 		return fmt.Errorf("%w; %s stopped before readiness succeeded", err, cfg.ContainerName())
 	}
-	cliLogln("Application %s is still starting after %s; continuing readiness checks every 5 seconds.", cfg.ContainerName(), time.Since(started).Round(time.Second))
+	limit := time.Duration(readinessObserveFactor) * timeout
+	cliLogln("Application %s is still starting after %s; continuing readiness checks every 5 seconds for up to %s.", cfg.ContainerName(), time.Since(started).Round(time.Second), limit)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	addr := net.JoinHostPort(hostname, fmt.Sprint(readiness.TCPSocket.Port))
-	dialer := net.Dialer{Timeout: 2 * time.Second}
-	probe := func(ctx context.Context) bool {
-		connection, err := dialer.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			return false
-		}
-		_ = connection.Close()
-		return true
-	}
+	deadline := time.NewTimer(limit - time.Since(started))
+	defer deadline.Stop()
+	_, probeOnce, closeProbe := makeReadinessProbe(
+		hostname,
+		readiness.TCPSocket.Port,
+		httpPort != 0 && httpPort == readiness.TCPSocket.Port,
+	)
+	defer closeProbe()
+	probe := func(ctx context.Context) bool { return probeOnce(ctx) == nil }
 	warned := false
-	err = continueReadiness(ctx, ticker.C, probe, running, func(err error) {
+	err = continueReadiness(ctx, ticker.C, deadline.C, probe, running, func(err error) {
 		if !warned {
 			cliLogln("Warning: %v; continuing to observe startup.", err)
 			warned = true
 		}
 	})
+	if errors.Is(err, errReadinessObserveLimit) {
+		return commandErrorf(errReadinessTimeout, "%s did not become ready within %s", cfg.ContainerName(), limit)
+	}
 	if err == nil {
 		cliLogln("Application %s ready after %s.", cfg.ContainerName(), time.Since(started).Round(time.Second))
 	}

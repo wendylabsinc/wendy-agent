@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,16 +10,20 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 )
 
 func newCameraCmd() *cobra.Command {
@@ -32,13 +37,60 @@ func newCameraCmd() *cobra.Command {
 		// "watch" is a hidden alias for "view": it just works for muscle memory
 		// but stays out of help to keep the listed commands focused.
 		newCameraWatchCmd(),
+		// "frames" is the measurement surface beside the picture one: colour
+		// plus depth aligned to it, with a declared-requirement refusal. See
+		// camera_frames.go.
+		newCameraFramesCmd(),
 		newCameraLoginCmd(),
 		newCameraForgetCmd(),
 		newCameraTestCmd(),
 		newCameraControlsCmd(),
 		newCameraSetControlCmd(),
+		newCameraDHCPCmd(),
 	)
 	return cmd
+}
+
+type cameraAction uint8
+
+const (
+	cameraCapture cameraAction = iota
+	cameraRawCapture
+	cameraStableIDCapture
+	cameraCustomCapture
+	cameraNetworkManagement
+	cameraV4L2Controls
+)
+
+// Swift serves camera listing, video and USB controls, enrolled or not, like
+// the Linux agent, but never serves network-camera management. Go agents can
+// also report Darwin; they take no Swift-specific path here.
+//
+// SECURITY: this preflight is guidance, not access control. Whether an
+// unenrolled device serves its camera is the agent's decision; both agents
+// currently accept that risk until devices can be provisioned locally.
+func cameraServicePreflight(ctx context.Context, conn *grpcclient.AgentConnection, action cameraAction) error {
+	if err := diagnosticContextError(ctx); err != nil {
+		return err
+	}
+	version := diagnosticAgentVersion(ctx, conn)
+	if err := diagnosticContextError(ctx); err != nil {
+		return err
+	}
+	if !isSwiftMacAgent(version) {
+		return nil
+	}
+	switch action {
+	case cameraRawCapture:
+		return fmt.Errorf("Wendy Agent for Mac currently streams H.264 video only")
+	case cameraStableIDCapture:
+		return fmt.Errorf("Stable V4L2 camera identifiers are not available on macOS")
+	case cameraCustomCapture:
+		return fmt.Errorf("Custom camera dimensions and frame rates are not yet supported by Wendy Agent for Mac")
+	case cameraNetworkManagement:
+		return fmt.Errorf("network camera management is not supported by Wendy Agent for macOS")
+	}
+	return nil
 }
 
 func newCameraListCmd() *cobra.Command {
@@ -48,11 +100,21 @@ func newCameraListCmd() *cobra.Command {
 		Short: "List cameras",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			conn, err := connectToAgent(ctx)
+			target, err := resolveCameraTargetFn(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer target.Close()
+			if isLiteCameraTarget(target) {
+				return listLiteCameras(cmd, target)
+			}
+			conn, err := connectFromSelectedDevice(target, resolveConfig{})
+			if err != nil {
+				return err
+			}
+			if err := cameraServicePreflight(ctx, conn, cameraCapture); err != nil {
+				return err
+			}
 
 			var devices []*agentpb.VideoDevice
 			if refresh {
@@ -158,17 +220,19 @@ func newCameraLoginCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			password, err := readCameraPassword(cmd, id)
-			if err != nil {
-				return err
-			}
-
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
 			if err != nil {
 				return err
 			}
 			defer conn.Close()
+			if err := cameraServicePreflight(ctx, conn, cameraNetworkManagement); err != nil {
+				return err
+			}
+			password, err := readCameraPassword(cmd, id)
+			if err != nil {
+				return err
+			}
 
 			if _, err := conn.VideoService.SetCameraCredentials(ctx, &agentpb.SetCameraCredentialsRequest{
 				DeviceId: id,
@@ -223,6 +287,9 @@ func newCameraForgetCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
+			if err := cameraServicePreflight(ctx, conn, cameraNetworkManagement); err != nil {
+				return err
+			}
 
 			if _, err := conn.VideoService.ForgetCamera(ctx, &agentpb.ForgetCameraRequest{
 				DeviceId: id,
@@ -263,6 +330,9 @@ func newCameraTestCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
+			if err := cameraServicePreflight(ctx, conn, cameraNetworkManagement); err != nil {
+				return err
+			}
 
 			return runCameraTest(ctx, conn.VideoService, id, cmd.OutOrStdout())
 		},
@@ -321,7 +391,7 @@ func newCameraWatchCmd() *cobra.Command {
 	return newCameraStreamCmd("watch", true)
 }
 
-var connectCameraStreamFn = connectToAgent
+var resolveCameraTargetFn = resolveTarget
 
 // newCameraStreamCmd builds the camera streaming command under the given name.
 // "view" is the canonical, listed command; "watch" reuses the same logic as a
@@ -334,7 +404,7 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    use,
 		Hidden: hidden,
-		Short:  "Stream H.264 video from a device camera",
+		Short:  "Stream video from a device camera",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if raw && !toStdout {
@@ -350,15 +420,38 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			// #762–#764 latency work). Like watch, the stream also holds one
 			// connection for its whole lifetime, so reuse saves nothing after
 			// the first frame.
-			opts := []resolveOption{DisableSessionBroker()}
+			opts := []resolveOption{DisableSessionBroker(), IncludeBluetooth()}
 			if nonInteractive {
 				opts = append(opts, NonInteractive(), SuppressUpdateCheck(), SuppressProvisioningHint())
 			}
-			conn, err := connectCameraStreamFn(ctx, opts...)
+			target, err := resolveCameraTargetFn(ctx, opts...)
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer target.Close()
+			if isLiteCameraTarget(target) {
+				return viewLiteCamera(cmd, target, liteCameraOptions{
+					id: deviceID, idSet: cmd.Flags().Changed("id"), stableID: stableID,
+					width: width, height: height, fps: fps,
+					stdout: toStdout, raw: raw, nonInteractive: nonInteractive,
+				})
+			}
+			conn, err := connectFromSelectedDevice(target, resolveConfig{suppressProvisioningHint: nonInteractive})
+			if err != nil {
+				return err
+			}
+			captureAction := cameraCapture
+			switch {
+			case raw:
+				captureAction = cameraRawCapture
+			case stableID != "":
+				captureAction = cameraStableIDCapture
+			case width != 0 || height != 0 || fps != 0:
+				captureAction = cameraCustomCapture
+			}
+			if err := cameraServicePreflight(ctx, conn, captureAction); err != nil {
+				return err
+			}
 
 			// --stable-id addresses the camera by its stable udev identity and
 			// is resolved by the AGENT at request time. --id is the boot-order
@@ -430,13 +523,13 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID (boot order; see --stable-id)")
+	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Camera device ID, or SensorLink channel ID on Wendy Lite")
 	cmd.Flags().StringVar(&stableID, "stable-id", "",
-		"Camera stable ID from `camera list --json` — survives reboots and re-plugging")
+		"Camera stable `id` from 'camera list --json'; survives reboots and re-plugging")
 	cmd.Flags().Uint32Var(&width, "width", 0, "Frame width (0 = device default)")
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
-	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)")
+	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264, VP8/WebM, or Wendy Lite MJPEG)")
 	cmd.Flags().BoolVar(&raw, "raw", false, "With --stdout: write the camera's uncompressed capture frames (one whole frame per message, layout printed to stderr) instead of encoded video. Only cameras captured in a raw pixel format offer this; viewers of the same camera keep receiving H.264.")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Disable terminal prompts and automatic installs; select a camera with --id or --stable-id when several are available")
 
@@ -526,7 +619,22 @@ func cameraStreamDiagnostic(err error) error {
 		return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
 	case streamreason.CameraInUse:
 		device := info.GetMetadata()["device"]
+		if hint := info.GetMetadata()["hint"]; hint != "" {
+			// The agent knows what is likely holding the node -- on a
+			// RealSense, a vendor-SDK app or its own depth capture -- and the
+			// generic wording would leave the operator guessing.
+			return fmt.Errorf("camera %s is held on this device and could not be shared. %s. Stop whichever is running, then retry", device, hint)
+		}
 		return fmt.Errorf("camera %s is held by another application on this device and could not be shared with it. Stop the app holding it, then retry", device)
+	case streamreason.RequirementUnmet:
+		// The agent already wrote the sentence naming each missing property and
+		// why. Repeating it here would only make it longer; what the operator
+		// gains is the flag to drop, spelled exactly as it is typed.
+		return fmt.Errorf("%s. Drop --require %s to stream without it, or use a camera that provides it (`wendy device camera frames --list`)",
+			status.Convert(err).Message(), info.GetMetadata()["missing"])
+	case streamreason.CalibratedSourceUnavailable, streamreason.FrameTooLarge:
+		// The agent's sentence already names the source, the cause and the fix.
+		return fmt.Errorf("%s", status.Convert(err).Message())
 	}
 	return err
 }
@@ -569,7 +677,14 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream, allowInstal
 		return fmt.Errorf("receiving video: %w", err)
 	}
 	codec := first.GetCodec()
+	return playCameraPipeline(ctx, playbackPipelineArgs(codec), allowInstallPrompt, func(w io.Writer) error {
+		return feedGStreamer(ctx, stream, first, codec, w)
+	})
+}
 
+// playCameraPipeline owns the player process for both agent and SensorLink streams.
+func playCameraPipeline(ctx context.Context, pipeline []string, allowInstallPrompt bool, feed func(io.Writer) error) error {
+	var err error
 	var gstPath string
 	if allowInstallPrompt {
 		gstPath, err = ensureGSTLaunch(ctx)
@@ -580,32 +695,165 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream, allowInstal
 		return err
 	}
 
-	gst := exec.CommandContext(ctx, gstPath, playbackPipelineArgs(codec)...)
-	gst.Stderr = os.Stderr
+	stderr := &playerStderr{out: os.Stderr}
+	gst := exec.CommandContext(ctx, gstPath, pipeline...)
+	gst.Stderr = stderr
+	// Wait copies stderr until every holder of the pipe has closed it, which
+	// includes helpers the player started (gst-plugin-scanner); bound that.
+	gst.WaitDelay = playerOutputDelay
 
-	stdin, err := gst.StdinPipe()
+	stdinPipe, err := gst.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("creating GStreamer stdin pipe: %w", err)
 	}
+	stdin := &playerInput{w: stdinPipe}
 
 	if err := gst.Start(); err != nil {
 		return fmt.Errorf("starting GStreamer: %w", err)
 	}
+	playerExited := make(chan struct{})
+	var playerErr error
+	go func() {
+		playerErr = gst.Wait()
+		stderr.flush()
+		close(playerExited)
+	}()
 	defer func() {
-		stdin.Close()      //nolint:errcheck — signal EOF to GStreamer before killing
+		stdinPipe.Close()  //nolint:errcheck — signal EOF to GStreamer before killing
 		gst.Process.Kill() //nolint:errcheck
-		gst.Wait()         //nolint:errcheck
+		<-playerExited
 	}()
 
 	done := make(chan error, 1)
-	go func() { done <- feedGStreamer(ctx, stream, first, codec, stdin) }()
+	go func() { done <- feed(stdin) }()
 
 	select {
 	case err := <-done:
+		if err != nil && stdin.failed.Load() {
+			// Writing fails as soon as the player is gone, which can be
+			// noticed before its exit is. Report why it went instead.
+			select {
+			case <-playerExited:
+				return playerExitResult(ctx, playerErr, stderr)
+			case <-time.After(playerOutputDelay):
+			}
+		}
 		return err
 	case <-ctx.Done():
 		return nil
+	case <-playerExited:
+		return playerExitResult(ctx, playerErr, stderr)
 	}
+}
+
+// playerOutputDelay bounds how long playback waits, once the player has
+// exited, for the rest of its output and for its exit to be observed.
+const playerOutputDelay = time.Second
+
+// playerExitResult reports how the player process ended. Closing the player
+// window is how the viewer stops watching, so like Ctrl+C it is not a failure.
+func playerExitResult(ctx context.Context, err error, stderr *playerStderr) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	if stderr.closedWindow() {
+		cliLogln("Player window closed.")
+		return nil
+	}
+	// ErrWaitDelay alone means the player exited cleanly but a helper it
+	// started still held its stderr.
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		return fmt.Errorf("GStreamer exited: %w", err)
+	}
+	return nil
+}
+
+// playerWindowClosedErrors are the errors GStreamer's video sinks post when
+// their window is closed: glimagesink (macOS, and some Linux desktops) says
+// "Quit requested"; xvimagesink, ximagesink and waylandsink on Linux and the
+// Direct3D sinks on Windows say "Output window was closed". gst-launch-1.0
+// prints the error as "ERROR: from element <path>: <message>" and exits with
+// the same status as for a real failure, so this text is the only way to tell
+// a closed window from a broken player.
+var playerWindowClosedErrors = []string{"Quit requested", "Output window was closed"}
+
+// isPlayerWindowClosedError reports whether a line of player output is the
+// error a video sink posts when its window is closed. Only the message is
+// matched: gst-launch-1.0 translates its "ERROR: from element" prefix.
+func isPlayerWindowClosedError(line string) bool {
+	line = strings.TrimRight(line, "\r\n")
+	for _, msg := range playerWindowClosedErrors {
+		if strings.HasSuffix(line, ": "+msg) {
+			return true
+		}
+	}
+	return false
+}
+
+// playerStderr forwards the player's stderr line by line, except for the
+// error report GStreamer prints after the window is closed: that report (the
+// error, its debug details and the shutdown that follows) describes the viewer
+// stopping, not a fault, and the CLI says so in a line of its own.
+type playerStderr struct {
+	out io.Writer
+
+	mu           sync.Mutex
+	partial      []byte
+	windowClosed bool
+}
+
+func (p *playerStderr) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.partial = append(p.partial, b...)
+	for {
+		i := bytes.IndexByte(p.partial, '\n')
+		if i < 0 {
+			break
+		}
+		p.forward(p.partial[:i+1])
+		p.partial = p.partial[i+1:]
+	}
+	return len(b), nil
+}
+
+// flush forwards a final line the player left unterminated.
+func (p *playerStderr) flush() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.partial) > 0 {
+		p.forward(p.partial)
+		p.partial = nil
+	}
+}
+
+func (p *playerStderr) forward(line []byte) {
+	if !p.windowClosed && isPlayerWindowClosedError(string(line)) {
+		p.windowClosed = true
+	}
+	if !p.windowClosed {
+		p.out.Write(line) //nolint:errcheck — losing the terminal must not stop playback
+	}
+}
+
+func (p *playerStderr) closedWindow() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.windowClosed
+}
+
+// playerInput is the player's stdin, remembering whether a write failed.
+type playerInput struct {
+	w      io.Writer
+	failed atomic.Bool
+}
+
+func (p *playerInput) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if err != nil {
+		p.failed.Store(true)
+	}
+	return n, err
 }
 
 func feedGStreamer(ctx context.Context, stream videoStream, first *agentpb.VideoFrame, codec agentpb.VideoCodec, stdin io.Writer) error {

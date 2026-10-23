@@ -3,15 +3,19 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
-	statusOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Return current MCP session connection state and a plain-English suggested next step. Call this first to orient yourself."),
+	desc := "Return current MCP session connection state, cached CLI update details, and a plain-English suggested next step. Call this first to orient yourself. cli_update.available means a newer release is known; false does not confirm a successful release check."
+	if s.relay {
+		desc = "Return the current connection state and a plain-English suggested next step. Call this first to orient yourself."
 	}
+	statusOpts := []mcpgo.ToolOption{mcpgo.WithDescription(desc)}
 	statusOpts = append(statusOpts, readOnly()...)
 	statusOpts = append(statusOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("wendy_status", statusOpts...), s.handleWendyStatus)
@@ -19,14 +23,49 @@ func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
 
 func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn, connType, target := s.connectionSnapshot()
+	auth, loginErr := s.authState(time.Now())
 
 	if conn == nil {
-		out := map[string]any{
-			"connected":           false,
-			"suggested_next_step": "not connected — call device_list for configured and online cloud devices (scan=true adds LAN discovery), then device_connect for local devices or cloud_connect for cloud devices",
-			"proxy_diagnostics":   s.proxyDiagnostics(),
+		next := "Call device_list, then device_connect with the returned device selector. For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure."
+		if s.hostSimulators() {
+			next = "Call device_list, then device_connect with the returned device selector. " +
+				"If no physical device is available and the task needs no physical hardware, use a local simulator rather than skipping on-device checks: " +
+				"device_connect boots a listed vm:NAME without asking; ask the user before simulator_create (simulator group) downloads a new one. " +
+				"For uninstalled hardware enable setup with wendy_tools, then use os_install_plan. An empty scan does not establish a network failure."
 		}
-		return okResult(out), nil
+		if s.relay {
+			next = "Call device_list, then device_connect with the returned device selector. For uninstalled hardware use os_install_plan. An empty scan does not establish a network failure."
+		}
+		// Signing in only reaches Cloud devices: gating discovery on it made
+		// agents wait for a sign-in that local targets never needed.
+		if auth == "logged_out" || auth == "expired" {
+			signedOut := "Not signed in to Wendy Cloud"
+			if auth == "expired" {
+				signedOut = "The Wendy Cloud session has expired"
+			}
+			local := "LAN devices that are not Cloud-enrolled need no sign-in."
+			if s.hostSimulators() {
+				local = "Local simulators and " + local
+			}
+			next += " " + signedOut + ", so device_list omits Cloud devices. " + local +
+				" Call auth_login and show the user the link only when the task needs a Cloud device or a device error asks for a sign-in."
+		}
+		out := map[string]any{
+			"connected":             false,
+			"suggested_next_step":   next,
+			"auth":                  auth,
+			"tool_groups":           s.selectedToolGroups(),
+			"cli_version":           version.Version,
+			"cli_update":            s.cliUpdateStatus(),
+			"installation_planning": s.installation.Plan != nil,
+			"installation_jobs":     s.installation.Start != nil,
+			"simulator_management":  s.simulators.List != nil,
+			"proxy_diagnostics":     s.proxyDiagnostics(),
+		}
+		if loginErr != nil {
+			out["auth_login_error"] = loginErr.Error()
+		}
+		return s.statusResult(out), nil
 	}
 
 	host := conn.Host
@@ -34,14 +73,38 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		host = "device"
 	}
 	out := map[string]any{
-		"connected":           true,
-		"device":              host,
-		"connection_type":     connType,
-		"suggested_next_step": fmt.Sprintf("connected to %s via %s — ready to use container, wifi, hardware, telemetry, and os tools", host, connType),
-		"proxy_diagnostics":   s.proxyDiagnostics(),
+		"connected":             true,
+		"tool_groups":           s.selectedToolGroups(),
+		"cli_version":           version.Version,
+		"cli_update":            s.cliUpdateStatus(),
+		"installation_planning": s.installation.Plan != nil,
+		"installation_jobs":     s.installation.Start != nil,
+		"simulator_management":  s.simulators.List != nil,
+		"device":                host,
+		"connection_type":       connType,
+		"suggested_next_step":   fmt.Sprintf("Connected to %s via %s. Use run or inspect containers and logs; enable specialist groups with wendy_tools.", host, connType),
+		"proxy_diagnostics":     s.proxyDiagnostics(),
+	}
+	out["auth"] = auth
+	if loginErr != nil {
+		out["auth_login_error"] = loginErr.Error()
 	}
 	if target.Device != "" {
 		out["command_target"] = target
 	}
-	return okResult(out), nil
+	if s.relay {
+		out["suggested_next_step"] = fmt.Sprintf("Connected to %s via %s. Use run or inspect containers and logs.", host, connType)
+	}
+	return s.statusResult(out), nil
+}
+
+// statusResult drops what a hosted chat has no use for: CLI upgrade details,
+// the local command target, group state and app-proxy diagnostics.
+func (s *mcpServer) statusResult(out map[string]any) *mcpgo.CallToolResult {
+	if s.relay {
+		for _, k := range []string{"cli_update", "command_target", "tool_groups", "proxy_diagnostics"} {
+			delete(out, k)
+		}
+	}
+	return okResult(out)
 }

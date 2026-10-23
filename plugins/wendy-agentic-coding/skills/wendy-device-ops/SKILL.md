@@ -1,11 +1,21 @@
 ---
 name: wendy-device-ops
-description: "Use when a developer or coding agent needs Wendy CLI-native device operations: discover devices, set defaults, inspect device version/system/hardware/WiFi state, update the agent, or gather evidence before SSH/debugging."
+description: "Use for Wendy CLI or MCP device operations on WendyOS and Wendy Lite: discover devices, inspect hardware and software, configure WiFi, update the agent or OS, use cameras, Bluetooth or Cloud tunnels, or gather evidence before debugging."
 ---
 
 # Wendy Device Ops Workflow
 
-Use this for device operations that are not app build/run lifecycle. Prefer CLI-native, non-interactive commands before SSH.
+Use this for device operations that are not app build/run lifecycle. Access devices through Wendy CLI or MCP only. Do not use SSH. If Wendy cannot retrieve a needed fact, report the missing capability or failed check.
+
+## Start with device info
+
+Before asking the user for their board, firmware, OS, or agent version, inspect the device yourself:
+
+```bash
+wendy --json device info --device <target>
+```
+
+Reuse the target from the failing command or conversation, or omit `--device` to use the configured default. If the target is unknown, use discovery below and select the unambiguous match to the user's context. Ask only for an unresolved target choice or relevant facts the inspection could not retrieve.
 
 ## Discover and select a device
 
@@ -13,9 +23,13 @@ Bound discovery so agents do not hang:
 
 ```bash
 wendy discover --json --type all --timeout 5s
-wendy discover --json --type usb --timeout 5s
-wendy discover --json --type lan --timeout 5s
 ```
+
+The CLI reaches a device's agent over gRPC on TCP port 50051, through USB or
+LAN. On Linux, a USB-C tethered device needs a one-time host setup: ask the user
+to run `wendy discover` in a terminal and accept its USB-C setup prompt (it
+needs sudo). An empty scan can also mean a board without WendyOS; use
+`wendy-device-install` for that.
 
 Use explicit hostnames when possible:
 
@@ -25,7 +39,7 @@ wendy device get-default
 wendy device unset-default
 ```
 
-Passing the hostname to `set-default` avoids the interactive picker. Use `--device <hostname>` on later commands when you do not want to depend on local default state.
+Passing the hostname to `set-default` avoids the interactive picker. Change the default only when that is part of the user's task. For diagnostic commands, use `--device <target>` to select the device without changing the default.
 
 ## Inspect device state
 
@@ -33,13 +47,6 @@ Local CLI info:
 
 ```bash
 wendy --json info
-```
-
-Target device info and platform facts:
-
-```bash
-wendy --json device info --device <hostname>
-wendy --json device info --check-updates --device <hostname>
 ```
 
 Hardware capabilities:
@@ -79,7 +86,7 @@ Do not echo or store WiFi passwords in issues, PRs, reusable docs, or final summ
 Only update the agent when the user asks, when the device is clearly behind the CLI, or when a fix requires a newer agent. Prefer checking first:
 
 ```bash
-wendy --json device version --check-updates --device <hostname>
+wendy --json device info --check-updates --device <hostname>
 ```
 
 Stable update:
@@ -95,26 +102,31 @@ wendy --json device update --nightly --device <hostname>
 wendy --json device update --binary ./path/to/wendy-agent --device <hostname>
 ```
 
-## SSH fallback
+## With MCP tools
 
-If CLI-native inspection cannot answer the question, WendyOS devices may temporarily allow:
+The Wendy MCP server covers the same operations on its connected device. Enable
+the groups named below with `wendy_tools(groups=[...])` first; each call replaces
+the enabled set, so list every group you still need.
 
-```bash
-ssh root@<hostname>
-```
-
-Use SSH primarily for read-only evidence collection and WendyOS issue filing. On the device, use containerd/`nerdctl`, not Docker:
-
-```bash
-cat /etc/wendyos/device-type 2>/dev/null || true
-cat /etc/os-release 2>/dev/null || true
-systemctl status wendy-agent --no-pager
-journalctl -u wendy-agent -n 200 --no-pager
-sudo nerdctl -n default ps -a
-sudo nerdctl -n default logs <container>
-```
-
-Prefer changing app containers, `wendy.json`, or repo code over changing bare-metal device settings. If a direct device change is necessary, make it minimal and document it.
+- Inspect (core): `device_info` (versions, storage, battery) and
+  `hardware_capabilities(category=...)`.
+- Default device (`setup`): `device_set_default(address=...)`.
+- WiFi (`setup`): `wifi_status`, `wifi_list`, `wifi_known_networks`,
+  `wifi_connect(ssid=..., password=...)` and `wifi_disconnect`. Connecting drops
+  the current network, so the session may lose the device. Forget and rank have
+  no MCP tool; use the CLI.
+- Updates (`setup`): `device_update_agent` (`nightly`, `binary_path`) updates only
+  the agent, verifies it and reconnects. `os_update` starts an OS update;
+  `os_update_status` reports whether it committed or rolled back, and why.
+- Cameras and Bluetooth (`hardware`): `camera_list`, `camera_controls`,
+  `camera_set_control`, `camera_snapshot(device_id=...)` (activates the camera,
+  so ask first), `bluetooth_scan`, `bluetooth_connect` and `bluetooth_disconnect`.
+- Cloud (`cloud`): `cloud_discover`, `cloud_connect`, `cloud_ping`, and
+  `cloud_tunnel(local_port=..., remote_port=...)` with `cloud_tunnel_list` and
+  `cloud_tunnel_close(id=...)` for port forwards owned by this server.
+- Enrollment (`setup`): `cloud_enroll_device` uses the current Cloud login;
+  `provisioning_start` needs a supplied enrollment token; `provisioning_status`
+  checks the result.
 
 ## Routing
 

@@ -37,6 +37,16 @@ Two headline hardware specs are included when the agent reports them. Both are o
 
 For **live** CPU and memory utilization, use [`wendy device top`](top.md).
 
+### Power mode output
+
+On NVIDIA Jetson devices the agent reports the current power mode (nvpmodel), shown as `Power Mode: MODE_30W (2)`. With `--json`, `powerMode` holds the numeric `id` and the `name`:
+
+```json
+{"powerMode": {"id": 2, "name": "MODE_30W"}}
+```
+
+The field is omitted on devices that are not a Jetson, when the mode cannot be read, and on agents that predate it. To see every available mode or switch, use [`wendy device power-mode`](power-mode.md).
+
 ### Storage output fields
 
 When the agent can identify the filesystem that holds `/var/lib/containerd`, it is reported alongside the mounted partitions. The field is omitted from the JSON map when inspection fails or the agent predates it.
@@ -54,7 +64,7 @@ On GPU-capable devices, the following GPU fields are included. Each is omitted f
 | `gpuVendor` | `GPU:` | GPU vendor (e.g. `nvidia`, `qualcomm`); shown as `unknown` in human-readable output when a GPU is present but the vendor is unreported. |
 | `jetpackVersion` | `JetPack:` | JetPack/L4T version string (Jetson only). |
 | `cudaVersion` | `CUDA:` | CUDA toolkit version (e.g. `12.6`). |
-| `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA, `a623` for a Qualcomm Adreno). |
+| `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA, `a623` for a Qualcomm Adreno). On a Jetson, which ships no `nvidia-smi`, it comes from the SoC in the device tree: `sm_110` on Thor, `sm_87` on Orin, `sm_72` on Xavier. |
 | `gpuCapabilities[]` | `GPU Compute:` | One entry per detected GPU: `vendor`, `path` (the device node that identified it, e.g. `/dev/dri/card0`), and `computeBackends` (`cuda`, `rocm`, or `metal`). A single GPU prints its backends; several print each one with its vendor and path. The line is omitted when no GPU reports a backend, and no entries at all means an older agent. An on-SoC neural accelerator is not a GPU backend — see `npuBackends`. |
 
 ### NPU output fields
@@ -86,20 +96,16 @@ Loopback, down, and container/virtual bridge interfaces are omitted, as are link
 
 ### OS Update output
 
-On WendyOS devices that use the **wendyos-update** OTA engine, `wendy device info` prints a compact `OS Update:` block showing the live A/B slot state and the last recorded update outcome:
+When an update outcome has been recorded, `wendy device info` prints a compact `OS Update:` block:
 
 ```
 OS Update:
-  Slot A: booted, rootfs normal, WendyOS 0.17.0
-  Slot B: inactive, retries 2 (trial boot pending)
-  Pending: wendyos-jetson 0.18.0 (installed, target slot B)
   Last update: committed (0.16.0 → 0.17.0)
 ```
 
-The block is omitted entirely when:
-- the device does not use the wendyos-update engine,
-- the agent is too old to support the engine-status probe, or
-- no update record exists and the live probe returns nothing.
+This reads the saved outcome. For live A/B slot state, pending updates, and engine diagnostics, run [`wendy os update-status`](../os/update.md).
+
+The block is omitted when no update record exists, the agent does not support update status, or the optional status request fails or times out.
 
 When the last update outcome is not `committed`, a hint is printed:
 
@@ -107,11 +113,11 @@ When the last update outcome is not `committed`, a hint is printed:
   Details: wendy os update-status
 ```
 
-Slot health is colour-coded: `normal` is green, anything else is red. Outcome words follow the same scheme: `committed` is green, `rolled back` is amber, and failure outcomes are red.
+The outcome is colour-coded: `committed` is green, `rolled back` is amber, and failure outcomes are red.
 
 ### JSON: `osUpdate` field
 
-When OS-update information is available, `--json` includes an `osUpdate` object. It is omitted entirely when nothing is reportable.
+When a recorded update outcome is available, `--json` includes an `osUpdate` object. It is omitted when no outcome is available.
 
 ```json
 {
@@ -121,23 +127,6 @@ When OS-update information is available, `--json` includes an `osUpdate` object.
       "createdAtUnix": 1750000000,
       "oldOsVersion": "0.16.0",
       "newOsVersion": "0.17.0"
-    },
-    "engine": {
-      "connector": "tegrauefi",
-      "currentSlot": "A",
-      "slots": [
-        { "slot": "A", "booted": true, "partition": "/dev/nvme0n1p1", "distro": "WendyOS 0.17.0", "kernel": "5.15.148-tegra", "rootfsHealth": "normal", "retries": "", "note": "" },
-        { "slot": "B", "booted": false, "partition": "/dev/nvme0n1p2", "retries": "2", "note": "trial boot pending" }
-      ],
-      "system": [
-        { "key": "bootloader", "value": "36.3.0" }
-      ],
-      "pending": {
-        "artifactName": "wendyos-jetson",
-        "artifactVersion": "0.18.0",
-        "phase": "installed",
-        "targetSlot": "B"
-      }
     }
   }
 }
@@ -149,14 +138,8 @@ When OS-update information is available, `--json` includes an `osUpdate` object.
 | `osUpdate.lastUpdate.createdAtUnix` | Unix timestamp of the recorded update outcome. |
 | `osUpdate.lastUpdate.oldOsVersion` / `newOsVersion` | OS versions before and after the update (omitted when not recorded). |
 | `osUpdate.lastUpdate.note` | Failure reason from the updater, if any (omitted when empty). |
-| `osUpdate.engine` | Live snapshot from `wendy os update-status --json`; omitted when not available. |
-| `osUpdate.engine.connector` | Platform connector, e.g. `tegrauefi` or `ubootenv`. |
-| `osUpdate.engine.currentSlot` | Slot the device is booted from (`A` or `B`). |
-| `osUpdate.engine.slots[].rootfsHealth` | Bootloader-reported slot health, e.g. `normal`. |
-| `osUpdate.engine.slots[].retries` | Remaining boot-trial retries (string; empty when not tracked). |
-| `osUpdate.engine.system` | Connector-specific key/value pairs (e.g. bootloader version); JSON only, not shown in human-readable output. |
-| `osUpdate.engine.pending` | In-flight update; omitted when none is pending. |
-| `osUpdate.engine.pending.phase` | Engine phase, e.g. `installed` (awaiting reboot + commit). |
+
+For the live engine snapshot, use `wendy os update-status --json` and read its `engineStatus` field. Basic device info does not request this snapshot.
 
 ## Flags
 

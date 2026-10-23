@@ -37,6 +37,8 @@ endif
 # Build both CLI and agent (native)
 build: build-cli build-agent
 
+.PHONY: test-race
+
 # Build the wendy CLI
 build-cli:
 ifeq ($(HOST_ENV),windows)

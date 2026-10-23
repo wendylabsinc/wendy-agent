@@ -1,6 +1,7 @@
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Pre } from 'fumadocs-ui/components/codeblock';
 import { File, Files, Folder } from 'fumadocs-ui/components/files';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
@@ -14,11 +15,18 @@ import {
 } from './docs/buyers-tables';
 import { CliClip, CliShot } from './docs/cli-shot';
 import { CliToAgentRelationshipDiagram } from './docs/cli-to-agent-relationship-diagram';
+import { TrackedCodeBlock } from './docs/install-copy-tracking';
 import { SetDefaultDeviceSection } from './docs/set-default-device-section';
+import { YouTubeVideo } from './docs/youtube-video';
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
+    pre: (props) => (
+      <TrackedCodeBlock {...props}>
+        <Pre>{props.children}</Pre>
+      </TrackedCodeBlock>
+    ),
     Accordion,
     Accordions,
     Callout,
@@ -39,6 +47,7 @@ export function getMDXComponents(components?: MDXComponents) {
     CliShot,
     CliToAgentRelationshipDiagram,
     SetDefaultDeviceSection,
+    YouTubeVideo,
     ...components,
   } satisfies MDXComponents;
 }

@@ -202,7 +202,57 @@ func (s *ContainerService) CreateContainer(ctx context.Context, req *agentpb.Cre
 		zap.String("app_name", req.GetAppName()),
 		zap.String("image", req.GetImageName()),
 	)
-	return &agentpb.CreateContainerResponse{}, nil
+	return &agentpb.CreateContainerResponse{ImageDigest: s.imageDigest(ctx, req.GetImageName())}, nil
+}
+
+// imageDigester is the optional capability that reports the manifest digest of
+// a created container's image, which a recorded deploy stores on its release.
+type imageDigester interface {
+	ImageDigest(ctx context.Context, imageName string) (string, error)
+}
+
+// imageDigest is the digest for a create response; nil when the runtime cannot
+// tell, which an older agent's response reads as too.
+func (s *ContainerService) imageDigest(ctx context.Context, imageName string) *string {
+	d, ok := s.containerd.(imageDigester)
+	if !ok {
+		return nil
+	}
+	digest, err := d.ImageDigest(ctx, imageName)
+	if err != nil {
+		s.logger.Warn("image digest unavailable", zap.String("image", imageName), zap.Error(err))
+		return nil
+	}
+	return &digest
+}
+
+// startedDigestStream fills the image digest into the Started message of a
+// RunContainer stream.
+type startedDigestStream struct {
+	grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]
+	digest *string
+}
+
+func (w startedDigestStream) Send(m *agentpb.RunContainerLayersResponse) error {
+	if started := m.GetStarted(); started != nil {
+		started.ImageDigest = w.digest
+	}
+	return w.ServerStreamingServer.Send(m)
+}
+
+// ValidateContainer reports whether CreateContainer would accept req, without
+// touching a running container of the same name (WDY-3850). A refusal is
+// FailedPrecondition, which callers tell apart from an older agent's
+// Unimplemented.
+func (s *ContainerService) ValidateContainer(ctx context.Context, req *agentpb.CreateContainerRequest) (*agentpb.ValidateContainerResponse, error) {
+	appCfg, err := parseAppConfig(req.GetAppConfig())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
+	}
+	if err := s.containerd.ValidateContainer(ctx, req, appCfg); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "container would fail to create: %v", err)
+	}
+	return &agentpb.ValidateContainerResponse{}, nil
 }
 
 func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContainerRequest, stream grpc.ServerStreamingServer[agentpb.CreateContainerProgressResponse]) error {
@@ -228,7 +278,7 @@ func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContai
 	// Send completed response.
 	return stream.Send(&agentpb.CreateContainerProgressResponse{
 		ResponseType: &agentpb.CreateContainerProgressResponse_Completed{
-			Completed: &agentpb.CreateContainerResponse{},
+			Completed: &agentpb.CreateContainerResponse{ImageDigest: s.imageDigest(stream.Context(), req.GetImageName())},
 		},
 	})
 }
@@ -445,6 +495,7 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		RestartPolicy: req.GetRestartPolicy(),
 		UserArgs:      req.GetUserArgs(),
 		Env:           req.GetEnv(),
+		ReleaseId:     req.ReleaseId,
 	}
 
 	if err := s.containerd.CreateContainer(ctx, createReq, appCfg); err != nil {
@@ -461,7 +512,8 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		zap.Duration("create_container", createDur),
 		zap.Duration("total_before_start", time.Since(runStartedAt)))
 
-	return s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream)
+	digestStream := startedDigestStream{stream, s.imageDigest(ctx, req.GetImageName())}
+	return s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, digestStream)
 }
 
 func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
@@ -508,14 +560,7 @@ func (s *ContainerService) startGroup(
 			}
 		}(outputCh)
 
-		if s.monitor != nil {
-			s.monitor.ClearExplicitStop(id)
-		}
-		if err := s.containerd.SetStoppedByUser(startCtx, id, false); err != nil {
-			s.logger.Warn("failed to clear stopped-by-user mark",
-				zap.String("container_id", id), zap.Error(err))
-		}
-		s.registerContainerWithMonitor(startCtx, id, restartPolicy)
+		s.recordContainerStart(startCtx, id, restartPolicy)
 	}
 
 	return stream.Send(&agentpb.RunContainerLayersResponse{
@@ -591,6 +636,41 @@ func monitorPolicyInt(rp *agentpb.RestartPolicy) (policy int, maxRetries int, ok
 	}
 }
 
+// recordContainerStart uses the actual container IDs for every lifecycle mark.
+// Start accepts an app alias (including a one-service app stored as app_relay),
+// but stop and boot reconciliation work on resolved IDs. Registering the alias
+// leaves a second monitor entry that an explicit service stop can never reach.
+func (s *ContainerService) recordContainerStart(ctx context.Context, appName string, restartPolicy *agentpb.RestartPolicy) {
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
+	if err != nil || len(ids) == 0 {
+		s.logger.Warn("failed to resolve started containers; lifecycle bookkeeping skipped",
+			zap.String("app_name", appName), zap.Error(err))
+		return
+	}
+	if s.monitor != nil {
+		canonical := false
+		for _, id := range ids {
+			canonical = canonical || id == appName
+		}
+		if !canonical {
+			// Retire an alias left by an earlier start before registering IDs.
+			// The resolver gives exact container IDs precedence, so this does
+			// not remove an unrelated container whose name shares a prefix.
+			s.monitor.Unregister(appName)
+		}
+	}
+	for _, id := range ids {
+		if s.monitor != nil {
+			s.monitor.ClearExplicitStop(id)
+		}
+		if err := s.containerd.SetStoppedByUser(ctx, id, false); err != nil {
+			s.logger.Warn("failed to clear stopped-by-user mark",
+				zap.String("container_id", id), zap.Error(err))
+		}
+		s.registerContainerWithMonitor(ctx, id, restartPolicy)
+	}
+}
+
 // When restartPolicy is nil the persisted containerd label is used.
 func (s *ContainerService) registerContainerWithMonitor(ctx context.Context, appName string, restartPolicy *agentpb.RestartPolicy) {
 	if s.monitor == nil {
@@ -642,8 +722,8 @@ func (s *ContainerService) guaranteeOutputDrain(appName string, outputCh <-chan 
 			for output := range outputCh {
 				s.logManager.Publish(appName, output)
 			}
-			// When the containerd channel closes, publish a Done marker.
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
+			// The producer sends its own terminal marker with run ownership.
+			// Channel closure alone must not end a replacement run's stream.
 		}()
 		return subCh, func() { s.logManager.Unsubscribe(appName, subID) }
 	}
@@ -686,23 +766,7 @@ func (s *ContainerService) streamContainerOutput(
 	readCh, releaseDrain := s.guaranteeOutputDrain(appName, outputCh)
 	defer releaseDrain()
 
-	// The container started successfully. If it was previously explicitly
-	// stopped, clear that mark so automatic restarts are re-enabled.
-	// We clear it here (right after start succeeds) rather than after
-	// streaming completes so that stream errors (e.g. client disconnect)
-	// do not leave ExplicitStop set and suppress future automatic restarts.
-	if s.monitor != nil {
-		s.monitor.ClearExplicitStop(appName)
-	}
-	// Clear the persisted stop mark too, so a user-initiated start re-enables
-	// boot reconcile for this app. Best-effort. (Only user starts reach this
-	// path; the boot reconcile starts via the monitor and never clears it.)
-	if err := s.containerd.SetStoppedByUser(startCtx, appName, false); err != nil {
-		s.logger.Warn("failed to clear stopped-by-user mark",
-			zap.String("app_name", appName), zap.Error(err))
-	}
-
-	s.registerContainerWithMonitor(startCtx, appName, restartPolicy)
+	s.recordContainerStart(startCtx, appName, restartPolicy)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -797,16 +861,7 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	readCh, releaseDrain := s.guaranteeOutputDrain(appName, outputCh)
 	defer releaseDrain()
 
-	// Mirror the same monitor bookkeeping as streamContainerOutput: clear any
-	// prior explicit-stop mark and register with the persisted restart policy.
-	if s.monitor != nil {
-		s.monitor.ClearExplicitStop(appName)
-	}
-	if err := s.containerd.SetStoppedByUser(startCtx, appName, false); err != nil {
-		s.logger.Warn("failed to clear stopped-by-user mark",
-			zap.String("app_name", appName), zap.Error(err))
-	}
-	s.registerContainerWithMonitor(startCtx, appName, nil)
+	s.recordContainerStart(startCtx, appName, nil)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{

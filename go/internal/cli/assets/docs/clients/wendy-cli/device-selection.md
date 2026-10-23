@@ -14,9 +14,21 @@ wendy run --device my-mac.local:50051
 
 Failing to connect to an explicit device results in a failure.
 
+A value made only of digits, such as `283`, is rejected: it is not a hostname or IP address, and the system resolver would turn it into an unrelated address. If it is a Wendy Cloud asset ID, use its cloud selector (`--device cloud://<cloud-grpc-host:port>/org/<org-id>/asset/283`) or `wendy cloud device <command> --device 283`. The error prints the exact selector when you are logged in.
+
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 
-## 2. Default Device
+## 2. `WENDY_DEVICE`
+
+If `--device` is not given and the `WENDY_DEVICE` environment variable is set, the CLI connects to that device exactly as if it had been passed with `--device`. Use it to give one terminal, script or AI session its own target without changing the saved default that every session shares:
+
+```sh
+WENDY_DEVICE=my-pi.local wendy run
+```
+
+`--device` still takes precedence. A blank value is ignored.
+
+## 3. Default Device
 
 If a Default Device is set using [`wendy device set-default`](./commands/device/set-default.md),
 the CLI attempts to connect to it. The saved value may be a hostname, IP
@@ -36,12 +48,18 @@ that the default is set but unreachable instead of opening a picker.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 
-## 3. Show Picker
+## 4. Show Picker
 
-mDNS and BLE discover nearby [WendyOS](../../wendyos/),
-Wendy-Agent and [Wendy Lite](../../wendy-lite/) devices.
+The picker finds nearby [WendyOS](/docs/#2-set-up-a-device), Wendy Agent and
+[Wendy Lite](/docs/advanced/wendy-lite/) devices using local-network and Bluetooth discovery.
+Finding a device here is separate from enabling
+[Wendy Net Bluetooth connections](/docs/hardware/bluetooth#wendy-net-over-bluetooth)
+between devices.
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
+
+Cached LAN devices stay hidden until their agent answers a probe or mDNS
+resolves their service during the current scan.
 
 When logged into Wendy Cloud, press `e` on a highlighted Local device to run
 the `wendy device enroll` flow using the active cloud account. Enrollment
@@ -53,12 +71,10 @@ as a LAN device when local discovery is allowed by the network and macOS Local
 Network permissions.
 
 The picker table shows the same columns as
-[`wendy discover`](./commands/discover.md#interactive-table). The leading
+[`wendy discover`](./commands/discover.md#interactive-tui). The leading
 marker column displays provisioned state (`●`/`○`) for LAN devices alongside
-the `✦` default marker. When the highlighted device is provisioned but this
-CLI cannot read its agent details (unprovisioned CLI, or logged in with
-credentials that don't have access), a footer hint explains why the version is
-blank and suggests `wendy auth login`.
+the `✦` default marker. If the CLI cannot verify the highlighted device's agent,
+a footer hint explains what went wrong and what to try next.
 
 In scripts, CI, SSH sessions without a TTY, or any other non-interactive
 context, no picker is shown. Pass `--device`, or configure a default with
@@ -67,6 +83,35 @@ before running commands that need a target.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 > If the terminal is interactive, a prompt will be made to update the device right now.
+
+## Simulator startup and authentication failures
+
+While waiting for a simulator to boot, the CLI retries connection failures
+such as an agent that is not yet listening. It stops immediately if the
+connection fails because of a TLS authentication rejection, a device identity
+refusal, an organization mismatch, or a gRPC `Unauthenticated` or
+`PermissionDenied` response.
+
+A TLS authentication failure can mean a wrong device clock or incompatible
+credentials. If the device clock may be wrong, run `wendy device sync-time`
+on the same LAN, then retry. Refresh certificates when the CLI reports expired
+client credentials, after checking this computer's clock. Use
+`WENDY_TLS_DEBUG=1` for connection details.
+
+Authentication failures omit the simulator's boot-console output. Ordinary
+startup timeouts still include the available boot-console tail to help
+diagnose guest startup problems.
+
+## Automatic connection recovery
+
+After a possible clock-related TLS failure, the CLI attempts to broadcast a
+signed time proof on the LAN and retries the connection. It reports whether
+sending failed and whether the retry connected; sending a proof does not confirm
+that the device received it or changed its clock.
+
+The CLI offers to refresh certificates when it has evidence that the client
+credentials need renewal. A timeout or generic TLS rejection alone does not
+trigger that offer.
 
 ## Local Targets
 

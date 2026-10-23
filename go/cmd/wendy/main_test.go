@@ -4,15 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"google.golang.org/grpc/codes"
@@ -45,6 +52,43 @@ func TestRenderErrorKeepsDiagnosticPresentationAndContext(t *testing.T) {
 type capturedEvent struct {
 	event string
 	props map[string]string
+}
+
+func TestReportFailureForTourCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		tour bool
+		want int
+	}{
+		{"completed", nil, true, 0},
+		{"interactive cancellation", commands.ErrUserCancelled, false, 0},
+		{"tour cancellation", commands.ErrUserCancelled, true, 130},
+		{"wrapped tour cancellation", fmt.Errorf("install: %w", commands.ErrUserCancelled), true, 130},
+		{"failure", errors.New("failed"), true, 1},
+		{"tour auth failure", config.ErrNotLoggedIn, true, 3},
+		{"interactive auth failure", config.ErrNotLoggedIn, false, 3},
+		{"default cleared", commands.ErrDefaultCleared, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entrypoint := ""
+			if tc.tour {
+				entrypoint = "tour"
+			}
+			t.Setenv("WENDY_TELEMETRY_ENTRYPOINT", entrypoint)
+			var out strings.Builder
+			if got := reportFailure(&out, tc.err, nil, []string{"--json"}); got != tc.want {
+				t.Fatalf("exit code = %d, want %d", got, tc.want)
+			}
+			if tc.want == 0 || tc.want == 130 {
+				if out.Len() != 0 {
+					t.Fatalf("cancellation or success printed an error: %s", out.String())
+				}
+			} else if envelope := decodeEnvelope(t, out.String()); envelope.Exit != tc.want {
+				t.Fatalf("envelope exit = %d, want %d", envelope.Exit, tc.want)
+			}
+		})
+	}
 }
 
 func captureAnalytics(t *testing.T) *[]capturedEvent {
@@ -143,6 +187,19 @@ func TestTrackCommand_TopLevelSubcommand(t *testing.T) {
 	}
 	if _, present := got.props["error_class"]; present {
 		t.Errorf("error_class must be absent on success, got %q", got.props["error_class"])
+	}
+}
+
+func TestTrackCommand_DoctorNeverUploads(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	root := newTestRoot()
+	doctor := &cobra.Command{Use: "doctor"}
+	root.AddCommand(doctor)
+	trackCommand(doctor, nil, time.Millisecond)
+	trackCommand(doctor, errors.New("local check failed"), time.Millisecond)
+	if len(*events) != 0 {
+		t.Fatalf("doctor emitted analytics: %+v", *events)
 	}
 }
 
@@ -338,20 +395,106 @@ func TestErrorClass_Mapping(t *testing.T) {
 		{"user_cancelled", commands.ErrUserCancelled, "user_cancelled"},
 		{"default_cleared", commands.ErrDefaultCleared, "user_cancelled"},
 		{"user_cancelled_wrapped", fmt.Errorf("aborted: %w", commands.ErrUserCancelled), "user_cancelled"},
+		{"swift_picker_cancelled", fmt.Errorf("product: %w", swifttoolchain.ErrUserCancelled), "user_cancelled"},
+		{"tui_cancelled", tui.ErrCancelled, "user_cancelled"},
+		{"joined_cancellation", errors.Join(errors.New("service failed"), commands.ErrUserCancelled), "user_cancelled"},
 		{"context_canceled", context.Canceled, "context_canceled"},
 		{"context_deadline", context.DeadlineExceeded, "context_deadline"},
+		{"cancellation_before_category", errors.Join(config.ErrNotLoggedIn, context.Canceled), "context_canceled"},
+		{"deadline_before_category", errors.Join(config.ErrNotLoggedIn, context.DeadlineExceeded), "context_deadline"},
+		{"grpc_cancellation_before_category", errors.Join(config.ErrNotLoggedIn, status.Error(codes.Canceled, "cancelled")), "context_canceled"},
+		{"grpc_deadline_before_category", errors.Join(config.ErrNotLoggedIn, status.Error(codes.DeadlineExceeded, "deadline")), "grpc_deadline"},
 		{"grpc_canceled_status", status.Error(codes.Canceled, "client gone"), "context_canceled"},
 		{"grpc_unavailable_status", status.Error(codes.Unavailable, "transport closing"), "grpc_unavailable"},
 		{"grpc_unavailable_wrapped", fmt.Errorf("connecting to cloud: %w", status.Error(codes.Unavailable, "x")), "grpc_unavailable"},
 		{"grpc_deadline_status", status.Error(codes.DeadlineExceeded, "ctx done"), "grpc_deadline"},
 		{"grpc_unimplemented_status", status.Error(codes.Unimplemented, "nope"), "grpc_unimplemented"},
-		{"grpc_internal", status.Error(codes.Internal, "boom"), "grpc_other"},
-		{"grpc_unknown_explicit", status.Error(codes.Unknown, "vague"), "grpc_other"},
+		{"grpc_internal", status.Error(codes.Internal, "boom"), "grpc_internal"},
+		{"grpc_unknown_explicit", status.Error(codes.Unknown, "vague"), "grpc_unknown"},
+		{"auth_required", fmt.Errorf("cloud: %w", config.ErrNotLoggedIn), "auth_required"},
+		{"auth_session_ambiguous", config.ErrMultipleSessions, "auth_session_ambiguous"},
+		{"missing_tool", &exec.Error{Name: "/private/tool", Err: exec.ErrNotFound}, "tool_not_found"},
+		{"dns", &net.DNSError{Name: "secret.local", Err: "no such host"}, "network_dns"},
+		{"timeout", &net.OpError{Op: "dial", Err: os.ErrDeadlineExceeded}, "network_timeout"},
+		{"refused", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, "network_refused"},
+		{"unreachable", syscall.EHOSTUNREACH, "network_unreachable"},
+		{"reset", syscall.ECONNRESET, "connection_closed"},
+		{"permission", &os.PathError{Op: "open", Path: "/private/project", Err: os.ErrPermission}, "permission_denied"},
+		{"file_missing", &os.PathError{Op: "open", Path: "/private/project", Err: os.ErrNotExist}, "file_not_found"},
+		{"disk_full", syscall.ENOSPC, "disk_full"},
+		{"eof", io.EOF, "unexpected_eof"},
+		{"truncated_stream", fmt.Errorf("upload: %w", io.ErrUnexpectedEOF), "unexpected_eof"},
+		{"subprocess", &exec.ExitError{}, "process_failed"},
+		{"unknown_subcommand", commands.UnknownSubcommandError([]string{"device", "banana"}), "cli_usage"},
+		{"bundled_device_argument", commands.UnknownSubcommandError([]string{"--device foo", "device", "info"}), "cli_usage"},
+		{"cobra_root_unknown_command", errors.New(`unknown command "banana" for "wendy"`), "cli_usage"},
+		{"message_is_not_a_category", errors.New("rpc error: code = Unavailable: secret.local build failed"), "other"},
 		{"non_grpc", errors.New("some plain failure"), "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := errorClass(tc.err); got != tc.want {
 				t.Errorf("errorClass(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestErrorClassGRPCStatuses(t *testing.T) {
+	for code, want := range map[codes.Code]string{
+		codes.InvalidArgument: "grpc_invalid_argument", codes.NotFound: "grpc_not_found",
+		codes.AlreadyExists: "grpc_already_exists", codes.PermissionDenied: "grpc_permission_denied",
+		codes.ResourceExhausted: "grpc_resource_exhausted", codes.FailedPrecondition: "grpc_failed_precondition",
+		codes.Aborted: "grpc_aborted", codes.OutOfRange: "grpc_out_of_range",
+		codes.DataLoss: "grpc_data_loss", codes.Unauthenticated: "grpc_unauthenticated",
+	} {
+		err := fmt.Errorf("service private-name: %w", status.Error(code, "secret.local /private/project"))
+		if got := errorClass(err); got != want {
+			t.Errorf("code %v = %q, want %q", code, got, want)
+		}
+	}
+}
+
+func TestTrackCommandClassifiedFailureDoesNotLeakCause(t *testing.T) {
+	events := captureAnalytics(t)
+	err := fmt.Errorf("secret.local /private/project: %w", config.ErrNotLoggedIn)
+	trackCommand(newTestRoot(), err, time.Millisecond)
+	if len(*events) != 1 {
+		t.Fatalf("got %d events, want 1", len(*events))
+	}
+	props := (*events)[0].props
+	if props["error_class"] != "auth_required" || props["success"] != "false" {
+		t.Fatalf("unexpected properties: %v", props)
+	}
+	for key, value := range props {
+		if strings.Contains(value, "secret") || strings.Contains(value, "/private") {
+			t.Errorf("%s leaked error content: %q", key, value)
+		}
+	}
+}
+
+func TestTrackCommandFlagErrorClasses(t *testing.T) {
+	for _, args := range [][]string{
+		{"run", "--secret-flag"},
+		{"run", "--device"},
+		{"run", "--help=secret-value"},
+		{"run", "--=secret-value"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			events := captureAnalytics(t)
+			root := newTestRoot()
+			root.SetArgs(args)
+			executed, err := root.ExecuteC()
+			if err == nil {
+				t.Fatal("expected flag parsing failure")
+			}
+			trackCommand(executed, err, time.Millisecond)
+			if len(*events) != 1 || (*events)[0].props["error_class"] != "cli_usage" {
+				t.Fatalf("wrong classification for %v: %+v", err, *events)
+			}
+			for key, value := range (*events)[0].props {
+				if strings.Contains(value, "secret") || strings.Contains(value, "--") {
+					t.Errorf("%s leaked flag content: %q", key, value)
+				}
 			}
 		})
 	}
@@ -448,13 +591,13 @@ func TestFormatError_UnimplementedKeepsUpdateHintForGeneratedStub(t *testing.T) 
 
 // A genuine mTLS rejection by the device (clock skew, stale/mismatched cert)
 // surfaces as a server-sent TLS alert ("remote error: tls: bad certificate").
-// That case must keep the clock-skew / timedatectl remedy — it is accurate.
+// That case should offer supported clock recovery without claiming a diagnosis.
 func TestFormatError_GenuineCertRejectionKeepsClockSkewAdvice(t *testing.T) {
 	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
 		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
 
 	got := formatError(err).Error()
-	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "timedatectl") {
+	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "wendy device sync-time") || strings.Contains(got, "ssh ") {
 		t.Fatalf("genuine cert rejection should keep clock-skew advice, got %q", got)
 	}
 }
@@ -468,7 +611,7 @@ func TestFormatError_X509VerifyFailureKeepsClockSkewAdvice(t *testing.T) {
 		`connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate has expired or is not yet valid"`))
 
 	got := formatError(err).Error()
-	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "timedatectl") {
+	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "wendy device sync-time") || strings.Contains(got, "ssh ") {
 		t.Fatalf("x509 verify failure should keep clock-skew advice, got %q", got)
 	}
 }
@@ -551,7 +694,7 @@ func TestMilestoneFor(t *testing.T) {
 	}{
 		{"wendy discover", true, "discover_success"},
 		{"wendy init", true, "init_success"},
-		{"wendy run", true, "first_deploy_success"},
+		{"wendy run", true, ""},
 		{"wendy cloud login", true, "auth_success"},
 		{"wendy auth login", true, "auth_success"},
 		{"wendy run", false, ""},
@@ -565,7 +708,7 @@ func TestMilestoneFor(t *testing.T) {
 }
 
 func TestIsSetupCommand(t *testing.T) {
-	setup := []string{"wendy completion install", "wendy __complete", "wendy help", "wendy analytics disable"}
+	setup := []string{"wendy completion install", "wendy __complete", "wendy help", "wendy analytics disable", "wendy update"}
 	real := []string{"wendy run", "wendy discover", "wendy device info"}
 	for _, p := range setup {
 		if !isSetupCommand(p) {
@@ -598,6 +741,165 @@ func TestFormatError_CloudTunnelVerdictIsShown(t *testing.T) {
 	for _, noise := range []string{"authentication handshake failed", "connection error", "transport:", "clock", "offline"} {
 		if strings.Contains(msg, noise) {
 			t.Errorf("message %q still carries %q", msg, noise)
+		}
+	}
+}
+
+func TestUpdateCheckNeverUploadsOrRunsOwnershipCleanup(t *testing.T) {
+	events := captureAnalytics(t)
+	root := &cobra.Command{Use: "wendy"}
+	update := &cobra.Command{Use: "update"}
+	update.Flags().Bool("check", false, "")
+	root.AddCommand(update)
+	if isReadOnlyInvocation(update) {
+		t.Fatal("actual updater classified as read-only")
+	}
+	if err := update.Flags().Set("check", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !isReadOnlyInvocation(update) {
+		t.Fatal("check would run ownership cleanup")
+	}
+	trackCommand(update, nil, time.Millisecond)
+	trackCommand(update, errors.New("offline"), time.Millisecond)
+	if len(*events) != 0 {
+		t.Fatal("read-only check emitted telemetry")
+	}
+}
+
+var refusedDial = status.Error(codes.Unavailable,
+	`connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:1: connect: connection refused"`)
+
+// A hint appended after the gRPC error (fmt.Errorf("...: %w\n  hint")) used to
+// vanish when formatError replaced the transport text with fixed prose.
+func TestFormatError_KeepsHintAppendedAfterGRPCError(t *testing.T) {
+	err := fmt.Errorf("default device %q is set but could not be reached: %w\n  Confirm it with 'wendy device get-default'.",
+		"127.0.0.1:1", refusedDial)
+	want := `default device "127.0.0.1:1" is set but could not be reached: ` +
+		"Could not connect to device. Is it powered on and connected to the network?\n" +
+		"  Confirm it with 'wendy device get-default'."
+	if got := formatError(err).Error(); got != want {
+		t.Errorf("formatError() = %q, want %q", got, want)
+	}
+
+	// The Unavailable-with-description branch keeps the suffix too, once.
+	err = fmt.Errorf("registering deployment with Cloud: %w; use --skip-cloud-registration for an offline deployment",
+		status.Error(codes.Unavailable, "deployment registry is restarting"))
+	want = "registering deployment with Cloud: deployment registry is restarting; use --skip-cloud-registration for an offline deployment"
+	if got := formatError(err).Error(); got != want {
+		t.Errorf("formatError() = %q, want %q", got, want)
+	}
+}
+
+// formatErrorParts must render exactly the text formatError always printed,
+// and report the advice lines it added as separate steps.
+func TestFormatErrorParts_ReportsItsOwnSteps(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
+	f := formatErrorParts(err)
+	wantText := "querying device version: TLS handshake rejected by device (possible clock skew or cert mismatch).\n" +
+		"  If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.\n" +
+		"  For full TLS details rerun with WENDY_TLS_DEBUG=1"
+	if f.text != wantText {
+		t.Errorf("text = %q, want %q", f.text, wantText)
+	}
+	wantSteps := []string{"If the device clock may be wrong, run 'wendy device sync-time' on the same LAN, then retry.", "For full TLS details rerun with WENDY_TLS_DEBUG=1"}
+	if strings.Join(f.steps, "|") != strings.Join(wantSteps, "|") {
+		t.Errorf("steps = %q, want %q", f.steps, wantSteps)
+	}
+}
+
+// With the status error flattened by %v, nothing after the gRPC text can be
+// told apart from it; formatError keeps its long-standing behaviour.
+func TestFormatError_FlattenedGRPCErrorStillRewrites(t *testing.T) {
+	err := fmt.Errorf("listing volumes: %v", status.Error(codes.Unimplemented, "unknown method ListVolumes for service x"))
+	if got, want := formatError(err).Error(), "listing volumes: Not supported by this agent version. Try updating the agent."; got != want {
+		t.Errorf("formatError() = %q, want %q", got, want)
+	}
+}
+
+// dialedError stands in for commands' device dial error: the cause's message,
+// plus the address the dial was aimed at.
+type dialedError struct {
+	addr  string
+	cause error
+}
+
+func (e dialedError) Error() string         { return e.cause.Error() }
+func (e dialedError) Unwrap() error         { return e.cause }
+func (e dialedError) DeviceAddress() string { return e.addr }
+
+func TestFormatError_ConnectErrorsNameTheDevice(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{dialedError{"127.0.0.1:1", refusedDial},
+			"Could not connect to device at 127.0.0.1:1. Is it powered on and connected to the network?"},
+		{refusedDial,
+			"Could not connect to device. Is it powered on and connected to the network?"},
+		{dialedError{"10.0.0.9:50051", status.Error(codes.DeadlineExceeded, "context deadline exceeded")},
+			"Connection to device at 10.0.0.9:50051 timed out."},
+		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"),
+			"Connection timed out."},
+		// An empty description used to render as an empty message.
+		{dialedError{"10.0.0.9:50051", status.Error(codes.Unavailable, "")},
+			"Device at 10.0.0.9:50051 is unavailable."},
+		{status.Error(codes.Unavailable, ""),
+			"Device is unavailable."},
+	} {
+		if got := formatError(tc.err).Error(); got != tc.want {
+			t.Errorf("formatError(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+// A device that is off, or a host name that does not resolve, is exit 5
+// whether the dial was refused, timed out, or never found an address.
+func TestErrorClass_DeviceDialFailures(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{dialedError{"10.255.255.1:50051", status.Error(codes.DeadlineExceeded, "context deadline exceeded while waiting for connections to become ready")}, "device_unreachable"},
+		{fmt.Errorf("default device: %w", dialedError{"x.local:50051", status.Error(codes.DeadlineExceeded, "context deadline exceeded")}), "device_unreachable"},
+		{dialedError{"127.0.0.1:1", refusedDial}, "device_unreachable"},
+		{dialedError{"nosuchhost.invalid:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")}, "device_not_resolved"},
+		{dialedError{"wendyos-zzz:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")}, "device_unreachable"},
+		// Without a dialled address a deadline is still just a deadline.
+		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"), "grpc_deadline"},
+		{fmt.Errorf("waiting: %w", context.DeadlineExceeded), "context_deadline"},
+		// Ctrl-C during a dial is a cancellation, not a verdict on the device.
+		{dialedError{"127.0.0.1:1", fmt.Errorf("dialing: %w", context.Canceled)}, "context_canceled"},
+	} {
+		if got := errorClass(tc.err); got != tc.want {
+			t.Errorf("errorClass(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+// A host name that resolves to nothing is named in the message, which the
+// resolver's own text ("produced zero addresses") never does.
+func TestFormatError_UnresolvedDeviceNamesTheHost(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{dialedError{"nosuchhost.invalid:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
+			"Could not resolve device host nosuchhost.invalid.\n  Check the name, or connect by IP address."},
+		{dialedError{"nosuchhost.invalid:50051", status.Error(codes.Unavailable,
+			`connection error: desc = "transport: Error while dialing: dial tcp: lookup nosuchhost.invalid: no such host"`)},
+			"Could not resolve device host nosuchhost.invalid.\n  Check the name, or connect by IP address."},
+		{dialedError{"wendyos-x.local:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
+			"Could not resolve device host wendyos-x.local.\n  The device may be offline, or mDNS may be blocked on this network; connect by IP address to rule that out."},
+		{dialedError{"wendyos-zzz:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
+			"Could not resolve device host wendyos-zzz.\n  The device may be offline, or mDNS may be blocked on this network; connect by IP address to rule that out."},
+		// A fully qualified name's trailing dot must not double the full stop.
+		{dialedError{"nosuchhost.invalid.:50051", status.Error(codes.Unavailable, "name resolver error: produced zero addresses")},
+			"Could not resolve device host nosuchhost.invalid.\n  Check the name, or connect by IP address."},
+	} {
+		if got := formatError(tc.err).Error(); got != tc.want {
+			t.Errorf("formatError(%v) = %q, want %q", tc.err, got, tc.want)
 		}
 	}
 }

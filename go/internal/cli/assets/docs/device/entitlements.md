@@ -110,6 +110,51 @@ A "network" type entitlement can have the following values:
 }
 ```
 
+### Wendy Net service access
+
+Use `network` mode `mesh` with `serviceCIDR: "10.99.0.0/16"` and isolated
+networking. Declare incoming TCP or UDP ports explicitly. This enables service
+access, not general outbound Internet access. Follow the
+[service sharing guide](/docs/guides/wendy-net-services) for complete manifests.
+
+### Private Avahi
+
+Add `{ "type": "avahi" }` when an app uses Avahi through D-Bus or compatible
+client libraries. Apps using their own mDNS socket do not need this grant.
+Avahi does not grant network access by itself; combine it with the appropriate
+private network entitlement. See the
+[Avahi workflow](/docs/guides/wendy-net-services#alternative-use-private-avahi-through-d-bus).
+
+## HTTP
+
+Use `http` to declare a web endpoint for clients to discover. It grants no
+additional network access; combine it with host networking for a container
+server:
+
+```json
+[
+    { "type": "network", "mode": "host" },
+    { "type": "http", "port": 8080 }
+]
+```
+
+Ordinary detached agent deployments include HTTP URLs in their
+[endpoint report](../clients/wendy-cli/commands/run.md#detached-output), without
+checking application health. See the [full `http` reference](../apps/wendy.json.md#http)
+for discovery and attached-run behavior.
+
+## Wi-Fi Aware
+
+Use `{ "type": "nan" }` only when your app needs to manage Wi-Fi Aware discovery
+and direct connections itself. Ordinary Wendy Net apps do not need this grant.
+For an app that sends IP traffic over those direct connections, also add
+`{ "type": "network", "mode": "host" }`.
+
+This grants direct radio control to a trusted app. Wi-Fi Aware shares the device's
+radio with other apps and Wendy Net, so avoid radio-wide start, stop, or reset
+commands. See the [configuration reference](../apps/wendy.json.md#nan) for the
+app's control socket, interface, and reply-directory settings.
+
 ## Input
 
 The input entitlement allows the container to access Linux input devices such as game controllers, barcode scanners, keyboards, and other devices that appear under `/dev/input/`. This is separate from the USB entitlement — USB covers `/dev/bus/usb` (raw USB access), while input covers the higher-level Linux input subsystem.
@@ -160,6 +205,13 @@ Most USB HID devices (scanners, keyboards) should use `input`. You only need `us
 ## USB
 
 The USB entitlement allows the container to access USB devices.
+
+Wendy bind-mounts `/dev/bus/usb` when that directory exists on the host. On a
+host without a USB bus, including a VM, it skips the mount so container startup
+does not fail with `cannot stat /dev/bus/usb`. This grants no virtual USB devices:
+an app that needs a physical camera still needs that camera and its driver, or an
+explicit [simulator backend](../apps/wendy-services.md#simulation-backends).
+If the USB directory appears after deployment, redeploy to mount it.
 
 ## Serial / UART
 

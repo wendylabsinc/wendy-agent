@@ -1322,9 +1322,27 @@ func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
 }
 
 func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
-	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble","discoveryScope":"host"}}}`)
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble","scope":"network"}}}`)
 	if got := ValidateJSON(data); len(got) != 0 {
 		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
+	}
+}
+
+func TestValidateJSON_DiscoveryScopeIsDeprecated(t *testing.T) {
+	for scope, want := range map[string]string{"host": `use "scope": "network"`, "app": `use "scope": "device"`} {
+		data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"discoveryScope":"` + scope + `"}}}`)
+		got := ValidateJSON(data)
+		if len(got) != 1 || !strings.Contains(got[0], "discoveryScope is deprecated") || !strings.Contains(got[0], want) {
+			t.Errorf("discoveryScope %q: got %v, want one deprecation warning suggesting %s", scope, got, want)
+		}
+	}
+}
+
+func TestValidateJSON_ScopeAndDiscoveryScopeWarnOnce(t *testing.T) {
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"scope":"network","discoveryScope":"host"}}}`)
+	got := ValidateJSON(data)
+	if len(got) != 1 || !strings.Contains(got[0], "takes precedence") {
+		t.Errorf("got %v, want one warning that scope takes precedence", got)
 	}
 }
 
@@ -2316,6 +2334,23 @@ func TestAdminEntitlementJSONUnknownKeyWarns(t *testing.T) {
 	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"admin","bogus":1}]}`))
 	if len(warnings) == 0 {
 		t.Fatal("expected warning for unknown key on admin entitlement")
+	}
+}
+
+func TestNANEntitlementValidation(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{{Type: EntitlementNAN}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("nan entitlement rejected: %v", err)
+	}
+	if warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"nan"}]}`)); len(warnings) != 0 {
+		t.Fatalf("nan entitlement warnings: %v", warnings)
+	}
+	if warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"nan","mode":"host"}]}`)); len(warnings) == 0 {
+		t.Fatal("nan entitlement must not accept network options")
+	}
+	cfg.Entitlements = append(cfg.Entitlements, Entitlement{Type: EntitlementNAN})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("duplicate nan entitlement accepted")
 	}
 }
 

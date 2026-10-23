@@ -325,7 +325,7 @@ func Run(ctx context.Context, encoded string, idleTTL time.Duration, parentLease
 	if err != nil {
 		return err
 	}
-	return serve(ctx, dir, spec, upstream.Conn, idleTTL, parentLeaseSignal(parentLease, spec.ParentPID))
+	return serve(ctx, dir, spec, upstream.Conn, idleTTL, parentLeaseSignal(parentLease, spec.ParentPID), true)
 }
 
 // parentLeaseSignal reports whether the invocation that prepared this broker
@@ -518,14 +518,20 @@ func (a *activity) rpcUnanswered() {
 	}
 }
 
-// isLocalCancellation distinguishes an explicit cancel from an expired client
-// deadline, which grpc-go also surfaces as cancellation of the server context.
+// gRPC transmits deadlines as relative timeouts, so the broker reconstructs a
+// slightly later deadline after the request crosses the local Unix socket.
+// Allow for that transit and scheduling delay when the client's deadline
+// cancels the server context before the broker's own deadline expires.
+const cancellationDeadlineSlack = 10 * time.Millisecond
+
+// isLocalCancellation recognizes cancellation well before any deadline.
+// Cancellation near the deadline is ambiguous and counts as unanswered.
 func isLocalCancellation(ctx context.Context, err error) bool {
 	if status.Code(err) != codes.Canceled || !errors.Is(ctx.Err(), context.Canceled) {
 		return false
 	}
 	deadline, hasDeadline := ctx.Deadline()
-	return !hasDeadline || time.Now().Before(deadline)
+	return !hasDeadline || time.Until(deadline) > cancellationDeadlineSlack
 }
 
 func (a *activity) noteUpstreamError(upstream *grpc.ClientConn, err error) {
@@ -538,9 +544,11 @@ func (a *activity) noteUpstreamError(upstream *grpc.ClientConn, err error) {
 // rpcCompression carries the grpc-encoding an inbound RPC arrived with from
 // the stats layer — the only place grpc-go exposes it — to the proxy handler,
 // which mirrors it onto the upstream call. Without that mirror the proxy
-// silently decompresses: chunk pushes open WriteChunks with gzip specifically
-// because raw chunk payloads have stalled USB-NCM links (see chunkpush.go),
-// and a broker in the middle must keep that property on the real device link.
+// silently decompresses: chunk pushes pick gzip or uncompressed per link and
+// device (see chunkUploadConfigFor in chunkcompression.go) specifically
+// because raw chunk payloads have stalled USB-NCM links (see chunkpush.go
+// and chunkupload.Watch's stall watchdog), and a broker in the middle must
+// keep whichever encoding was chosen on the real device link.
 //
 // TagRPC attaches the holder and HandleRPC's InHeader fills it on the same
 // goroutine that then invokes the handler (grpc-go's server does both before
@@ -690,11 +698,15 @@ func proxyHandler(upstream *grpc.ClientConn, activity *activity) grpc.StreamHand
 // a re-dial simply never happens under this broker's identity lock: the next
 // invocation direct-dials with fresh pin state and prepares a fresh broker.
 //
-// The transport may legitimately still be establishing when serve() starts
-// (tests hand serve() an un-dialed conn; Run() hands it a probed, Ready one),
-// so departure only counts after Ready has been observed once.
-func watchUpstreamState(ctx context.Context, upstream *grpc.ClientConn, activity *activity) {
+// An unprobed connection may still be establishing. A probed connection has
+// ALREADY reached Ready even if this goroutine starts after it has departed:
+// never mistake that loss for a permissible initial connection attempt.
+func watchUpstreamState(ctx context.Context, upstream *grpc.ClientConn, activity *activity, alreadyVerified bool) {
 	state := upstream.GetState()
+	if alreadyVerified && state != connectivity.Ready {
+		activity.markBad()
+		return
+	}
 	for state != connectivity.Ready {
 		if state == connectivity.Shutdown {
 			activity.markBad()
@@ -751,7 +763,15 @@ func (h connectionActivity) HandleConn(_ context.Context, event stats.ConnStats)
 // caller must hold the identity flock (see acquireIdentityLock in Run) for the
 // whole call: holding it is what entitles serve to clobber and later remove
 // the socket and state files.
-func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration, parentAlive func() bool) (err error) {
+func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn, idleTTL time.Duration, parentAlive func() bool, verified ...bool) (err error) {
+	// Capture before publishing the state file. Run supplies its successful
+	// probe explicitly, covering loss even before serve begins; unprobed test
+	// connections retain the initial-establishment behavior.
+	initialState := upstream.GetState()
+	alreadyVerified := initialState == connectivity.Ready || (len(verified) > 0 && verified[0])
+	if alreadyVerified && initialState != connectivity.Ready {
+		return nil // retire before publishing a transport that already lost trust
+	}
 	if idleTTL <= 0 {
 		idleTTL = DefaultIdleTTL
 	}
@@ -788,7 +808,7 @@ func serve(ctx context.Context, dir string, spec Spec, upstream *grpc.ClientConn
 	)
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()
-	go watchUpstreamState(serveCtx, upstream, activity)
+	go watchUpstreamState(serveCtx, upstream, activity, alreadyVerified)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

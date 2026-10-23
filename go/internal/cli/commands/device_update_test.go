@@ -161,6 +161,8 @@ func TestCheckLocalAgentArtifact(t *testing.T) {
 	zipData := []byte{'P', 'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00}
 	arm64ELF := makeELFHeader(183)
 	amd64ELF := makeELFHeader(62)
+	macOSArm64MachO := []byte{0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01}
+	macOSUniversalMachO := []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x02}
 	randomBytes := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}
 	shellScript := []byte("#!/bin/sh\necho hi\n")
 
@@ -213,6 +215,22 @@ func TestCheckLocalAgentArtifact(t *testing.T) {
 			deviceOS:   "wendyos",
 			deviceArch: "arm64",
 			wantErr:    false,
+		},
+		{
+			name:         "macOS arm64 CLI executable is rejected on WendyOS",
+			data:         macOSArm64MachO,
+			deviceOS:     "wendyos",
+			deviceArch:   "arm64",
+			wantErr:      true,
+			wantContains: []string{"Mach-O", "wendyos", "Linux ELF"},
+		},
+		{
+			name:         "universal macOS executable is rejected on Linux",
+			data:         macOSUniversalMachO,
+			deviceOS:     "ubuntu",
+			deviceArch:   "arm64",
+			wantErr:      true,
+			wantContains: []string{"Mach-O", "ubuntu", "Linux ELF"},
 		},
 		{
 			name:       "mismatched ELF arch still delegates to checkELFArchitecture",
@@ -413,9 +431,14 @@ func TestAgentUpdateTerminalError(t *testing.T) {
 			wantUnconfirmed: true,
 		},
 		{
-			name:       "update already in progress explains the stale-lock reboot",
+			name:       "update already in progress points at a running update",
 			recvErr:    status.Error(codes.FailedPrecondition, "an update is already in progress"),
-			wantSubstr: "reboot",
+			wantSubstr: "another OS or agent update may still be running",
+		},
+		{
+			name:       "update already in progress keeps the stale-lock reboot hint",
+			recvErr:    status.Error(codes.FailedPrecondition, "an update is already in progress"),
+			wantSubstr: "reboot the device",
 		},
 		{
 			name:       "sha mismatch is reported verbatim",

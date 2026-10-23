@@ -28,14 +28,16 @@ Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installatio
   <Step>
     ### Connect the microSD Card to Your Computer
 
-    Insert your microSD card into a microSD-to-SD card adapter.
+    Insert your microSD card into a card reader connected to your development computer.
+    Use a microSD-to-SD adapter if your reader takes full-size SD cards.
 
     <video width="100%" autoPlay loop muted playsInline>
       <source src="/videos/installation/pi-5-micro-sd-to-sd-card-adapter.mp4" type="video/mp4" />
       Your browser does not support the video tag.
     </video>
 
-    Then insert the adapter into your MacBook's SD card slot.
+    The video shows a MacBook's SD slot. A USB card reader works on macOS, Linux,
+    or Windows as well.
 
     <video width="100%" autoPlay loop muted playsInline>
       <source src="/videos/installation/pi-5-insert-card-into-macbook.mp4" type="video/mp4" />
@@ -91,7 +93,10 @@ Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installatio
 
     <Tabs items={['Raspberry Pi 5', 'Raspberry Pi 4', 'Raspberry Pi 3']} groupId="rpi-model" persist>
       <Tab value="Raspberry Pi 5">
-        Connect your Raspberry Pi 5 to your computer using a USB-C cable. This both powers the board and creates a direct connection for deploying and managing apps.
+        Connect your Raspberry Pi 5 to your computer using a USB-C **data** cable.
+        The computer's port must supply enough power for the board and its peripherals.
+        If power is unreliable, use the Pi's power supply and connect over Ethernet
+        or the Wi-Fi configured during installation.
 
         <video width="100%" autoPlay loop muted playsInline>
           <source src="/videos/installation/pi-5-usb-c-to-macbook.mp4" type="video/mp4" />
@@ -100,7 +105,11 @@ Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installatio
       </Tab>
 
       <Tab value="Raspberry Pi 4">
-        Connect your Raspberry Pi 4 to your computer using a USB-C cable, plugged into the Pi's USB-C port. The Pi 4's USB-C port runs in gadget mode, so this both powers the board and creates a direct connection for deploying and managing apps — just like the Pi 5.
+        Connect your Raspberry Pi 4 to your computer using a USB-C **data** cable,
+        plugged into the Pi's USB-C port. The port supports a direct connection,
+        but the computer must supply enough power for the board and its peripherals.
+        Otherwise use the Pi's power supply and connect over Ethernet or the Wi-Fi
+        configured during installation.
       </Tab>
 
       <Tab value="Raspberry Pi 3">
@@ -125,6 +134,15 @@ Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installatio
 
     You should see your Raspberry Pi appear in the list of discovered devices.
 
+    On macOS, allow **Local Network** access when prompted. For a USB-C connection
+    on Linux, run discovery in a terminal and accept its host network setup prompt,
+    which requires administrator access. Match the name you chose during installation.
+    Writing the card successfully does not yet confirm that this Pi has booted.
+
+    If the Pi is missing, check power, use a data-capable cable, and confirm that
+    Ethernet or Wi-Fi connects it to the same network as your computer. Cloud
+    enrollment is optional for local development.
+
     <CliShot flow="discover" step="devices" alt="The Wendy CLI listing discovered WendyOS devices on the network" />
 
     <Callout type="warning">
@@ -135,6 +153,6 @@ Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installatio
   </Step>
 </Steps>
 
-### Next Steps
+## Next steps
 
-Now that WendyOS is installed, you can start deploying apps to your device. Check out the [Hello World Guide](/docs/guides/tutorials/python/hello-world) to build your first app.
+Your Raspberry Pi is ready. Continue with [step 3 of the quickstart](/docs/#3-create-an-app) to create and run your first app.

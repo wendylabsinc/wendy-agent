@@ -134,6 +134,11 @@ func (d cloudDiscoveryDevice) info(ver *agentpb.GetAgentVersionResponse) any {
 		deviceType = humanReadableOSType(d.GetOsType(), d.GetArchitecture())
 	}
 	info := cloudDiscoverV2Info{ID: d.key, Name: d.GetName(), Type: deviceType, Address: d.GetIpAddress()}
+	if d.isLite() {
+		info.Type = liteDeviceType(info.Type)
+		info.Version = d.v2.GetOsVersion()
+		return info
+	}
 	if ver != nil {
 		if info.Type == "" {
 			info.Type = humanReadableDeviceType(ver.GetDeviceType())
@@ -146,9 +151,18 @@ func (d cloudDiscoveryDevice) info(ver *agentpb.GetAgentVersionResponse) any {
 	return info
 }
 
+// isLite reports whether the device is a Wendy Lite board. It has no WendyOS
+// agent, and its version is its firmware's, as Cloud records it.
+func (d cloudDiscoveryDevice) isLite() bool {
+	return d.v2 != nil && isLiteCloudAsset(d.v2)
+}
+
 func (d cloudDiscoveryDevice) connect(ctx context.Context, auth *config.AuthConfig, brokerURL string) (*grpcclient.AgentConnection, error) {
 	if d.legacy != nil {
 		return connectCloudAsset(ctx, auth, d.legacy, brokerURL)
+	}
+	if d.isLite() {
+		return nil, fmt.Errorf("%s is a Wendy Lite device; it has no WendyOS agent to reach through a cloud tunnel", d.GetName())
 	}
 	return connectCloudAssetV2(ctx, auth, d.v2, brokerURL)
 }
@@ -201,10 +215,10 @@ func pickCloudDiscoveryDevice(ctx context.Context, auth *config.AuthConfig, name
 		all, fetchErr := fetchCloudDiscoveryDevices(ctx, auth, false)
 		if fetchErr == nil {
 			if name == "" && len(all) > 0 {
-				return cloudDiscoveryDevice{}, fmt.Errorf("all %d enrolled devices are currently reported offline; check the agents' Cloud presence logs ('wendy cloud discover --all --json' lists enrolled devices)", len(all))
+				return cloudDiscoveryDevice{}, commandErrorf(errDeviceOffline, "all %d enrolled devices are currently reported offline; check the agents' Cloud presence logs ('wendy cloud discover --all --json' lists enrolled devices)", len(all))
 			}
 			if _, e := resolveCloudDiscoveryDevice(all, name); e == nil {
-				return cloudDiscoveryDevice{}, fmt.Errorf("device %q is enrolled but currently reported offline; check its Cloud presence logs", name)
+				return cloudDiscoveryDevice{}, commandErrorf(errDeviceOffline, "device %q is enrolled but currently reported offline; check its Cloud presence logs", name)
 			}
 		}
 	}
@@ -228,7 +242,7 @@ func resolveCloudDiscoveryDevice(devices []cloudDiscoveryDevice, name string) (c
 		for i := range devices {
 			if strings.EqualFold(devices[i].GetName(), name) {
 				if match != nil {
-					return cloudDiscoveryDevice{}, fmt.Errorf("multiple devices match %q; use a device UUID", name)
+					return cloudDiscoveryDevice{}, commandErrorf(errDeviceAmbiguous, "multiple devices match %q; use a device UUID", name)
 				}
 				match = &devices[i]
 			}
@@ -245,5 +259,5 @@ func resolveCloudDiscoveryDevice(devices []cloudDiscoveryDevice, name string) (c
 	for _, d := range devices {
 		names = append(names, d.key+"="+d.GetName())
 	}
-	return cloudDiscoveryDevice{}, fmt.Errorf("multiple cloud devices found; rerun with --device <id|name> (%s)", strings.Join(names, ", "))
+	return cloudDiscoveryDevice{}, commandErrorf(errDeviceAmbiguous, "multiple cloud devices found; rerun with --device <id|name> (%s)", strings.Join(names, ", "))
 }

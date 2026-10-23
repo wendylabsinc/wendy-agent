@@ -4,9 +4,134 @@ A browser workspace backed by Wendy's Go client compiled to WASM. It starts with
 an empty workspace. Device metrics, applications, and OpenTelemetry data come
 from connected agents; there is no demo mode.
 
+## Electron desktop
+
+The desktop workspace uses the same components and theme as the browser client.
+It bundles a CLI built from this checkout, so local workflows do not depend on
+the version of `wendy` installed on your PATH. The browser app still runs with
+`npm run dev` as described below.
+
+From `web-client`:
+
+```sh
+npm ci
+npm run desktop
+```
+
+This builds the CLI, copies the Go2 runtime source, prepares `node-pty` for
+Electron, and opens the desktop app with Vite on `127.0.0.1:5174`. Node.js 22.13+
+and Go 1.27.3+ are required to build. Compiling the terminal dependency may also
+require Xcode Command Line Tools on macOS or a C++ toolchain on Linux/Windows.
+
+To run without a development server, or produce a native application:
+
+```sh
+npm run desktop:build
+npm run desktop:start
+npm run desktop:package
+```
+
+The package is written to `release/` for the current OS and architecture. On
+macOS it contains `Wendy Desktop.app`. This is a local development package;
+release signing and notarization are not configured. Packaging includes only
+the desktop renderer, native bridge, terminal module, CLI, and simulator source.
+The packaged application does not need Node, Go, Vite, or a separate web server.
+
+- Choose **Docker** or **Apple Container** in the sidebar. Docker uses your
+  current context and environment. Apple Container requires an Apple silicon
+  Mac; **Start Apple Container** opens its service and builder setup prompts.
+- **Open folder**, then **Chat** for persistent interactive Wendy chat. The
+  settings button configures the model/provider through Wendy's existing setup.
+  Chat credentials stay in Wendy's CLI configuration. Tool approval remains
+  interactive. Open an empty folder and ask chat to create an app, or open an
+  existing Wendy project.
+- **Build** and **Build & run** use an explicit target. Local container targets
+  select their own provider; remote devices use the selected builder.
+  A target can be `docker`, `apple-container`, `vm:name`, or a Wendy device
+  address. Output and any CLI prompts appear in persistent sessions below.
+- **New simulator** offers Unitree Go2, Unitree G1, and Raspberry Pi app simulation.
+  Robot simulation builds the checked-in image with the selected runtime
+  and starts an isolated container with a loopback-only viewer port. The first
+  build downloads pinned ROS, MuJoCo, model and policy dependencies. Each robot
+  uses 4 CPUs and 4 GiB. The live viewer appears after the endpoint's simulation
+  identity is verified. The 3D canvas and movement controls are part of the
+  desktop page, with no embedded page or nested viewer scrollbar. Scrolling
+  over the scene scrolls the workspace; zoom uses the + and − buttons.
+  Camera, lidar, pause, and reset controls stay beside the view. World, sensor,
+  and ROS app settings expand below. Pausing or a robot fault leaves the viewer
+  available to recover.
+- **Raspberry Pi apps** uses a generic ARM64 WendyOS VM through QEMU with 2 CPUs,
+  2 GiB of memory, and a 16 GiB virtual disk. It supports application development,
+  not Pi GPIO or peripheral emulation. QEMU installation and OS download progress
+  appear in the session. Readiness requires a response from the guest agent.
+  Open **Dashboard** to inspect the VM. Set the build and chat target in the sidebar
+  when you want to deploy to it. **Boot logs**
+  streams its serial console; **Device logs** streams app and agent logs.
+- **Devices & monitoring** lists existing local VMs and discovers network devices.
+  Open **Dashboard** directly from a device or VM row for live CPU, memory,
+  disk, GPU, temperature, and application usage. Metrics depend on the device.
+  **Logs** displays searchable records with application and severity filters,
+  pause/resume, and expandable details. **Containers** and simulator **Boot logs**
+  use the same log viewer. Monitoring runs in native app views and only connects
+  to already running VMs.
+- Simulator records persist across app restarts. Closing the app stops active
+  chat/build/installer sessions after confirmation; simulator containers and VMs keep
+  running. Use **Stop** to stop one. **Logs**, **Start**, and **Retry build**
+  operate only on that simulator's labeled container.
+  VM **Start**, **Stop**, and **Retry setup** operate on its dedicated VM record.
+- **Flash device** defaults to Raspberry Pi 5, with Pi 3/4 and Jetson developer
+  kits also available. Find the drive, review the exact release/target/checksum,
+  then open the installer. The desktop rechecks the plan and asks for native
+  confirmation before starting. Wendy retains its own disk, Wi-Fi, naming and
+  administrator prompts. No automatic `--yes` or internal-drive bypass is used.
+  Verify first boot at an explicit address after the write finishes.
+
+These container simulators have their own ROS loopback bus. An app run on the
+ordinary Docker or Apple Container target is a separate container and does not
+automatically join that bus. For the existing managed ROS app deployment flow,
+create a robot VM with `wendy vm create NAME --profile go2` or `--profile g1`
+and target `vm:NAME`.
+The managed VM flow currently builds its robot runtime with Docker. The desktop
+container viewer itself works with either runtime and requires no QEMU VM.
+
+Native access is confined to the desktop's main frame through a small preload
+API. The renderer is sandboxed with Node integration disabled. The desktop
+bundles the viewer code and requests only allowlisted simulator data and control
+endpoints through the native bridge. Container-hosted scripts never execute in
+the desktop renderer. Commands use argument arrays, never shell strings.
+Project paths require the native folder chooser; flash plans stay in the main
+process and cannot be replaced by a command array supplied by the renderer.
+The existing browser/cloud credential store is separate from CLI chat state.
+
+Validation:
+
+```sh
+npm run desktop:test
+npx tsc --noEmit
+npm run desktop:build
+# Hidden renderer fixture checks Dashboard and Logs interactions without devices.
+npx electron scripts/desktop-verify-monitoring.mjs
+WENDY_DESKTOP_SMOKE=1 npm run desktop:start
+# Optional integration check: builds a disposable simulator, verifies physical
+# movement and the viewer endpoint, then removes its own container.
+node scripts/desktop-verify-simulator.mjs docker
+node scripts/desktop-verify-simulator.mjs apple-container
+node scripts/desktop-verify-simulator.mjs docker g1
+node scripts/desktop-verify-simulator.mjs apple-container g1
+# Creates its own guest, deploys an app, checks Dashboard data and logs, and removes it.
+node scripts/desktop-verify-vm.mjs
+```
+
+The smoke launch checks the React renderer, preload, runtime probes and a real
+Electron terminal running the bundled CLI. Project actions can also be checked
+with `node scripts/desktop-verify-project.mjs docker` or `apple-container`.
+Flash tests use
+fixtures to verify changed-drive rejection and confirmation; they do not erase
+physical storage. Model responses require configured chat credentials.
+
 ## Run locally
 
-Install Node.js 22.13 or newer and Go 1.27 or newer, then run from `web-client`
+Install Node.js 22.13 or newer and Go 1.27.3 or newer, then run from `web-client`
 inside the Wendy repository:
 
 ```sh
@@ -40,9 +165,17 @@ The WASM worker follows the CLI's flow:
 - A CSR and operator certificate from `identity.dev.pki.wendy.sh`.
 - Refresh-token rotation to the Cloud API resource, then paginated v2 device discovery.
 
-The worker saves the private key, certificates, profile, and refresh token in
-IndexedDB for this browser origin. Reloading or reopening the browser restores
-the same certificate, and expired access tokens are refreshed. These credentials
+The worker saves the certificates, profile, and refresh token in IndexedDB for
+this browser origin, and the operator key the way the Wendy console does: its
+ML-DSA-65 seed, AES-GCM-encrypted under a non-extractable WebCrypto key stored
+beside it, with the tenant and operator as additional data so a seed moved into
+another operator's record does not decrypt. The seed is decrypted only inside
+the worker on restore, crosses into the WASM module as bytes that are zeroed
+once copied, and is never a JS string. This protects the key at rest, not
+against script running in this origin, which can call the same decrypt. A
+record saved before this held the key in plaintext; the first restore rewraps it
+and removes the plaintext. Reloading or reopening the browser restores the same
+certificate, and expired access tokens are refreshed. These credentials
 are not sent to the UI thread or stored in localStorage. The
 same-origin `/api/wendy-auth` proxy forwards only allowlisted Wendy auth/PKI
 requests and Cloud grant signing keys; tokens and public CSRs pass through it, but private keys do not.
@@ -63,6 +196,32 @@ sessions. Clearing site data also clears the saved login.
 Sign-out is local; it does not log you out of other Wendy applications.
 
 ## Cloud workspace
+
+Choose **Networks** to inspect local net membership, direct peer links, and selected
+routes. The browser reads snapshots from the signed-in Cloud inventory. The
+desktop combines LAN discovery with the current CLI Cloud inventory. Each
+snapshot uses an independent authenticated connection, so viewing networks does
+not replace the device dashboard connection.
+
+Devices are grouped by their verified tenant and device identity. A device seen
+only through another peer remains visible without claiming that it is reachable
+from this client. Selecting a node shows its reported next hops, carrier types,
+route costs, and signed announcement expiry. A signed route authorizes its
+origin and prefix; it does not prove that an intermediary forwards traffic.
+
+The view polls at most four devices concurrently, then waits ten seconds before
+the next batch. **Pause** stops new reads. Snapshots older than thirty seconds
+are marked stale. An active local network also needs a valid, recent device capture time.
+Failed reads retain the last snapshot visibly as stale. Older agents
+appear as unsupported until updated. Offline, denied, and unverified devices
+remain explicit rather than becoming empty healthy networks.
+
+The underlying read-only API is
+`WendyLocalMeshAdminService.GetLocalMeshTopology`, with the same tenant-scoped
+operator authorization as the existing net administration API. The CLI exposes
+it as `wendy --device HOST:PORT --json device wendy-net topology`.
+`--observation` adds a typed result envelope for clients handling partial
+failures. Neither the API nor this view enables the net or changes its policy.
 
 The sidebar shows the signed-in email from OIDC UserInfo and the organization
 name from Cloud's v2 OrganizationService. UserInfo must match the authenticated
@@ -106,6 +265,54 @@ Hosted Cloud discovery additionally needs a trusted WSS Cloud relay and its
 configuration in the worker. Until these exist, the hosted UI explains the local
 sign-in requirement. It does not pretend to be signed in or substitute fake data.
 
+## Embedding the signer
+
+Other Wendy pages (the Cloud console) run this worker to sign in and sign
+with the operator key. Each release publishes `wendy-web-<version>.tar.gz`:
+the worker, `wendy-credentials.js`, `wasm_exec.js`, `wendy.wasm.gz` and a
+`MANIFEST` of sha256 sums. Serve the files from one directory on the page's own
+origin and start `new Worker("<dir>/wendy-worker.js?sha256=<hex>")`, with the
+MANIFEST's `wendy.wasm` line (the decompressed module) as the pin. A mismatch
+posts `{fatal: "sha256 mismatch"}` and nothing runs. MANIFEST's first line
+names the Go toolchain; `npm run build:wasm` with that toolchain at the
+release commit reproduces the pin.
+
+| Call | Params | Result |
+|---|---|---|
+| `init` | `browserauth.Settings` JSON | `true`; once, before sign-in. Services are then called directly, not through `/api/wendy-auth` |
+| `auth-begin` | `{redirect, email?, issuer?}`; `issuer` pins an organization's realm | authorize URL |
+| `auth-complete` | `{code, state, issuer}` | profile |
+| `auth-restore` | `{tenant?, subject?, refresh?}` | that organization's profile, or `null`; `refresh: true` always rotates the refresh token once and fails the restore if that exchange fails |
+| `credential` | `{tenant?}` | `{profile, algorithm, chainDER, accessToken, publicJWK}`; refreshes a token with under a minute left |
+| `sign` | `{tenant?, bytes: Uint8Array}` | `{signature: Uint8Array}` with the operator key |
+| `auth-signout` | `{tenant?}` | `true`; no tenant signs out of every organization |
+
+Call `init` once, first, before any sign-in, `credential` or `sign` call; a
+second `init` fails. Without it the worker keeps the development dashboard's
+defaults and its `/api/wendy-auth` proxy. Every service URL must be explicit
+HTTPS (the Cloud gRPC authority on port 443). There is no host allowlist, by
+design: the page owns this worker's origin and its saved sign-ins, and a
+self-hosted deployment names its own services. Saved sign-ins from another
+auth host do not restore.
+
+`sign` takes the bytes as the request's second argument, a non-empty
+`Uint8Array`; anything else fails with `Nothing to sign`. The bytes are signed
+as given, with no prefix.
+
+An `issuer` for `auth-begin` must be a Wendy auth realm,
+`<auth_base>/realms/<name>` on the configured auth host. The system realm is
+rejected, compared without case. The callback must return from that same realm;
+`auth-complete` with a different `issuer` fails, and sign-in must start again.
+
+Each organization keeps its own saved sign-in, keyed by tenant and operator.
+The operator key never leaves the worker. Cloud device sessions still require
+the local browser relay.
+
+Upgrading from an older wendy-web: its single `session` slot moves to its
+organization's slot on first load, and the old slot is removed. No action is
+needed. A legacy record without a tenant and operator is dropped, so that
+operator signs in again.
+
 ## Validation
 
 ```sh
@@ -113,6 +320,8 @@ sign-in requirement. It does not pretend to be signed in or substitute fake data
 go test -race ./go/internal/cli/browserauth
 node go/experiments/wasmgrpc/auth-worker.mjs
 node web-client/tests/credential-store.test.mjs
+node web-client/tests/wendy-web-bridge.test.mjs   # after npm run build:wasm
+GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./go/cmd/wendy-web ./go/internal/cli/browserauth
 node --experimental-strip-types web-client/tests/telemetry.test.mjs
 node --experimental-strip-types --test web-client/tests/auth-proxy.test.mjs
 
