@@ -592,7 +592,10 @@ func (e *AppRequirementsUnsupportedError) Error() string {
 }
 
 // MissingWendyCoreError lets the CLI offer to configure an ESP-IDF project.
-type MissingWendyCoreError struct{}
+// Toolchain is the one that configured the project, so setup uses it too.
+type MissingWendyCoreError struct {
+	Toolchain *espidftoolchain.ProjectToolchain
+}
 
 func (*MissingWendyCoreError) Error() string {
 	return "this project does not include the wendy_core component; run 'wendy run' interactively to add it, or add it to main/idf_component.yml and call ESP_ERROR_CHECK(wendy_core_init()) first in app_main()"
@@ -656,7 +659,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 			return nil, err
 		}
 		if !hasCore {
-			return nil, &MissingWendyCoreError{}
+			return nil, &MissingWendyCoreError{Toolchain: toolchain}
 		}
 	}
 

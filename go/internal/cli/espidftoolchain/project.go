@@ -74,8 +74,9 @@ func (p *ProjectToolchain) Ensure(ctx context.Context) error {
 	return nil
 }
 
+// Command runs idf.py with args. A nil or zero toolchain uses EIM.
 func (p *ProjectToolchain) Command(ctx context.Context, args ...string) *exec.Cmd {
-	if p.Image == "" {
+	if p == nil || p.Image == "" {
 		return IdfCommandContext(ctx, args...)
 	}
 	command := []string{"run", "--rm", "-v", p.root + ":/project", "-w", filepath.ToSlash(filepath.Join("/project", p.relative)), p.Image, "idf.py"}

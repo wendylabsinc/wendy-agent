@@ -43,6 +43,7 @@ func HasBuildComponent(projectPath, name string) (bool, error) {
 // WendyCoreSetup holds source changes prepared before the user confirms setup.
 type WendyCoreSetup struct {
 	projectPath   string
+	toolchain     *ProjectToolchain
 	sourcePath    string
 	original      []byte
 	updated       []byte
@@ -57,9 +58,10 @@ func (s *WendyCoreSetup) SourcePath() string {
 
 // PrepareWendyCore locates a single app_main in the main component and prepares
 // its initialization without writing files. Unrecognized layouts need manual
-// setup so we do not guess which entry point to change.
-func PrepareWendyCore(projectPath string) (*WendyCoreSetup, error) {
-	s := &WendyCoreSetup{projectPath: projectPath}
+// setup so we do not guess which entry point to change. Apply runs idf.py
+// through toolchain, the one that built the project; nil selects EIM.
+func PrepareWendyCore(projectPath string, toolchain *ProjectToolchain) (*WendyCoreSetup, error) {
+	s := &WendyCoreSetup{projectPath: projectPath, toolchain: toolchain}
 	manifestPath := filepath.Join(projectPath, "main", "idf_component.yml")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -161,7 +163,7 @@ func (s *WendyCoreSetup) checkSource() error {
 }
 
 func (s *WendyCoreSetup) runIDF(ctx context.Context, args ...string) error {
-	cmd := IdfCommandContext(ctx, args...)
+	cmd := s.toolchain.Command(ctx, args...)
 	cmd.Dir = s.projectPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
