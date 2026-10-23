@@ -187,27 +187,40 @@ func isAudioHubDMAEndpoint(detail string) bool {
 	return admaifEndpointPattern.MatchString(detail)
 }
 
+const (
+	pipewireCaptureClockDomain = "PIPEWIRE_CAPTURE/AGENT_RECEIPT"
+	alsaCaptureClockDomain     = "ALSA_CAPTURE/AGENT_RECEIPT"
+)
+
 func (a *audioDataAdapter) Discover(ctx context.Context) []data.Source {
 	var nodes []audio.Node
-	domain := "PIPEWIRE_CAPTURE/AGENT_RECEIPT"
+	domain := pipewireCaptureClockDomain
 	if audio.Available() {
 		var err error
 		nodes, _, err = audio.ListNodes(ctx)
 		if err != nil {
 			return nil
 		}
+		nodes = append(nodes, a.audio.sensorLinkCaptureNodes(ctx)...)
 	} else {
 		var err error
 		nodes, err = audio.ListAlsaNodes(ctx)
 		if err != nil {
 			return nil
 		}
-		domain = "ALSA_CAPTURE/AGENT_RECEIPT"
+		nodes = a.audio.nameSensorLinkMounts(nodes)
+		domain = alsaCaptureClockDomain
 	}
 	out := make([]data.Source, 0, len(nodes))
 	for _, n := range nodes {
 		if n.IsSink {
 			continue
+		}
+		nodeDomain := domain
+		// A sensor-link microphone is recorded through arecord even on a
+		// PipeWire host (captureTarget), so its stamps are ALSA receipts.
+		if _, ok := audio.AlsaSubdevice(n.ID); ok {
+			nodeDomain = alsaCaptureClockDomain
 		}
 		detail := strings.TrimSpace(n.Description + " " + n.Name)
 		healthy := true
@@ -218,7 +231,7 @@ func (a *audioDataAdapter) Discover(ctx context.Context) []data.Source {
 		out = append(out, data.Source{
 			ID:          fmt.Sprintf("audio:%d", n.ID),
 			Kind:        "audio",
-			ClockDomain: domain,
+			ClockDomain: nodeDomain,
 			Healthy:     healthy,
 			Detail:      detail,
 		})

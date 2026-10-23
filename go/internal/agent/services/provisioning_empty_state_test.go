@@ -20,7 +20,8 @@ import (
 
 func TestEmptyProvisioningStateAllowsEnrollmentWithoutErasingCredentials(t *testing.T) {
 	dir := t.TempDir()
-	key, err := certs.GenerateKeyPair()
+	// ACME enrollment keeps an existing ML-DSA-65 key and replaces any other.
+	key, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
