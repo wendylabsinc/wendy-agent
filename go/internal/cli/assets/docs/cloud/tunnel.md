@@ -1,9 +1,10 @@
 # Cloud Tunnel
 
-The `wendy cloud tunnel` command forwards a local port to an authorized service
-on a cloud-enrolled device. Cloud v2 uses a service catalog; legacy sessions also
-support custom TCP ports and UDP. It listens on `127.0.0.1` on your development
-machine and reaches the remote service through the Cloud broker. Start with the
+The `wendy cloud tunnel` command forwards a local TCP or UDP port to an authorized
+service on a cloud-enrolled device. Cloud v2 authorizes each port through its
+service catalog; legacy sessions use the legacy broker. It listens on
+`127.0.0.1` on your development machine and reaches the remote service through
+the Cloud broker. Start with the
 [Cloud v2 or Legacy tab](/docs/cloud) if you have not selected a session yet.
 
 ## Prerequisites
@@ -28,8 +29,8 @@ This is a transport for an authenticated Agent client, not an HTTP endpoint.
 Forwarding does not bypass the Agent's authentication. Keep the command running
 while using it, then press Ctrl+C to close the forward.
 
-Without a protocol suffix, the command uses TCP. A single port uses that port at
-both ends. The `/udp` suffix is supported only with legacy sessions.
+Without a protocol suffix, the command uses TCP. Append `/udp` to forward UDP
+datagrams. A single port uses that port at both ends.
 
 Cloud v2 supports any TCP or UDP port from 1 through 65535 on the device's
 loopback interface. For example:
@@ -39,9 +40,10 @@ wendy cloud tunnel 8080:3007 --device shop-floor-01
 wendy cloud tunnel 9000:9000/udp --device shop-floor-01
 ```
 
-Arbitrary ports require an updated Cloud service, CLI, and agent. Older v2
-versions support only TCP ports 22 and 50052. Legacy sessions retain their
-existing TCP and UDP forwarding behavior.
+Arbitrary ports require an updated Cloud service, plus CLI and agent
+[2026.10.22-211023](https://github.com/wendylabsinc/WendyOS/releases/tag/2026.10.22-211023)
+or newer. Older v2 versions support only TCP ports 22 and 50052. Legacy
+sessions retain their existing TCP and UDP forwarding behavior.
 
 Each v2 UDP session authorizes one remote port. Separate local peers use
 separate flows, with up to 64 active flows and 16 new flows per second.
@@ -49,8 +51,8 @@ Empty datagrams are supported; the maximum payload is 65507 bytes.
 
 Port 22 requires an SSH server on the target. Release Jetson and Raspberry Pi images do not
 include one; listing `ssh` in the catalog does not make SSH available there.
-Custom application ports and UDP are migration dependencies, not interchangeable
-v1/v2 examples. See [Moving to Cloud v2](/docs/cloud-migration).
+Before moving a custom application port or UDP workflow from v1, test it on v2
+with the updated versions. See [Moving to Cloud v2](/docs/cloud-migration).
 
 The CLI:
 
@@ -80,4 +82,4 @@ numeric asset IDs for legacy Cloud, or device names in either environment.
 
 - [Cloud Connectivity](./connectivity.md)
 - [`wendy cloud discover`](../clients/wendy-cli/commands/cloud/discover.md)
-- [Reach a UDP service through legacy Wendy Cloud](/docs/guides/tutorials/python/cloud-udp-service)
+- [Reach a UDP service through Wendy Cloud](/docs/guides/tutorials/python/cloud-udp-service)

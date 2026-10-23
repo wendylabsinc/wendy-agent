@@ -1,22 +1,22 @@
 ---
-title: Reach a UDP service through legacy Wendy Cloud
-description: Deploy a Python UDP echo server and verify a reply through a Cloud v1 tunnel. Cloud v2 does not currently expose UDP forwarding.
+title: Reach a UDP Service Through Wendy Cloud
+description: Deploy a Python UDP echo server, forward a local UDP port through Wendy Cloud, and check an end-to-end reply.
 language: python
 ---
 
 This tutorial sends a UDP message from your development machine to a Python service on a remote WendyOS device. Wendy Cloud forwards the message and the reply through an authenticated tunnel.
 
-<Callout type="warn" title="Legacy Cloud v1 only">
-  Cloud v2 does not currently expose UDP forwarding through its service catalog.
-  Use an existing v1 deployment and legacy session for this tutorial. See the
-  [Cloud guide](/docs/cloud) and [migration guide](/docs/cloud-migration) before
-  changing an existing setup.
+<Callout type="warn" title="Cloud version requirements">
+  On Cloud v2, UDP forwarding needs an updated Cloud service and CLI and Wendy
+  Agent [2026.10.22-211023](https://github.com/wendylabsinc/WendyOS/releases/tag/2026.10.22-211023)
+  or newer. Older v2 versions do not forward UDP. Legacy Cloud v1 sessions also
+  work. See the [Cloud guide](/docs/cloud) to choose a session.
 </Callout>
 
 ## Prerequisites
 
 - The [Wendy CLI](/docs/#1-install-the-wendy-cli) and Python 3 on your development machine.
-- A Linux WendyOS device enrolled in [legacy Wendy Cloud](https://cloud.wendy.sh) and online.
+- A Linux WendyOS device enrolled in [Wendy Cloud](/docs/cloud) and online.
 - A signed-in account with access to that device.
 - CLI, cloud broker, and device agent versions that support UDP tunnels and cloud ping.
 - A working container build setup for `wendy run`, as described in [the quickstart](/docs/#1-install-the-wendy-cli).
@@ -28,14 +28,15 @@ The commands use `remote-device` as the enrolled device name. Replace it with yo
 Sign in and find the device:
 
 ```bash
-wendy cloud login --legacy
+wendy cloud login
 wendy cloud status
 wendy --json cloud discover
 ```
 
-If another context is active, select the legacy context shown by `status` with
-`wendy auth use <legacy-context-name>`, then repeat discovery. Send three echo
-requests to its agent:
+For a device on legacy Cloud v1, sign in with `wendy cloud login --legacy`
+instead. If another context is active, select the intended one shown by
+`status` with `wendy auth use <context-name>`, then repeat discovery. Send three
+echo requests to its agent:
 
 ```bash
 wendy cloud ping --device remote-device --count 3

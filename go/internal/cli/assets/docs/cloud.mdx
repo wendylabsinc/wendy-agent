@@ -95,33 +95,41 @@ wendy cloud device logs --device shop-floor-01
 
 The saved Cloud target makes `wendy run` deploy through Cloud. Check the app's
 state, logs, and expected output after deployment. A completed upload does not
-prove the application is ready. If an app exposes its own web or API port,
-check the tunnel limits below before relying on remote access to it.
+prove the application is ready. To reach an app's own web or API port
+remotely, use a tunnel as described below.
 
 ### Reach services through a tunnel
 
-Cloud v2 authorizes tunnels through a service catalog. The current catalog
-exposes TCP port **50052** for Wendy Agent and TCP port **22** for SSH. For
-example, forward the Agent service:
+Cloud v2 forwards TCP or UDP to any port from 1 through 65535 on the device's
+loopback interface. Arbitrary ports need an updated Cloud service and CLI and
+Wendy Agent [2026.10.22-211023](https://github.com/wendylabsinc/WendyOS/releases/tag/2026.10.22-211023)
+or newer. Older v2 versions forward only TCP port **50052** for Wendy Agent and
+TCP port **22** for SSH.
 
 ```sh
+# An HTTP service listening on device port 3000
+wendy cloud tunnel 8080:3000 --device shop-floor-01
+
+# A UDP service listening on device port 9000
+wendy cloud tunnel 9000:9000/udp --device shop-floor-01
+
+# The Wendy Agent service
 wendy cloud tunnel 15052:50052 --device shop-floor-01
 ```
 
-The local listener is a transport for an authenticated client, not a web page.
-It does not remove the Agent's authentication requirements. Keep the command
-running while using it, then press Ctrl+C to close the tunnel.
+The Agent port is a transport for an authenticated client, not a web page.
+Forwarding it does not remove the Agent's authentication requirements. Keep the
+command running while using a tunnel, then press Ctrl+C to close it.
 
 <Callout type="warn">
-  Custom application ports such as 80, 3000, or 9000 and UDP forwarding are not
-  available through the current Cloud v2 catalog. Port 22 works only when the
-  target actually runs SSH; release Jetson and Raspberry Pi images do not include an SSH server.
-  A catalog entry does not create a service on the device.
+  A tunnel reaches only a service that is already listening on the device. Port
+  22 works only when the target actually runs SSH; release Jetson and Raspberry
+  Pi images do not include an SSH server.
 </Callout>
 
 Cloud selects the v2 relay. Do not pass `--broker-url` for a v2 session.
-See the [tunnel reference](/docs/advanced/cloud/tunnel) for selection rules and
-errors. Existing v1 app-port and UDP workflows are in the **Legacy** tab.
+See the [tunnel reference](/docs/advanced/cloud/tunnel) for UDP limits,
+selection rules, and errors.
 
 ### Use service accounts for automation
 
@@ -179,8 +187,8 @@ v2 replacements. To deploy, select the device in the **Cloud** tab of
 
 ### Forward an application port or UDP service
 
-These examples require a legacy session and a running service on the remote
-device. They are not Cloud v2 examples.
+Legacy sessions keep their existing TCP and UDP forwarding. Each example needs
+a service already running on the remote device.
 
 ```sh
 # An existing HTTP service listening on device port 80
@@ -191,13 +199,14 @@ wendy cloud tunnel 9000:9000/udp --device shop-floor-01
 ```
 
 For a complete UDP example, use
-[Reach a UDP service through legacy Wendy Cloud](/docs/guides/tutorials/python/cloud-udp-service).
+[Reach a UDP service through Wendy Cloud](/docs/guides/tutorials/python/cloud-udp-service).
 Keep the tunnel running while using the service.
 
 ### Plan your upgrade
 
-Check application ports, UDP, unattended access, notification delivery, and
-Companion support before changing device enrollment. Use
+Check application ports and UDP, unattended access, notification delivery, and
+Companion support before changing device enrollment. On v2, application ports
+and UDP need the updated Cloud, CLI, and Agent versions. Use
 [Moving to Cloud v2](/docs/cloud-migration) to validate a spare device and plan
 the cutover. Keep the working v1 deployment until its replacement is verified.
 

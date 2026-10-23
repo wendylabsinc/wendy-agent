@@ -20,7 +20,7 @@ to choose a product and find its setup guide.
 
 - **Wendy Cloud v2**: remote device access and fleet management. The current CLI
   signs into v2 by default; v1 remains available with `--legacy`. App-port and UDP
-  tunneling differ between versions. Start with the [Cloud guide](/docs/cloud).
+  tunnels on v2 need updated Cloud, CLI, and Agent versions. Start with the [Cloud guide](/docs/cloud).
 - **Headless Mac** — _beta_: deploy native macOS apps to Apple Silicon Mac targets with [Headless Mac](/docs/installation/wendy-agent-macos). Apple Silicon only. Since the initial beta it has gained remote agent self-update, a LAN registry served over mTLS, app supervision and restart parity across agent restarts, and native gamepad entitlements. Beta limitations are documented in the macOS install guide.
 
 ## Available Preview

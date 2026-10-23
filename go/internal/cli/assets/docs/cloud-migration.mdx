@@ -21,8 +21,8 @@ device.
 | Dashboard | [cloud.wendy.dev](https://cloud.wendy.dev/login) | [cloud.wendy.sh](https://cloud.wendy.sh) |
 | Device selector | Name or UUID from discovery | Name or numeric asset ID |
 | Remote Agent operations | Through the authorized Wendy Agent service | Through the legacy broker |
-| Raw TCP tunnels | Current catalog: remote ports 22 and 50052 | Application ports supported by the legacy broker |
-| UDP forwarding | Not exposed by the current catalog | Available on compatible legacy broker and Agent versions |
+| Raw TCP tunnels | Any device port with updated Cloud, CLI, and Agent; older v2 versions allow only ports 22 and 50052 | Application ports supported by the legacy broker |
+| UDP forwarding | Any device port with updated Cloud, CLI, and Agent; not available on older v2 versions | Available on compatible legacy broker and Agent versions |
 | Service-account sign-in | Available for authorized API operations; no operator certificate | Not the v2 service-account flow |
 | App notifications | Requires app registration, assignment, entitlement, and Cloud grant | Existing integrations must be checked separately during migration |
 
@@ -64,9 +64,10 @@ persistent data locations, users, and access requirements. Include the exact
 ports and protocols used by dashboards, cameras, collectors, and external APIs.
 Check which scripts run unattended and how they authenticate.
 
-If a workflow needs a custom application port or UDP tunnel, the current v2
-catalog does not replace it. Keep that workflow on v1 until you have an
-available, tested replacement. Check Companion's v2 support for the features
+If a workflow needs a custom application port or UDP tunnel, v2 requires the
+updated Cloud service and CLI and Wendy Agent 2026.10.22-211023 or newer. Test
+that exact port and protocol on the spare device, and keep the workflow on v1
+until it passes. Check Companion's v2 support for the features
 your operators use, including cameras, app controls, logs, and notifications.
 App Store availability alone does not establish v1/v2 feature parity.
 
@@ -107,8 +108,8 @@ does not restore a device's old enrollment.
 | --- | --- |
 | The fleet is empty after sign-in | Check the active context, organization, and `discover --all`. V1 devices do not appear automatically in v2. |
 | A numeric device ID no longer resolves | Select the v2 device by its name or UUID from discovery. |
-| The service catalog has no entry for a port | That application port is not exposed through the current v2 catalog. |
-| UDP forwarding is refused | The session is v2; the UDP tutorial requires a legacy session. |
+| The service catalog has no entry for a port | The Cloud service, CLI, or Agent predates arbitrary v2 ports. Older v2 versions forward only TCP ports 22 and 50052. |
+| UDP forwarding is refused | Older v2 versions do not forward UDP. Update the Cloud service, CLI, and Agent, or use a legacy session. |
 | API login works but remote device access fails | Check the account's permissions and principal type. Service accounts do not receive operator certificates. |
 | The app runs but a notification does not arrive | Check registration, assignment, entitlement, Cloud grant, recipient organization, and Companion push registration in the [notification guide](/docs/guides/device-notifications). |
 
