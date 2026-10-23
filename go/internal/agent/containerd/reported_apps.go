@@ -11,6 +11,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
+// maxSignal is the highest Linux signal number (SIGRTMAX).
+const maxSignal = 64
+
 // ReportApps returns one report per Wendy-managed app, for the cloud
 // reported-state stream. Apps whose id cloud would refuse are left out, so one
 // legacy container cannot refuse the whole report.
@@ -23,7 +26,8 @@ func (c *Client) ReportApps(ctx context.Context) ([]services.AppReport, error) {
 	byApp := make(map[string]*services.AppReport)
 	var order []string
 	for _, ctr := range ctrs {
-		info, err := ctr.Info(ctx)
+		// Containers just read the records; this runs every poll.
+		info, err := ctr.Info(ctx, containerd.WithoutRefreshedMetadata)
 		if err != nil {
 			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
 			continue
@@ -39,8 +43,9 @@ func (c *Client) ReportApps(ctx context.Context) ([]services.AppReport, error) {
 			}
 		}
 		var signal uint32
-		if code, _, ok := parseExitLabels(info.Labels); ok && info.Labels[labelKeyStoppedByUser] != "true" && code > 128 {
-			// The runtime reports a signal death as 128+signal.
+		if code, _, ok := parseExitLabels(info.Labels); ok && info.Labels[labelKeyStoppedByUser] != "true" && code > 128 && code <= 128+maxSignal {
+			// The runtime reports a signal death as 128+signal; a higher code
+			// is a plain exit status.
 			signal = uint32(code - 128)
 		}
 		digest, release := info.Labels[labelKeyImageDigest], info.Labels[labelKeyReleaseID]

@@ -49,6 +49,7 @@ func TestReportAppsReadsReleaseIdentityLabels(t *testing.T) {
 		containerd.WithContainerStore(ros2TestContainerStore{records: []containers.Container{
 			{ID: "cam", Labels: labels("cam", "sha256:a", labelKeyReleaseID, release)},
 			{ID: "crashed", Labels: labels("crashed", "sha256:b", labelKeyExitCode, "137", labelKeyExitReason, "signal")},
+			{ID: "exited", Labels: labels("exited", "sha256:g", labelKeyExitCode, "255", labelKeyExitReason, "crashed")},
 			{ID: "multi_api", Labels: labels("multi", "sha256:c", labelKeyReleaseID, release)},
 			{ID: "multi_web", Labels: labels("multi", "sha256:d", labelKeyReleaseID, release)},
 			{ID: "legacy", Labels: labels("campaign:x", "sha256:e")},
@@ -68,6 +69,8 @@ func TestReportAppsReadsReleaseIdentityLabels(t *testing.T) {
 	want := []services.AppReport{
 		{AppID: "cam", ReleaseID: release, ManifestDigest: "sha256:a", Running: true},
 		{AppID: "crashed", ManifestDigest: "sha256:b", ExitSignal: 9},
+		// exit(255) is past every signal number: an exit code, not a signal.
+		{AppID: "exited", ManifestDigest: "sha256:g"},
 		// Services disagree on the image, so no digest; they share a release.
 		{AppID: "multi", ReleaseID: release, Running: true},
 		// A release id cloud would refuse is dropped, not sent.
