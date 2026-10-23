@@ -115,6 +115,9 @@ type AuthConfig struct {
 	// key per operator device (sem 2026-10-20 21:29). Wraps to it open on this
 	// machine only.
 	RegistryPrivateKey string `json:"registryPrivateKey,omitempty"`
+	// RegistryKeyID is the key_id Cloud acknowledged for RegistryPrivateKey.
+	// Empty or different means the key is unbound and registration is retried.
+	RegistryKeyID string `json:"registryKeyId,omitempty"`
 	// ServiceAccount is the wendy-auth service-account sub of a headless
 	// session. Its token is re-minted from DPoPPrivateKey; there is no
 	// refresh token.

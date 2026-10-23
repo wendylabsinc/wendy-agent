@@ -272,6 +272,13 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		DPoPPrivateKey: privateKeyPEM,
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
+	// This machine keeps its registry key across sign-ins of the same operator.
+	for _, prior := range cfg.Auth {
+		if sameOAuthSession(&prior, &authEntry) && len(prior.Certificates) > 0 && prior.Certificates[0].PrincipalURI == certInfo.PrincipalURI {
+			authEntry.RegistryPrivateKey, authEntry.RegistryKeyID = prior.RegistryPrivateKey, prior.RegistryKeyID
+		}
+	}
+	registerRegistryKeyAfterMint(ctx, &authEntry)
 	cfg.AddAuth(authEntry)
 	// Name the new session as a context; the first login becomes "default" and
 	// current. A later login does not change the current context.

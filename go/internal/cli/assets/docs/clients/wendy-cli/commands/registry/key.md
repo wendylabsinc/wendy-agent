@@ -1,0 +1,25 @@
+# `wendy registry key`
+
+Shows or rotates this machine's registry encryption key. Encrypted releases
+are wrapped to it, so they open on this machine only.
+
+```sh
+wendy registry key show
+wendy registry key rotate
+```
+
+Each machine (and each browser) you sign in on holds its own key. `wendy auth
+login` creates it and registers it with Wendy Cloud, signed with your operator
+key; a certificate refresh retries a registration that did not go through.
+
+| Command | Description |
+|---------|-------------|
+| `show` | Prints the key id and registers the key if Cloud has not yet |
+| `rotate` | Replaces the key with a new one and registers it |
+
+| Flag | Description |
+|------|-------------|
+| `--cloud-grpc` | Cloud gRPC endpoint of the session to use |
+
+After a rotation, releases wrapped to the old key must be wrapped again to the
+new one by another of your signed-in devices.
