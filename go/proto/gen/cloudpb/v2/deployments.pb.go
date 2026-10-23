@@ -22,6 +22,73 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ApplyOutcome int32
+
+const (
+	ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED        ApplyOutcome = 0
+	ApplyOutcome_APPLY_OUTCOME_APPLIED            ApplyOutcome = 1
+	ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE ApplyOutcome = 2
+	ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET    ApplyOutcome = 3
+	ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE     ApplyOutcome = 4
+	ApplyOutcome_APPLY_OUTCOME_REJECTED_DIGEST    ApplyOutcome = 5
+	ApplyOutcome_APPLY_OUTCOME_REJECTED_UNWRAP    ApplyOutcome = 6
+	ApplyOutcome_APPLY_OUTCOME_PULL_REFUSED       ApplyOutcome = 7
+	ApplyOutcome_APPLY_OUTCOME_SUPERSEDED         ApplyOutcome = 8
+)
+
+// Enum value maps for ApplyOutcome.
+var (
+	ApplyOutcome_name = map[int32]string{
+		0: "APPLY_OUTCOME_UNSPECIFIED",
+		1: "APPLY_OUTCOME_APPLIED",
+		2: "APPLY_OUTCOME_REJECTED_SIGNATURE",
+		3: "APPLY_OUTCOME_REJECTED_TARGET",
+		4: "APPLY_OUTCOME_REJECTED_STALE",
+		5: "APPLY_OUTCOME_REJECTED_DIGEST",
+		6: "APPLY_OUTCOME_REJECTED_UNWRAP",
+		7: "APPLY_OUTCOME_PULL_REFUSED",
+		8: "APPLY_OUTCOME_SUPERSEDED",
+	}
+	ApplyOutcome_value = map[string]int32{
+		"APPLY_OUTCOME_UNSPECIFIED":        0,
+		"APPLY_OUTCOME_APPLIED":            1,
+		"APPLY_OUTCOME_REJECTED_SIGNATURE": 2,
+		"APPLY_OUTCOME_REJECTED_TARGET":    3,
+		"APPLY_OUTCOME_REJECTED_STALE":     4,
+		"APPLY_OUTCOME_REJECTED_DIGEST":    5,
+		"APPLY_OUTCOME_REJECTED_UNWRAP":    6,
+		"APPLY_OUTCOME_PULL_REFUSED":       7,
+		"APPLY_OUTCOME_SUPERSEDED":         8,
+	}
+)
+
+func (x ApplyOutcome) Enum() *ApplyOutcome {
+	p := new(ApplyOutcome)
+	*p = x
+	return p
+}
+
+func (x ApplyOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ApplyOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_wendycloud_v2_deployments_proto_enumTypes[0].Descriptor()
+}
+
+func (ApplyOutcome) Type() protoreflect.EnumType {
+	return &file_wendycloud_v2_deployments_proto_enumTypes[0]
+}
+
+func (x ApplyOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ApplyOutcome.Descriptor instead.
+func (ApplyOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{0}
+}
+
 type Running int32
 
 const (
@@ -55,11 +122,11 @@ func (x Running) String() string {
 }
 
 func (Running) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendycloud_v2_deployments_proto_enumTypes[0].Descriptor()
+	return file_wendycloud_v2_deployments_proto_enumTypes[1].Descriptor()
 }
 
 func (Running) Type() protoreflect.EnumType {
-	return &file_wendycloud_v2_deployments_proto_enumTypes[0]
+	return &file_wendycloud_v2_deployments_proto_enumTypes[1]
 }
 
 func (x Running) Number() protoreflect.EnumNumber {
@@ -68,7 +135,7 @@ func (x Running) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Running.Descriptor instead.
 func (Running) EnumDescriptor() ([]byte, []int) {
-	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{0}
+	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{1}
 }
 
 type ReleaseType int32
@@ -76,6 +143,7 @@ type ReleaseType int32
 const (
 	ReleaseType_CONTAINER ReleaseType = 0
 	ReleaseType_WASM      ReleaseType = 1
+	ReleaseType_CONFIG    ReleaseType = 2
 )
 
 // Enum value maps for ReleaseType.
@@ -83,10 +151,12 @@ var (
 	ReleaseType_name = map[int32]string{
 		0: "CONTAINER",
 		1: "WASM",
+		2: "CONFIG",
 	}
 	ReleaseType_value = map[string]int32{
 		"CONTAINER": 0,
 		"WASM":      1,
+		"CONFIG":    2,
 	}
 )
 
@@ -101,11 +171,11 @@ func (x ReleaseType) String() string {
 }
 
 func (ReleaseType) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendycloud_v2_deployments_proto_enumTypes[1].Descriptor()
+	return file_wendycloud_v2_deployments_proto_enumTypes[2].Descriptor()
 }
 
 func (ReleaseType) Type() protoreflect.EnumType {
-	return &file_wendycloud_v2_deployments_proto_enumTypes[1]
+	return &file_wendycloud_v2_deployments_proto_enumTypes[2]
 }
 
 func (x ReleaseType) Number() protoreflect.EnumNumber {
@@ -114,7 +184,7 @@ func (x ReleaseType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReleaseType.Descriptor instead.
 func (ReleaseType) EnumDescriptor() ([]byte, []int) {
-	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{1}
+	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{2}
 }
 
 type AppRunningState int32
@@ -150,11 +220,11 @@ func (x AppRunningState) String() string {
 }
 
 func (AppRunningState) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendycloud_v2_deployments_proto_enumTypes[2].Descriptor()
+	return file_wendycloud_v2_deployments_proto_enumTypes[3].Descriptor()
 }
 
 func (AppRunningState) Type() protoreflect.EnumType {
-	return &file_wendycloud_v2_deployments_proto_enumTypes[2]
+	return &file_wendycloud_v2_deployments_proto_enumTypes[3]
 }
 
 func (x AppRunningState) Number() protoreflect.EnumNumber {
@@ -163,7 +233,7 @@ func (x AppRunningState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AppRunningState.Descriptor instead.
 func (AppRunningState) EnumDescriptor() ([]byte, []int) {
-	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{2}
+	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{3}
 }
 
 type ContainerAction int32
@@ -199,11 +269,11 @@ func (x ContainerAction) String() string {
 }
 
 func (ContainerAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendycloud_v2_deployments_proto_enumTypes[3].Descriptor()
+	return file_wendycloud_v2_deployments_proto_enumTypes[4].Descriptor()
 }
 
 func (ContainerAction) Type() protoreflect.EnumType {
-	return &file_wendycloud_v2_deployments_proto_enumTypes[3]
+	return &file_wendycloud_v2_deployments_proto_enumTypes[4]
 }
 
 func (x ContainerAction) Number() protoreflect.EnumNumber {
@@ -212,7 +282,7 @@ func (x ContainerAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ContainerAction.Descriptor instead.
 func (ContainerAction) EnumDescriptor() ([]byte, []int) {
-	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{3}
+	return file_wendycloud_v2_deployments_proto_rawDescGZIP(), []int{4}
 }
 
 // ==================== App Releases ====================
@@ -223,12 +293,14 @@ type AppRelease struct {
 	AppId          string                 `protobuf:"bytes,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
 	Name           string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	Details        string                 `protobuf:"bytes,5,opt,name=details,proto3" json:"details,omitempty"`
-	ImageDigest    *string                `protobuf:"bytes,6,opt,name=image_digest,json=imageDigest,proto3,oneof" json:"image_digest,omitempty"`
-	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	ReleaseType    ReleaseType            `protobuf:"varint,9,opt,name=release_type,json=releaseType,proto3,enum=wendycloud.v2.ReleaseType" json:"release_type,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// For a registry-backed release: ArtifactManifest.manifest_digest, set by
+	// ArtifactRegistryService.PublishArtifact.
+	ImageDigest   *string                `protobuf:"bytes,6,opt,name=image_digest,json=imageDigest,proto3,oneof" json:"image_digest,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	ReleaseType   ReleaseType            `protobuf:"varint,9,opt,name=release_type,json=releaseType,proto3,enum=wendycloud.v2.ReleaseType" json:"release_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AppRelease) Reset() {
@@ -735,6 +807,15 @@ type Deployment struct {
 	Details         string                 `protobuf:"bytes,5,opt,name=details,proto3" json:"details,omitempty"`
 	CreatedByUserId string                 `protobuf:"bytes,6,opt,name=created_by_user_id,json=createdByUserId,proto3" json:"created_by_user_id,omitempty"`
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// Both computed on read, never stored (WDY-3573).
+	// target_count: devices with a fan-out row for this deployment (rows carry its deployment_id).
+	// updated_count: of those, devices whose reported_release_id equals this deployment's
+	// app_release_id, reported after the deployment was created (the reported_at fence).
+	TargetCount  int32 `protobuf:"varint,8,opt,name=target_count,json=targetCount,proto3" json:"target_count,omitempty"`
+	UpdatedCount int32 `protobuf:"varint,9,opt,name=updated_count,json=updatedCount,proto3" json:"updated_count,omitempty"`
+	// The targeting the deployment was created with (WDY-3576). Both empty: every device.
+	TargetTags      []string `protobuf:"bytes,10,rep,name=target_tags,json=targetTags,proto3" json:"target_tags,omitempty"`
+	TargetDeviceIds []string `protobuf:"bytes,11,rep,name=target_device_ids,json=targetDeviceIds,proto3" json:"target_device_ids,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -818,6 +899,34 @@ func (x *Deployment) GetCreatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Deployment) GetTargetCount() int32 {
+	if x != nil {
+		return x.TargetCount
+	}
+	return 0
+}
+
+func (x *Deployment) GetUpdatedCount() int32 {
+	if x != nil {
+		return x.UpdatedCount
+	}
+	return 0
+}
+
+func (x *Deployment) GetTargetTags() []string {
+	if x != nil {
+		return x.TargetTags
+	}
+	return nil
+}
+
+func (x *Deployment) GetTargetDeviceIds() []string {
+	if x != nil {
+		return x.TargetDeviceIds
+	}
+	return nil
+}
+
 // infer the created_by_user_id from the authService
 type CreateDeploymentRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -826,8 +935,15 @@ type CreateDeploymentRequest struct {
 	AppReleaseId   string                 `protobuf:"bytes,3,opt,name=app_release_id,json=appReleaseId,proto3" json:"app_release_id,omitempty"`
 	Details        string                 `protobuf:"bytes,4,opt,name=details,proto3" json:"details,omitempty"`
 	Running        Running                `protobuf:"varint,5,opt,name=running,proto3,enum=wendycloud.v2.Running" json:"running,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Targeting (WDY-3576). The deployment goes to the union of the devices that carry any of
+	// target_tags (exact match) and the devices named in target_device_ids (UUIDs, each must
+	// belong to the organization). Both empty: every device in the organization. The set is
+	// resolved once, at create time; a device tagged later does not get the deployment. A
+	// non-empty targeting that matches no device is refused with FAILED_PRECONDITION.
+	TargetTags      []string `protobuf:"bytes,6,rep,name=target_tags,json=targetTags,proto3" json:"target_tags,omitempty"`
+	TargetDeviceIds []string `protobuf:"bytes,7,rep,name=target_device_ids,json=targetDeviceIds,proto3" json:"target_device_ids,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CreateDeploymentRequest) Reset() {
@@ -893,6 +1009,20 @@ func (x *CreateDeploymentRequest) GetRunning() Running {
 		return x.Running
 	}
 	return Running_ABSENT
+}
+
+func (x *CreateDeploymentRequest) GetTargetTags() []string {
+	if x != nil {
+		return x.TargetTags
+	}
+	return nil
+}
+
+func (x *CreateDeploymentRequest) GetTargetDeviceIds() []string {
+	if x != nil {
+		return x.TargetDeviceIds
+	}
+	return nil
 }
 
 type GetDeploymentRequest struct {
@@ -1112,8 +1242,14 @@ type CurrentState struct {
 	ReportedState          Running                `protobuf:"varint,3,opt,name=reported_state,json=reportedState,proto3,enum=wendycloud.v2.Running" json:"reported_state,omitempty"`
 	ReportedRestartCount   int32                  `protobuf:"varint,4,opt,name=reported_restart_count,json=reportedRestartCount,proto3" json:"reported_restart_count,omitempty"`
 	ReportedLastExitSignal uint32                 `protobuf:"varint,5,opt,name=reported_last_exit_signal,json=reportedLastExitSignal,proto3" json:"reported_last_exit_signal,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// The postbox entry this state answers, so cloud can tell which signed
+	// request a device applied or refused, and why.
+	PostboxEntryId int64        `protobuf:"varint,6,opt,name=postbox_entry_id,json=postboxEntryId,proto3" json:"postbox_entry_id,omitempty"`
+	CorrelationId  string       `protobuf:"bytes,7,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	ManifestDigest string       `protobuf:"bytes,8,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
+	Outcome        ApplyOutcome `protobuf:"varint,9,opt,name=outcome,proto3,enum=wendycloud.v2.ApplyOutcome" json:"outcome,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CurrentState) Reset() {
@@ -1181,14 +1317,51 @@ func (x *CurrentState) GetReportedLastExitSignal() uint32 {
 	return 0
 }
 
+func (x *CurrentState) GetPostboxEntryId() int64 {
+	if x != nil {
+		return x.PostboxEntryId
+	}
+	return 0
+}
+
+func (x *CurrentState) GetCorrelationId() string {
+	if x != nil {
+		return x.CorrelationId
+	}
+	return ""
+}
+
+func (x *CurrentState) GetManifestDigest() string {
+	if x != nil {
+		return x.ManifestDigest
+	}
+	return ""
+}
+
+func (x *CurrentState) GetOutcome() ApplyOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED
+}
+
 // this is to be called by the wendy-agent to get the desired state of an app on an asset
 // if the app_id does not exist, wendy-agent should remove the container from the asset
 type DesiredStateResponse struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	DesiredAppStates []*DesiredAppState     `protobuf:"bytes,1,rep,name=desired_app_states,json=desiredAppStates,proto3" json:"desired_app_states,omitempty"`
 	CertExpiresAt    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=cert_expires_at,json=certExpiresAt,proto3,oneof" json:"cert_expires_at,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Postbox nudge (sem 2026-10-15, postbox client section approved): the
+	// device's postbox holds entries up to this id. It carries no authority: the
+	// device runs its normal DevicePostboxService.PullChanges and verifies every
+	// entry; a forged or spurious nudge only triggers a pull that finds nothing
+	// new. Unset = no nudge; timer polling stays the fallback while the stream is
+	// down. Cloud sets it only on a message that also carries the complete
+	// desired_app_states, never on a nudge-only message: an agent that ignores
+	// this field reads an empty list as "remove every app".
+	PostboxHeadEntryId *int64 `protobuf:"varint,3,opt,name=postbox_head_entry_id,json=postboxHeadEntryId,proto3,oneof" json:"postbox_head_entry_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DesiredStateResponse) Reset() {
@@ -1233,6 +1406,13 @@ func (x *DesiredStateResponse) GetCertExpiresAt() *timestamppb.Timestamp {
 		return x.CertExpiresAt
 	}
 	return nil
+}
+
+func (x *DesiredStateResponse) GetPostboxHeadEntryId() int64 {
+	if x != nil && x.PostboxHeadEntryId != nil {
+		return *x.PostboxHeadEntryId
+	}
+	return 0
 }
 
 type DesiredAppState struct {
@@ -1379,8 +1559,28 @@ type AssetApp struct {
 	DeploymentDetails   *string                `protobuf:"bytes,10,opt,name=deployment_details,json=deploymentDetails,proto3,oneof" json:"deployment_details,omitempty"`
 	DeploymentCreatedAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=deployment_created_at,json=deploymentCreatedAt,proto3,oneof" json:"deployment_created_at,omitempty"`
 	ReleaseType         ReleaseType            `protobuf:"varint,12,opt,name=release_type,json=releaseType,proto3,enum=wendycloud.v2.ReleaseType" json:"release_type,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Reported state v2 (apps spec section 2, approved sem 2026-10-15): the
+	// device's own word from its latest CurrentState for this app, stored next to
+	// the desired state. Facts under the device's cert, no authority; unset or
+	// zero = the device has not reported it. Freshness is reported_at (7): a
+	// stale report is shown as stale, never as current truth.
+	PostboxEntryId int64        `protobuf:"varint,13,opt,name=postbox_entry_id,json=postboxEntryId,proto3" json:"postbox_entry_id,omitempty"`
+	CorrelationId  string       `protobuf:"bytes,14,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	ManifestDigest string       `protobuf:"bytes,15,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
+	Outcome        ApplyOutcome `protobuf:"varint,16,opt,name=outcome,proto3,enum=wendycloud.v2.ApplyOutcome" json:"outcome,omitempty"`
+	// True: cloud holds no desired state for this app on this device; the row
+	// exists only because the device reported the app (unassigned but running,
+	// e.g. a direct push with recording off, WDY-3207). Reporting is unconditional
+	// on an enrolled device, so such an app is shown, never hidden. desired_state
+	// (5) is meaningless when true, and the row is never an assignment. False is
+	// the default, so a cloud that predates this field reads as "assigned", which
+	// every row it serves is.
+	Unassigned bool `protobuf:"varint,17,opt,name=unassigned,proto3" json:"unassigned,omitempty"`
+	// The release the device reported running, when it named a release of this
+	// app; app_release_id (3) stays the desired release.
+	ReportedReleaseId *string `protobuf:"bytes,18,opt,name=reported_release_id,json=reportedReleaseId,proto3,oneof" json:"reported_release_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *AssetApp) Reset() {
@@ -1495,6 +1695,48 @@ func (x *AssetApp) GetReleaseType() ReleaseType {
 		return x.ReleaseType
 	}
 	return ReleaseType_CONTAINER
+}
+
+func (x *AssetApp) GetPostboxEntryId() int64 {
+	if x != nil {
+		return x.PostboxEntryId
+	}
+	return 0
+}
+
+func (x *AssetApp) GetCorrelationId() string {
+	if x != nil {
+		return x.CorrelationId
+	}
+	return ""
+}
+
+func (x *AssetApp) GetManifestDigest() string {
+	if x != nil {
+		return x.ManifestDigest
+	}
+	return ""
+}
+
+func (x *AssetApp) GetOutcome() ApplyOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED
+}
+
+func (x *AssetApp) GetUnassigned() bool {
+	if x != nil {
+		return x.Unassigned
+	}
+	return false
+}
+
+func (x *AssetApp) GetReportedReleaseId() string {
+	if x != nil && x.ReportedReleaseId != nil {
+		return *x.ReportedReleaseId
+	}
+	return ""
 }
 
 type ListAssetAppsResponse struct {
@@ -2011,7 +2253,7 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\faccess_token\x18\x03 \x01(\tR\vaccessToken\x129\n" +
 	"\n" +
 	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12\x1a\n" +
-	"\busername\x18\x05 \x01(\tR\busername\"\x8a\x02\n" +
+	"\busername\x18\x05 \x01(\tR\busername\"\x9f\x03\n" +
 	"\n" +
 	"Deployment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
@@ -2021,13 +2263,22 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\adetails\x18\x05 \x01(\tR\adetails\x12+\n" +
 	"\x12created_by_user_id\x18\x06 \x01(\tR\x0fcreatedByUserId\x129\n" +
 	"\n" +
-	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xe4\x01\n" +
+	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12!\n" +
+	"\ftarget_count\x18\b \x01(\x05R\vtargetCount\x12#\n" +
+	"\rupdated_count\x18\t \x01(\x05R\fupdatedCount\x12\x1f\n" +
+	"\vtarget_tags\x18\n" +
+	" \x03(\tR\n" +
+	"targetTags\x12*\n" +
+	"\x11target_device_ids\x18\v \x03(\tR\x0ftargetDeviceIds\"\xb1\x02\n" +
 	"\x17CreateDeploymentRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12 \n" +
 	"\tjq_filter\x18\x02 \x01(\tH\x00R\bjqFilter\x88\x01\x01\x12$\n" +
 	"\x0eapp_release_id\x18\x03 \x01(\tR\fappReleaseId\x12\x18\n" +
 	"\adetails\x18\x04 \x01(\tR\adetails\x120\n" +
-	"\arunning\x18\x05 \x01(\x0e2\x16.wendycloud.v2.RunningR\arunningB\f\n" +
+	"\arunning\x18\x05 \x01(\x0e2\x16.wendycloud.v2.RunningR\arunning\x12\x1f\n" +
+	"\vtarget_tags\x18\x06 \x03(\tR\n" +
+	"targetTags\x12*\n" +
+	"\x11target_device_ids\x18\a \x03(\tR\x0ftargetDeviceIdsB\f\n" +
 	"\n" +
 	"_jq_filter\"&\n" +
 	"\x14GetDeploymentRequest\x12\x0e\n" +
@@ -2041,18 +2292,24 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\vdeployments\x18\x01 \x03(\v2\x19.wendycloud.v2.DeploymentR\vdeployments\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\"`\n" +
 	"\x1aUpdateReportedStateRequest\x12B\n" +
-	"\x0ecurrent_states\x18\x01 \x03(\v2\x1b.wendycloud.v2.CurrentStateR\rcurrentStates\"\x93\x02\n" +
+	"\x0ecurrent_states\x18\x01 \x03(\v2\x1b.wendycloud.v2.CurrentStateR\rcurrentStates\"\xc4\x03\n" +
 	"\fCurrentState\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12)\n" +
 	"\x0eapp_release_id\x18\x02 \x01(\tH\x00R\fappReleaseId\x88\x01\x01\x12=\n" +
 	"\x0ereported_state\x18\x03 \x01(\x0e2\x16.wendycloud.v2.RunningR\rreportedState\x124\n" +
 	"\x16reported_restart_count\x18\x04 \x01(\x05R\x14reportedRestartCount\x129\n" +
-	"\x19reported_last_exit_signal\x18\x05 \x01(\rR\x16reportedLastExitSignalB\x11\n" +
-	"\x0f_app_release_id\"\xc1\x01\n" +
+	"\x19reported_last_exit_signal\x18\x05 \x01(\rR\x16reportedLastExitSignal\x12(\n" +
+	"\x10postbox_entry_id\x18\x06 \x01(\x03R\x0epostboxEntryId\x12%\n" +
+	"\x0ecorrelation_id\x18\a \x01(\tR\rcorrelationId\x12'\n" +
+	"\x0fmanifest_digest\x18\b \x01(\tR\x0emanifestDigest\x125\n" +
+	"\aoutcome\x18\t \x01(\x0e2\x1b.wendycloud.v2.ApplyOutcomeR\aoutcomeB\x11\n" +
+	"\x0f_app_release_id\"\x93\x02\n" +
 	"\x14DesiredStateResponse\x12L\n" +
 	"\x12desired_app_states\x18\x01 \x03(\v2\x1e.wendycloud.v2.DesiredAppStateR\x10desiredAppStates\x12G\n" +
-	"\x0fcert_expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\rcertExpiresAt\x88\x01\x01B\x12\n" +
-	"\x10_cert_expires_at\"\x9b\x02\n" +
+	"\x0fcert_expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\rcertExpiresAt\x88\x01\x01\x126\n" +
+	"\x15postbox_head_entry_id\x18\x03 \x01(\x03H\x01R\x12postboxHeadEntryId\x88\x01\x01B\x12\n" +
+	"\x10_cert_expires_atB\x18\n" +
+	"\x16_postbox_head_entry_id\"\x9b\x02\n" +
 	"\x0fDesiredAppState\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12)\n" +
 	"\x0eapp_release_id\x18\x02 \x01(\tH\x00R\fappReleaseId\x88\x01\x01\x12;\n" +
@@ -2063,7 +2320,7 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\r_image_digest\"Z\n" +
 	"\x14ListAssetAppsRequest\x12\x19\n" +
 	"\basset_id\x18\x01 \x01(\tR\aassetId\x12'\n" +
-	"\x0forganization_id\x18\x02 \x01(\tR\x0eorganizationId\"\xaf\x06\n" +
+	"\x0forganization_id\x18\x02 \x01(\tR\x0eorganizationId\"\xcd\b\n" +
 	"\bAssetApp\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12)\n" +
@@ -2078,7 +2335,15 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\x12deployment_details\x18\n" +
 	" \x01(\tH\x06R\x11deploymentDetails\x88\x01\x01\x12S\n" +
 	"\x15deployment_created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampH\aR\x13deploymentCreatedAt\x88\x01\x01\x12=\n" +
-	"\frelease_type\x18\f \x01(\x0e2\x1a.wendycloud.v2.ReleaseTypeR\vreleaseTypeB\x11\n" +
+	"\frelease_type\x18\f \x01(\x0e2\x1a.wendycloud.v2.ReleaseTypeR\vreleaseType\x12(\n" +
+	"\x10postbox_entry_id\x18\r \x01(\x03R\x0epostboxEntryId\x12%\n" +
+	"\x0ecorrelation_id\x18\x0e \x01(\tR\rcorrelationId\x12'\n" +
+	"\x0fmanifest_digest\x18\x0f \x01(\tR\x0emanifestDigest\x125\n" +
+	"\aoutcome\x18\x10 \x01(\x0e2\x1b.wendycloud.v2.ApplyOutcomeR\aoutcome\x12\x1e\n" +
+	"\n" +
+	"unassigned\x18\x11 \x01(\bR\n" +
+	"unassigned\x123\n" +
+	"\x13reported_release_id\x18\x12 \x01(\tH\bR\x11reportedReleaseId\x88\x01\x01B\x11\n" +
 	"\x0f_app_release_idB\x13\n" +
 	"\x11_app_release_nameB\x11\n" +
 	"\x0f_reported_stateB\x0e\n" +
@@ -2086,7 +2351,8 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\x17_reported_restart_countB\x10\n" +
 	"\x0e_deployment_idB\x15\n" +
 	"\x13_deployment_detailsB\x18\n" +
-	"\x16_deployment_created_at\"O\n" +
+	"\x16_deployment_created_atB\x16\n" +
+	"\x14_reported_release_id\"O\n" +
 	"\x15ListAssetAppsResponse\x126\n" +
 	"\n" +
 	"asset_apps\x18\x01 \x03(\v2\x17.wendycloud.v2.AssetAppR\tassetApps\"A\n" +
@@ -2121,15 +2387,27 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\x18ControlContainerResponse\x12\x1d\n" +
 	"\awarning\x18\x01 \x01(\tH\x00R\awarning\x88\x01\x01B\n" +
 	"\n" +
-	"\b_warning*/\n" +
+	"\b_warning*\xb7\x02\n" +
+	"\fApplyOutcome\x12\x1d\n" +
+	"\x19APPLY_OUTCOME_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15APPLY_OUTCOME_APPLIED\x10\x01\x12$\n" +
+	" APPLY_OUTCOME_REJECTED_SIGNATURE\x10\x02\x12!\n" +
+	"\x1dAPPLY_OUTCOME_REJECTED_TARGET\x10\x03\x12 \n" +
+	"\x1cAPPLY_OUTCOME_REJECTED_STALE\x10\x04\x12!\n" +
+	"\x1dAPPLY_OUTCOME_REJECTED_DIGEST\x10\x05\x12!\n" +
+	"\x1dAPPLY_OUTCOME_REJECTED_UNWRAP\x10\x06\x12\x1e\n" +
+	"\x1aAPPLY_OUTCOME_PULL_REFUSED\x10\a\x12\x1c\n" +
+	"\x18APPLY_OUTCOME_SUPERSEDED\x10\b*/\n" +
 	"\aRunning\x12\n" +
 	"\n" +
 	"\x06ABSENT\x10\x00\x12\v\n" +
 	"\aRUNNING\x10\x01\x12\v\n" +
-	"\aSTOPPED\x10\x02*&\n" +
+	"\aSTOPPED\x10\x02*2\n" +
 	"\vReleaseType\x12\r\n" +
 	"\tCONTAINER\x10\x00\x12\b\n" +
-	"\x04WASM\x10\x01*r\n" +
+	"\x04WASM\x10\x01\x12\n" +
+	"\n" +
+	"\x06CONFIG\x10\x02*r\n" +
 	"\x0fAppRunningState\x12!\n" +
 	"\x1dAPP_RUNNING_STATE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19APP_RUNNING_STATE_STOPPED\x10\x01\x12\x1d\n" +
@@ -2137,18 +2415,18 @@ const file_wendycloud_v2_deployments_proto_rawDesc = "" +
 	"\x0fContainerAction\x12 \n" +
 	"\x1cCONTAINER_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16CONTAINER_ACTION_START\x10\x01\x12\x19\n" +
-	"\x15CONTAINER_ACTION_STOP\x10\x022\x98\t\n" +
+	"\x15CONTAINER_ACTION_STOP\x10\x022\xa2\t\n" +
 	"\x11DeploymentService\x12Q\n" +
 	"\x10CreateAppRelease\x12\x1c.wendycloud.v2.SignedRequest\x1a\x19.wendycloud.v2.AppRelease\"\x04\x88\xb5\x18\x01\x12Q\n" +
 	"\x10UpdateAppRelease\x12\x1c.wendycloud.v2.SignedRequest\x1a\x19.wendycloud.v2.AppRelease\"\x04\x88\xb5\x18\x01\x12b\n" +
-	"\x0fListAppReleases\x12%.wendycloud.v2.ListAppReleasesRequest\x1a&.wendycloud.v2.ListAppReleasesResponse0\x01\x12x\n" +
-	"\x17GetPushImageCredentials\x12-.wendycloud.v2.GetPushImageCredentialsRequest\x1a..wendycloud.v2.GetPushImageCredentialsResponse\x12Q\n" +
+	"\x0fListAppReleases\x12%.wendycloud.v2.ListAppReleasesRequest\x1a&.wendycloud.v2.ListAppReleasesResponse0\x01\x12}\n" +
+	"\x17GetPushImageCredentials\x12-.wendycloud.v2.GetPushImageCredentialsRequest\x1a..wendycloud.v2.GetPushImageCredentialsResponse\"\x03\x88\x02\x01\x12Q\n" +
 	"\x10CreateDeployment\x12\x1c.wendycloud.v2.SignedRequest\x1a\x19.wendycloud.v2.Deployment\"\x04\x88\xb5\x18\x01\x12O\n" +
 	"\rGetDeployment\x12#.wendycloud.v2.GetDeploymentRequest\x1a\x19.wendycloud.v2.Deployment\x12b\n" +
 	"\x0fListDeployments\x12%.wendycloud.v2.ListDeploymentsRequest\x1a&.wendycloud.v2.ListDeploymentsResponse0\x01\x12i\n" +
 	"\x13HandleReportedState\x12).wendycloud.v2.UpdateReportedStateRequest\x1a#.wendycloud.v2.DesiredStateResponse(\x010\x01\x12Z\n" +
-	"\rListAssetApps\x12#.wendycloud.v2.ListAssetAppsRequest\x1a$.wendycloud.v2.ListAssetAppsResponse\x12i\n" +
-	"\x12GetPullCredentials\x12(.wendycloud.v2.GetPullCredentialsRequest\x1a).wendycloud.v2.GetPullCredentialsResponse\x12d\n" +
+	"\rListAssetApps\x12#.wendycloud.v2.ListAssetAppsRequest\x1a$.wendycloud.v2.ListAssetAppsResponse\x12n\n" +
+	"\x12GetPullCredentials\x12(.wendycloud.v2.GetPullCredentialsRequest\x1a).wendycloud.v2.GetPullCredentialsResponse\"\x03\x88\x02\x01\x12d\n" +
 	"\x14ListDeviceContainers\x12*.wendycloud.v2.ListDeviceContainersRequest\x1a\x1e.wendycloud.v2.DeviceContainer0\x01\x12_\n" +
 	"\x10ControlContainer\x12\x1c.wendycloud.v2.SignedRequest\x1a'.wendycloud.v2.ControlContainerResponse\"\x04\x88\xb5\x18\x01b\x06proto3"
 
@@ -2164,99 +2442,102 @@ func file_wendycloud_v2_deployments_proto_rawDescGZIP() []byte {
 	return file_wendycloud_v2_deployments_proto_rawDescData
 }
 
-var file_wendycloud_v2_deployments_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_wendycloud_v2_deployments_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
 var file_wendycloud_v2_deployments_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_wendycloud_v2_deployments_proto_goTypes = []any{
-	(Running)(0),                            // 0: wendycloud.v2.Running
-	(ReleaseType)(0),                        // 1: wendycloud.v2.ReleaseType
-	(AppRunningState)(0),                    // 2: wendycloud.v2.AppRunningState
-	(ContainerAction)(0),                    // 3: wendycloud.v2.ContainerAction
-	(*AppRelease)(nil),                      // 4: wendycloud.v2.AppRelease
-	(*CreateAppReleaseRequest)(nil),         // 5: wendycloud.v2.CreateAppReleaseRequest
-	(*UpdateAppReleaseRequest)(nil),         // 6: wendycloud.v2.UpdateAppReleaseRequest
-	(*ListAppReleasesRequest)(nil),          // 7: wendycloud.v2.ListAppReleasesRequest
-	(*ListAppReleasesResponse)(nil),         // 8: wendycloud.v2.ListAppReleasesResponse
-	(*GetPushImageCredentialsRequest)(nil),  // 9: wendycloud.v2.GetPushImageCredentialsRequest
-	(*GetPushImageCredentialsResponse)(nil), // 10: wendycloud.v2.GetPushImageCredentialsResponse
-	(*Deployment)(nil),                      // 11: wendycloud.v2.Deployment
-	(*CreateDeploymentRequest)(nil),         // 12: wendycloud.v2.CreateDeploymentRequest
-	(*GetDeploymentRequest)(nil),            // 13: wendycloud.v2.GetDeploymentRequest
-	(*ListDeploymentsRequest)(nil),          // 14: wendycloud.v2.ListDeploymentsRequest
-	(*ListDeploymentsResponse)(nil),         // 15: wendycloud.v2.ListDeploymentsResponse
-	(*UpdateReportedStateRequest)(nil),      // 16: wendycloud.v2.UpdateReportedStateRequest
-	(*CurrentState)(nil),                    // 17: wendycloud.v2.CurrentState
-	(*DesiredStateResponse)(nil),            // 18: wendycloud.v2.DesiredStateResponse
-	(*DesiredAppState)(nil),                 // 19: wendycloud.v2.DesiredAppState
-	(*ListAssetAppsRequest)(nil),            // 20: wendycloud.v2.ListAssetAppsRequest
-	(*AssetApp)(nil),                        // 21: wendycloud.v2.AssetApp
-	(*ListAssetAppsResponse)(nil),           // 22: wendycloud.v2.ListAssetAppsResponse
-	(*GetPullCredentialsRequest)(nil),       // 23: wendycloud.v2.GetPullCredentialsRequest
-	(*GetPullCredentialsResponse)(nil),      // 24: wendycloud.v2.GetPullCredentialsResponse
-	(*ListDeviceContainersRequest)(nil),     // 25: wendycloud.v2.ListDeviceContainersRequest
-	(*DeviceContainer)(nil),                 // 26: wendycloud.v2.DeviceContainer
-	(*DeviceService)(nil),                   // 27: wendycloud.v2.DeviceService
-	(*ControlContainerRequest)(nil),         // 28: wendycloud.v2.ControlContainerRequest
-	(*ControlContainerResponse)(nil),        // 29: wendycloud.v2.ControlContainerResponse
-	(*timestamppb.Timestamp)(nil),           // 30: google.protobuf.Timestamp
-	(*SignedRequest)(nil),                   // 31: wendycloud.v2.SignedRequest
+	(ApplyOutcome)(0),                       // 0: wendycloud.v2.ApplyOutcome
+	(Running)(0),                            // 1: wendycloud.v2.Running
+	(ReleaseType)(0),                        // 2: wendycloud.v2.ReleaseType
+	(AppRunningState)(0),                    // 3: wendycloud.v2.AppRunningState
+	(ContainerAction)(0),                    // 4: wendycloud.v2.ContainerAction
+	(*AppRelease)(nil),                      // 5: wendycloud.v2.AppRelease
+	(*CreateAppReleaseRequest)(nil),         // 6: wendycloud.v2.CreateAppReleaseRequest
+	(*UpdateAppReleaseRequest)(nil),         // 7: wendycloud.v2.UpdateAppReleaseRequest
+	(*ListAppReleasesRequest)(nil),          // 8: wendycloud.v2.ListAppReleasesRequest
+	(*ListAppReleasesResponse)(nil),         // 9: wendycloud.v2.ListAppReleasesResponse
+	(*GetPushImageCredentialsRequest)(nil),  // 10: wendycloud.v2.GetPushImageCredentialsRequest
+	(*GetPushImageCredentialsResponse)(nil), // 11: wendycloud.v2.GetPushImageCredentialsResponse
+	(*Deployment)(nil),                      // 12: wendycloud.v2.Deployment
+	(*CreateDeploymentRequest)(nil),         // 13: wendycloud.v2.CreateDeploymentRequest
+	(*GetDeploymentRequest)(nil),            // 14: wendycloud.v2.GetDeploymentRequest
+	(*ListDeploymentsRequest)(nil),          // 15: wendycloud.v2.ListDeploymentsRequest
+	(*ListDeploymentsResponse)(nil),         // 16: wendycloud.v2.ListDeploymentsResponse
+	(*UpdateReportedStateRequest)(nil),      // 17: wendycloud.v2.UpdateReportedStateRequest
+	(*CurrentState)(nil),                    // 18: wendycloud.v2.CurrentState
+	(*DesiredStateResponse)(nil),            // 19: wendycloud.v2.DesiredStateResponse
+	(*DesiredAppState)(nil),                 // 20: wendycloud.v2.DesiredAppState
+	(*ListAssetAppsRequest)(nil),            // 21: wendycloud.v2.ListAssetAppsRequest
+	(*AssetApp)(nil),                        // 22: wendycloud.v2.AssetApp
+	(*ListAssetAppsResponse)(nil),           // 23: wendycloud.v2.ListAssetAppsResponse
+	(*GetPullCredentialsRequest)(nil),       // 24: wendycloud.v2.GetPullCredentialsRequest
+	(*GetPullCredentialsResponse)(nil),      // 25: wendycloud.v2.GetPullCredentialsResponse
+	(*ListDeviceContainersRequest)(nil),     // 26: wendycloud.v2.ListDeviceContainersRequest
+	(*DeviceContainer)(nil),                 // 27: wendycloud.v2.DeviceContainer
+	(*DeviceService)(nil),                   // 28: wendycloud.v2.DeviceService
+	(*ControlContainerRequest)(nil),         // 29: wendycloud.v2.ControlContainerRequest
+	(*ControlContainerResponse)(nil),        // 30: wendycloud.v2.ControlContainerResponse
+	(*timestamppb.Timestamp)(nil),           // 31: google.protobuf.Timestamp
+	(*SignedRequest)(nil),                   // 32: wendycloud.v2.SignedRequest
 }
 var file_wendycloud_v2_deployments_proto_depIdxs = []int32{
-	30, // 0: wendycloud.v2.AppRelease.created_at:type_name -> google.protobuf.Timestamp
-	30, // 1: wendycloud.v2.AppRelease.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 2: wendycloud.v2.AppRelease.release_type:type_name -> wendycloud.v2.ReleaseType
-	1,  // 3: wendycloud.v2.CreateAppReleaseRequest.release_type:type_name -> wendycloud.v2.ReleaseType
-	4,  // 4: wendycloud.v2.ListAppReleasesResponse.app_releases:type_name -> wendycloud.v2.AppRelease
-	30, // 5: wendycloud.v2.GetPushImageCredentialsResponse.expires_at:type_name -> google.protobuf.Timestamp
-	30, // 6: wendycloud.v2.Deployment.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 7: wendycloud.v2.CreateDeploymentRequest.running:type_name -> wendycloud.v2.Running
-	11, // 8: wendycloud.v2.ListDeploymentsResponse.deployments:type_name -> wendycloud.v2.Deployment
-	17, // 9: wendycloud.v2.UpdateReportedStateRequest.current_states:type_name -> wendycloud.v2.CurrentState
-	0,  // 10: wendycloud.v2.CurrentState.reported_state:type_name -> wendycloud.v2.Running
-	19, // 11: wendycloud.v2.DesiredStateResponse.desired_app_states:type_name -> wendycloud.v2.DesiredAppState
-	30, // 12: wendycloud.v2.DesiredStateResponse.cert_expires_at:type_name -> google.protobuf.Timestamp
-	0,  // 13: wendycloud.v2.DesiredAppState.desired_state:type_name -> wendycloud.v2.Running
-	1,  // 14: wendycloud.v2.DesiredAppState.release_type:type_name -> wendycloud.v2.ReleaseType
-	0,  // 15: wendycloud.v2.AssetApp.desired_state:type_name -> wendycloud.v2.Running
-	0,  // 16: wendycloud.v2.AssetApp.reported_state:type_name -> wendycloud.v2.Running
-	30, // 17: wendycloud.v2.AssetApp.reported_at:type_name -> google.protobuf.Timestamp
-	30, // 18: wendycloud.v2.AssetApp.deployment_created_at:type_name -> google.protobuf.Timestamp
-	1,  // 19: wendycloud.v2.AssetApp.release_type:type_name -> wendycloud.v2.ReleaseType
-	21, // 20: wendycloud.v2.ListAssetAppsResponse.asset_apps:type_name -> wendycloud.v2.AssetApp
-	30, // 21: wendycloud.v2.GetPullCredentialsResponse.expires_at:type_name -> google.protobuf.Timestamp
-	1,  // 22: wendycloud.v2.GetPullCredentialsResponse.release_type:type_name -> wendycloud.v2.ReleaseType
-	2,  // 23: wendycloud.v2.DeviceContainer.running_state:type_name -> wendycloud.v2.AppRunningState
-	27, // 24: wendycloud.v2.DeviceContainer.services:type_name -> wendycloud.v2.DeviceService
-	2,  // 25: wendycloud.v2.DeviceService.running_state:type_name -> wendycloud.v2.AppRunningState
-	3,  // 26: wendycloud.v2.ControlContainerRequest.action:type_name -> wendycloud.v2.ContainerAction
-	31, // 27: wendycloud.v2.DeploymentService.CreateAppRelease:input_type -> wendycloud.v2.SignedRequest
-	31, // 28: wendycloud.v2.DeploymentService.UpdateAppRelease:input_type -> wendycloud.v2.SignedRequest
-	7,  // 29: wendycloud.v2.DeploymentService.ListAppReleases:input_type -> wendycloud.v2.ListAppReleasesRequest
-	9,  // 30: wendycloud.v2.DeploymentService.GetPushImageCredentials:input_type -> wendycloud.v2.GetPushImageCredentialsRequest
-	31, // 31: wendycloud.v2.DeploymentService.CreateDeployment:input_type -> wendycloud.v2.SignedRequest
-	13, // 32: wendycloud.v2.DeploymentService.GetDeployment:input_type -> wendycloud.v2.GetDeploymentRequest
-	14, // 33: wendycloud.v2.DeploymentService.ListDeployments:input_type -> wendycloud.v2.ListDeploymentsRequest
-	16, // 34: wendycloud.v2.DeploymentService.HandleReportedState:input_type -> wendycloud.v2.UpdateReportedStateRequest
-	20, // 35: wendycloud.v2.DeploymentService.ListAssetApps:input_type -> wendycloud.v2.ListAssetAppsRequest
-	23, // 36: wendycloud.v2.DeploymentService.GetPullCredentials:input_type -> wendycloud.v2.GetPullCredentialsRequest
-	25, // 37: wendycloud.v2.DeploymentService.ListDeviceContainers:input_type -> wendycloud.v2.ListDeviceContainersRequest
-	31, // 38: wendycloud.v2.DeploymentService.ControlContainer:input_type -> wendycloud.v2.SignedRequest
-	4,  // 39: wendycloud.v2.DeploymentService.CreateAppRelease:output_type -> wendycloud.v2.AppRelease
-	4,  // 40: wendycloud.v2.DeploymentService.UpdateAppRelease:output_type -> wendycloud.v2.AppRelease
-	8,  // 41: wendycloud.v2.DeploymentService.ListAppReleases:output_type -> wendycloud.v2.ListAppReleasesResponse
-	10, // 42: wendycloud.v2.DeploymentService.GetPushImageCredentials:output_type -> wendycloud.v2.GetPushImageCredentialsResponse
-	11, // 43: wendycloud.v2.DeploymentService.CreateDeployment:output_type -> wendycloud.v2.Deployment
-	11, // 44: wendycloud.v2.DeploymentService.GetDeployment:output_type -> wendycloud.v2.Deployment
-	15, // 45: wendycloud.v2.DeploymentService.ListDeployments:output_type -> wendycloud.v2.ListDeploymentsResponse
-	18, // 46: wendycloud.v2.DeploymentService.HandleReportedState:output_type -> wendycloud.v2.DesiredStateResponse
-	22, // 47: wendycloud.v2.DeploymentService.ListAssetApps:output_type -> wendycloud.v2.ListAssetAppsResponse
-	24, // 48: wendycloud.v2.DeploymentService.GetPullCredentials:output_type -> wendycloud.v2.GetPullCredentialsResponse
-	26, // 49: wendycloud.v2.DeploymentService.ListDeviceContainers:output_type -> wendycloud.v2.DeviceContainer
-	29, // 50: wendycloud.v2.DeploymentService.ControlContainer:output_type -> wendycloud.v2.ControlContainerResponse
-	39, // [39:51] is the sub-list for method output_type
-	27, // [27:39] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	31, // 0: wendycloud.v2.AppRelease.created_at:type_name -> google.protobuf.Timestamp
+	31, // 1: wendycloud.v2.AppRelease.updated_at:type_name -> google.protobuf.Timestamp
+	2,  // 2: wendycloud.v2.AppRelease.release_type:type_name -> wendycloud.v2.ReleaseType
+	2,  // 3: wendycloud.v2.CreateAppReleaseRequest.release_type:type_name -> wendycloud.v2.ReleaseType
+	5,  // 4: wendycloud.v2.ListAppReleasesResponse.app_releases:type_name -> wendycloud.v2.AppRelease
+	31, // 5: wendycloud.v2.GetPushImageCredentialsResponse.expires_at:type_name -> google.protobuf.Timestamp
+	31, // 6: wendycloud.v2.Deployment.created_at:type_name -> google.protobuf.Timestamp
+	1,  // 7: wendycloud.v2.CreateDeploymentRequest.running:type_name -> wendycloud.v2.Running
+	12, // 8: wendycloud.v2.ListDeploymentsResponse.deployments:type_name -> wendycloud.v2.Deployment
+	18, // 9: wendycloud.v2.UpdateReportedStateRequest.current_states:type_name -> wendycloud.v2.CurrentState
+	1,  // 10: wendycloud.v2.CurrentState.reported_state:type_name -> wendycloud.v2.Running
+	0,  // 11: wendycloud.v2.CurrentState.outcome:type_name -> wendycloud.v2.ApplyOutcome
+	20, // 12: wendycloud.v2.DesiredStateResponse.desired_app_states:type_name -> wendycloud.v2.DesiredAppState
+	31, // 13: wendycloud.v2.DesiredStateResponse.cert_expires_at:type_name -> google.protobuf.Timestamp
+	1,  // 14: wendycloud.v2.DesiredAppState.desired_state:type_name -> wendycloud.v2.Running
+	2,  // 15: wendycloud.v2.DesiredAppState.release_type:type_name -> wendycloud.v2.ReleaseType
+	1,  // 16: wendycloud.v2.AssetApp.desired_state:type_name -> wendycloud.v2.Running
+	1,  // 17: wendycloud.v2.AssetApp.reported_state:type_name -> wendycloud.v2.Running
+	31, // 18: wendycloud.v2.AssetApp.reported_at:type_name -> google.protobuf.Timestamp
+	31, // 19: wendycloud.v2.AssetApp.deployment_created_at:type_name -> google.protobuf.Timestamp
+	2,  // 20: wendycloud.v2.AssetApp.release_type:type_name -> wendycloud.v2.ReleaseType
+	0,  // 21: wendycloud.v2.AssetApp.outcome:type_name -> wendycloud.v2.ApplyOutcome
+	22, // 22: wendycloud.v2.ListAssetAppsResponse.asset_apps:type_name -> wendycloud.v2.AssetApp
+	31, // 23: wendycloud.v2.GetPullCredentialsResponse.expires_at:type_name -> google.protobuf.Timestamp
+	2,  // 24: wendycloud.v2.GetPullCredentialsResponse.release_type:type_name -> wendycloud.v2.ReleaseType
+	3,  // 25: wendycloud.v2.DeviceContainer.running_state:type_name -> wendycloud.v2.AppRunningState
+	28, // 26: wendycloud.v2.DeviceContainer.services:type_name -> wendycloud.v2.DeviceService
+	3,  // 27: wendycloud.v2.DeviceService.running_state:type_name -> wendycloud.v2.AppRunningState
+	4,  // 28: wendycloud.v2.ControlContainerRequest.action:type_name -> wendycloud.v2.ContainerAction
+	32, // 29: wendycloud.v2.DeploymentService.CreateAppRelease:input_type -> wendycloud.v2.SignedRequest
+	32, // 30: wendycloud.v2.DeploymentService.UpdateAppRelease:input_type -> wendycloud.v2.SignedRequest
+	8,  // 31: wendycloud.v2.DeploymentService.ListAppReleases:input_type -> wendycloud.v2.ListAppReleasesRequest
+	10, // 32: wendycloud.v2.DeploymentService.GetPushImageCredentials:input_type -> wendycloud.v2.GetPushImageCredentialsRequest
+	32, // 33: wendycloud.v2.DeploymentService.CreateDeployment:input_type -> wendycloud.v2.SignedRequest
+	14, // 34: wendycloud.v2.DeploymentService.GetDeployment:input_type -> wendycloud.v2.GetDeploymentRequest
+	15, // 35: wendycloud.v2.DeploymentService.ListDeployments:input_type -> wendycloud.v2.ListDeploymentsRequest
+	17, // 36: wendycloud.v2.DeploymentService.HandleReportedState:input_type -> wendycloud.v2.UpdateReportedStateRequest
+	21, // 37: wendycloud.v2.DeploymentService.ListAssetApps:input_type -> wendycloud.v2.ListAssetAppsRequest
+	24, // 38: wendycloud.v2.DeploymentService.GetPullCredentials:input_type -> wendycloud.v2.GetPullCredentialsRequest
+	26, // 39: wendycloud.v2.DeploymentService.ListDeviceContainers:input_type -> wendycloud.v2.ListDeviceContainersRequest
+	32, // 40: wendycloud.v2.DeploymentService.ControlContainer:input_type -> wendycloud.v2.SignedRequest
+	5,  // 41: wendycloud.v2.DeploymentService.CreateAppRelease:output_type -> wendycloud.v2.AppRelease
+	5,  // 42: wendycloud.v2.DeploymentService.UpdateAppRelease:output_type -> wendycloud.v2.AppRelease
+	9,  // 43: wendycloud.v2.DeploymentService.ListAppReleases:output_type -> wendycloud.v2.ListAppReleasesResponse
+	11, // 44: wendycloud.v2.DeploymentService.GetPushImageCredentials:output_type -> wendycloud.v2.GetPushImageCredentialsResponse
+	12, // 45: wendycloud.v2.DeploymentService.CreateDeployment:output_type -> wendycloud.v2.Deployment
+	12, // 46: wendycloud.v2.DeploymentService.GetDeployment:output_type -> wendycloud.v2.Deployment
+	16, // 47: wendycloud.v2.DeploymentService.ListDeployments:output_type -> wendycloud.v2.ListDeploymentsResponse
+	19, // 48: wendycloud.v2.DeploymentService.HandleReportedState:output_type -> wendycloud.v2.DesiredStateResponse
+	23, // 49: wendycloud.v2.DeploymentService.ListAssetApps:output_type -> wendycloud.v2.ListAssetAppsResponse
+	25, // 50: wendycloud.v2.DeploymentService.GetPullCredentials:output_type -> wendycloud.v2.GetPullCredentialsResponse
+	27, // 51: wendycloud.v2.DeploymentService.ListDeviceContainers:output_type -> wendycloud.v2.DeviceContainer
+	30, // 52: wendycloud.v2.DeploymentService.ControlContainer:output_type -> wendycloud.v2.ControlContainerResponse
+	41, // [41:53] is the sub-list for method output_type
+	29, // [29:41] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_wendycloud_v2_deployments_proto_init() }
@@ -2278,7 +2559,7 @@ func file_wendycloud_v2_deployments_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendycloud_v2_deployments_proto_rawDesc), len(file_wendycloud_v2_deployments_proto_rawDesc)),
-			NumEnums:      4,
+			NumEnums:      5,
 			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
