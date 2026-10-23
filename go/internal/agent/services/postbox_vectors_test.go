@@ -1,8 +1,6 @@
 package services
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -10,8 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,24 +24,23 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
-// readVectors reads a gzipped copy of a service-protos conformance file and
-// checks it is byte for byte the one at the pinned commit (65830a0a).
-func readVectors(t *testing.T, name, sha string, v any) {
+// readVectors regenerates a service-protos conformance file with its own
+// deterministic generator (vendored from 65830a0a under testdata/postbox; the
+// files themselves are too large for the PR review budgets) and checks the
+// output is byte for byte the file at that commit.
+func readVectors(t *testing.T, gen, file, sha string, v any) {
 	t.Helper()
-	gz, err := os.ReadFile("testdata/postbox/" + name + ".gz")
-	if err != nil {
-		t.Fatal(err)
+	out := t.TempDir()
+	cmd := exec.Command("go", "run", "testdata/postbox/"+gen+"/generate.go", out)
+	if msg, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generating %s: %v\n%s", file, err, msg)
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(gz))
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := io.ReadAll(zr)
+	raw, err := os.ReadFile(filepath.Join(out, file))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != sha {
-		t.Fatalf("%s is not service-protos 65830a0a's (sha256 %x)", name, sum)
+		t.Fatalf("%s is not service-protos 65830a0a's (sha256 %x)", file, sum)
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		t.Fatal(err)
@@ -78,7 +76,7 @@ func TestPostboxCheckpointVectors(t *testing.T) {
 			Checkpoint string `json:"checkpoint_b64"`
 		} `json:"vectors"`
 	}
-	readVectors(t, "checkpoint-vectors-v1.json", "5932852a7bd47a24ad1a74e399aca68b49be89ac7f38eeecb1ebaab70dec4c42", &doc)
+	readVectors(t, "checkpoint", "checkpoint-vectors-v1.json", "5932852a7bd47a24ad1a74e399aca68b49be89ac7f38eeecb1ebaab70dec4c42", &doc)
 	roots := x509.NewCertPool()
 	roots.AddCert(b64Cert(t, doc.Root))
 	if len(doc.Vectors) != 18 {
@@ -152,7 +150,7 @@ func (c *orgCAClient) GetOrgCAs(_ context.Context, in *cloudpbv2.GetOrgCAsReques
 // and validity checks.
 func TestPostboxEntryVectors(t *testing.T) {
 	var doc postboxEntryVectors
-	readVectors(t, "postbox-entry-vectors-v1.json", "582c7013f35f84c302af586aad5ae9a184715d3c40be36ffc36682b50128e3fa", &doc)
+	readVectors(t, "entry", "postbox-entry/postbox-entry-vectors-v1.json", "582c7013f35f84c302af586aad5ae9a184715d3c40be36ffc36682b50128e3fa", &doc)
 	orgCA := b64Cert(t, doc.OrgCA)
 	if len(doc.OrgCAVectors)+len(doc.ValidityVectors) != 12 || doc.PlatformCap != int64(postboxPlatformCap/time.Second) {
 		t.Fatalf("%d+%d vectors, platform cap %d", len(doc.OrgCAVectors), len(doc.ValidityVectors), doc.PlatformCap)
