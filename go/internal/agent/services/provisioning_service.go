@@ -587,34 +587,7 @@ func (s *ProvisioningService) writePEMFiles(keyPEM, certPEM, chainPEM string) er
 // All writers, including first-boot imports and legacy key migration, must use
 // this helper so an interrupted write cannot truncate the enrollment record.
 func WriteProvisioningState(path string, data []byte) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".provisioning-*")
-	if err != nil {
-		return err
-	}
-	tmp := file.Name()
-	defer os.Remove(tmp)
-	if err = file.Chmod(0600); err == nil {
-		_, err = file.Write(data)
-	}
-	if err == nil {
-		err = file.Sync()
-	}
-	closeErr := file.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return syncWriteFile(path, data, 0o600)
 }
 
 // saveState writes provisioning state to disk.
