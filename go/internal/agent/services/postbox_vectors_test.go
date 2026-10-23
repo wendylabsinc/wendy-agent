@@ -65,6 +65,7 @@ func b64Cert(t *testing.T, s string) *x509.Certificate {
 func TestPostboxCheckpointVectors(t *testing.T) {
 	var doc struct {
 		Root    string `json:"root_cert_der_b64"`
+		TSACA   string `json:"tsa_intermediate_cert_der_b64"`
 		Vectors []struct {
 			Name       string `json:"name"`
 			Expect     string `json:"expect"`
@@ -79,6 +80,7 @@ func TestPostboxCheckpointVectors(t *testing.T) {
 	readVectors(t, "checkpoint", "checkpoint-vectors-v1.json", "5932852a7bd47a24ad1a74e399aca68b49be89ac7f38eeecb1ebaab70dec4c42", &doc)
 	roots := x509.NewCertPool()
 	roots.AddCert(b64Cert(t, doc.Root))
+	tsaCA := b64Cert(t, doc.TSACA)
 	if len(doc.Vectors) != 18 {
 		t.Fatalf("%d vectors, want 18", len(doc.Vectors))
 	}
@@ -96,7 +98,8 @@ func TestPostboxCheckpointVectors(t *testing.T) {
 			if got := map[bool]string{true: "valid", false: "invalid"}[err == nil]; got != v.Expect || code != v.Refusal {
 				t.Fatalf("got %s %q (%v), want %s %q", got, code, err, v.Expect, v.Refusal)
 			}
-			if err == nil && (cp.maxID < v.HWM || len(cp.head) != 32 || cp.genTime.IsZero()) {
+			// inter carries the TSA intermediate on to the entry tokens.
+			if err == nil && (cp.maxID < v.HWM || len(cp.head) != 32 || cp.genTime.IsZero() || len(cp.inter) != 1 || !cp.inter[0].Equal(tsaCA)) {
 				t.Fatalf("verified checkpoint binds %+v", cp)
 			}
 		})
@@ -229,7 +232,10 @@ func TestPostboxEntryVectors(t *testing.T) {
 			// cloud's ControlContainer form asset/<id>/container/<name>
 			// (bindsThisDevice, covered by the fixture tests), so binding is
 			// not part of this run.
-			desc, outcome, _, err := verifyPostboxSignature(e, id)
+			// The vector entries carry no tsr_response (a service-protos
+			// gap): the signing time here is the vectors' verify time, and
+			// the cap counts from iat, which the generator stamps as genTime.
+			desc, outcome, _, err := verifyPostboxSignature(e, id, time.Unix(doc.VerifyAt, 0))
 			if err != nil {
 				t.Fatalf("signature/chain = %v: %v", outcome, err)
 			}
@@ -241,7 +247,7 @@ func TestPostboxEntryVectors(t *testing.T) {
 			if v.Stage == "device" {
 				now = time.Unix(v.TrustedNow, 0)
 			}
-			code, err := postboxValidity(req, desc.Iat, now)
+			code, err := postboxValidity(req, time.Unix(desc.Iat, 0), now)
 			if err == nil && v.Stage == "accept" {
 				// The tenant cap is cloud's accept check, on top of the
 				// platform cap the device shares.

@@ -56,6 +56,9 @@ type postboxCheckpoint struct {
 	maxID   int64
 	head    []byte    // hash_of_head: the entry_hash at max_id
 	genTime time.Time // the TSA's time: the device's trusted time (AAA D9)
+	// inter is the checkpoint x5c beyond its leaf: the platform intermediates
+	// an entry's TSA token chains through (the token embeds only its signer).
+	inter []*x509.Certificate
 }
 
 // verifyCheckpoint runs README steps 1-10 against the pinned platform roots,
@@ -92,7 +95,7 @@ func verifyCheckpoint(raw []byte, roots *x509.CertPool, tenant, target string, m
 		return postboxCheckpoint{}, cpRefuse("signature_body_mismatch", "JWS payload is not the artifact body")
 	}
 	// 4, 4b. The RFC 3161 token over SHA-256(body as received).
-	genTime, err := verifyCheckpointToken(token, body, chain, roots)
+	genTime, err := verifyTimestampToken(token, body, chain[1:], roots)
 	if err != nil {
 		return postboxCheckpoint{}, err
 	}
@@ -140,7 +143,7 @@ func verifyCheckpoint(raw []byte, roots *x509.CertPool, tenant, target string, m
 	if now.After(expires) {
 		return postboxCheckpoint{}, cpRefuse("stale", "expired at %s", expires)
 	}
-	return postboxCheckpoint{maxID: b.MaxID, head: head, genTime: genTime}, nil
+	return postboxCheckpoint{maxID: b.MaxID, head: head, genTime: genTime, inter: chain[1:]}, nil
 }
 
 // verifyCheckpointJWS returns the payload and the x5c chain (leaf first).
@@ -239,11 +242,12 @@ type tstInfo struct {
 	Rest         asn1.RawValue `asn1:"optional"`
 }
 
-// verifyCheckpointToken checks the RFC 3161 TimeStampResp and returns its
-// genTime. The token embeds only the TSA signer leaf; candidate intermediates
-// are the JWS chain beyond its leaf and the token's other certificates, and
-// each must still chain to the pinned root.
-func verifyCheckpointToken(der, body []byte, jwsChain []*x509.Certificate, roots *x509.CertPool) (time.Time, error) {
+// verifyTimestampToken checks an RFC 3161 TimeStampResp over SHA-256(stamped)
+// (a checkpoint body or an entry's request_jws) and returns its genTime. The
+// token embeds only the TSA signer leaf; candidate intermediates are inter
+// (the checkpoint x5c beyond its leaf) and the token's other certificates,
+// and each must still chain to the pinned root.
+func verifyTimestampToken(der, stamped []byte, inter []*x509.Certificate, roots *x509.CertPool) (time.Time, error) {
 	var resp struct {
 		Status struct {
 			Status int
@@ -273,9 +277,9 @@ func verifyCheckpointToken(der, body []byte, jwsChain []*x509.Certificate, roots
 	// The signer is the embedded certificate the SignerInfo names, never a
 	// position in the list.
 	var signer *x509.Certificate
-	inter := x509.NewCertPool()
-	for _, c := range jwsChain[1:] {
-		inter.AddCert(c)
+	pool := x509.NewCertPool()
+	for _, c := range inter {
+		pool.AddCert(c)
 	}
 	for rest := sd.Certificates.Bytes; len(rest) > 0; {
 		var raw asn1.RawValue
@@ -293,7 +297,7 @@ func verifyCheckpointToken(der, body []byte, jwsChain []*x509.Certificate, roots
 			}
 			signer = c
 		} else {
-			inter.AddCert(c)
+			pool.AddCert(c)
 		}
 	}
 	if signer == nil {
@@ -341,12 +345,12 @@ func verifyCheckpointToken(der, body []byte, jwsChain []*x509.Certificate, roots
 		return time.Time{}, cpRefuse("timestamp", "TSTInfo: %v", err)
 	}
 	// The TSA chain is checked at genTime, now that the signature vouches for it.
-	if _, err := signer.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, CurrentTime: tst.GenTime, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping}}); err != nil {
+	if _, err := signer.Verify(x509.VerifyOptions{Roots: roots, Intermediates: pool, CurrentTime: tst.GenTime, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping}}); err != nil {
 		return time.Time{}, cpRefuse("timestamp", "TSA chain: %v", err)
 	}
-	h := sha256.Sum256(body)
+	h := sha256.Sum256(stamped)
 	if !tst.MessageImprint.HashAlgorithm.Algorithm.Equal(oidSHA256) || !bytes.Equal(tst.MessageImprint.HashedMessage, h[:]) {
-		return time.Time{}, cpRefuse("imprint_mismatch", "token imprint is not SHA-256(body)")
+		return time.Time{}, cpRefuse("imprint_mismatch", "token imprint is not SHA-256 of the stamped bytes")
 	}
 	return tst.GenTime, nil
 }

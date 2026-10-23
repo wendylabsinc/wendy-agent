@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -59,6 +60,8 @@ type fakePostboxCloud struct {
 	orgCAs    map[string][]*x509.Certificate
 	orgCAAsks int
 	genTime   time.Time
+	stamp     func(jws []byte) []byte // the TSA token cloud takes at accept
+	inter     []*x509.Certificate     // the checkpoint x5c beyond its leaf
 }
 
 func (c *fakePostboxCloud) GetOrgCAs(_ context.Context, in *cloudpbv2.GetOrgCAsRequest, _ ...grpc.CallOption) (*cloudpbv2.GetOrgCAsResponse, error) {
@@ -108,7 +111,7 @@ func (c *fakePostboxCloud) add(jws, payload []byte, payloadType string) *cloudpb
 		prev = c.entries[n-1].GetEntryHash()
 	}
 	id := int64(len(c.entries) + 1)
-	tsr := []byte("tsr")
+	tsr := c.stamp(jws)
 	e := &cloudpbv2.PostboxEntry{
 		EntryId: id, RequestJws: jws, TsrResponse: tsr, PrevHash: prev,
 		EntryHash:      postboxEntryHash(prev, c.tenant, c.target, id, jws, tsr),
@@ -134,7 +137,7 @@ func (c *fakePostboxCloud) notarize(_ []byte, _ *x509.CertPool, _, _ string, mar
 	if gen.IsZero() {
 		gen = now
 	}
-	return postboxCheckpoint{maxID: last.GetEntryId(), head: last.GetEntryHash(), genTime: gen}, nil
+	return postboxCheckpoint{maxID: last.GetEntryId(), head: last.GetEntryHash(), genTime: gen, inter: c.inter}, nil
 }
 
 type pbFixture struct {
@@ -150,6 +153,9 @@ type pbFixture struct {
 	dir                       string
 	alg                       string // JWS header alg; "" = ML-DSA-65
 	now                       time.Time
+	stampAt                   time.Time // entry token genTime; zero = now
+	tsaCA, tsaSigner          *x509.Certificate
+	tsaKey                    *mldsa.PrivateKey
 	cloud                     *fakePostboxCloud
 	ctr                       *mockContainerdClient
 	p                         *Postbox
@@ -205,7 +211,7 @@ func pemOf(certs ...*x509.Certificate) string {
 
 func newPBFixture(t *testing.T) *pbFixture {
 	t.Helper()
-	f := &pbFixture{t: t, tenant: uuid.NewString(), uuid: uuid.NewString(), dir: t.TempDir(), now: time.Now()}
+	f := &pbFixture{t: t, tenant: uuid.NewString(), uuid: uuid.NewString(), dir: t.TempDir(), now: time.Now().Truncate(time.Second)}
 	f.uri = "spiffe://wendy.sh/tenant/" + f.tenant + "/device/" + f.uuid
 	f.root, f.rootKey = mkCA(t, "platform root", nil, nil)
 	f.tenantCA, f.tenantCAKey = mkCA(t, "tenant intermediate", f.root, f.rootKey)
@@ -228,7 +234,26 @@ func newPBFixture(t *testing.T) *pbFixture {
 	}
 	f.opLeaf = mkLeaf(t, "spiffe://wendy.sh/tenant/"+f.tenant+"/operator/alice", f.opKey.PublicKey(), f.opCA, f.opCAKey)
 
-	f.cloud = &fakePostboxCloud{tenant: f.tenant, target: f.uri, pulls: make(chan int64, 16)}
+	// The platform TSA, as pki-core's: an ML-DSA signer under a platform
+	// intermediate that only the checkpoint x5c carries.
+	var tsaCAKey *ecdsa.PrivateKey
+	f.tsaCA, tsaCAKey = mkCA(t, "platform TSA intermediate", f.root, f.rootKey)
+	if f.tsaKey, err = mldsa.GenerateKey(mldsa.MLDSA65()); err != nil {
+		t.Fatal(err)
+	}
+	f.tsaSigner = mkCert(t, &x509.Certificate{
+		Subject: pkix.Name{CommonName: "platform TSA"}, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping},
+	}, f.tsaCA, f.tsaKey.PublicKey(), tsaCAKey)
+
+	f.cloud = &fakePostboxCloud{tenant: f.tenant, target: f.uri, pulls: make(chan int64, 16), inter: []*x509.Certificate{f.tsaCA}}
+	f.cloud.stamp = func(jws []byte) []byte {
+		at := f.stampAt
+		if at.IsZero() {
+			at = f.now
+		}
+		return f.timestamp(jws, at)
+	}
 	f.ctr = &mockContainerdClient{resolvedIDs: map[string][]string{"web": {"web"}}}
 	f.p = f.newPostbox()
 	return f
@@ -280,6 +305,82 @@ func (f *pbFixture) sign(method string, msg proto.Message, resource string, x5c 
 		f.t.Fatal(err)
 	}
 	return []byte(input + "." + base64.RawURLEncoding.EncodeToString(sig)), payload, string(msg.ProtoReflect().Descriptor().FullName())
+}
+
+// timestamp is an RFC 3161 TimeStampResp over SHA-256(stamped) at gen,
+// signed by the fixture TSA with its certificate embedded, as cloud's accept
+// takes it from pki-core.
+func (f *pbFixture) timestamp(stamped []byte, gen time.Time) []byte {
+	f.t.Helper()
+	der := func(v any) []byte {
+		b, err := asn1.Marshal(v)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		return b
+	}
+	type alg struct{ Algorithm asn1.ObjectIdentifier }
+	imprint := sha256.Sum256(stamped)
+	var tst struct {
+		Version        int
+		Policy         asn1.ObjectIdentifier
+		MessageImprint struct {
+			HashAlgorithm alg
+			HashedMessage []byte
+		}
+		SerialNumber *big.Int
+		GenTime      time.Time `asn1:"generalized"`
+	}
+	tst.Version, tst.Policy, tst.SerialNumber, tst.GenTime = 1, asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 65441, 2, 1}, big.NewInt(1), gen.UTC()
+	tst.MessageImprint.HashAlgorithm, tst.MessageImprint.HashedMessage = alg{oidSHA256}, imprint[:]
+	tstDER := der(tst)
+	md := sha256.Sum256(tstDER)
+	attr := func(t asn1.ObjectIdentifier, v any) []byte {
+		return der(struct {
+			Type  asn1.ObjectIdentifier
+			Value asn1.RawValue
+		}{t, asn1.RawValue{Tag: asn1.TagSet, IsCompound: true, Bytes: der(v)}})
+	}
+	attrs := append(attr(oidAttrContentType, oidTSTInfo), attr(oidAttrMessageDigest, md[:])...)
+	sig, err := f.tsaKey.Sign(rand.Reader, der(asn1.RawValue{Tag: asn1.TagSet, IsCompound: true, Bytes: attrs}), &mldsa.Options{})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	type signerInfo struct {
+		Version int
+		SID     struct {
+			Issuer       asn1.RawValue
+			SerialNumber *big.Int
+		}
+		DigestAlgorithm    alg
+		SignedAttrs        asn1.RawValue
+		SignatureAlgorithm alg
+		Signature          []byte
+	}
+	si := signerInfo{Version: 1, DigestAlgorithm: alg{oidSHA256}, SignatureAlgorithm: alg{mldsaSigOIDs[1952]}, Signature: sig,
+		SignedAttrs: asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: attrs}}
+	si.SID.Issuer, si.SID.SerialNumber = asn1.RawValue{FullBytes: f.tsaSigner.RawIssuer}, f.tsaSigner.SerialNumber
+	var sd struct {
+		Version          int
+		DigestAlgorithms []alg `asn1:"set"`
+		EncapContentInfo struct {
+			EContentType asn1.ObjectIdentifier
+			EContent     []byte `asn1:"explicit,tag:0"`
+		}
+		Certificates asn1.RawValue
+		SignerInfos  []signerInfo `asn1:"set"`
+	}
+	sd.Version, sd.DigestAlgorithms, sd.SignerInfos = 3, []alg{{oidSHA256}}, []signerInfo{si}
+	sd.EncapContentInfo.EContentType, sd.EncapContentInfo.EContent = oidTSTInfo, tstDER
+	sd.Certificates = asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: f.tsaSigner.Raw}
+	token := der(struct {
+		ContentType asn1.ObjectIdentifier
+		Content     asn1.RawValue
+	}{oidCMSSignedData, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: der(sd)}})
+	return der(struct {
+		Status         struct{ Status int }
+		TimeStampToken asn1.RawValue
+	}{TimeStampToken: asn1.RawValue{FullBytes: token}})
 }
 
 func (f *pbFixture) control(app string, action cloudpbv2.ContainerAction, mutate func(map[string]any)) *cloudpbv2.PostboxEntry {
@@ -439,7 +540,7 @@ func TestPostboxRefusesNamedAndRunsNothing(t *testing.T) {
 			f.cloud.add(jws, payload, typ)
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, true},
 		{"valid_until beyond the platform cap", func(f *pbFixture) {
-			f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(time.Unix(f.now.Unix()-5, 0).Add(postboxPlatformCap+time.Second)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+			f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(postboxPlatformCap+time.Second)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, true},
 		{"header alg is not the leaf's", func(f *pbFixture) {
 			f.alg = "ML-DSA-87"
@@ -632,10 +733,10 @@ func TestPostboxDeploymentMustNameThisDevice(t *testing.T) {
 	}
 	entries := f.cloud.entries
 	id := &postboxIdentity{tenant: f.tenant, uuid: f.uuid, uri: f.uri, anchors: []*x509.Certificate{f.tenantCA}}
-	if _, _, o, _, _ := verifyPostboxRequest(entries[0], id, f.now); o != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET {
+	if _, _, o, _, _ := verifyPostboxRequest(entries[0], id, f.now, f.now); o != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET {
 		t.Fatalf("tag-only deployment = %v, want refused: tags are cloud-resolved", o)
 	}
-	if _, _, o, _, err := verifyPostboxRequest(entries[1], id, f.now); err != nil {
+	if _, _, o, _, err := verifyPostboxRequest(entries[1], id, f.now, f.now); err != nil {
 		t.Fatalf("deployment naming this device = %v: %v", o, err)
 	}
 }
@@ -753,8 +854,7 @@ func TestPostboxValidityEdges(t *testing.T) {
 	})
 	t.Run("valid_until at the platform cap passes", func(t *testing.T) {
 		f := newPBFixture(t)
-		iat := f.now.Unix() - 5
-		f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(time.Unix(iat, 0).Add(postboxPlatformCap)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+		f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(postboxPlatformCap)), []*x509.Certificate{f.opLeaf, f.opCA}, nil) // the cap counts from the entry's timestamp
 		f.cycle()
 		if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED {
 			t.Fatalf("outcome = %+v", f.outcome("web"))
@@ -778,7 +878,7 @@ func TestPostboxValidityEdges(t *testing.T) {
 	}{
 		{"missing", "validity_missing", func(*pbFixture) *timestamppb.Timestamp { return nil }},
 		{"above platform cap", "above_platform_cap", func(f *pbFixture) *timestamppb.Timestamp {
-			return timestamppb.New(time.Unix(f.now.Unix()-5, 0).Add(postboxPlatformCap + time.Second))
+			return timestamppb.New(f.now.Add(postboxPlatformCap + time.Second))
 		}},
 		{"at trusted now", "stale", func(f *pbFixture) *timestamppb.Timestamp { return timestamppb.New(f.now) }},
 	} {
@@ -816,5 +916,81 @@ func TestPostboxHoldsOnCheckpointBelowItsMark(t *testing.T) {
 	f.cycle()
 	if len(f.ctr.stopCalls) != 0 || f.p.snapshot().HighWater != 0 || f.p.refusals["checkpoint"] != 1 {
 		t.Fatalf("applied under a rolled-back checkpoint: stop %v, refusals %v", f.ctr.stopCalls, f.p.refusals)
+	}
+}
+
+// The entry's RFC 3161 token is its signing time (RULINGS-LOG 2026-10-24
+// 03:25): the operator chain is checked and the platform cap counted at its
+// genTime, an iat after it is refused, and an entry without a verifying
+// token is held.
+func TestPostboxEntryTimestampIsTheSigningTime(t *testing.T) {
+	stop := cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP
+	t.Run("valid: cap counted from genTime, not iat", func(t *testing.T) {
+		f := newPBFixture(t)
+		// From iat the cap is exceeded by an hour; from genTime it is met.
+		f.controlUntil("web", stop, timestamppb.New(f.now.Add(postboxPlatformCap)), []*x509.Certificate{f.opLeaf, f.opCA},
+			func(c map[string]any) { c["iat"] = f.now.Unix() - 3600 })
+		f.cycle()
+		if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED || len(f.ctr.stopCalls) != 1 {
+			t.Fatalf("outcome = %+v, refusals %v", f.outcome("web"), f.p.refusals)
+		}
+	})
+	t.Run("iat after the timestamp refused", func(t *testing.T) {
+		f := newPBFixture(t)
+		f.control("web", stop, func(c map[string]any) { c["iat"] = f.now.Add(postboxCheckpointSkew).Unix() + 1 })
+		f.cycle()
+		if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE || f.p.refusals["iat_after_timestamp"] != 1 || f.p.snapshot().HighWater != 1 || len(f.ctr.stopCalls) != 0 {
+			t.Fatalf("outcome = %+v, refusals %v: want iat_after_timestamp, consumed", f.outcome("web"), f.p.refusals)
+		}
+	})
+	t.Run("back-dated iat from a cert expired at genTime refused", func(t *testing.T) {
+		f := newPBFixture(t)
+		u, _ := url.Parse("spiffe://wendy.sh/tenant/" + f.tenant + "/operator/alice")
+		expired := mkCert(t, &x509.Certificate{
+			Subject: pkix.Name{CommonName: "leaf"}, URIs: []*url.URL{u},
+			NotBefore: f.now.Add(-2 * time.Hour), NotAfter: f.now.Add(-10 * time.Minute),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}, f.opCA, f.opKey.PublicKey(), f.opCAKey)
+		f.controlUntil("web", stop, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{expired, f.opCA},
+			func(c map[string]any) { c["iat"] = f.now.Unix() - 1800 }) // inside the cert's old validity
+		f.cycle()
+		// An unverified signer sets no app outcome: audit and refusal count only.
+		if f.p.refusals["signature"] != 1 || f.p.snapshot().HighWater != 1 || len(f.ctr.stopCalls) != 0 {
+			t.Fatalf("refusals %v, state %+v: want signature, consumed", f.p.refusals, f.p.snapshot())
+		}
+	})
+	for name, token := range map[string]func(f *pbFixture, e *cloudpbv2.PostboxEntry) []byte{
+		"token missing":          func(*pbFixture, *cloudpbv2.PostboxEntry) []byte { return nil },
+		"token over another jws": func(f *pbFixture, _ *cloudpbv2.PostboxEntry) []byte { return f.timestamp([]byte("other"), f.now) },
+		"token by an unknown TSA": func(f *pbFixture, e *cloudpbv2.PostboxEntry) []byte {
+			f.tsaSigner = f.opLeaf
+			f.tsaKey = f.opKey
+			return f.timestamp(e.RequestJws, f.now)
+		},
+	} {
+		t.Run(name+" holds", func(t *testing.T) {
+			f := newPBFixture(t)
+			e := f.control("web", stop, nil)
+			e.TsrResponse = token(f, e)
+			e.EntryHash = postboxEntryHash(e.PrevHash, f.tenant, f.uri, 1, e.RequestJws, e.TsrResponse)
+			f.cycle()
+			if st := f.p.snapshot(); st.HighWater != 0 || len(f.ctr.stopCalls) != 0 || len(f.p.Outcomes()) != 0 || f.p.refusals["entry_timestamp"] != 1 {
+				t.Fatalf("not held: state %+v, outcomes %v, refusals %v", st, f.p.Outcomes(), f.p.refusals)
+			}
+		})
+	}
+}
+
+// GetOrgCAs: of a response carrying the Device CA and a sibling CA (both
+// issued by the tenant CA) besides the requested one, only the CA whose
+// subject is the requested issuer is cached.
+func TestPostboxCachesOnlyTheRequestedOperatorCA(t *testing.T) {
+	f := newPBFixture(t)
+	sibling, _ := mkCA(t, "sibling authority", f.tenantCA, f.tenantCAKey)
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(f.opLeaf.RawIssuer): {f.deviceCA, sibling, f.opCA}}
+	f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{f.opLeaf}, nil)
+	f.cycle()
+	if st := f.p.snapshot(); len(st.OrgCAs) != 1 || string(st.OrgCAs[0]) != string(f.opCA.Raw) || len(f.ctr.stopCalls) != 1 {
+		t.Fatalf("cached %d CAs, stop %v: want only the operator authority", len(st.OrgCAs), f.ctr.stopCalls)
 	}
 }
