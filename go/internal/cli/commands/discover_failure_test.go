@@ -344,8 +344,10 @@ func TestDiscoveryIdentityRecoveryUsesGoverningPin(t *testing.T) {
 		{"alias", identityRefusal("lab's board.local", &certs.IdentityMismatchError{WantOrg: 2, WantAsset: "344", GotOrg: 76, GotAsset: "472"}), []string{"asset 344 in organization 2", "asset 472 in organization 76"}, `wendy device unpin 'lab'\''s board.local'`},
 		{"SPKI store identity", spkiRefusal("192.0.2.1", &devicepin.PinMismatchError{Key: "urn:wendy:org:2:asset:344", Want: "sha256:old", Got: "sha256:new"}), []string{"sha256:old", "sha256:new"}, "wendy device unpin urn:wendy:org:2:asset:344"},
 		{"unknown key", &certs.IdentityMismatchError{WantOrg: 2, WantAsset: "344", GotOrg: 76, GotAsset: "472"}, []string{"asset 344 in organization 2", "asset 472 in organization 76"}, ""},
-		{"tenant mismatch with pin", identityRefusal("board.local", tenantMismatch), []string{wantPrincipal, gotPrincipal}, "wendy device unpin board.local"},
-		{"tenant mismatch without pin", tenantMismatch, []string{wantPrincipal, gotPrincipal}, ""},
+		{"tenant mismatch with pin", identityRefusal("board.local", tenantMismatch), []string{"Saved: principal " + wantPrincipal, "Now:   principal " + gotPrincipal}, "wendy device unpin board.local"},
+		{"tenant mismatch without pin", tenantMismatch, []string{"Saved: principal " + wantPrincipal + ". Now: principal " + gotPrincipal + "."}, ""},
+		{"legacy pin meets principal", identityRefusal("board.local", &certs.IdentityMismatchError{WantOrg: 2, WantAsset: "344", GotAsset: "lite-test-board", GotPrincipal: gotPrincipal}), []string{"Saved: asset 344 in organization 2", "Now:   principal " + gotPrincipal}, "wendy device unpin board.local"},
+		{"no presented identity without pin", &certs.IdentityMismatchError{WantOrg: 2, WantAsset: "344"}, []string{"Saved: asset 344 in organization 2. Now: no wendy identity."}, ""},
 		{"control in key", identityRefusal("board\x1b.local", &certs.IdentityMismatchError{}), nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
