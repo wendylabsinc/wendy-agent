@@ -33,6 +33,7 @@ func Run(ctx context.Context, cfg Config) error {
 	var wg sync.WaitGroup
 	defer func() { cancel(); wg.Wait() }()
 	var candidates localmesh.CandidateQueue
+	var authenticatedRadios darwinPeerCache
 	var diagnosticMu sync.Mutex
 	lastError := ""
 	ticker := time.NewTicker(5 * time.Second)
@@ -72,6 +73,9 @@ func Run(ctx context.Context, cfg Config) error {
 					}
 				}
 				matches++
+				if authenticatedRadios.suppressed(address, adv, cfg.Selection, time.Now()) {
+					continue
+				}
 				lease := policy.Reserve(address, meshid.Device{}, true)
 				if lease == nil {
 					continue
@@ -80,7 +84,9 @@ func Run(ctx context.Context, cfg Config) error {
 				go func() {
 					defer wg.Done()
 					defer lease.Release()
-					err := dialDarwin(ctx, cfg, address, adv, lease)
+					err := dialDarwin(ctx, cfg, address, adv, lease, func(peer meshid.Device) {
+						authenticatedRadios.remember(address, adv, peer, time.Now())
+					})
 					diagnosticMu.Lock()
 					if err != nil {
 						lastError = err.Error()
@@ -108,7 +114,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 }
-func dialDarwin(ctx context.Context, cfg Config, address string, adv Advertisement, lease *localmesh.ConnectionLease) error {
+func dialDarwin(ctx context.Context, cfg Config, address string, adv Advertisement, lease *localmesh.ConnectionLease, authenticated func(meshid.Device)) error {
 	connection, err := central.Connect(address, 5)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -148,6 +154,9 @@ func dialDarwin(ctx context.Context, cfg Config, address string, adv Advertiseme
 		return fmt.Errorf("TLS handshake: %w", err)
 	}
 	defer secure.Close()
+	if authenticated != nil {
+		authenticated(peer)
+	}
 	if cfg.Selection != nil && !cfg.Selection.AllowRadio(peer, localmesh.RadioBLE) {
 		return nil
 	}

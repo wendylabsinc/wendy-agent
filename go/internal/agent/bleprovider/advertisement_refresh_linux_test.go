@@ -266,7 +266,7 @@ func (n *refreshTestNode) AttachStream(ctx context.Context, peer meshid.Device, 
 	<-ctx.Done()
 	return ctx.Err()
 }
-func TestAdvertisementRefreshOnlyAfterAuthenticatedInboundAdmission(t *testing.T) {
+func TestAdvertisementRefreshAfterAuthenticatedInbound(t *testing.T) {
 	for _, kind := range []string{"admitted", "untrusted", "full", "cheaper"} {
 		t.Run(kind, func(t *testing.T) {
 			server, client := metricsTLSConfigs(t)
@@ -315,7 +315,10 @@ func TestAdvertisementRefreshOnlyAfterAuthenticatedInboundAdmission(t *testing.T
 			}
 			_ = b.Close()
 			<-clientDone
-			if kind != "admitted" && len(r.advertisementRefresh) != 0 {
+			if kind == "cheaper" && len(r.advertisementRefresh) != 1 {
+				t.Fatal("authenticated LAN-preferred disconnect did not restore advertising")
+			}
+			if kind != "admitted" && kind != "cheaper" && len(r.advertisementRefresh) != 0 {
 				t.Fatal("rejected inbound requested refresh")
 			}
 		})
