@@ -54,6 +54,27 @@ an owner or administrator account. If cleanup fails, run the exact Cloud removal
 command printed in the error; it retains the old enrollment details needed to
 finish. See [device unenrollment](/docs/device/unenrollment) for recovery guidance.
 
+## Clear a device that Cloud no longer has
+
+If Cloud has no record of a reachable WendyOS device, `--force` clears only the
+device's local enrollment over the LAN so it can enroll again:
+
+```sh
+wendy device unenroll --device <device-address> --force
+```
+
+It asks for confirmation, or accepts `--yes` (required with `--json`). Cloud
+reports "not found" both for a missing device and for one your account cannot
+access, so make sure the device is no longer in use. `--force` refuses a device
+Cloud still lists, and stops on any other Cloud error. It does not delete a
+Cloud record or revoke the device certificate. It needs an updated agent, a
+sign-in to the device's organization and a direct LAN connection. To resume an
+interrupted Cloud removal, use `--asset-id` instead.
+
+If the connection drops before the device confirms, the command reports the
+reset as unconfirmed and keeps the saved device pins. After checking the device
+reset, clear them with `wendy device unpin <hostname-or-identity>`.
+
 ## Flags
 
 | Flag | Description |
@@ -62,7 +83,8 @@ finish. See [device unenrollment](/docs/device/unenrollment) for recovery guidan
 | `--cloud-only` | Remove Cloud access without connecting to the device. |
 | `--cloud-grpc` | Cloud endpoint of the saved sign-in to use. |
 | `--asset-id` | Check the exact Cloud asset UUID for a current WendyOS enrollment. Not available for Lite or Cloud-only removal. |
-| `--check` | Check the Cloud binding and agent reset support without making changes. Not available for Lite or Cloud-only removal. |
+| `--check` | Check the Cloud binding and agent reset support without making changes; with `--force`, check the forced local reset instead. Not available for Lite or Cloud-only removal. |
+| `--force` | Clear only the local enrollment of a device Cloud has no record of. Does not delete a Cloud record or revoke the certificate. Not available with `--asset-id`, for Lite, or for Cloud-only removal. |
 | `--yes` | Confirm removal without a prompt. Required when running non-interactively. |
 
 ## Related

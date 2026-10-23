@@ -68,7 +68,7 @@ func v2UnenrollPreflight(reply *v2AssetState, err error, j *v2UnenrollProgress) 
 			return nil
 		}
 		if status.Code(err) == codes.NotFound {
-			return fmt.Errorf("Cloud device not found; to resume an interrupted reset, supply its exact --asset-id: %w", err)
+			return fmt.Errorf("Cloud device not found or not visible to this account; to resume an interrupted reset, supply its exact --asset-id; if Cloud has no record of this device, --force clears only its local enrollment: %w", err)
 		}
 		return err
 	}
@@ -225,11 +225,19 @@ func v2UnenrollCloudContext(ctx context.Context, auth *config.AuthConfig) (conte
 	return metadata.AppendToOutgoingContext(rpcctx, "x-correlation-id", id), nil
 }
 
-func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly bool) error {
+func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, prov *agentpbv2.ProvisionedResponse, verifiedPeer *grpcpeer.Peer, override, assetOverride string, yes, checkOnly, force bool) error {
 	// SECURITY: only the authenticated-reset bit counts. CloudUnenrollmentSupported
 	// was advertised by prerelease Agents that trusted caller-supplied deletion
-	// fields, so it is ignored here, including for --check.
-	if !prov.GetCloudAuthenticatedResetSupported() {
+	// fields, so it is ignored here, including for --check. --force is a separate
+	// local-only mode with its own capability; it never runs the Cloud flow.
+	if force {
+		if assetOverride != "" {
+			return fmt.Errorf("--force clears only a local enrollment and cannot be combined with --asset-id")
+		}
+		if !prov.GetLocalResetSupported() {
+			return fmt.Errorf("this Agent does not support forced local enrollment reset; update it with 'wendy device update' and retry; no mutation performed")
+		}
+	} else if !prov.GetCloudAuthenticatedResetSupported() {
 		return fmt.Errorf("this Agent does not support Cloud-authenticated reset; update it with 'wendy device update' and retry; no mutation performed")
 	}
 	principal, err := certs.ParsePrincipal(prov.GetPrincipalUri())
@@ -275,20 +283,17 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return fmt.Errorf("--asset-id requires a canonical UUID")
 		}
 	}
-	tlsInfo := verifiedPeer.AuthInfo.(credentials.TLSInfo)
-	leaf := tlsInfo.State.PeerCertificates[0]
-	issuers := append([]*x509.Certificate{}, tlsInfo.State.PeerCertificates[1:]...)
-	storedChain, _ := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificateChain))
-	issuers = append(issuers, storedChain...)
-	issuer, err := unenrollproof.Issuer(leaf, issuers)
-	if err != nil {
-		return err
+	tlsInfo, ok := verifiedPeer.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return fmt.Errorf("verified peer certificate unavailable; no mutation performed")
 	}
+	leaf := tlsInfo.State.PeerCertificates[0]
 	operator, err := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificate))
 	if err != nil || len(operator) != 1 {
 		return fmt.Errorf("exact reset operator certificate required; no mutation performed")
 	}
 	j.Serial = leaf.SerialNumber.Text(16)
+	var issuer *x509.Certificate
 	svc := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn)
 	ops := v2UnenrollOps{
 		lookup: func(ctx context.Context, id string) (*v2AssetState, error) {
@@ -334,11 +339,32 @@ func runV2DeviceUnenroll(ctx context.Context, conn *grpcclient.AgentConnection, 
 		},
 	}
 	reply, err := ops.lookup(ctx, j.AssetID)
+	if force {
+		// Cloud also answers NotFound to a caller who cannot see the device, so
+		// NotFound alone never selects local reset: the operator must ask for it.
+		// A device Cloud still lists keeps the Cloud flow.
+		switch {
+		case err == nil:
+			return fmt.Errorf("Cloud still lists %s; --force only clears a device Cloud has no record of; rerun without --force to unenroll it through Cloud; no mutation performed", principal.Principal)
+		case status.Code(err) != codes.NotFound:
+			return fmt.Errorf("checking Cloud binding before forced local reset: %w", err)
+		}
+		return runV2LocalDeviceUnenroll(ctx, conn, prov, verifiedPeer, yes, checkOnly)
+	}
 	if checkOnly && err != nil {
 		return fmt.Errorf("checking active Cloud binding: %w", err)
 	}
 	if err := v2UnenrollPreflight(reply, err, &j); err != nil {
 		return fmt.Errorf("reading Cloud lifecycle: %w", err)
+	}
+	// Cloud cleanup still requires the installed leaf's issuer before mutation.
+	// Forced local cleanup needs neither an issuer nor OCSP evidence.
+	issuers := append([]*x509.Certificate{}, tlsInfo.State.PeerCertificates[1:]...)
+	storedChain, _ := certs.ParseCertsFromPEM([]byte(auth.Certificates[0].PemCertificateChain))
+	issuers = append(issuers, storedChain...)
+	issuer, err = unenrollproof.Issuer(leaf, issuers)
+	if err != nil {
+		return err
 	}
 	if checkOnly {
 		if jsonOutput {

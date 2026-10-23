@@ -383,10 +383,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	// A verified completed reset, including a recovered pending reset, has
 	// already erased its credentials. Reclaim owned kernel policy before
-	// exposing its receipt. A fresh unenrolled host has no such receipt and
+	// exposing its receipt. A local-only reset has no receipt but leaves a
+	// verified completion marker. A fresh unenrolled host has neither and
 	// must not require mesh firewall tools just to begin enrollment.
 	if resetStatus, err := provisioningSvcV2.IsProvisioned(ctx, &agentpbv2.IsProvisionedRequest{}); err == nil {
-		recoverCompletedResetMesh(ctx, resetStatus.GetNotProvisioned().GetUnenrollmentCompletion(), 5*time.Second,
+		completed := len(resetStatus.GetNotProvisioned().GetUnenrollmentCompletion()) != 0 || provisioningSvc.LocalResetCompleted()
+		recoverCompletedResetMesh(ctx, completed, 5*time.Second,
 			cleanupResetMesh, provisioningSvc.SetResetCleanupError, func(err error) {
 				logger.Error("Reset net cleanup incomplete; completion and enrollment remain unavailable", zap.Error(err))
 			})

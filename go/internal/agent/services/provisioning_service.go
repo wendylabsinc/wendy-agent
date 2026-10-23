@@ -44,6 +44,7 @@ type provisioningState struct {
 	PrincipalURI     string             `json:"principalURI,omitempty"`
 	ACMEDirectoryURL string             `json:"acmeDirectoryURL,omitempty"`
 	Unenrollment     *unenrollmentState `json:"unenrollment,omitempty"`
+	LocalReset       *localResetState   `json:"localReset,omitempty"`
 }
 
 // Public recovery evidence lives in the existing provisioning state, never
@@ -161,7 +162,7 @@ func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*tim
 	if len(clock) > 0 && clock[0] != nil {
 		svc.trustedTime = clock[0].FreshTime
 	}
-	svc.resetRecoveryErr = svc.recoverCloudReset()
+	svc.resetRecoveryErr = svc.recoverProvisioningReset()
 	if svc.resetRecoveryErr == nil {
 		svc.loadState()
 	}
@@ -430,11 +431,15 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
 	}
 
+	// A direct PKI identity is erased only under a protected pending record:
+	// Cloud-signed unenrollment, or an operator-requested local-only reset.
+	localReset := false
 	if s.principalURI != "" {
 		if expectedPrincipal == "" || expectedPrincipal != s.principalURI {
 			return nil, status.Error(codes.FailedPrecondition, "direct PKI reset requires the exact expected principal through v2")
 		}
-		if expectedFingerprint == "" || expectedFingerprint != s.certificateFingerprintLocked() || !s.cloudResetAuthorizedLocked() {
+		localReset = s.localResetAuthorizedLocked()
+		if expectedFingerprint == "" || expectedFingerprint != s.certificateFingerprintLocked() || !(localReset || s.cloudResetAuthorizedLocked()) {
 			return nil, status.Error(codes.FailedPrecondition, "verify Cloud unenrollment and installed-leaf PKI revocation before clearing enrollment keys")
 		}
 	}
@@ -445,9 +450,12 @@ func (s *ProvisioningService) unprovision(expectedPrincipal, expectedFingerprint
 	)
 
 	var cleanupErr error
-	if s.principalURI != "" {
+	switch {
+	case localReset:
+		cleanupErr = s.finishLocalReset()
+	case s.principalURI != "":
 		cleanupErr = s.finishCloudReset()
-	} else {
+	default:
 		cleanupErr = s.clearStateFiles()
 	}
 	if err := cleanupErr; err != nil {
