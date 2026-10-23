@@ -288,7 +288,8 @@ func runCloudDeviceUnenrollAndReset(cmd *cobra.Command, cloudGRPC, selector, dev
 		}
 		if deviceReset {
 			fmt.Fprintln(cmd.OutOrStdout(), "Cleared the board's enrollment identity. WiFi settings and apps were preserved. Run 'wendy device enroll' to enroll again.")
-		} else if reset == nil && device.v2 != nil && strings.HasPrefix(device.v2.GetPkiDeviceName(), "lite-") {
+		} else if reset == nil && device.v2 != nil && (device.isLite() || strings.HasPrefix(device.v2.GetPkiDeviceName(), "lite-")) {
+			// UUID-enrolled Lite boards lack the lite- prefix but report their OS type.
 			fmt.Fprintln(cmd.OutOrStdout(), "The device was not reset. Connect this Lite board over USB and run 'wendy device unenroll' to clear its stored identity before enrolling again.")
 		} else if reset == nil {
 			fmt.Fprintln(cmd.OutOrStdout(), "The device was not reset. If it still holds an issued identity, clear it through device recovery before enrolling again.")

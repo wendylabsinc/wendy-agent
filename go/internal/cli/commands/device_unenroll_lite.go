@@ -86,7 +86,8 @@ func runLiteDeviceUnenroll(cmd *cobra.Command, target models.ExternalDevice, clo
 		if err != nil {
 			return fmt.Errorf("verifying the board's cleared identity: %w", err)
 		}
-		if state == nil || state.Enrolled {
+		// Enrollment refuses a board that still reports a pending identity.
+		if state == nil || state.Enrolled || state.GetDeviceId() != "" {
 			return fmt.Errorf("the board did not confirm that its enrollment identity was cleared")
 		}
 		if err := device.ResetTargetDevice(true, 0); err != nil {

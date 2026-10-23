@@ -574,17 +574,28 @@ func TestCloudUnenrollWithResetStopsOnCloudFailure(t *testing.T) {
 }
 
 func TestCloudOnlyLiteUnenrollExplainsUSBRecovery(t *testing.T) {
-	preserveCloudUnenrollmentHooks(t)
-	service := &unenrollConfirmationServer{asset: unenrollTestCloudDevice(liteTestAssetID, "desk", "lite-441bf6804824").v2}
-	startUnenrollResetServer(t, service)
-	cmd := &cobra.Command{}
-	cmd.SetContext(context.Background())
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	if err := runCloudDeviceUnenroll(cmd, "", liteTestAssetID, "", true); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "Connect this Lite board over USB and run 'wendy device unenroll'") {
-		t.Fatalf("missing Lite recovery instructions: %q", output.String())
+	for _, tc := range []struct{ name, identity, osType string }{
+		{"hardware identity", "lite-441bf6804824", ""},
+		{"UUID identity", "44444444-4444-4444-8444-444444444444", liteCloudOSType},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveCloudUnenrollmentHooks(t)
+			asset := unenrollTestCloudDevice(liteTestAssetID, "desk", tc.identity).v2
+			if tc.osType != "" {
+				asset.OsType = proto.String(tc.osType)
+			}
+			service := &unenrollConfirmationServer{asset: asset}
+			startUnenrollResetServer(t, service)
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			if err := runCloudDeviceUnenroll(cmd, "", liteTestAssetID, "", true); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), "Connect this Lite board over USB and run 'wendy device unenroll'") {
+				t.Fatalf("missing Lite recovery instructions: %q", output.String())
+			}
+		})
 	}
 }

@@ -22,6 +22,7 @@ type fakeLiteUnenrollmentDevice struct {
 	challenge                                    *litepb.WendyComEnrollmentChallenge
 	challengeErr, resetErr, verifyErr, rebootErr error
 	stillEnrolled                                bool
+	retainedID                                   string
 	calls                                        []string
 }
 
@@ -38,7 +39,7 @@ func (d *fakeLiteUnenrollmentDevice) Close() error {
 func (d *fakeLiteUnenrollmentDevice) EnrollmentChallenge(statusOnly bool) (*litepb.WendyComEnrollmentChallenge, error) {
 	if statusOnly && len(d.calls) > 0 {
 		d.calls = append(d.calls, "verify")
-		return &litepb.WendyComEnrollmentChallenge{Enrolled: d.stillEnrolled}, d.verifyErr
+		return &litepb.WendyComEnrollmentChallenge{Enrolled: d.stillEnrolled, DeviceId: d.retainedID}, d.verifyErr
 	}
 	if statusOnly {
 		d.calls = append(d.calls, "preflight")
@@ -266,7 +267,7 @@ func TestLiteUnenrollPreflightPreservesCloud(t *testing.T) {
 }
 
 func TestLiteUnenrollChecksResetAndReboot(t *testing.T) {
-	for _, mode := range []string{"bad nonce", "reset", "verification", "still enrolled", "reboot"} {
+	for _, mode := range []string{"bad nonce", "reset", "verification", "still enrolled", "identity retained", "reboot"} {
 		t.Run(mode, func(t *testing.T) {
 			preserveLiteUnenrollmentHooks(t)
 			device := &fakeLiteUnenrollmentDevice{identity: &liteclient.DeviceIdentity{ID: "441bf6804824"}}
@@ -283,6 +284,10 @@ func TestLiteUnenrollChecksResetAndReboot(t *testing.T) {
 				wantCalls += ",verify"
 			case "still enrolled":
 				device.stillEnrolled = true
+				wantCalls += ",verify"
+			case "identity retained":
+				// Enrollment would reject this board as pending.
+				device.retainedID = "44444444-4444-4444-8444-444444444444"
 				wantCalls += ",verify"
 			case "reboot":
 				device.rebootErr = failure
