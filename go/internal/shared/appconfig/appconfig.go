@@ -881,21 +881,8 @@ func (c *AppConfig) Validate() error {
 		if err := ValidateEnv(fmt.Sprintf("services[%q].env", name), svc.Env); err != nil {
 			return err
 		}
-		ros2 := c.GetROS2Config()
-		if svc.Frameworks != nil && svc.Frameworks.ROS2 != nil {
-			ros2 = svc.Frameworks.ROS2
-		}
-		if ros2 != nil {
-			// Multi-service containers receive both app-level and service-level
-			// entitlements, so validate the effective network mode rather than the
-			// service slice alone. This also catches a service that isolates an
-			// inherited device/peripherals scope from the host network.
-			entitlements := make([]Entitlement, 0, len(c.Entitlements)+len(svc.Entitlements))
-			entitlements = append(entitlements, c.Entitlements...)
-			entitlements = append(entitlements, svc.Entitlements...)
-			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), ros2, entitlements); err != nil {
-				return err
-			}
+		if err := c.validateServiceROS2(name, svc); err != nil {
+			return err
 		}
 		if err := svc.Resources.validate(fmt.Sprintf("services[%q].resources", name)); err != nil {
 			return err
@@ -1127,18 +1114,34 @@ func (c *AppConfig) ValidateComposeCompanion() error {
 		return err
 	}
 	for name, svc := range c.Services {
-		if svc.Frameworks != nil {
-			// Services receive app-level and service-level entitlements.
-			entitlements := append(append([]Entitlement(nil), c.Entitlements...), svc.Entitlements...)
-			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2, entitlements); err != nil {
-				return err
-			}
+		if err := c.validateServiceROS2(name, svc); err != nil {
+			return err
 		}
 		if err := svc.Resources.validate(fmt.Sprintf("services[%q].resources", name)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// validateServiceROS2 validates the ROS 2 config a service runs with: its own,
+// or the app's when it has none.
+func (c *AppConfig) validateServiceROS2(name string, svc *ServiceConfig) error {
+	ros2 := c.GetROS2Config()
+	if svc.Frameworks != nil && svc.Frameworks.ROS2 != nil {
+		ros2 = svc.Frameworks.ROS2
+	}
+	if ros2 == nil {
+		return nil
+	}
+	// Multi-service containers receive both app-level and service-level
+	// entitlements, so validate the effective network mode rather than the
+	// service slice alone. This also catches a service that isolates an
+	// inherited device/peripherals scope from the host network.
+	entitlements := make([]Entitlement, 0, len(c.Entitlements)+len(svc.Entitlements))
+	entitlements = append(entitlements, c.Entitlements...)
+	entitlements = append(entitlements, svc.Entitlements...)
+	return validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), ros2, entitlements)
 }
 
 // isValidI2CDevice reports whether device is a safe I2C device name (i2c-N).

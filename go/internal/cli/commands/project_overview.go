@@ -69,17 +69,22 @@ func printProjectScope(cmd *cobra.Command, scope projectObject, title string) {
 		if domain == nil {
 			domain = "derived from appId"
 		}
-		rmw, distro, discovery := ros2["rmw"], ros2["distro"], ros2["discoveryScope"]
+		rmw, distro := ros2["rmw"], ros2["distro"]
 		if rmw == nil {
 			rmw = appconfig.ROS2DefaultRMW
 		}
 		if distro == nil {
 			distro = appconfig.ROS2DefaultDistro
 		}
-		if discovery == nil {
-			discovery = "app"
+		// ResolvedScope applies the default and translates a deprecated discoveryScope.
+		var cfg appconfig.ROS2Config
+		data, _ := json.Marshal(ros2)
+		_ = json.Unmarshal(data, &cfg)
+		topicScope := cfg.ResolvedScope()
+		if topicScope == "" {
+			topicScope = "invalid"
 		}
-		fmt.Fprintf(out, "  ROS 2: domain %v, %v, %v, discovery %v\n", domain, rmw, distro, discovery)
+		fmt.Fprintf(out, "  ROS 2: domain %v, %v, %v, scope %v\n", domain, rmw, distro, topicScope)
 	}
 	if len(entries) == 0 && len(fw) == 0 {
 		fmt.Fprintln(out, "  No local capabilities or integrations.")

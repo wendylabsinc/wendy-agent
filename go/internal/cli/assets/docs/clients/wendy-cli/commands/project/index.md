@@ -51,6 +51,12 @@ internet access. Use `--mode host` when the app needs the device's host network.
 Mesh networking also requires `--service-cidr`. Changing away from mesh removes
 the mesh-only service CIDR.
 
+ROS 2 `--scope` sets who can see the app's topics: `app`, `device` (the default),
+`peripherals`, or `network`. `device` and `peripherals` need the host network, so
+validation rejects them next to a `bridge` network entry. Manifests that still set
+the deprecated `discoveryScope` keep working; `wendy project show` reports the scope
+it behaves as.
+
 ## Service scope
 
 ```sh

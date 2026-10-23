@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 func projectTestCommand(t *testing.T, args ...string) (string, error) {
@@ -102,6 +103,7 @@ func TestProjectRejectsInvalidEditsWithoutWriting(t *testing.T) {
 		{"invalid storage path", []string{"add", "persist", "--name", "data", "--path", "relative"}, "absolute"},
 		{"bad domain", []string{"add", "ros2", "--domain-id", "233"}, "232"},
 		{"bad middleware", []string{"add", "ros2", "--rmw", "typo"}, "rmw"},
+		{"bad scope", []string{"edit", "ros2", "--scope", "everywhere"}, "must be one of"},
 		{"bad device", []string{"add", "serial", "--serial-device", "../../ttyUSB0"}, "serial device"},
 		{"mesh CIDR", []string{"add", "network", "--mode", "mesh"}, "--service-cidr"},
 		{"wrong flag", []string{"add", "camera", "--domain-id", "42"}, "does not use --domain-id"},
@@ -124,6 +126,43 @@ func TestProjectRejectsInvalidEditsWithoutWriting(t *testing.T) {
 				t.Fatal("invalid edit changed the file")
 			}
 		})
+	}
+}
+
+func TestProjectROS2ScopeWritesCurrentKey(t *testing.T) {
+	_, path := projectTestSetup(t, `{"appId":"robot"}`)
+	if _, err := projectTestCommand(t, "add", "ros2", "--scope", "network", "--file", path); err != nil {
+		t.Fatal(err)
+	}
+	data := readProjectTestFile(t, path)
+	if !strings.Contains(data, `"scope": "network"`) || strings.Contains(data, "discoveryScope") {
+		t.Fatalf("scope not written as frameworks.ros2.scope: %s", data)
+	}
+	if _, err := projectTestCommand(t, "edit", "ros2", "--discovery-scope", "host", "--file", path); err == nil {
+		t.Fatal("accepted the deprecated discovery scope flag")
+	}
+}
+
+func TestProjectOverviewShowsEffectiveROS2Scope(t *testing.T) {
+	for _, test := range []struct{ ros2, want string }{
+		{`{}`, "scope device"},
+		{`{"scope":"app"}`, "scope app"},
+		{`{"discoveryScope":"host"}`, "scope network"},
+	} {
+		_, path := projectTestSetup(t, `{"appId":"robot","frameworks":{"ros2":`+test.ros2+`}}`)
+		output, err := projectTestCommand(t, "show", "--file", path)
+		if err != nil || !strings.Contains(output, test.want) {
+			t.Errorf("%s: want %q in %s (%v)", test.ros2, test.want, output, err)
+		}
+	}
+}
+
+func TestProjectCatalogDescribesEveryEntitlement(t *testing.T) {
+	for _, name := range appconfig.ValidEntitlementTypes {
+		f, ok := findProjectFeature(name)
+		if !ok || f.label == "" || f.description == "" {
+			t.Errorf("%s: label %q, description %q", name, f.label, f.description)
+		}
 	}
 }
 

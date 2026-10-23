@@ -31,6 +31,7 @@ func projectCatalog() []projectFeature {
 		"i2c": "I2C bus", "gpio": "GPIO pins", "spi": "SPI bus", "usb": "USB access",
 		"serial": "USB serial device", "http": "Web interface", "mcp": "MCP server",
 		"input": "Input devices", "display": "Display access", "bluetooth": "Bluetooth access",
+		"avahi": "Private mDNS (Avahi)", "nan": "Wi-Fi Aware control",
 		"episode-write": "Episode recording", "notifications": "Notifications", "admin": "Agent administration",
 		"build": "Container builds", "video": "Video access (deprecated; use camera)",
 	}
@@ -79,7 +80,7 @@ func projectFields(name string) []projectField {
 			{"domainId", "domain-id", "Domain ID", "0 to 232; empty derives a stable ID from appId", "int", "", false},
 			{"rmw", "rmw", "Middleware", "cyclonedds, fastrtps, connextdds, or gurumdds", "string", appconfig.ROS2DefaultRMW, false},
 			{"distro", "distro", "ROS distribution", "For example humble or jazzy", "string", appconfig.ROS2DefaultDistro, false},
-			{"discoveryScope", "discovery-scope", "Discovery scope", "app: this app group; host: device network", "string", "app", false},
+			{"scope", "scope", "Scope", "Who sees the app's topics: app (only this app), device (every app on the device), peripherals (the device and attached hardware), or network", "string", appconfig.ROS2ScopeDevice, false},
 		}
 	}
 	return nil

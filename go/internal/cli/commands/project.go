@@ -17,6 +17,7 @@ import (
 var entitlementDescriptions = map[string]string{
 	appconfig.EntitlementNetwork:       "Access network interfaces",
 	appconfig.EntitlementBluetooth:     "Access Bluetooth peripherals",
+	appconfig.EntitlementAvahi:         "Run a private Avahi mDNS daemon for the app",
 	appconfig.EntitlementNAN:           "Control Wi-Fi Aware through the host NAN socket",
 	appconfig.EntitlementVideo:         "Deprecated: use camera instead",
 	appconfig.EntitlementGPU:           "Access GPU for AI or compute workloads",
