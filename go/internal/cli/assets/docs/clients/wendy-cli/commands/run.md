@@ -670,7 +670,9 @@ devices skip registration automatically.
 the CLI creates the release under the tag before the deploy, the device labels
 the container with it, and the CLI stores the image digest the device reports.
 It is off by default. Without it nothing is recorded, and the device still
-reports the app, which Cloud keeps as an unassigned app. It needs an
-enrolled device and a single-container app, and does not combine with
-`--watch` or `--skip-cloud-registration`. To record a release without
+reports the app, which Cloud keeps as an unassigned app. It needs a
+single-container app and one WendyOS device enrolled with Wendy Cloud, checked
+before anything is built. It does not combine with `--watch`,
+`--skip-cloud-registration`, several devices in one run, Compose projects or
+provider targets such as `--device docker`. To record a release without
 deploying, use [`wendy app release`](app/release.md).

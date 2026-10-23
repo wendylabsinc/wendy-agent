@@ -12,7 +12,6 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
-	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -95,6 +94,9 @@ func createAppRelease(ctx context.Context, conn grpc.ClientConnInterface, auth *
 	if err != nil {
 		return "", fmt.Errorf("creating release %s of %s: %w", tag, appID, err)
 	}
+	if release.GetId() == "" {
+		return "", fmt.Errorf("creating release %s of %s: Cloud returned no release id", tag, appID)
+	}
 	return release.GetId(), nil
 }
 
@@ -105,17 +107,30 @@ func setAppReleaseDigest(ctx context.Context, conn grpc.ClientConnInterface, aut
 		&cloudpb.UpdateAppReleaseRequest{Id: id, Name: tag, ImageDigest: digest}, new(cloudpb.AppRelease))
 }
 
+// errRecordReleaseUnsupported refuses --record-release before anything is
+// built, for a deploy it cannot record.
+func errRecordReleaseUnsupported(what string) error {
+	return usageErrorf("--record-release cannot record %s; it records one container deployed to one WendyOS device", what)
+}
+
+// releaseCallTimeout bounds each release call to Cloud, as app registration
+// is bounded.
+const releaseCallTimeout = 15 * time.Second
+
 // deployRelease records one `wendy run --record-release <tag>` deploy. The
-// release is created only when a path that supports recording is about to
-// send the container, so a failed build or an unsupported path leaves nothing
-// behind; the digest is stored as soon as the agent reports it, so an attached
-// session ended with Ctrl-C still completes the release.
+// device's organization and operator session are found before the build, so
+// a device that cannot record is refused up front. The release is created
+// only when a path that supports recording is about to send the container, so
+// a failed build or an unsupported path leaves nothing behind; the digest is
+// stored as soon as the agent reports it, so an attached session ended with
+// Ctrl-C still completes the release.
 type deployRelease struct {
 	appID, tag string
 
 	mu     sync.Mutex
+	auth   *config.AuthConfig // operator session for the device's organization
+	tenant string             // the device's organization
 	id     string
-	auth   *config.AuthConfig
 	stored bool
 	err    error // why the digest was not stored
 }
@@ -127,33 +142,48 @@ func newDeployRelease(appID, tag string) (*deployRelease, error) {
 	return &deployRelease{appID: appID, tag: tag}, nil
 }
 
-// begin creates the release in the organization of the device behind conn,
-// with the operator session that deploys to it, and returns its id for the
-// container. A nil recorder records nothing.
-func (r *deployRelease) begin(ctx context.Context, conn *grpcclient.AgentConnection) (*string, error) {
+// prepare finds the organization of the device behind provisioning and the
+// operator session that deploys to it. It creates nothing.
+func (r *deployRelease) prepare(ctx context.Context, provisioning deploymentProvisioningClient, loadConfig func() (*config.Config, error)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, releaseCallTimeout)
+	defer cancel()
+	err := registerDeviceApps(ctx, provisioning, []string{r.appID}, loadConfig,
+		func(_ context.Context, auth *config.AuthConfig, device *agentpb.ProvisionedResponse, _ []string) error {
+			identity, err := certs.ParsePrincipal(device.GetPrincipalUri())
+			if err != nil || identity.TenantUUID == "" {
+				return fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud v2")
+			}
+			r.auth, r.tenant = auth, identity.TenantUUID
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	if r.tenant == "" {
+		return fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud")
+	}
+	return nil
+}
+
+// begin creates the release, once, in the organization prepare found and
+// returns its id for the container. A nil recorder records nothing.
+func (r *deployRelease) begin(ctx context.Context) (*string, error) {
 	if r == nil {
 		return nil, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.id == "" {
-		err := registerDeviceApps(ctx, deploymentProvisioningService{conn}, []string{r.appID}, config.Load,
-			func(ctx context.Context, auth *config.AuthConfig, device *agentpb.ProvisionedResponse, _ []string) error {
-				identity, err := certs.ParsePrincipal(device.GetPrincipalUri())
-				if err != nil || identity.TenantUUID == "" {
-					return fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud v2")
-				}
-				return withCloud(ctx, auth, func(ctx context.Context, cc grpc.ClientConnInterface) (err error) {
-					r.auth = auth
-					r.id, err = createAppRelease(ctx, cc, auth, identity.TenantUUID, r.appID, r.tag)
-					return err
-				})
-			})
+		ctx, cancel := context.WithTimeout(ctx, releaseCallTimeout)
+		defer cancel()
+		err := withCloud(ctx, r.auth, func(ctx context.Context, cc grpc.ClientConnInterface) (err error) {
+			r.id, err = createAppRelease(ctx, cc, r.auth, r.tenant, r.appID, r.tag)
+			return err
+		})
 		if err != nil {
 			return nil, err
-		}
-		if r.id == "" {
-			return nil, fmt.Errorf("--record-release needs a device enrolled with Wendy Cloud")
 		}
 	}
 	id := r.id
@@ -168,7 +198,7 @@ func (r *deployRelease) store(ctx context.Context, digest string) {
 	if r.id == "" || r.stored {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseCallTimeout)
 	defer cancel()
 	r.err = withCloud(ctx, r.auth, func(ctx context.Context, cc grpc.ClientConnInterface) error {
 		return setAppReleaseDigest(ctx, cc, r.auth, r.id, r.tag, digest)
@@ -192,6 +222,8 @@ func (r *deployRelease) outcome(deployErr error) error {
 		return nil
 	case r.err != nil:
 		return fmt.Errorf("release %s (%s) was created without its digest: %w", r.id, r.tag, r.err)
+	case deployErr != nil:
+		return fmt.Errorf("release %s (%s) was created, but the deploy failed before the device reported an image digest; it stays without one", r.id, r.tag)
 	default:
 		return fmt.Errorf("release %s (%s) was created, but the device reported no image digest (an older agent?); it stays without one", r.id, r.tag)
 	}

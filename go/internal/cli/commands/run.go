@@ -1052,6 +1052,10 @@ func runCommand(ctx context.Context, opts runOptions) (retErr error) {
 		if err := validateFleetRun(extras, opts.buildHost, opts.detach); err != nil {
 			return err
 		}
+		// Every device would carry the release created for the first one.
+		if opts.recordRelease != "" {
+			return errRecordReleaseUnsupported("a deploy to several devices")
+		}
 		deviceFlag = primary
 		opts.fleetDevices = extras
 		opts.detachedOutput = false
@@ -1093,6 +1097,9 @@ func runCommand(ctx context.Context, opts runOptions) (retErr error) {
 		}
 		if opts.waitReady {
 			return errWaitReadyUnsupported("Compose projects")
+		}
+		if opts.recordRelease != "" {
+			return errRecordReleaseUnsupported("a Compose project")
 		}
 		return runComposeCommand(ctx, cwd, opts)
 	}
@@ -1855,6 +1862,9 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if opts.waitReady || opts.readinessTimeout != 0 {
 		return commandErrorf(errConfigInvalid, "--wait-ready and --readiness-timeout require a WendyOS device target")
 	}
+	if opts.recordRelease != "" {
+		return errRecordReleaseUnsupported("a deploy to a provider target")
+	}
 	if opts.builder != "" {
 		return commandErrorf(errConfigInvalid, "--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
 	}
@@ -2196,17 +2206,27 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		return err
 	}
 	opts = opts.withConfiguredRestartPolicy(appCfg.RestartPolicy)
-	if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
-		return err
-	}
 	if opts.recordRelease != "" {
 		// ponytail: one container per recorded deploy; multi-service apps and
 		// watch loops need a release per service or per cycle first.
-		if len(appCfg.Services) > 0 || opts.isWatch() || opts.skipCloudRegistration {
-			return usageErrorf("--record-release supports a single-container deploy without --watch or --skip-cloud-registration")
+		switch {
+		case len(appCfg.Services) > 0:
+			return errRecordReleaseUnsupported("a multi-service app")
+		case opts.isWatch():
+			return errRecordReleaseUnsupported("a --watch loop")
+		case opts.skipCloudRegistration:
+			return errRecordReleaseUnsupported("an offline deploy (--skip-cloud-registration)")
 		}
 		var err error
 		if opts.release, err = newDeployRelease(appCfg.AppID, opts.recordRelease); err != nil {
+			return err
+		}
+	}
+	if err := registerCloudApps(ctx, conn, []string{appCfg.AppID}, opts.skipCloudRegistration); err != nil {
+		return err
+	}
+	if opts.release != nil {
+		if err := opts.release.prepare(ctx, deploymentProvisioningService{conn}, config.Load); err != nil {
 			return err
 		}
 		ctx = withDeployRelease(ctx, opts.release)
@@ -2799,7 +2819,7 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 // optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
 	activationStep(ctx, "deploy", nil)
-	releaseID, err := opts.release.begin(ctx, conn)
+	releaseID, err := opts.release.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -3637,7 +3657,6 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
-			noteImageDigest(ctx, resp.GetStarted().GetImageDigest())
 			if !started {
 				started = true
 				if onStarted != nil && !opts.deploy {
@@ -3645,6 +3664,8 @@ func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentCo
 				}
 			}
 			rc("  ↳ runcontainer: device create+start")
+			// Storing the digest is a Cloud call, not the device's create+start.
+			noteImageDigest(ctx, resp.GetStarted().GetImageDigest())
 			if opts.deploy {
 				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
@@ -4132,7 +4153,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		logSub = startRunLogSubscription(ctx, pushConn, appCfg.AppID, os.Stdout, runLogStreamWarning)
 		defer logSub.stop()
 	}
-	releaseID, err := opts.release.begin(ctx, pushConn)
+	releaseID, err := opts.release.begin(ctx)
 	if err != nil {
 		return nil, hint, err
 	}
