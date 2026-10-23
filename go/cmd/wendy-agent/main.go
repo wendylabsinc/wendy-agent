@@ -16,11 +16,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	wendy "github.com/wendylabsinc/wendy-go"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -149,7 +152,7 @@ func main() {
 	telemetryCore := services.NewTelemetryCore(telemetryBuf, zapcore.DebugLevel)
 	logger = zap.New(zapcore.NewTee(logger.Core(), telemetryCore))
 
-	logger.Info("Starting wendy-agent", zap.String("version", version.Version))
+	logger.Info("Starting wendy-agent", zap.String("version", version.Version), zap.String("core_version", wendy.CoreVersion()))
 
 	configPath := "/etc/wendy-agent"
 	if envPath := os.Getenv("WENDY_CONFIG_PATH"); envPath != "" {
@@ -1764,7 +1767,11 @@ func handleUtilityCommand(args []string) (bool, int) {
 	}
 
 	if args[0] == "--version" || args[0] == "-v" {
-		fmt.Println(version.Version)
+		if slices.Contains(args[1:], "--verbose") {
+			fmt.Printf("Agent: %s\nCore: %s\nGo: %s\n", version.Version, wendy.CoreVersion(), runtime.Version())
+		} else {
+			fmt.Println(version.Version)
+		}
 		return true, 0
 	}
 
