@@ -1014,7 +1014,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 	if seekableZst != "" || bmapPath != "" {
-		// bmap failures fall back silently; suppress the TUI error render
+		// a bmap failure falls back and its reason is printed then; suppress the TUI error render
 		writeProg = writeProg.WithoutErrorView()
 	}
 	wp := tui.NewProgressProgram(writeProg)
@@ -1122,6 +1122,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		if err := checkImageFitsDrive(fallbackSize, targetDrive); err != nil {
 			return fmt.Errorf("%w; full-image fallback skipped: %v", primary, err)
 		}
+		announceFastWriteFallback(os.Stdout, primary)
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
@@ -1764,7 +1765,7 @@ func streamZipImageEntry(zipPath string) (*imageStream, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(f.Name))
-		// .sdimg is the A/B disk image RPi targets now produce.
+		// .sdimg is the disk image older Raspberry Pi releases shipped.
 		if ext != ".img" && ext != ".raw" && ext != ".wic" && ext != ".sdimg" {
 			continue
 		}
@@ -2719,11 +2720,11 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 		return fmt.Errorf("this device only supports one Wi-Fi network")
 	}
 
-	// An empty serial device means "find it for me", which stays true across
-	// retries below: a reset re-enumerates the USB device and the node can
-	// come back under a different path. An explicitly supplied device is used
-	// verbatim on every attempt.
+	// An explicitly supplied device is used verbatim on every attempt. For
+	// discovered devices, preserve the selected port across retries and ask
+	// again if it disappears, since a different port may be another board.
 	autoDiscoverPort := serialDevice.Port == ""
+	interactive := !jsonOutput && isInteractiveTerminal()
 	if autoDiscoverPort {
 		fmt.Println("\nScanning for ESP32 devices...")
 
@@ -2731,8 +2732,12 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 		// the USB bus as it re-enumerates, so a single scan can miss it.
 		// Retry briefly rather than failing on the very first attempt.
 		deadline := time.Now().Add(1 * time.Second)
+		var devices []discovery.SerialPortInfo
 		for {
-			serialDevice, err = discovery.ResolveESP32InstallSerialPort()
+			devices, err = discovery.ResolveESP32InstallSerialPorts()
+			if err == nil && len(devices) == 0 {
+				err = fmt.Errorf("no ESP32 serial port found")
+			}
 			if err == nil || time.Now().After(deadline) {
 				break
 			}
@@ -2744,16 +2749,13 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 			fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
 			return fmt.Errorf("ESP32 not found: %w", err)
 		}
+		serialDevice, err = selectESP32InstallDevice(devices, discovery.SerialPortInfo{}, interactive, pickFromItems)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Println(esp32InstallCandidateMessage(serialDevice))
-	if serialDevice.Transport == discovery.SerialTransportUARTBridge {
-		fmt.Fprintln(os.Stderr, tui.WarningMessage(esp32UARTBridgeInstallWarning(len(provCreds) > 0)))
-		if requiresESP32UARTConfirmation(serialDevice, len(provCreds) > 0, isInteractiveTerminal()) &&
-			!confirmDefaultNoFn("Continue flashing through USB-UART without WiFi?") {
-			return ErrUserCancelled
-		}
-	}
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
 	firmwareID, err := WendyLiteFirmwareID(board)
@@ -2798,7 +2800,6 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 	// gets the plain retry prompt. Prompting is skipped entirely when the run
 	// isn't interactive or is producing JSON, so those fail immediately on the
 	// first attempt, unchanged from before this loop existed.
-	interactive := !jsonOutput && isInteractiveTerminal()
 	for attempt := 1; ; attempt++ {
 		// Native USB reset can re-enumerate at a different path (macOS:
 		// /dev/cu.usbmodem101 → /dev/cu.usbmodem1101). Re-scan install-capable
@@ -2806,9 +2807,23 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 		// A failed re-scan keeps the last known candidate and lets the attempt
 		// report the real error.
 		if attempt > 1 && autoDiscoverPort {
-			if rescanned, rescanErr := discovery.ResolveESP32InstallSerialPort(); rescanErr == nil && rescanned != serialDevice {
-				fmt.Printf("ESP32 reappeared at %s\n", rescanned.Port)
-				serialDevice = rescanned
+			if devices, rescanErr := discovery.ResolveESP32InstallSerialPorts(); rescanErr == nil && len(devices) > 0 {
+				selected, selectErr := selectESP32InstallDevice(devices, serialDevice, interactive, pickFromItems)
+				if selectErr != nil {
+					return selectErr
+				}
+				if selected.Port != serialDevice.Port {
+					fmt.Println(esp32InstallCandidateMessage(selected))
+				}
+				serialDevice = selected
+			}
+		}
+
+		if serialDevice.Transport == discovery.SerialTransportUARTBridge {
+			fmt.Fprintln(os.Stderr, tui.WarningMessage(esp32UARTBridgeInstallWarning(len(provCreds) > 0)))
+			if requiresESP32UARTConfirmation(serialDevice, len(provCreds) > 0, interactive) &&
+				!confirmDefaultNoFn("Continue flashing through USB-UART without WiFi?") {
+				return ErrUserCancelled
 			}
 		}
 

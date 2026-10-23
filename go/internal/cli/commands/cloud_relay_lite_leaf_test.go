@@ -114,16 +114,38 @@ func TestLiteRelayOptionsUseTheLiteLeafNotThePrimary(t *testing.T) {
 	// A later session switch must not redirect an in-flight device handshake's
 	// trust lookup.
 	var gotEndpoint, gotTenant string
-	real := discoverLiteDeviceCAChain
-	discoverLiteDeviceCAChain = func(_ context.Context, endpoint, tenant string) (string, error) {
+	fallback := liteDeviceCAChainVia(auth, func(_ context.Context, endpoint, tenant string) (string, error) {
 		gotEndpoint, gotTenant = endpoint, tenant
 		return "", nil
-	}
-	t.Cleanup(func() { discoverLiteDeviceCAChain = real })
+	})
 	auth.PKIEndpoint = ""
 	auth.Certificates[0].PrincipalURI = "invalid"
-	if _, err := options.DeviceTrustFallback(context.Background()); err != nil || gotEndpoint != "https://identity.selected.example/v1/identity/certificate" || gotTenant != liteTestTenant {
+	if _, err := fallback(context.Background()); err != nil || gotEndpoint != "https://identity.selected.example/v1/identity/certificate" || gotTenant != liteTestTenant {
 		t.Fatalf("device trust discovery = %q, %q, %v; want the selected PKI and tenant", gotEndpoint, gotTenant, err)
+	}
+}
+
+// A verifier may start discovery after its caller replaces the local discovery
+// function. It must keep the function selected when it was created.
+func TestLiteDeviceCAChainKeepsSelectedDiscovery(t *testing.T) {
+	discover := func(context.Context, string, string) (string, error) {
+		return "selected device CA chain", nil
+	}
+	lookup := liteDeviceCAChainVia(liteTestAuth("cloud.example:443"), discover)
+	discover = func(context.Context, string, string) (string, error) {
+		return "replacement device CA chain", nil
+	}
+	replacement := liteDeviceCAChainVia(liteTestAuth("cloud.example:443"), discover)
+	if got, err := replacement(context.Background()); err != nil || got != "replacement device CA chain" {
+		t.Fatalf("replacement device CA chain = %q, %v; want the replacement discovery function", got, err)
+	}
+	result := make(chan string, 1)
+	go func() {
+		chain, _ := lookup(context.Background())
+		result <- chain
+	}()
+	if got := <-result; got != "selected device CA chain" {
+		t.Fatalf("device CA chain = %q; want the selected discovery function", got)
 	}
 }
 
@@ -367,5 +389,23 @@ func TestSessionLiteCertificateReusesLeafCappedByPrimary(t *testing.T) {
 	auth.Certificates[0].PemCertificate = liteLeafPEM(t, key, principal, expiry.Add(time.Hour), false)
 	if _, ok := sessionLiteCertificate(auth, liteRenewMargin); ok {
 		t.Fatal("short leaf under a longer primary was reused")
+	}
+}
+
+// Each verifier keeps the discovery it was built with, so concurrent sessions
+// (and tests) never observe each other's lookups.
+func TestLiteDeviceCAChainKeepsItsOwnDiscovery(t *testing.T) {
+	for _, chain := range []string{"first", "second"} {
+		t.Run(chain, func(t *testing.T) {
+			t.Parallel()
+			fallback := liteDeviceCAChainVia(liteTestAuth("cloud.example:443"), func(context.Context, string, string) (string, error) {
+				return chain, nil
+			})
+			for range 100 {
+				if got, err := fallback(context.Background()); err != nil || got != chain {
+					t.Fatalf("discovery = %q, %v; want %q", got, err, chain)
+				}
+			}
+		})
 	}
 }

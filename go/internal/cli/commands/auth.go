@@ -112,10 +112,9 @@ func newAuthLoginCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Signs in to production Wendy Cloud using the browser-based OIDC flow by default. The browser collects your email and organization. The CLI obtains an operator certificate from pki-core and saves a refreshable Cloud API session. Pass --email to discover your realm before opening the browser, or --issuer to name it directly.\n" +
-			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
-			"With --service-account <key-file> (or " + serviceAccountKeyEnv + "): signs in headlessly as a wendy-auth service account; no browser or terminal is needed.",
+		Short: "Sign in to Wendy Cloud",
+		Long: "Sign in to Wendy Cloud in your browser, choose your organization, then return to the terminal. Wendy saves the sign-in for later commands. Pass --email to supply your email first.\n" +
+			"For scripts, use --service-account <key-file> or " + serviceAccountKeyEnv + ": no browser or terminal is needed. Use --api-key only for a self-hosted deployment that supports it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targetCount := 0
 			for _, selected := range []bool{production, development, legacy} {
@@ -235,16 +234,16 @@ func newAuthLoginCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&cloudDashboard, "cloud", "", "Cloud dashboard URL")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint, or local pki-core address (host:port) when using --api-key")
-	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer API key for local pki-core authentication")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud API endpoint, or self-hosted authentication address (host:port) with --api-key")
+	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key for a self-hosted authentication service")
 	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID for --api-key local login. For Wendy Cloud, each login is stored as an auth context; switch with 'wendy auth use <context>'.")
 	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.dev/realms/acme")
 	cmd.Flags().StringVar(&email, "email", "", "Email address for explicit organization discovery with wendy-auth")
 	cmd.Flags().StringVar(&authBase, "auth", defaultProdAuthBase, "wendy-auth base URL for browser login and --email discovery")
 	cmd.Flags().StringVar(&clientID, "client-id", "wendy-cli", "public DPoP OAuth client ID registered in wendy-auth")
 	cmd.Flags().StringVar(&resource, "resource", "", "RFC 8707 API resource indicator (used with OIDC login)")
-	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
-	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultProdPKIIdentityEndpoint, "pki-core operator identity CSR endpoint")
+	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "Certificate service authentication audience for browser login")
+	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultProdPKIIdentityEndpoint, "Certificate service URL for personal sign-in")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
 	cmd.Flags().StringVar(&serviceAccount, "service-account", "", "Service-account key file for headless login (or set "+serviceAccountKeyEnv+" to its contents)")
 	// Keep explicit environment selection and the legacy flow available without
@@ -516,15 +515,18 @@ func newAuthLogoutCmd() *cobra.Command {
 }
 
 func newAuthRefreshCertsCmd() *cobra.Command {
-	return &cobra.Command{
+	var all bool
+	cmd := &cobra.Command{
 		Use:   "refresh-certs",
-		Short: "Refresh mTLS certificates",
-		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials.",
+		Short: "Renew the current sign-in certificate",
+		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials. Only the current auth context (see 'wendy auth use') is refreshed unless --all asks for every stored context.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			err := refreshAllCerts(ctx)
-			if err == nil {
-				return nil
+			err := refreshCerts(ctx, all)
+			if err == nil || all {
+				// --all has no single session to log back into; each context's
+				// outcome is already printed.
+				return err
 			}
 			// An expired/absent session cannot be fixed by refreshing (there is no
 			// valid identity to refresh with) — offer to log in again instead, which
@@ -536,13 +538,18 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "Refresh every stored auth context")
+	return cmd
 }
 
-// refreshAllCerts re-issues certificates for every stored auth entry and
-// saves the updated config. It returns an error when not logged in or when
-// no entry could be refreshed, so callers that retry a connection afterwards
-// do not retry with the same stale certificates.
-func refreshAllCerts(ctx context.Context) error {
+// refreshCerts re-issues certificates and saves the updated config. It renews
+// the current context, or the only stored session; with all set it renews
+// every stored context, and one failing does not stop the rest. A context that was not selected is never touched: an OIDC refresh
+// consumes the session's rotating refresh token (WDY-3864). It returns an
+// error when nothing was refreshed, or under all when any context failed, so
+// callers that retry a connection afterwards do not retry with the same stale
+// certificates.
+func refreshCerts(ctx context.Context, all bool) error {
 	// OIDC certificate refresh consumes the same rotating token family as API
 	// refresh. Keep the lock through the final Save, including partial failures.
 	unlock, err := acquireAuthRefreshLock(ctx)
@@ -558,34 +565,59 @@ func refreshAllCerts(ctx context.Context) error {
 	if len(cfg.Auth) == 0 {
 		return fmt.Errorf("not logged in; run 'wendy auth login' first")
 	}
-	for i := range cfg.Auth {
-		cfg.Auth[i].InvalidateCachedSecrets()
+
+	var targets []*config.AuthConfig
+	if all {
+		for i := range cfg.Auth {
+			targets = append(targets, &cfg.Auth[i])
+		}
+	} else {
+		current, err := config.ResolveAuth(cfg, "", nil)
+		if errors.Is(err, config.ErrMultipleSessions) {
+			return fmt.Errorf("no current auth context; run 'wendy auth use <context>' or pass --all")
+		}
+		if err != nil {
+			return err
+		}
+		targets = append(targets, current)
 	}
 
 	refreshed := 0
+	var failed []error
 	var lastErr error
-	for i, auth := range cfg.Auth {
+	for _, auth := range targets {
+		auth.InvalidateCachedSecrets()
+		label := fmt.Sprintf("context %q (%s)", auth.Name, auth.CloudDashboard)
 		if len(auth.Certificates) == 0 {
-			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", label)))
 			continue
 		}
 
-		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", label)))
 
-		if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
-			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
+		if err := refreshCertsForAuthFn(ctx, auth); err != nil {
+			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", label, err)))
+			failed = append(failed, fmt.Errorf("context %q: %w", auth.Name, err))
 			lastErr = err
 			continue
 		}
 
 		refreshed++
-		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
+		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", label)))
 	}
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
+	if all {
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshed %d of %d auth contexts.", refreshed, len(targets))))
+		if len(failed) > 0 {
+			// Keep each cause in the chain so errors.Is (e.g. context.Canceled
+			// after Ctrl-C) and the error class still see it.
+			return fmt.Errorf("failed to refresh %d auth context(s): %w", len(failed), errors.Join(failed...))
+		}
+	}
 	if refreshed == 0 {
 		// Preserve the underlying failure (e.g. an unauthorized CertificateError)
 		// so the caller can detect an expired session and offer re-login.
@@ -595,6 +627,60 @@ func refreshAllCerts(ctx context.Context) error {
 		return fmt.Errorf("no certificates were refreshed")
 	}
 	return nil
+}
+
+// switchContextStep is the advice for a certificate rejected by a device in
+// org when renewing the current context would not fix it, so recovery says
+// what to do instead of spending the wrong session's refresh token
+// (WDY-3864). It names the stored context holding the org's certificate,
+// preferring the operator session over a legacy one as config.preferAuth
+// does. When org is unknown and several contexts hold certificates, it names
+// them all rather than guessing. It returns "" when renewing the current
+// context is the fix.
+func switchContextStep(org int32) string {
+	cfg, err := config.Load()
+	if err != nil {
+		return ""
+	}
+	current, _ := config.ResolveAuth(cfg, "", nil)
+	var holder *config.AuthConfig
+	var names []string
+	for i := range cfg.Auth {
+		a := &cfg.Auth[i]
+		if len(a.Certificates) == 0 {
+			continue
+		}
+		name := a.Name
+		if current != nil && a.Name == current.Name {
+			name += " (current)"
+		}
+		names = append(names, name)
+		if org == 0 || a.Certificates[0].OrganizationID != int(org) {
+			continue
+		}
+		if current != nil && a.Name == current.Name {
+			return ""
+		}
+		if holder == nil || (holder.OAuthIssuer == "" && a.OAuthIssuer != "") {
+			holder = a
+		}
+	}
+	if holder != nil {
+		return fmt.Sprintf("Run 'wendy auth use %s', then 'wendy auth refresh-certs', then retry.", holder.Name)
+	}
+	if org != 0 || len(names) == 0 || (len(names) == 1 && current != nil) {
+		return ""
+	}
+	return fmt.Sprintf("The device's organization is unknown, so its certificate may be held by any of these contexts: %s. Run 'wendy auth use <context>' for the device's organization if it is not the current one, then 'wendy auth refresh-certs', then retry.", strings.Join(names, ", "))
+}
+
+// refreshCertsStep is the advice for renewing a rejected certificate:
+// switchStep from switchContextStep, or a plain refresh of the current context.
+func refreshCertsStep(switchStep string) string {
+	if switchStep != "" {
+		return switchStep
+	}
+	return "Run 'wendy auth refresh-certs', then retry."
 }
 
 // firstAuthEntryForRelogin returns the stored auth entry a re-login should target

@@ -81,7 +81,11 @@ Discovery shows online devices by default. `--all` includes offline devices;
 or UUID returned by discovery, rather than a legacy numeric asset ID.
 
 Run `wendy device set-default`, open its **Cloud** tab, and press **d** on the
-intended device. From your app's project directory:
+intended device. Press **d** again on the default to clear it; the same key works
+in the live `wendy cloud discover` table. The saved choice keeps its Cloud
+endpoint, organization, and device identity, so renaming the device or switching
+context does not retarget it. Use `--device` to override it for one command.
+From your app's project directory:
 
 ```sh
 wendy run
