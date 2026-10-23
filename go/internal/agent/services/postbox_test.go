@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/url"
@@ -409,7 +410,7 @@ func TestPostboxRefusesNamedAndRunsNothing(t *testing.T) {
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, true},
 		{"lifetime beyond the cap", func(f *pbFixture) {
 			f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, func(c map[string]any) {
-				c["iat"], c["expiry"] = f.now.Unix()-3600, f.now.Unix()+3600
+				c["iat"], c["expiry"] = f.now.Unix()-1800, f.now.Unix()+3600 // iat inside the operator cert validity
 			})
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, true},
 		{"header alg is not the leaf's", func(f *pbFixture) {
@@ -440,8 +441,20 @@ func TestPostboxRefusesNamedAndRunsNothing(t *testing.T) {
 			if len(f.ctr.stopCalls)+len(f.ctr.startedNames) != 0 {
 				t.Fatalf("ran something: stop %v start %v", f.ctr.stopCalls, f.ctr.startedNames)
 			}
-			if o := f.outcome("web"); o.Outcome != tc.want || o.EntryID == 0 {
-				t.Fatalf("outcome = %+v, want %v", o, tc.want)
+			// Only a request verified as signed for this device reports against
+			// an app; every other refusal is its audit line and counter.
+			want := postboxOutcome{}
+			if tc.want == cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE {
+				want = postboxOutcome{EntryID: 1, Outcome: tc.want}
+			}
+			if o := f.outcome("web"); o.Outcome != want.Outcome || o.EntryID != want.EntryID {
+				t.Fatalf("outcome = %+v, want %+v", o, want)
+			}
+			if n := f.p.refusals[map[cloudpbv2.ApplyOutcome]string{
+				cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE:  "stale",
+				cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET: "target",
+			}[tc.want]] + f.p.refusals["signature"] + f.p.refusals["chain"]; n != 1 {
+				t.Fatalf("refusals = %v, want one", f.p.refusals)
 			}
 			st := f.p.snapshot()
 			if want := map[bool]int64{true: 1, false: 0}[tc.advance]; st.HighWater != want || st.Acked != want || len(f.cloud.acks) != int(want) {
@@ -474,6 +487,67 @@ func TestPostboxRefusesReplayedNonceAcrossRestart(t *testing.T) {
 	}
 	if st := f.p.snapshot(); st.HighWater != 2 || st.Acked != 2 {
 		t.Fatalf("state = %+v", st)
+	}
+}
+
+func TestPostboxForgedEntryKeepsAppOutcome(t *testing.T) {
+	f := newPBFixture(t)
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.cycle()
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_START, nil).RequestPayload = []byte("forged")
+	f.cycle()
+	if o := f.outcome("web"); o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED || o.EntryID != 1 {
+		t.Fatalf("outcome = %+v, want entry 1's APPLIED kept", o)
+	}
+	if f.p.refusals["signature"] != 1 || f.p.snapshot().HighWater != 2 {
+		t.Fatalf("refusals %v, state %+v", f.p.refusals, f.p.snapshot())
+	}
+}
+
+func TestPostboxFailedSaveLeavesEntryForNextCycle(t *testing.T) {
+	f := newPBFixture(t)
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.p.write = func(string, string, []byte) error { return errors.New("disk full") }
+	f.cycle()
+	if st := f.p.snapshot(); st.HighWater != 0 || st.HeadHash != nil || len(st.Nonces) != 0 || st.Pending != nil || len(f.ctr.stopCalls) != 0 || len(f.cloud.acks) != 0 {
+		t.Fatalf("failed save moved state %+v / stop %v / acks %d", st, f.ctr.stopCalls, len(f.cloud.acks))
+	}
+
+	f.p.write = writeProvisioningFile
+	f.cycle()
+	if len(f.ctr.stopCalls) != 1 || f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED || f.p.snapshot().HighWater != 1 {
+		t.Fatalf("entry not reprocessed: stop %v, outcome %+v", f.ctr.stopCalls, f.outcome("web"))
+	}
+}
+
+type crashingControl struct{}
+
+func (crashingControl) StartApp(context.Context, string) error { panic("agent killed") }
+func (crashingControl) StopApp(context.Context, string) error  { panic("agent killed") }
+
+func TestPostboxReportsEntryInterruptedByCrash(t *testing.T) {
+	f := newPBFixture(t)
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.p.control = crashingControl{}
+	func() {
+		defer func() { _ = recover() }()
+		_ = f.p.cycle(context.Background())
+	}()
+
+	f.p = f.newPostbox() // restart: the claim is on disk, no decision is
+	f.cycle()
+	o := f.outcome("web")
+	if o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED || o.EntryID != 1 || o.CorrelationID == "" {
+		t.Fatalf("outcome = %+v, want entry 1 reported interrupted", o)
+	}
+	if st := f.p.snapshot(); st.Pending != nil || st.HighWater != 1 || len(f.ctr.stopCalls) != 0 || f.p.refusals["interrupted"] != 1 {
+		t.Fatalf("state %+v, stop %v, refusals %v: want reported once, never retried", st, f.ctr.stopCalls, f.p.refusals)
+	}
+
+	f.p = f.newPostbox()
+	f.cycle()
+	if f.p.refusals["interrupted"] != 0 {
+		t.Fatal("interrupted entry reported again after it was settled")
 	}
 }
 

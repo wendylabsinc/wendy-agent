@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -57,6 +58,7 @@ type Postbox struct {
 	// checkpoint verifies PullChangesResponse.checkpoint and returns the
 	// notarized head it binds. It is a seam: see refuseCheckpoint.
 	checkpoint func(raw []byte, tenant, target string, now time.Time) (maxID int64, headHash []byte, err error)
+	write      func(configPath, name string, data []byte) error
 
 	wake            chan struct{}
 	identityChanged chan struct{}
@@ -89,6 +91,15 @@ type postboxState struct {
 	Nonces      map[string]int64              `json:"nonces,omitempty"`
 	Assignments map[string]*postboxAssignment `json:"assignments,omitempty"` // by deployment id
 	Outcomes    map[string]*postboxOutcome    `json:"outcomes,omitempty"`    // by app id
+	// Pending is the entry claimed past the mark and not yet decided. Found on
+	// load, it is the entry a crash interrupted: never applied, never retried.
+	Pending *postboxPending `json:"pending,omitempty"`
+}
+
+type postboxPending struct {
+	EntryID       int64  `json:"entryId"`
+	CorrelationID string `json:"correlationId"`
+	AppID         string `json:"appId,omitempty"`
 }
 
 // postboxAssignment is a verified DeviceAssignment held as desired state; the
@@ -142,6 +153,7 @@ func NewPostbox(logger *zap.Logger, pub TelemetryPublisher, configPath string, c
 		now:             time.Now,
 		dial:            dialPostbox,
 		checkpoint:      refuseCheckpoint,
+		write:           writeProvisioningFile,
 		wake:            make(chan struct{}, 1),
 		identityChanged: make(chan struct{}, 1),
 		refusals:        map[string]int64{},
@@ -276,6 +288,7 @@ func (p *Postbox) cycle(ctx context.Context) error {
 	if err := p.load(id.uri); err != nil {
 		return err
 	}
+	p.settleInterrupted()
 	client, closer, err := p.dial(cloudURL, certPEM, keyPEM, chainPEM)
 	if err != nil {
 		return err
@@ -312,7 +325,7 @@ func (p *Postbox) cycle(ctx context.Context) error {
 				break
 			}
 			if err := p.process(ctx, id, entry, cpMax, cpHead); err != nil {
-				p.logger.Error("postbox chain refused; holding", zap.Error(err), zap.Int64("entry_id", entry.GetEntryId()))
+				p.logger.Error("postbox entry not processed; holding", zap.Error(err), zap.Int64("entry_id", entry.GetEntryId()))
 				stop = true
 				break
 			}
@@ -346,7 +359,7 @@ func (p *Postbox) process(ctx context.Context, id *postboxIdentity, e *cloudpbv2
 		chainErr = errors.New("entry is not the head the checkpoint notarized")
 	}
 	if chainErr != nil {
-		p.decide(e, "", claimedApp(e), cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, "chain", chainErr)
+		p.decide(e, "", "", cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, "chain", chainErr)
 		return chainErr
 	}
 
@@ -356,16 +369,21 @@ func (p *Postbox) process(ctx context.Context, id *postboxIdentity, e *cloudpbv2
 	if outcome == cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED && verr == nil {
 		nonceExpiry = desc.Expiry
 	}
+	// req is set only for a request verified as signed for this device: only
+	// that may set an app's reported outcome; any other refusal is audit only.
+	app := postboxApp(req)
 	// The entry is verified as part of the chain: claim its nonce and move the
-	// mark BEFORE acting, so a crash never applies one signed request twice.
-	switch err := p.advance(e, desc.Nonce, nonceExpiry, now); {
+	// mark BEFORE acting, so a crash never applies one signed request twice
+	// (at most once: an interrupted entry is reported, not retried).
+	pending := &postboxPending{EntryID: e.GetEntryId(), CorrelationID: desc.Correlation, AppID: app}
+	switch err := p.advance(e, desc.Nonce, nonceExpiry, now, pending); {
 	case errors.Is(err, errReplayed):
 		outcome, reason, verr = cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, "replay", err
 	case err != nil:
 		return err
 	}
 	if verr != nil {
-		p.decide(e, desc.Correlation, claimedApp(e), outcome, reason, verr)
+		p.decide(e, desc.Correlation, app, outcome, reason, verr)
 		return nil
 	}
 	app, outcome, reason, aerr := p.apply(ctx, req)
@@ -403,7 +421,8 @@ type postboxDescriptor struct {
 // verifyPostboxRequest checks, in order: the operator signature and its chain
 // to this device's pinned CAs at the signed iat (an unverified request's
 // claims mean nothing), then the target, then freshness. The nonce is checked
-// by the caller against the persisted set. It returns the decoded payload.
+// by the caller against the persisted set. It returns the decoded payload
+// once signature and target verified, so also with a stale refusal.
 func verifyPostboxRequest(e *cloudpbv2.PostboxEntry, id *postboxIdentity, now time.Time) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
 	var desc postboxDescriptor
 	sig := func(err error) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
@@ -490,7 +509,7 @@ func verifyPostboxRequest(e *cloudpbv2.PostboxEntry, id *postboxIdentity, now ti
 	}
 
 	stale := func(err error) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
-		return nil, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, "stale", err
+		return req, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, "stale", err
 	}
 	switch {
 	case now.Unix() >= desc.Expiry:
@@ -565,7 +584,7 @@ func bindsThisDevice(req proto.Message, resource string, id *postboxIdentity) er
 func (p *Postbox) apply(ctx context.Context, req proto.Message) (string, cloudpbv2.ApplyOutcome, string, error) {
 	switch r := req.(type) {
 	case *cloudpbv2.ControlContainerRequest:
-		app, _, _ := strings.Cut(r.GetContainerName(), ".")
+		app := postboxApp(r)
 		var err error
 		switch r.GetAction() {
 		case cloudpbv2.ContainerAction_CONTAINER_ACTION_START:
@@ -628,11 +647,12 @@ func (p *Postbox) decide(e *cloudpbv2.PostboxEntry, correlation, app string, out
 		p.logger.Info("postbox entry applied", fields...)
 	}
 	// An outcome not attributable to an app has the audit line as its record.
+	p.mu.Lock()
 	if app != "" {
-		p.mu.Lock()
 		p.state.Outcomes[app] = &postboxOutcome{EntryID: e.GetEntryId(), CorrelationID: correlation, Outcome: outcome}
-		p.mu.Unlock()
 	}
+	p.state.Pending = nil
+	p.mu.Unlock()
 	if err := p.save(); err != nil {
 		p.logger.Warn("postbox: saving outcome failed", zap.Error(err))
 	}
@@ -672,10 +692,29 @@ func (p *Postbox) ack(ctx context.Context, client cloudpbv2.DevicePostboxService
 	return p.save()
 }
 
-// advance moves the mark past a chain-verified entry and claims its nonce.
-func (p *Postbox) advance(e *cloudpbv2.PostboxEntry, nonce string, nonceExpiry int64, now time.Time) error {
+// settleInterrupted reports the entry a crash left between advance and
+// decide: claimed past the mark, never applied. It is not retried.
+func (p *Postbox) settleInterrupted() {
 	p.mu.Lock()
-	st := p.state
+	pend := p.state.Pending
+	p.mu.Unlock()
+	if pend == nil {
+		return
+	}
+	// No ApplyOutcome names an interrupted apply yet (APPLY_FAILED is a contract gap).
+	p.decide(&cloudpbv2.PostboxEntry{EntryId: pend.EntryID}, pend.CorrelationID, pend.AppID,
+		cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "interrupted",
+		errors.New("agent stopped after claiming this entry and before deciding it; not retried"))
+}
+
+// advance moves the mark past a chain-verified entry, claims its nonce and
+// records it as pending. Memory changes only once the new state is on disk:
+// a failed write leaves the entry to be processed again next cycle.
+func (p *Postbox) advance(e *cloudpbv2.PostboxEntry, nonce string, nonceExpiry int64, now time.Time, pending *postboxPending) error {
+	p.mu.Lock()
+	st := *p.state
+	st.Nonces = maps.Clone(p.state.Nonces)
+	p.mu.Unlock()
 	replayed := false
 	if nonceExpiry > 0 {
 		if _, seen := st.Nonces[nonce]; seen {
@@ -689,11 +728,19 @@ func (p *Postbox) advance(e *cloudpbv2.PostboxEntry, nonce string, nonceExpiry i
 			delete(st.Nonces, n)
 		}
 	}
-	st.HighWater, st.HeadHash = e.GetEntryId(), e.GetEntryHash()
+	st.HighWater, st.HeadHash, st.Pending = e.GetEntryId(), e.GetEntryHash(), pending
+	p.mu.Lock()
+	data, err := json.Marshal(&st)
 	p.mu.Unlock()
-	if err := p.save(); err != nil {
+	if err == nil {
+		err = p.write(p.configPath, postboxStateFile, data)
+	}
+	if err != nil {
 		return fmt.Errorf("persisting postbox high-water mark: %w", err)
 	}
+	p.mu.Lock()
+	p.state = &st
+	p.mu.Unlock()
 	if replayed {
 		return errReplayed
 	}
@@ -750,7 +797,7 @@ func (p *Postbox) save() error {
 	if err != nil {
 		return err
 	}
-	return writeProvisioningFile(p.configPath, postboxStateFile, data)
+	return p.write(p.configPath, postboxStateFile, data)
 }
 
 func (p *Postbox) count(reason string) {
@@ -786,13 +833,8 @@ func (p *Postbox) count(reason string) {
 	})
 }
 
-// claimedApp is the app an entry's (possibly unverified) payload names, so a
-// refusal is reported against it.
-func claimedApp(e *cloudpbv2.PostboxEntry) string {
-	req, err := decodePostboxPayload(e)
-	if err != nil {
-		return ""
-	}
+// postboxApp is the app a verified request names; "" for none.
+func postboxApp(req proto.Message) string {
 	switch r := req.(type) {
 	case *cloudpbv2.ControlContainerRequest:
 		app, _, _ := strings.Cut(r.GetContainerName(), ".")
