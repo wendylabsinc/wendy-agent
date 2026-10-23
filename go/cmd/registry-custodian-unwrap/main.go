@@ -75,23 +75,18 @@ func run() ([]byte, error) {
 	}
 	defer os.RemoveAll(dir)
 
-	pubFile := filepath.Join(dir, "pub")
-	if err := gcloud(v, "keys", "versions", "get-public-key", v.version, "--public-key-format=xwing-raw-bytes", "--output-file="+pubFile); err != nil {
-		return nil, err
-	}
-	pub, err := os.ReadFile(pubFile)
+	pub, err := gcloud(v, "keys", "versions", "get-public-key", v.version, "--public-key-format=xwing-raw-bytes")
 	if err != nil {
 		return nil, err
 	}
 	return unwrap(w, pub, func(enc []byte) ([]byte, error) {
-		encFile, ssFile := filepath.Join(dir, "enc"), filepath.Join(dir, "ss")
+		// enc goes in a file, not on gcloud's stdin (see gcloud). The shared
+		// secret comes back on stdout, so it never reaches the disk.
+		encFile := filepath.Join(dir, "enc")
 		if err := os.WriteFile(encFile, enc, 0o600); err != nil {
 			return nil, err
 		}
-		if err := gcloud(v, "decapsulate", "--version="+v.version, "--ciphertext-file="+encFile, "--shared-secret-file="+ssFile); err != nil {
-			return nil, err
-		}
-		return os.ReadFile(ssFile)
+		return gcloud(v, "decapsulate", "--version="+v.version, "--ciphertext-file="+encFile, "--shared-secret-file=-")
 	})
 }
 
@@ -105,16 +100,23 @@ func parseVersion(name string) (keyVersion, error) {
 	return keyVersion{p[1], p[3], p[5], p[7], p[9]}, nil
 }
 
-// gcloud runs `gcloud kms <args>` on the key; its stderr (auth prompts,
-// permission errors) goes straight to ours.
-func gcloud(v keyVersion, args ...string) error {
+// gcloud runs `gcloud kms <args>` on the key and returns its stdout; its
+// stderr (auth prompts, permission errors) goes straight to ours. Its stdin is
+// the terminal when there is one: gcloud answers a reauthentication challenge
+// only on a terminal stdin, and ours is wrap.json.
+func gcloud(v keyVersion, args ...string) ([]byte, error) {
 	args = append(append([]string{"kms"}, args...), "--project="+v.project, "--location="+v.location, "--keyring="+v.keyRing, "--key="+v.key)
 	cmd := exec.Command("gcloud", args...)
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gcloud %s: %w", strings.Join(args[:2], " "), err)
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		defer tty.Close()
+		cmd.Stdin = tty
 	}
-	return nil
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", strings.Join(cmd.Args, " "), err)
+	}
+	return out, nil
 }
 
 // unwrap refuses a wrap made to another key than pub, or one missing a binding
