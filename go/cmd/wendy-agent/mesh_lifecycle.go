@@ -60,12 +60,12 @@ func (m *meshLifetime) Stop(ctx context.Context) error {
 
 // recoverCompletedResetMesh runs before listeners expose a completed reset.
 // Cleanup failures hide completion and enrollment readiness, while retries
-// leave diagnostics and agent updates available. The receipt must come from
+// leave diagnostics and agent updates available. Completion must come from
 // ProvisioningService's authenticated recovery, never a raw state-file read.
-// Fresh unenrolled hosts have no receipt and require no mesh dependencies.
-func recoverCompletedResetMesh(ctx context.Context, receipt []byte, retry time.Duration, cleanup func(context.Context) error, setError func(error), report func(error)) <-chan struct{} {
+// Fresh unenrolled hosts have no completion and require no mesh dependencies.
+func recoverCompletedResetMesh(ctx context.Context, completed bool, retry time.Duration, cleanup func(context.Context) error, setError func(error), report func(error)) <-chan struct{} {
 	done := make(chan struct{})
-	if len(receipt) == 0 {
+	if !completed {
 		close(done)
 		return done
 	}

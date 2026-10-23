@@ -43,6 +43,10 @@ type DeploymentServiceClient interface {
 	// Signed; payload_type "wendycloud.v2.UpdateAppReleaseRequest".
 	UpdateAppRelease(ctx context.Context, in *SignedRequest, opts ...grpc.CallOption) (*AppRelease, error)
 	ListAppReleases(ctx context.Context, in *ListAppReleasesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ListAppReleasesResponse], error)
+	// Deprecated: Do not use.
+	// Retired by the encrypted registry (registry.proto): no CLI holds a registry
+	// token. Deprecated now, deleted once cloud serves ArtifactRegistryService
+	// (expand, migrate, contract).
 	GetPushImageCredentials(ctx context.Context, in *GetPushImageCredentialsRequest, opts ...grpc.CallOption) (*GetPushImageCredentialsResponse, error)
 	// ==================== Deployments ====================
 	// Signed; payload_type "wendycloud.v2.CreateDeploymentRequest".
@@ -52,6 +56,10 @@ type DeploymentServiceClient interface {
 	// ==================== Asset App Desired Instructions (wendy-agent) ====================
 	HandleReportedState(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UpdateReportedStateRequest, DesiredStateResponse], error)
 	ListAssetApps(ctx context.Context, in *ListAssetAppsRequest, opts ...grpc.CallOption) (*ListAssetAppsResponse, error)
+	// Deprecated: Do not use.
+	// Retired by the encrypted registry (registry.proto): devices pull through
+	// DeviceArtifactService on their own mTLS. Deprecated now, deleted once cloud
+	// serves it (expand, migrate, contract).
 	GetPullCredentials(ctx context.Context, in *GetPullCredentialsRequest, opts ...grpc.CallOption) (*GetPullCredentialsResponse, error)
 	// ==================== Device Container Control ====================
 	ListDeviceContainers(ctx context.Context, in *ListDeviceContainersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeviceContainer], error)
@@ -106,6 +114,7 @@ func (c *deploymentServiceClient) ListAppReleases(ctx context.Context, in *ListA
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DeploymentService_ListAppReleasesClient = grpc.ServerStreamingClient[ListAppReleasesResponse]
 
+// Deprecated: Do not use.
 func (c *deploymentServiceClient) GetPushImageCredentials(ctx context.Context, in *GetPushImageCredentialsRequest, opts ...grpc.CallOption) (*GetPushImageCredentialsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetPushImageCredentialsResponse)
@@ -178,6 +187,7 @@ func (c *deploymentServiceClient) ListAssetApps(ctx context.Context, in *ListAss
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *deploymentServiceClient) GetPullCredentials(ctx context.Context, in *GetPullCredentialsRequest, opts ...grpc.CallOption) (*GetPullCredentialsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetPullCredentialsResponse)
@@ -227,6 +237,10 @@ type DeploymentServiceServer interface {
 	// Signed; payload_type "wendycloud.v2.UpdateAppReleaseRequest".
 	UpdateAppRelease(context.Context, *SignedRequest) (*AppRelease, error)
 	ListAppReleases(*ListAppReleasesRequest, grpc.ServerStreamingServer[ListAppReleasesResponse]) error
+	// Deprecated: Do not use.
+	// Retired by the encrypted registry (registry.proto): no CLI holds a registry
+	// token. Deprecated now, deleted once cloud serves ArtifactRegistryService
+	// (expand, migrate, contract).
 	GetPushImageCredentials(context.Context, *GetPushImageCredentialsRequest) (*GetPushImageCredentialsResponse, error)
 	// ==================== Deployments ====================
 	// Signed; payload_type "wendycloud.v2.CreateDeploymentRequest".
@@ -236,6 +250,10 @@ type DeploymentServiceServer interface {
 	// ==================== Asset App Desired Instructions (wendy-agent) ====================
 	HandleReportedState(grpc.BidiStreamingServer[UpdateReportedStateRequest, DesiredStateResponse]) error
 	ListAssetApps(context.Context, *ListAssetAppsRequest) (*ListAssetAppsResponse, error)
+	// Deprecated: Do not use.
+	// Retired by the encrypted registry (registry.proto): devices pull through
+	// DeviceArtifactService on their own mTLS. Deprecated now, deleted once cloud
+	// serves it (expand, migrate, contract).
 	GetPullCredentials(context.Context, *GetPullCredentialsRequest) (*GetPullCredentialsResponse, error)
 	// ==================== Device Container Control ====================
 	ListDeviceContainers(*ListDeviceContainersRequest, grpc.ServerStreamingServer[DeviceContainer]) error

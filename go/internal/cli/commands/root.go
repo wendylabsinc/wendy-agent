@@ -166,6 +166,8 @@ func NewRootCmd() *cobra.Command {
 	// Cloud
 	cloudCmd := newCloudCmd()
 	cloudCmd.GroupID = "cloud"
+	appCmd := newAppCmd()
+	appCmd.GroupID = "cloud"
 
 	// Settings
 	analyticsCmd := newAnalyticsCmd()
@@ -281,6 +283,7 @@ func NewRootCmd() *cobra.Command {
 		dataCmd,
 		// Cloud
 		cloudCmd,
+		appCmd,
 		// Settings
 		analyticsCmd,
 		cacheCmd,
