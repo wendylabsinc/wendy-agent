@@ -12,6 +12,11 @@ Each machine (and each browser) you sign in on holds its own key. `wendy auth
 login` creates it and registers it with Wendy Cloud, signed with your operator
 key; a certificate refresh retries a registration that did not go through.
 
+If registration fails, `wendy auth login` and a certificate refresh (such as
+`wendy auth refresh-certs`) print a warning and leave the key unbound. It is
+registered at the next sign-in or certificate refresh, or when you run
+`wendy registry key show`.
+
 | Command | Description |
 |---------|-------------|
 | `show` | Prints the key id and registers the key if Cloud has not yet |
