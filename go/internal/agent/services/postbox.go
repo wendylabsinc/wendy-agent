@@ -40,8 +40,8 @@ import (
 // Postbox is the device half of the AAA contract section 5.3 postbox: it pulls
 // this device's operator-signed change requests from cloud over the device's
 // own mTLS, verifies every entry itself (hash chain, notarized checkpoint,
-// high-water mark, operator signature anchored at this device's pinned CAs,
-// target, expiry, nonce), applies a verified request through the agent's
+// high-water mark, operator signature anchored at this device's tenant CA,
+// target, instruction validity, nonce), applies a verified request through the agent's
 // existing paths, reports the outcome on the reported-state stream and signs
 // an AckHead for the newest verified entry. Cloud is only a queue: nothing is
 // applied on its word, and every refusal is named, logged, counted and
@@ -55,9 +55,8 @@ type Postbox struct {
 	retry      time.Duration
 	now        func() time.Time
 	dial       func(cloudURL, certPEM, keyPEM, chainPEM string) (cloudpbv2.DevicePostboxServiceClient, io.Closer, error)
-	// checkpoint verifies PullChangesResponse.checkpoint and returns the
-	// notarized head it binds. It is a seam: see refuseCheckpoint.
-	checkpoint func(raw []byte, tenant, target string, now time.Time) (maxID int64, headHash []byte, err error)
+	// checkpoint verifies PullChangesResponse.checkpoint (verifyCheckpoint).
+	checkpoint func(raw []byte, roots *x509.CertPool, tenant, target string, mark int64, now time.Time) (postboxCheckpoint, error)
 	write      func(configPath, name string, data []byte) error
 
 	wake            chan struct{}
@@ -94,6 +93,14 @@ type postboxState struct {
 	// Pending is the entry claimed past the mark and not yet decided. Found on
 	// load, it is the entry a crash interrupted: never applied, never retried.
 	Pending *postboxPending `json:"pending,omitempty"`
+	// CheckpointMark is the newest max_id a verified checkpoint bound; it never
+	// goes back (checkpoint step 9). TimeFloor (unix seconds) is the newest
+	// verified checkpoint genTime: trusted now never falls below it (AAA D12).
+	CheckpointMark int64 `json:"checkpointMark,omitempty"`
+	TimeFloor      int64 `json:"timeFloor,omitempty"`
+	// OrgCAs caches, DER, the CAs GetOrgCAs served that this device verified as
+	// issued directly by its tenant CA (the Operator Authority CA).
+	OrgCAs [][]byte `json:"orgCAs,omitempty"`
 }
 
 type postboxPending struct {
@@ -124,11 +131,11 @@ const (
 	postboxStateFile = "postbox.json"
 	postboxPageSize  = 100
 	postboxMaxJWS    = 64 << 10
-	postboxMaxSkew   = 60 // seconds an iat may run ahead of this clock
-	// postboxMaxLifetime caps expiry - iat (the CLI signs for 30 s). With
-	// expiry checked against this clock it also keeps a backdated iat, at
-	// which the operator chain is verified, near the present.
-	postboxMaxLifetime = 10 * 60
+	// postboxPlatformCap caps valid_until - iat: 365 days (sem 2026-10-23
+	// 22:27, orchestrator 22:45). The device enforces it even though cloud
+	// does at accept. A request's own 30 s expiry and its iat window bind the
+	// call to cloud only and are not checked here (reqsig README, WDY-4015).
+	postboxPlatformCap = 365 * 24 * time.Hour
 	postboxAudience    = "https://cloud.wendy.sh/broker"
 	// materialPending is the one T14 seam's answer until the registry pull exists.
 	materialPending = "material pull pending (T14)"
@@ -152,7 +159,7 @@ func NewPostbox(logger *zap.Logger, pub TelemetryPublisher, configPath string, c
 		retry:           30 * time.Second,
 		now:             time.Now,
 		dial:            dialPostbox,
-		checkpoint:      refuseCheckpoint,
+		checkpoint:      verifyCheckpoint,
 		write:           writeProvisioningFile,
 		wake:            make(chan struct{}, 1),
 		identityChanged: make(chan struct{}, 1),
@@ -166,17 +173,6 @@ func dialPostbox(cloudURL, certPEM, keyPEM, chainPEM string) (cloudpbv2.DevicePo
 		return nil, nil, err
 	}
 	return cloudpbv2.NewDevicePostboxServiceClient(conn), closer, nil
-}
-
-// errCheckpointContractGap: service-protos carries no conformance vector for
-// the notarized checkpoint artifact (pki-core's {body, signature,
-// timestamp_token} with an RFC 3161 token), so the device cannot verify it.
-// Without a verified checkpoint nothing is applied (contract section 5.3:
-// stale or missing checkpoint = hold and alert), never a weaker check.
-var errCheckpointContractGap = errors.New("checkpoint verification has no contract vector yet (CONTRACT-GAP); holding")
-
-func refuseCheckpoint([]byte, string, string, time.Time) (int64, []byte, error) {
-	return 0, nil, errCheckpointContractGap
 }
 
 // UpdateIdentity swaps the device identity; empty values stop pulling.
@@ -232,8 +228,13 @@ func (p *Postbox) Run(ctx context.Context) {
 // postboxIdentity is this device as its own leaf proves it.
 type postboxIdentity struct {
 	tenant, uuid, uri string
-	anchors           []*x509.Certificate
-	signer            *devicesign.Signer // nil: cannot ack (P-256 device)
+	// anchors are the tenant CAs of the device's pinned chain; roots the
+	// platform roots there (the checkpoint and TSA chain to those).
+	anchors []*x509.Certificate
+	roots   *x509.CertPool
+	// orgCAs are the cached GetOrgCAs answers, intermediates under anchors.
+	orgCAs []*x509.Certificate
+	signer *devicesign.Signer // nil: cannot ack (P-256 device)
 }
 
 func (p *Postbox) identity() (*postboxIdentity, string, string, string, string, error) {
@@ -260,12 +261,23 @@ func (p *Postbox) identity() (*postboxIdentity, string, string, string, string, 
 	if err != nil {
 		return nil, "", "", "", "", fmt.Errorf("parsing device CA chain: %w", err)
 	}
-	ident := &postboxIdentity{tenant: id.TenantUUID, uuid: id.EntityID, uri: principal}
-	// The tenant CAs of the device's own pinned chain, never a leaf and never
-	// the platform root: anchoring there would let another tenant's operator
-	// authority vouch for a signer.
+	ident := &postboxIdentity{tenant: id.TenantUUID, uuid: id.EntityID, uri: principal, roots: x509.NewCertPool()}
+	// The tenant CA of the device's own pinned chain: a CA not issued by
+	// another intermediate there. Never the platform root (another tenant's
+	// operator authority would vouch for a signer) and never the Device CA
+	// (the Operator Authority CA is its sibling, issued by the tenant CA).
+	var cas []*x509.Certificate
 	for _, ca := range chain {
-		if ca.BasicConstraintsValid && ca.IsCA && !bytes.Equal(ca.RawSubject, ca.RawIssuer) {
+		switch {
+		case !ca.BasicConstraintsValid || !ca.IsCA:
+		case bytes.Equal(ca.RawSubject, ca.RawIssuer):
+			ident.roots.AddCert(ca)
+		default:
+			cas = append(cas, ca)
+		}
+	}
+	for _, ca := range cas {
+		if !slices.ContainsFunc(cas, func(o *x509.Certificate) bool { return bytes.Equal(o.RawSubject, ca.RawIssuer) }) {
 			ident.anchors = append(ident.anchors, ca)
 		}
 	}
@@ -288,6 +300,11 @@ func (p *Postbox) cycle(ctx context.Context) error {
 	if err := p.load(id.uri); err != nil {
 		return err
 	}
+	for _, der := range p.snapshot().OrgCAs {
+		if ca, err := x509.ParseCertificate(der); err == nil {
+			id.orgCAs = append(id.orgCAs, ca)
+		}
+	}
 	p.settleInterrupted()
 	client, closer, err := p.dial(cloudURL, certPEM, keyPEM, chainPEM)
 	if err != nil {
@@ -304,12 +321,19 @@ func (p *Postbox) cycle(ctx context.Context) error {
 		if len(resp.GetEntries()) == 0 {
 			break
 		}
-		cpMax, cpHead, err := p.checkpoint(resp.GetCheckpoint(), id.tenant, id.uri, p.now())
+		cp, err := p.checkpoint(resp.GetCheckpoint(), id.roots, id.tenant, id.uri, p.snapshot().CheckpointMark, p.trustedNow())
+		cpMax, cpHead := cp.maxID, cp.head
 		if err == nil && cpMax < hwm {
 			err = fmt.Errorf("checkpoint max_id %d is below the high-water mark %d", cpMax, hwm)
 		}
 		if err == nil && cpMax == hwm && hwm > 0 && !bytes.Equal(cpHead, p.snapshot().HeadHash) {
 			err = fmt.Errorf("checkpoint head at %d differs from the verified head", hwm)
+		}
+		if err == nil {
+			err = p.commit(func(st *postboxState) {
+				st.CheckpointMark = max(st.CheckpointMark, cpMax)
+				st.TimeFloor = max(st.TimeFloor, cp.genTime.Unix())
+			})
 		}
 		if err != nil {
 			// Hold: nothing is applied, the mark stays, and it is retried.
@@ -324,7 +348,7 @@ func (p *Postbox) cycle(ctx context.Context) error {
 				stop = true // not notarized yet; the next checkpoint covers it
 				break
 			}
-			if err := p.process(ctx, id, entry, cpMax, cpHead); err != nil {
+			if err := p.process(ctx, client, id, entry, cpMax, cpHead); err != nil {
 				p.logger.Error("postbox entry not processed; holding", zap.Error(err), zap.Int64("entry_id", entry.GetEntryId()))
 				stop = true
 				break
@@ -341,7 +365,7 @@ func (p *Postbox) cycle(ctx context.Context) error {
 // failure is returned: nothing after a broken link can be trusted, so the
 // mark stays and the pull holds. A request refusal advances the mark: the
 // entry is part of the verified chain, it is just not applied.
-func (p *Postbox) process(ctx context.Context, id *postboxIdentity, e *cloudpbv2.PostboxEntry, cpMax int64, cpHead []byte) error {
+func (p *Postbox) process(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, e *cloudpbv2.PostboxEntry, cpMax int64, cpHead []byte) error {
 	st := p.snapshot()
 	prev := st.HeadHash
 	if st.HighWater == 0 {
@@ -363,11 +387,21 @@ func (p *Postbox) process(ctx context.Context, id *postboxIdentity, e *cloudpbv2
 		return chainErr
 	}
 
-	now := p.now()
+	now := p.trustedNow()
+	// An operator leaf whose issuer this device does not hold holds the entry
+	// (not consumed, not refused) until cloud serves a CA that verifies.
+	if err := p.resolveIssuer(ctx, client, id, e, now); err != nil {
+		p.count("operator_ca")
+		p.logger.Warn("postbox entry held: operator CA not resolved", zap.String("audit", "postbox"),
+			zap.Int64("entry_id", e.GetEntryId()), zap.String("correlation_id", peekCorrelation(e.GetRequestJws())), zap.Error(err))
+		return fmt.Errorf("operator CA not resolved: %w", err)
+	}
 	req, desc, outcome, reason, verr := verifyPostboxRequest(e, id, now)
 	nonceExpiry := int64(0)
 	if outcome == cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED && verr == nil {
-		nonceExpiry = desc.Expiry
+		// Kept until the instruction itself expires: replay is refused while
+		// the request could still be valid.
+		nonceExpiry = postboxValidUntil(req).GetSeconds() + 1
 	}
 	// req is set only for a request verified as signed for this device: only
 	// that may set an app's reported outcome; any other refusal is audit only.
@@ -419,14 +453,72 @@ type postboxDescriptor struct {
 }
 
 // verifyPostboxRequest checks, in order: the operator signature and its chain
-// to this device's pinned CAs at the signed iat (an unverified request's
-// claims mean nothing), then the target, then freshness. The nonce is checked
-// by the caller against the persisted set. It returns the decoded payload
-// once signature and target verified, so also with a stale refusal.
+// to this device's tenant CA at the signed iat (an unverified request's
+// claims mean nothing), then the target, then the instruction's validity
+// against trusted now. The nonce is checked by the caller against the
+// persisted set. It returns the decoded payload once signature and target
+// verified, so also with a stale refusal.
 func verifyPostboxRequest(e *cloudpbv2.PostboxEntry, id *postboxIdentity, now time.Time) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
-	var desc postboxDescriptor
-	sig := func(err error) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
+	desc, outcome, reason, err := verifyPostboxSignature(e, id)
+	if err != nil {
+		return nil, desc, outcome, reason, err
+	}
+	req, err := decodePostboxPayload(e)
+	if err != nil {
 		return nil, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, "signature", err
+	}
+	if err := bindsThisDevice(req, desc.Target.Resource, id); err != nil {
+		return nil, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET, "target", err
+	}
+	if reason, err := postboxValidity(req, desc.Iat, now); err != nil {
+		return req, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, reason, err
+	}
+	if desc.Nonce == "" || len(desc.Nonce) > 344 { // 256 bytes, base64url
+		return req, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, "stale", errors.New("request nonce missing or oversized")
+	}
+	return req, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "", nil
+}
+
+// postboxValidUntil is the instruction validity the operator signed into the
+// payload (WDY-4015 item 3); nil when absent.
+func postboxValidUntil(req proto.Message) *timestamppb.Timestamp {
+	switch r := req.(type) {
+	case *cloudpbv2.ControlContainerRequest:
+		return r.GetValidUntil()
+	case *cloudpbv2.CreateDeploymentRequest:
+		return r.GetValidUntil()
+	case *cloudpbv2.UnassignDeviceRequest:
+		return r.GetValidUntil()
+	case *cloudpbv2.DeviceAssignment:
+		return r.GetExpiresAt()
+	}
+	return nil
+}
+
+// postboxValidity is the device's validity check (conformance/postbox-entry):
+// valid_until present, within the platform cap of the signed iat, and trusted
+// now strictly before it. The reason is the vectors' refusal code.
+func postboxValidity(req proto.Message, iat int64, now time.Time) (string, error) {
+	vu := postboxValidUntil(req)
+	switch {
+	case vu == nil:
+		return "validity_missing", errors.New("instruction carries no valid_until")
+	case vu.AsTime().Sub(time.Unix(iat, 0)) > postboxPlatformCap:
+		return "above_platform_cap", fmt.Errorf("valid_until %s is more than the platform cap after iat %d", vu.AsTime(), iat)
+	case !now.Before(vu.AsTime()):
+		return "stale", fmt.Errorf("instruction expired at %s (trusted now %s)", vu.AsTime(), now)
+	}
+	return "", nil
+}
+
+// verifyPostboxSignature checks the operator's JWS: ML-DSA-65 over x5c, the
+// claims, the operation and payload binding, an operator principal of this
+// tenant, and the leaf's chain through the cached org CAs to the tenant CA at
+// the signed iat.
+func verifyPostboxSignature(e *cloudpbv2.PostboxEntry, id *postboxIdentity) (postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
+	var desc postboxDescriptor
+	sig := func(err error) (postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
+		return desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, "signature", err
 	}
 	compact := string(e.GetRequestJws())
 	parts := strings.Split(compact, ".")
@@ -477,7 +569,7 @@ func verifyPostboxRequest(e *cloudpbv2.PostboxEntry, id *postboxIdentity, now ti
 	case desc.Audience != postboxAudience:
 		return sig(fmt.Errorf("audience %q", desc.Audience))
 	case !known || e.GetPayloadType() != wantType:
-		return nil, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET, "operation",
+		return desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET, "operation",
 			fmt.Errorf("operation %q with payload_type %q is not a device action", desc.Operation, e.GetPayloadType())
 	case desc.BodySHA256 != b64urlEncode(sum[:]):
 		return sig(errors.New("body_sha256 does not match the payload"))
@@ -489,40 +581,133 @@ func verifyPostboxRequest(e *cloudpbv2.PostboxEntry, id *postboxIdentity, now ti
 	}
 	// Validity at the signed iat: a request queued while the device was
 	// offline stays verifiable after its short-lived operator cert expires.
+	// The x5c is the leaf (anything after it is only a candidate); the
+	// Operator Authority CA comes from the GetOrgCAs cache.
 	at := time.Unix(desc.Iat, 0)
-	if _, err := certs.VerifyPeerCertificateChainExpiry(leaf, chain[1:], id.anchors, x509.ExtKeyUsageClientAuth, at, at); err != nil {
-		return sig(fmt.Errorf("operator certificate does not chain to this device's pinned CAs at iat: %w", err))
-	}
-
-	target := func(err error) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
-		return nil, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET, "target", err
+	if _, err := certs.VerifyPeerCertificateChainExpiry(leaf, append(chain[1:], id.orgCAs...), id.anchors, x509.ExtKeyUsageClientAuth, at, at); err != nil {
+		return sig(fmt.Errorf("operator certificate does not chain to this device's tenant CA at iat: %w", err))
 	}
 	if signer.TenantUUID != id.tenant || desc.Target.Tenant != id.tenant {
-		return target(fmt.Errorf("signer tenant %q / target tenant %q is not this device's tenant", signer.TenantUUID, desc.Target.Tenant))
+		return desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET, "target",
+			fmt.Errorf("signer tenant %q / target tenant %q is not this device's tenant", signer.TenantUUID, desc.Target.Tenant)
 	}
-	req, err := decodePostboxPayload(e)
-	if err != nil {
-		return sig(err)
-	}
-	if err := bindsThisDevice(req, desc.Target.Resource, id); err != nil {
-		return target(err)
-	}
+	return desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "", nil
+}
 
-	stale := func(err error) (proto.Message, postboxDescriptor, cloudpbv2.ApplyOutcome, string, error) {
-		return req, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, "stale", err
+// resolveIssuer makes sure the CA that issued the entry's operator leaf is
+// one this device can chain through. When it is not, it asks GetOrgCAs for
+// that issuer and caches each CA it verifies as issued directly by its tenant
+// CA (conformance/postbox-entry). An error means hold: NOT_FOUND, a transport
+// failure, or no served CA verified. An unparseable leaf is left for
+// verification to refuse.
+func (p *Postbox) resolveIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, e *cloudpbv2.PostboxEntry, now time.Time) error {
+	leaf := peekLeaf(e.GetRequestJws())
+	if leaf == nil {
+		return nil
 	}
-	switch {
-	case now.Unix() >= desc.Expiry:
-		return stale(fmt.Errorf("request expired at %d", desc.Expiry))
-	case desc.Iat > now.Unix()+postboxMaxSkew || desc.Expiry <= desc.Iat || desc.Expiry-desc.Iat > postboxMaxLifetime:
-		return stale(fmt.Errorf("request iat %d / expiry %d is not valid now", desc.Iat, desc.Expiry))
-	case desc.Nonce == "" || len(desc.Nonce) > 344: // 256 bytes, base64url
-		return stale(errors.New("request nonce missing or oversized"))
+	known := func() bool {
+		for _, ca := range slices.Concat(id.anchors, id.orgCAs, peekIntermediates(e.GetRequestJws())) {
+			if bytes.Equal(ca.RawSubject, leaf.RawIssuer) {
+				return true
+			}
+		}
+		return false
 	}
-	if a, ok := req.(*cloudpbv2.DeviceAssignment); ok && a.GetExpiresAt() != nil && !now.Before(a.GetExpiresAt().AsTime()) {
-		return stale(fmt.Errorf("assignment expired at %s", a.GetExpiresAt().AsTime()))
+	if known() {
+		return nil
 	}
-	return req, desc, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "", nil
+	return p.resolveIssuerName(ctx, client, id, leaf.RawIssuer, now)
+}
+
+// resolveIssuerName asks GetOrgCAs for the CA named issuer (DER Name) and
+// caches each served CA that verifies. It fails unless a cached CA now has
+// that subject.
+func (p *Postbox) resolveIssuerName(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, issuer []byte, now time.Time) error {
+	resp, err := client.GetOrgCAs(ctx, &cloudpbv2.GetOrgCAsRequest{Issuer: issuer})
+	if err != nil {
+		return fmt.Errorf("GetOrgCAs: %w", err)
+	}
+	var added [][]byte
+	for _, der := range resp.GetCaDer() {
+		ca, code, err := verifyOrgCA(der, id.anchors, now)
+		if err != nil {
+			p.count(code)
+			p.logger.Warn("postbox: refused a CA cloud served", zap.String("audit", "postbox"), zap.String("reason", code), zap.Error(err))
+			continue
+		}
+		if !slices.ContainsFunc(id.orgCAs, ca.Equal) {
+			id.orgCAs = append(id.orgCAs, ca)
+			added = append(added, ca.Raw)
+		}
+	}
+	if len(added) > 0 {
+		if err := p.commit(func(st *postboxState) { st.OrgCAs = append(slices.Clone(st.OrgCAs), added...) }); err != nil {
+			return err
+		}
+	}
+	if !slices.ContainsFunc(id.orgCAs, func(ca *x509.Certificate) bool { return bytes.Equal(ca.RawSubject, issuer) }) {
+		return errors.New("no CA cloud served for this issuer is issued by this device's tenant CA")
+	}
+	return nil
+}
+
+// verifyOrgCA accepts a GetOrgCAs certificate only if it is a CA issued
+// directly by one of this device's tenant CAs and valid now; cloud's word
+// alone is never enough. The code is the vectors' refusal label.
+func verifyOrgCA(der []byte, tenantCAs []*x509.Certificate, now time.Time) (*x509.Certificate, string, error) {
+	ca, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, "not_a_ca", err
+	}
+	if !ca.BasicConstraintsValid || !ca.IsCA {
+		return nil, "not_a_ca", fmt.Errorf("%q is not a CA", ca.Subject.CommonName)
+	}
+	roots := x509.NewCertPool()
+	for _, t := range tenantCAs {
+		roots.AddCert(t)
+	}
+	// Roots only, no intermediates: the one chain possible is [ca, tenant CA].
+	chains, err := ca.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	if err != nil || len(chains) == 0 || len(chains[0]) != 2 {
+		return nil, "not_under_org_ca", fmt.Errorf("%q is not issued by this device's tenant CA: %v", ca.Subject.CommonName, err)
+	}
+	return ca, "", nil
+}
+
+// trustedNow is the device clock, floored by the newest verified checkpoint
+// genTime. With no checkpoint seen yet it is the clock alone, assumed right
+// (the agent does not gate on timesync); a clock running behind is bounded by
+// the floor once a checkpoint verifies.
+func (p *Postbox) trustedNow() time.Time {
+	now := p.now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.state != nil {
+		if floor := time.Unix(p.state.TimeFloor, 0); floor.After(now) {
+			return floor
+		}
+	}
+	return now
+}
+
+// commit applies change to a copy of the state, saves it, and swaps it in
+// only once it is on disk.
+func (p *Postbox) commit(change func(*postboxState)) error {
+	p.mu.Lock()
+	st := *p.state
+	p.mu.Unlock()
+	change(&st)
+	data, err := json.Marshal(&st)
+	if err == nil {
+		err = p.write(p.configPath, postboxStateFile, data)
+	}
+	if err != nil {
+		return fmt.Errorf("persisting postbox state: %w", err)
+	}
+	p.mu.Lock()
+	p.state = &st
+	p.mu.Unlock()
+	return nil
 }
 
 func decodePostboxPayload(e *cloudpbv2.PostboxEntry) (proto.Message, error) {
@@ -595,8 +780,7 @@ func (p *Postbox) apply(ctx context.Context, req proto.Message) (string, cloudpb
 			err = fmt.Errorf("unknown container action %v", r.GetAction())
 		}
 		if err != nil {
-			// No ApplyOutcome names a failed apply of a verified request yet.
-			return app, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "apply", err
+			return app, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLY_FAILED, "apply", err
 		}
 		return app, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED, "", nil
 	case *cloudpbv2.DeviceAssignment:
@@ -621,7 +805,7 @@ func (p *Postbox) apply(ctx context.Context, req proto.Message) (string, cloudpb
 		outcome, reason, err := p.pullMaterial(ctx, r.GetAppReleaseId(), nil)
 		return "", outcome, reason, err // names a release, not an app
 	}
-	return "", cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "apply", fmt.Errorf("no apply path for %T", req)
+	return "", cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLY_FAILED, "apply", fmt.Errorf("no apply path for %T", req)
 }
 
 // pullMaterial is the single seam for the registry pull, unwrap and decrypt
@@ -701,9 +885,8 @@ func (p *Postbox) settleInterrupted() {
 	if pend == nil {
 		return
 	}
-	// No ApplyOutcome names an interrupted apply yet (APPLY_FAILED is a contract gap).
 	p.decide(&cloudpbv2.PostboxEntry{EntryId: pend.EntryID}, pend.CorrelationID, pend.AppID,
-		cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED, "interrupted",
+		cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLY_FAILED, "interrupted",
 		errors.New("agent stopped after claiming this entry and before deciding it; not retried"))
 }
 
@@ -843,6 +1026,49 @@ func postboxApp(req proto.Message) string {
 		return r.GetAppId()
 	}
 	return ""
+}
+
+// peekX5C parses the x5c of a JWS header without verifying anything.
+func peekX5C(jws []byte) []*x509.Certificate {
+	header, _, ok := strings.Cut(string(jws), ".")
+	if !ok {
+		return nil
+	}
+	raw, err := b64url(header)
+	if err != nil {
+		return nil
+	}
+	var h struct {
+		X5C []string `json:"x5c"`
+	}
+	_ = json.Unmarshal(raw, &h)
+	var out []*x509.Certificate
+	for _, enc := range h.X5C {
+		der, err := b64std(enc)
+		if err != nil {
+			return out
+		}
+		c, err := x509.ParseCertificate(der)
+		if err != nil {
+			return out
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func peekLeaf(jws []byte) *x509.Certificate {
+	if x5c := peekX5C(jws); len(x5c) > 0 {
+		return x5c[0]
+	}
+	return nil
+}
+
+func peekIntermediates(jws []byte) []*x509.Certificate {
+	if x5c := peekX5C(jws); len(x5c) > 1 {
+		return x5c[1:]
+	}
+	return nil
 }
 
 func peekCorrelation(jws []byte) string {

@@ -25,6 +25,8 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -53,6 +55,25 @@ type fakePostboxCloud struct {
 	entries []*cloudpbv2.PostboxEntry
 	acks    []*cloudpbv2.SignedRequest
 	pulls   chan int64
+	// orgCAs is what GetOrgCAs serves per issuer Name; absent = NOT_FOUND.
+	orgCAs    map[string][]*x509.Certificate
+	orgCAAsks int
+	genTime   time.Time
+}
+
+func (c *fakePostboxCloud) GetOrgCAs(_ context.Context, in *cloudpbv2.GetOrgCAsRequest, _ ...grpc.CallOption) (*cloudpbv2.GetOrgCAsResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.orgCAAsks++
+	cas, ok := c.orgCAs[string(in.GetIssuer())]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "no CA with this subject")
+	}
+	resp := &cloudpbv2.GetOrgCAsResponse{}
+	for _, ca := range cas {
+		resp.CaDer = append(resp.CaDer, ca.Raw)
+	}
+	return resp, nil
 }
 
 func (c *fakePostboxCloud) PullChanges(_ context.Context, in *cloudpbv2.PullChangesRequest, _ ...grpc.CallOption) (*cloudpbv2.PullChangesResponse, error) {
@@ -98,23 +119,30 @@ func (c *fakePostboxCloud) add(jws, payload []byte, payloadType string) *cloudpb
 }
 
 // notarize is the test checkpoint seam: the cloud tip, as a verified
-// checkpoint would bind it.
-func (c *fakePostboxCloud) notarize([]byte, string, string, time.Time) (int64, []byte, error) {
+// checkpoint would bind it, notarized at genTime (zero: now).
+func (c *fakePostboxCloud) notarize(_ []byte, _ *x509.CertPool, _, _ string, mark int64, now time.Time) (postboxCheckpoint, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) == 0 {
-		return 0, nil, nil
+		return postboxCheckpoint{}, nil
 	}
 	last := c.entries[len(c.entries)-1]
-	return last.GetEntryId(), last.GetEntryHash(), nil
+	if last.GetEntryId() < mark {
+		return postboxCheckpoint{}, cpRefuse("rollback", "max_id below the mark")
+	}
+	gen := c.genTime
+	if gen.IsZero() {
+		gen = now
+	}
+	return postboxCheckpoint{maxID: last.GetEntryId(), head: last.GetEntryHash(), genTime: gen}, nil
 }
 
 type pbFixture struct {
 	t                         *testing.T
 	tenant, uuid, uri         string
 	root, opCA                *x509.Certificate
-	tenantCA                  *x509.Certificate
-	tenantCAKey               *ecdsa.PrivateKey
+	tenantCA, deviceCA        *x509.Certificate
+	tenantCAKey, deviceCAKey  *ecdsa.PrivateKey
 	rootKey, opCAKey          *ecdsa.PrivateKey
 	opKey                     *mldsa.PrivateKey
 	opLeaf                    *x509.Certificate
@@ -181,7 +209,7 @@ func newPBFixture(t *testing.T) *pbFixture {
 	f.uri = "spiffe://wendy.sh/tenant/" + f.tenant + "/device/" + f.uuid
 	f.root, f.rootKey = mkCA(t, "platform root", nil, nil)
 	f.tenantCA, f.tenantCAKey = mkCA(t, "tenant intermediate", f.root, f.rootKey)
-	deviceCA, deviceCAKey := mkCA(t, "device identity CA", f.tenantCA, f.tenantCAKey)
+	f.deviceCA, f.deviceCAKey = mkCA(t, "device identity CA", f.tenantCA, f.tenantCAKey)
 	f.opCA, f.opCAKey = mkCA(t, "operator authority", f.tenantCA, f.tenantCAKey)
 
 	var err error
@@ -192,8 +220,8 @@ func newPBFixture(t *testing.T) *pbFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.certPEM = pemOf(mkLeaf(t, f.uri, signer.Public(), deviceCA, deviceCAKey))
-	f.chainPEM = pemOf(deviceCA, f.tenantCA, f.root)
+	f.certPEM = pemOf(mkLeaf(t, f.uri, signer.Public(), f.deviceCA, f.deviceCAKey))
+	f.chainPEM = pemOf(f.deviceCA, f.tenantCA, f.root)
 
 	if f.opKey, err = mldsa.GenerateKey(mldsa.MLDSA65()); err != nil {
 		t.Fatal(err)
@@ -255,9 +283,15 @@ func (f *pbFixture) sign(method string, msg proto.Message, resource string, x5c 
 }
 
 func (f *pbFixture) control(app string, action cloudpbv2.ContainerAction, mutate func(map[string]any)) *cloudpbv2.PostboxEntry {
-	msg := &cloudpbv2.ControlContainerRequest{AssetId: f.uuid, OrganizationId: f.tenant, ContainerName: app, Action: action}
+	return f.controlUntil(app, action, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{f.opLeaf, f.opCA}, mutate)
+}
+
+// controlUntil signs a ControlContainer with the given valid_until (nil: none)
+// and x5c.
+func (f *pbFixture) controlUntil(app string, action cloudpbv2.ContainerAction, validUntil *timestamppb.Timestamp, x5c []*x509.Certificate, mutate func(map[string]any)) *cloudpbv2.PostboxEntry {
+	msg := &cloudpbv2.ControlContainerRequest{AssetId: f.uuid, OrganizationId: f.tenant, ContainerName: app, Action: action, ValidUntil: validUntil}
 	jws, payload, typ := f.sign(cloudpbv2.DeploymentService_ControlContainer_FullMethodName, msg,
-		"asset/"+f.uuid+"/container/"+app, []*x509.Certificate{f.opLeaf, f.opCA}, f.opKey, mutate)
+		"asset/"+f.uuid+"/container/"+app, x5c, f.opKey, mutate)
 	return f.cloud.add(jws, payload, typ)
 }
 
@@ -372,20 +406,16 @@ func TestPostboxRefusesNamedAndRunsNothing(t *testing.T) {
 				c["target"] = map[string]any{"tenant": f.tenant, "resource": "asset/" + f.uuid + "/container/db"}
 			})
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET, true},
-		{"expired", func(f *pbFixture) {
-			f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, func(c map[string]any) {
-				c["iat"], c["expiry"] = f.now.Unix()-60, f.now.Unix()-30
-			})
+		{"past valid_until", func(f *pbFixture) {
+			f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, true},
+		{"valid_until missing", func(f *pbFixture) {
+			f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil, []*x509.Certificate{f.opLeaf, f.opCA}, nil)
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, true},
 		{"wrong root", func(f *pbFixture) {
 			leaf := mkLeaf(t, "spiffe://wendy.sh/tenant/"+f.tenant+"/operator/mallory", f.opKey.PublicKey(), otherCA, otherCAKey)
 			msg := &cloudpbv2.ControlContainerRequest{AssetId: f.uuid, OrganizationId: f.tenant, ContainerName: "web", Action: cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP}
 			jws, payload, typ := f.sign(cloudpbv2.DeploymentService_ControlContainer_FullMethodName, msg, "asset/"+f.uuid+"/container/web", []*x509.Certificate{leaf, otherCA}, f.opKey, nil)
-			f.cloud.add(jws, payload, typ)
-		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, true},
-		{"leaf-only x5c cannot reach the operator authority", func(f *pbFixture) {
-			msg := &cloudpbv2.ControlContainerRequest{AssetId: f.uuid, OrganizationId: f.tenant, ContainerName: "web", Action: cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP}
-			jws, payload, typ := f.sign(cloudpbv2.DeploymentService_ControlContainer_FullMethodName, msg, "asset/"+f.uuid+"/container/web", []*x509.Certificate{f.opLeaf}, f.opKey, nil)
 			f.cloud.add(jws, payload, typ)
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, true},
 		{"device signs as operator", func(f *pbFixture) {
@@ -408,10 +438,8 @@ func TestPostboxRefusesNamedAndRunsNothing(t *testing.T) {
 			jws, payload, typ := f.sign(cloudpbv2.DeploymentService_ControlContainer_FullMethodName, msg, "asset/"+f.uuid+"/container/web", []*x509.Certificate{leaf, otherOp, otherTenant}, f.opKey, nil)
 			f.cloud.add(jws, payload, typ)
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, true},
-		{"lifetime beyond the cap", func(f *pbFixture) {
-			f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, func(c map[string]any) {
-				c["iat"], c["expiry"] = f.now.Unix()-1800, f.now.Unix()+3600 // iat inside the operator cert validity
-			})
+		{"valid_until beyond the platform cap", func(f *pbFixture) {
+			f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(time.Unix(f.now.Unix()-5, 0).Add(postboxPlatformCap+time.Second)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
 		}, cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, true},
 		{"header alg is not the leaf's", func(f *pbFixture) {
 			f.alg = "ML-DSA-87"
@@ -450,10 +478,11 @@ func TestPostboxRefusesNamedAndRunsNothing(t *testing.T) {
 			if o := f.outcome("web"); o.Outcome != want.Outcome || o.EntryID != want.EntryID {
 				t.Fatalf("outcome = %+v, want %+v", o, want)
 			}
-			if n := f.p.refusals[map[cloudpbv2.ApplyOutcome]string{
-				cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE:  "stale",
-				cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_TARGET: "target",
-			}[tc.want]] + f.p.refusals["signature"] + f.p.refusals["chain"]; n != 1 {
+			n := int64(0)
+			for _, v := range f.p.refusals {
+				n += v
+			}
+			if n != 1 {
 				t.Fatalf("refusals = %v, want one", f.p.refusals)
 			}
 			st := f.p.snapshot()
@@ -537,8 +566,8 @@ func TestPostboxReportsEntryInterruptedByCrash(t *testing.T) {
 	f.p = f.newPostbox() // restart: the claim is on disk, no decision is
 	f.cycle()
 	o := f.outcome("web")
-	if o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_UNSPECIFIED || o.EntryID != 1 || o.CorrelationID == "" {
-		t.Fatalf("outcome = %+v, want entry 1 reported interrupted", o)
+	if o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLY_FAILED || o.EntryID != 1 || o.CorrelationID == "" {
+		t.Fatalf("outcome = %+v, want entry 1 reported APPLY_FAILED (interrupted)", o)
 	}
 	if st := f.p.snapshot(); st.Pending != nil || st.HighWater != 1 || len(f.ctr.stopCalls) != 0 || f.p.refusals["interrupted"] != 1 {
 		t.Fatalf("state %+v, stop %v, refusals %v: want reported once, never retried", st, f.ctr.stopCalls, f.p.refusals)
@@ -553,7 +582,7 @@ func TestPostboxReportsEntryInterruptedByCrash(t *testing.T) {
 
 func TestPostboxHoldsWithoutVerifiedCheckpoint(t *testing.T) {
 	f := newPBFixture(t)
-	f.p.checkpoint = refuseCheckpoint // production today: the contract has no vector
+	f.p.checkpoint = verifyCheckpoint // the production verifier; the fake's bytes are no checkpoint
 	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
 	f.cycle()
 	if len(f.ctr.stopCalls) != 0 || f.p.snapshot().HighWater != 0 || len(f.cloud.acks) != 0 {
@@ -583,7 +612,7 @@ func TestPostboxAssignmentHeldUntilMaterialPull(t *testing.T) {
 		t.Fatalf("outcome = %+v, want the T14 seam's pull refusal", o)
 	}
 
-	unassign := &cloudpbv2.UnassignDeviceRequest{OrganizationId: f.tenant, DeploymentId: dep, Device: f.uri}
+	unassign := &cloudpbv2.UnassignDeviceRequest{OrganizationId: f.tenant, DeploymentId: dep, Device: f.uri, ValidUntil: timestamppb.New(f.now.Add(time.Hour))}
 	jws, payload, typ = f.sign(cloudpbv2.ArtifactRegistryService_UnassignDevice_FullMethodName, unassign, resource, []*x509.Certificate{f.opLeaf, f.opCA}, f.opKey, nil)
 	f.cloud.add(jws, payload, typ)
 	f.cycle()
@@ -596,7 +625,7 @@ func TestPostboxDeploymentMustNameThisDevice(t *testing.T) {
 	f := newPBFixture(t)
 	for _, req := range []*cloudpbv2.CreateDeploymentRequest{
 		{OrganizationId: f.tenant, AppReleaseId: "rel", TargetTags: []string{"lab"}},
-		{OrganizationId: f.tenant, AppReleaseId: "rel", TargetDeviceIds: []string{f.uuid}},
+		{OrganizationId: f.tenant, AppReleaseId: "rel", TargetDeviceIds: []string{f.uuid}, ValidUntil: timestamppb.New(f.now.Add(time.Hour))},
 	} {
 		jws, payload, typ := f.sign(cloudpbv2.DeploymentService_CreateDeployment_FullMethodName, req, "org/"+f.tenant+"/release/rel", []*x509.Certificate{f.opLeaf, f.opCA}, f.opKey, nil)
 		f.cloud.add(jws, payload, typ)
@@ -630,9 +659,7 @@ func TestPostboxNudgeWakesRun(t *testing.T) {
 func TestReportedStateCarriesPostboxOutcomes(t *testing.T) {
 	f := newPBFixture(t)
 	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
-	f.control("db", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, func(c map[string]any) {
-		c["iat"], c["expiry"] = f.now.Unix()-60, f.now.Unix()-30
-	})
+	f.controlUntil("db", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(-time.Second)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
 	f.cycle()
 	r := NewReportedState(zap.NewNop(), &fakeAppReporter{apps: []AppReport{{AppID: "web"}}}, nil, "", "", "", "")
 	r.AttachPostbox(f.p)
@@ -649,5 +676,145 @@ func TestReportedStateCarriesPostboxOutcomes(t *testing.T) {
 	}
 	if s := got["db"]; s == nil || s.GetReportedState() != cloudpbv2.Running_ABSENT || s.GetOutcome() != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE {
 		t.Fatalf("db = %v", s)
+	}
+}
+
+func TestPostboxFetchesOperatorCAOnceAndCachesIt(t *testing.T) {
+	f := newPBFixture(t)
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(f.opLeaf.RawIssuer): {f.opCA}}
+	leafOnly := []*x509.Certificate{f.opLeaf}
+	f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(time.Hour)), leafOnly, nil)
+	f.cycle()
+	st := f.p.snapshot()
+	if len(f.ctr.stopCalls) != 1 || f.cloud.orgCAAsks != 1 || len(st.OrgCAs) != 1 || string(st.OrgCAs[0]) != string(f.opCA.Raw) {
+		t.Fatalf("stop %v, asks %d, cached %d", f.ctr.stopCalls, f.cloud.orgCAAsks, len(st.OrgCAs))
+	}
+	if st.CheckpointMark != 1 || st.TimeFloor != f.now.Unix() {
+		t.Fatalf("checkpoint mark %d / time floor %d not persisted", st.CheckpointMark, st.TimeFloor)
+	}
+
+	f.p = f.newPostbox() // restart: the cache comes back from disk
+	f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(time.Hour)), leafOnly, nil)
+	f.cycle()
+	if len(f.ctr.stopCalls) != 2 || f.cloud.orgCAAsks != 1 {
+		t.Fatalf("stop %v, asks %d: want the cached CA used", f.ctr.stopCalls, f.cloud.orgCAAsks)
+	}
+}
+
+func TestPostboxHoldsEntryUntilAnOperatorCAVerifies(t *testing.T) {
+	f := newPBFixture(t)
+	f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{f.opLeaf}, nil)
+	held := func(step string) {
+		t.Helper()
+		st := f.p.snapshot()
+		if st.HighWater != 0 || len(st.OrgCAs) != 0 || len(f.ctr.stopCalls) != 0 || len(f.cloud.acks) != 0 || len(f.p.Outcomes()) != 0 {
+			t.Fatalf("%s: entry not held: state %+v, stop %v, acks %d, outcomes %v", step, st, f.ctr.stopCalls, len(f.cloud.acks), f.p.Outcomes())
+		}
+	}
+
+	f.cycle() // NOT_FOUND
+	held("not found")
+	if f.p.refusals["operator_ca"] != 1 {
+		t.Fatalf("refusals = %v", f.p.refusals)
+	}
+
+	// Cloud serves another tenant's operator authority under the same root,
+	// with the same subject Name: refused, never cached.
+	otherTenant, otherTenantKey := mkCA(t, "other tenant intermediate", f.root, f.rootKey)
+	otherOp, _ := mkCA(t, "operator authority", otherTenant, otherTenantKey)
+	notCA := mkLeaf(t, "spiffe://wendy.sh/tenant/"+f.tenant+"/operator/x", &f.tenantCAKey.PublicKey, f.tenantCA, f.tenantCAKey)
+	// Neither the tenant CA itself nor a CA under its Device CA sibling is
+	// one the tenant CA issued.
+	underDeviceCA, _ := mkCA(t, "operator authority", f.deviceCA, f.deviceCAKey)
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(f.opLeaf.RawIssuer): {otherOp, notCA, f.tenantCA, underDeviceCA}}
+	f.cycle()
+	held("other tenant / not a CA / the tenant CA / under the Device CA")
+	if f.p.refusals["not_under_org_ca"] != 3 || f.p.refusals["not_a_ca"] != 1 || f.p.refusals["operator_ca"] != 2 {
+		t.Fatalf("refusals = %v", f.p.refusals)
+	}
+
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(f.opLeaf.RawIssuer): {f.opCA}}
+	f.cycle()
+	if len(f.ctr.stopCalls) != 1 || f.p.snapshot().HighWater != 1 || f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED {
+		t.Fatalf("held entry not applied once the CA verified: stop %v, outcome %+v", f.ctr.stopCalls, f.outcome("web"))
+	}
+}
+
+func TestPostboxValidityEdges(t *testing.T) {
+	t.Run("call expiry long past is ignored", func(t *testing.T) {
+		f := newPBFixture(t)
+		f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, func(c map[string]any) {
+			c["iat"], c["expiry"] = f.now.Unix()-1800, f.now.Unix()-1770 // offline for 30 minutes
+		})
+		f.cycle()
+		if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED {
+			t.Fatalf("outcome = %+v", f.outcome("web"))
+		}
+	})
+	t.Run("valid_until at the platform cap passes", func(t *testing.T) {
+		f := newPBFixture(t)
+		iat := f.now.Unix() - 5
+		f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(time.Unix(iat, 0).Add(postboxPlatformCap)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+		f.cycle()
+		if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED {
+			t.Fatalf("outcome = %+v", f.outcome("web"))
+		}
+	})
+	t.Run("checkpoint time ahead of the clock makes it stale", func(t *testing.T) {
+		f := newPBFixture(t)
+		f.cloud.genTime = f.now.Add(2 * time.Hour)                             // the TSA's time; this clock runs behind
+		f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil) // valid_until = clock + 1 h
+		f.cycle()
+		if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE || f.p.refusals["stale"] != 1 || len(f.ctr.stopCalls) != 0 {
+			t.Fatalf("outcome = %+v, refusals %v", f.outcome("web"), f.p.refusals)
+		}
+		if f.p.snapshot().TimeFloor != f.cloud.genTime.Unix() {
+			t.Fatalf("time floor %d", f.p.snapshot().TimeFloor)
+		}
+	})
+	for _, tc := range []struct {
+		name, reason string
+		until        func(f *pbFixture) *timestamppb.Timestamp
+	}{
+		{"missing", "validity_missing", func(*pbFixture) *timestamppb.Timestamp { return nil }},
+		{"above platform cap", "above_platform_cap", func(f *pbFixture) *timestamppb.Timestamp {
+			return timestamppb.New(time.Unix(f.now.Unix()-5, 0).Add(postboxPlatformCap + time.Second))
+		}},
+		{"at trusted now", "stale", func(f *pbFixture) *timestamppb.Timestamp { return timestamppb.New(f.now) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPBFixture(t)
+			f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, tc.until(f), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+			f.cycle()
+			if f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE || f.p.refusals[tc.reason] != 1 || f.p.snapshot().HighWater != 1 {
+				t.Fatalf("outcome = %+v, refusals %v: want %s, consumed", f.outcome("web"), f.p.refusals, tc.reason)
+			}
+		})
+	}
+}
+
+func TestPostboxVerifiedButFailedApplyReportsApplyFailed(t *testing.T) {
+	f := newPBFixture(t)
+	f.ctr.stopErr = errors.New("containerd unavailable")
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.cycle()
+	if o := f.outcome("web"); o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLY_FAILED || o.EntryID != 1 || f.p.refusals["apply"] != 1 {
+		t.Fatalf("outcome = %+v, refusals %v", o, f.p.refusals)
+	}
+	if st := f.p.snapshot(); st.HighWater != 1 || st.Acked != 1 {
+		t.Fatalf("state %+v: a failed apply is consumed and acked, not retried", st)
+	}
+}
+
+func TestPostboxHoldsOnCheckpointBelowItsMark(t *testing.T) {
+	f := newPBFixture(t)
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	if err := f.p.load(f.uri); err != nil {
+		t.Fatal(err)
+	}
+	f.p.state.CheckpointMark = 2 // a newer checkpoint was verified before
+	f.cycle()
+	if len(f.ctr.stopCalls) != 0 || f.p.snapshot().HighWater != 0 || f.p.refusals["checkpoint"] != 1 {
+		t.Fatalf("applied under a rolled-back checkpoint: stop %v, refusals %v", f.ctr.stopCalls, f.p.refusals)
 	}
 }
