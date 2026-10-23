@@ -143,12 +143,11 @@ func dialDarwin(ctx context.Context, cfg Config, address string, adv Advertiseme
 			return nil
 		},
 	})
-	handshake, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err = secure.HandshakeContext(handshake)
-	cancel()
+	_, err = handshakeMeshOutbound(ctx, secure)
 	if err != nil {
 		return fmt.Errorf("TLS handshake: %w", err)
 	}
+	defer secure.Close()
 	if cfg.Selection != nil && !cfg.Selection.AllowRadio(peer, localmesh.RadioBLE) {
 		return nil
 	}
