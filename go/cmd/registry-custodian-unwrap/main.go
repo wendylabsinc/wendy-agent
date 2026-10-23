@@ -52,7 +52,7 @@ func main() {
 
 func run() ([]byte, error) {
 	if len(os.Args) != 2 {
-		return nil, errors.New("usage: registry-custodian-unwrap <kms-key-version-resource> < wrap.json")
+		return nil, errors.New("usage: registry-custodian-unwrap <kms-key-version-resource> < wrap.json (wrap.json: KeyWrap proto JSON plus \"organizationId\")")
 	}
 	v, err := parseVersion(os.Args[1])
 	if err != nil {
