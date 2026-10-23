@@ -39,6 +39,7 @@ type Supervisor struct {
 	transportFor TransportFactory
 	newWriter    func(path string) ros2camera.CameraWriter
 	audioLoop    AudioLoop
+	resolveAddrs func(context.Context, SensorPairing) ([]string, bool)
 
 	statusMu  sync.Mutex
 	connected map[string]bool
@@ -53,6 +54,19 @@ type Supervisor struct {
 // cannot do that across pairings with different source identities.
 func NewSupervisor(logger *zap.Logger, lb Loopback, transportFor TransportFactory, newWriter func(path string) ros2camera.CameraWriter, audioLoop AudioLoop) *Supervisor {
 	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, audioLoop: audioLoop, nodeIDs: make(map[string]uint32), connected: make(map[string]bool)}
+}
+
+// SetAddressResolver replaces LAN-only resolution. Configure it before starting
+// any pairings; explicit pinned addresses still bypass discovery.
+func (s *Supervisor) SetAddressResolver(resolve func(context.Context, SensorPairing) ([]string, bool)) {
+	s.resolveAddrs = resolve
+}
+
+func (s *Supervisor) resolve(ctx context.Context, p SensorPairing) ([]string, bool) {
+	if s.resolveAddrs != nil {
+		return s.resolveAddrs(ctx, p)
+	}
+	return resolvePairingLANAddrs(ctx, p)
 }
 
 // IsConnected reports whether the current stream has delivered a frame to a
@@ -152,11 +166,8 @@ func backoffDelay(level int) time.Duration {
 // addr decides the dial target for every (re)connect. A non-empty addr is an
 // explicitly-pinned target (a caller that wants this exact address) and is
 // reused unchanged for the life of the pairing. An empty addr is the dynamic,
-// identity-resolved case — the common `device pair` path, which sends no
-// address — and is RE-resolved by asset id (via the resolveLANAddrs seam)
-// before every attempt: when the source's address changes (e.g. a Mac
-// rejoins WiFi with a new IP), the next reconnect re-browses mDNS and dials
-// the source's CURRENT address instead of forever redialing the stale one.
+// identity-resolved case used by `device pair`. Each reconnect resolves fresh
+// addresses, preferring LAN and including live mesh routes when configured.
 func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr string) error {
 	pinned := addr != ""
 	level := 0
@@ -167,13 +178,12 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 		dialAddrs := []string{addr}
 		if !pinned {
 			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-			resolved, ok := resolvePairingLANAddrs(rctx, p)
+			resolved, ok := s.resolve(rctx, p)
 			rcancel()
 			if !ok {
-				// Source not (yet) on the LAN — boot-resume before it's up, or
-				// mid-move between addresses. Back off on the same schedule as
-				// a failed stream and retry the browse.
-				s.logger.Warn("sensor source not found on LAN, retrying", zap.String("source", p.Key()))
+				// Source not reachable yet, including boot-resume or route loss.
+				// Back off on the same schedule as a failed stream and resolve again.
+				s.logger.Warn("sensor source not reachable, retrying", zap.String("source", p.Key()))
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
