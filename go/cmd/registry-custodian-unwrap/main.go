@@ -15,6 +15,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
+	"crypto/mlkem"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -40,6 +41,12 @@ type wrap struct {
 	Enc            []byte `json:"enc"`
 	Ciphertext     []byte `json:"ciphertext"`
 }
+
+const (
+	encSize          = mlkem.CiphertextSize768 + 32 // X-Wing ciphertext: ML-KEM-768 ‖ X25519
+	sharedSecretSize = 32
+	sealedKeySize    = 32 + 16 // the wrapped key and its GCM tag
+)
 
 func main() {
 	key, err := run()
@@ -110,20 +117,28 @@ func gcloud(v keyVersion, args ...string) error {
 	return nil
 }
 
-// unwrap refuses a wrap made to another key than pub, decapsulates its enc
-// with decap and opens it: HPKE base mode (RFC 9180), X-Wing / HKDF-SHA256 /
-// AES-256-GCM, custodian info, empty AAD.
+// unwrap refuses a wrap made to another key than pub, or one missing a binding
+// field or of the wrong size, before decap: KMS logs and alerts on every
+// decapsulate. It then decapsulates enc with decap and opens the wrap: HPKE
+// base mode (RFC 9180), X-Wing / HKDF-SHA256 / AES-256-GCM, custodian info,
+// empty AAD.
 func unwrap(w wrap, pub []byte, decap func(enc []byte) ([]byte, error)) ([]byte, error) {
 	if keyID(pub) != w.RecipientKeyID {
-		return nil, fmt.Errorf("wrap recipient_key_id %s is not this KMS key version (%s)", w.RecipientKeyID, keyID(pub))
+		return nil, fmt.Errorf("wrap recipientKeyId %q is not this KMS key version (%s)", w.RecipientKeyID, keyID(pub))
 	}
 	info, err := w.info()
 	if err != nil {
 		return nil, err
 	}
+	if len(w.Enc) != encSize || len(w.Ciphertext) != sealedKeySize {
+		return nil, fmt.Errorf("wrap enc and ciphertext are %d and %d bytes, want %d and %d", len(w.Enc), len(w.Ciphertext), encSize, sealedKeySize)
+	}
 	ss, err := decap(w.Enc)
 	if err != nil {
 		return nil, err
+	}
+	if len(ss) != sharedSecretSize {
+		return nil, fmt.Errorf("decapsulate returned %d bytes, want a %d-byte shared secret", len(ss), sharedSecretSize)
 	}
 	gcm, nonce, err := keySchedule(ss, info)
 	if err != nil {
@@ -144,10 +159,26 @@ func keyID(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// isKeyID reports whether s has the form of a key id: lower-case hex SHA-256.
+func isKeyID(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
+}
+
 // info = "wendy-registry-wrap-v1" ‖ lp(org) ‖ u8 scope kind ‖ lp(scope id) ‖
 // lp(key_id) ‖ u8 recipient_kind ‖ lp(recipient) ‖ lp(recipient_key_id), with
-// recipient_kind 3 (CUSTODIAN) and an empty recipient.
+// recipient_kind 3 (CUSTODIAN) and an empty recipient. A missing field is
+// refused here; the open would only fail after the KMS decapsulate.
 func (w wrap) info() ([]byte, error) {
+	if w.OrganizationID == "" {
+		return nil, errors.New(`wrap.json has no "organizationId" (KeyWrap does not carry it; add the organization the wrap was made for)`)
+	}
+	if (w.Scope.DeploymentID == "") == (w.Scope.AppReleaseID == "") {
+		return nil, errors.New(`wrap scope needs exactly one of "deploymentId" and "appReleaseId"`)
+	}
+	if !isKeyID(w.Scope.KeyID) {
+		return nil, fmt.Errorf(`wrap scope "keyId" %q is not a lower-case hex SHA-256`, w.Scope.KeyID)
+	}
 	scope, scopeID := byte(1), w.Scope.DeploymentID
 	if scopeID == "" {
 		scope, scopeID = 2, w.Scope.AppReleaseID

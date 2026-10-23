@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdh"
+	"crypto/hpke"
 	"crypto/mlkem"
 	"crypto/sha3"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -17,7 +20,15 @@ const (
 	vecWrappedKey = "d82ca60ac5250e6ece7b68f4dfe5f401704bbd0f8a7fe0acac6e0436791133c7"
 )
 
-func TestUnwrapCustodianVector(t *testing.T) {
+// Vector device-deployment-wrap-valid: its deployment key and its info_hex up
+// to recipient_kind, the deployment-scope part the custodian info shares.
+const (
+	vecDeploymentID   = "4b2d8f6e-1c3a-4e5b-9d7f-2a6c8e0b1d3f"
+	vecDeploymentKey  = "921b4e7ee2766da98d1929d8aa36bed197a05296130fd4642cc24b263fa43a94"
+	vecDeploymentInfo = "77656e64792d72656769737472792d777261702d7631002432353538666437362d616663372d343636652d393631332d36623731353239366135323601002434623264386636652d316333612d346535622d396437662d326136633865306231643366004064633930636131613165396633633334366235353531363935626262656133373134623735316165633161306336323963393366366162303333656230336365"
+)
+
+func vectorWrap() wrap {
 	var w wrap
 	w.OrganizationID = "2558fd76-afc7-466e-9613-6b715296a526"
 	w.Scope.AppReleaseID = "9e1f3a5c-7b2d-4c6e-8f0a-1b3d5e7f9a2c"
@@ -25,8 +36,39 @@ func TestUnwrapCustodianVector(t *testing.T) {
 	w.RecipientKeyID = "bd31a0c8ebc7539c1b361f379f52b59f2200c1332f850430ae1a2c535447f796"
 	w.Enc, _ = hex.DecodeString(vecEnc)
 	w.Ciphertext, _ = hex.DecodeString(vecCiphertext)
+	return w
+}
 
-	// Local X-Wing decapsulation standing in for KMS (draft-connolly-cfrg-xwing-kem).
+// sealDeployment wraps key to pub at the vector's deployment scope with
+// crypto/hpke, which shares no code with keySchedule.
+func sealDeployment(t *testing.T, pub, key []byte) wrap {
+	t.Helper()
+	w := vectorWrap()
+	w.Scope.AppReleaseID, w.Scope.DeploymentID = "", vecDeploymentID
+	w.Scope.KeyID = "dc90ca1a1e9f3c346b5551695bbbea3714b751aec1a0c629c93f6ab033eb03ce"
+	info, err := w.info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk, err := hpke.MLKEM768X25519().NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, s, err := hpke.NewSender(pk, hpke.HKDFSHA256(), hpke.AES256GCM(), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Ciphertext, err = s.Seal(nil, key); err != nil {
+		t.Fatal(err)
+	}
+	w.Enc = enc
+	return w
+}
+
+// vectorKey returns the vector's recipient public key and a local X-Wing
+// decapsulation standing in for KMS (draft-connolly-cfrg-xwing-kem).
+func vectorKey(t *testing.T) ([]byte, func(enc []byte) ([]byte, error)) {
+	t.Helper()
 	seed, _ := hex.DecodeString(vecPrivateKey)
 	expanded := sha3.SumSHAKE256(seed, mlkem.SeedSize+32)
 	seedPQ, seedT := expanded[:mlkem.SeedSize], expanded[mlkem.SeedSize:]
@@ -59,20 +101,88 @@ func TestUnwrapCustodianVector(t *testing.T) {
 		}
 		return h.Sum(nil), nil
 	}
+	return pub, decap
+}
 
-	key, err := unwrap(w, pub, decap)
+func TestUnwrapCustodianVector(t *testing.T) {
+	pub, decap := vectorKey(t)
+	key, err := unwrap(vectorWrap(), pub, decap)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := hex.EncodeToString(key); got != vecWrappedKey {
 		t.Fatalf("key = %s, want %s", got, vecWrappedKey)
 	}
+}
 
-	w.Ciphertext[0] ^= 1
-	if _, err := unwrap(w, pub, decap); err == nil {
-		t.Fatal("tampered wrap opened")
+func TestUnwrapDeploymentScope(t *testing.T) {
+	pub, decap := vectorKey(t)
+	want, _ := hex.DecodeString(vecDeploymentKey)
+	w := sealDeployment(t, pub, want)
+
+	info, err := w.info()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := unwrap(w, pub[1:], decap); err == nil {
-		t.Fatal("wrap opened under another recipient key")
+	// recipient_kind 3, lp(""), lp(recipient_key_id)
+	wantInfo := vecDeploymentInfo + "03" + "0000" + "0040" + hex.EncodeToString([]byte(w.RecipientKeyID))
+	if got := hex.EncodeToString(info); got != wantInfo {
+		t.Fatalf("info = %s, want %s", got, wantInfo)
+	}
+
+	key, err := unwrap(w, pub, decap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(key, want) {
+		t.Fatalf("key = %x, want %x", key, want)
+	}
+}
+
+// Every refusal that can be made before KMS is: each decapsulate is a logged,
+// alerted use of the custodian key.
+func TestUnwrapRefuses(t *testing.T) {
+	pub, decap := vectorKey(t)
+	otherPub := bytes.Clone(pub)
+	otherPub[0] ^= 1
+	notKeyID := sealDeployment(t, pub, make([]byte, 32)) // opens, but SHA-256(key) != keyId
+
+	for _, tc := range []struct {
+		name string
+		pub  []byte // nil: the vector key
+		edit func(*wrap)
+		kms  bool // refused only after a decapsulate
+	}{
+		{name: "another recipient key", pub: otherPub},
+		{name: "no organizationId", edit: func(w *wrap) { w.OrganizationID = "" }},
+		{name: "no scope id", edit: func(w *wrap) { w.Scope.AppReleaseID = "" }},
+		{name: "two scope ids", edit: func(w *wrap) { w.Scope.DeploymentID = vecDeploymentID }},
+		{name: "upper-case keyId", edit: func(w *wrap) { w.Scope.KeyID = strings.ToUpper(w.Scope.KeyID) }},
+		{name: "short enc", edit: func(w *wrap) { w.Enc = w.Enc[1:] }},
+		{name: "long ciphertext", edit: func(w *wrap) { w.Ciphertext = append(w.Ciphertext, 0) }},
+		{name: "tampered ciphertext", edit: func(w *wrap) { w.Ciphertext[0] ^= 1 }, kms: true},
+		{name: "another organization", edit: func(w *wrap) { w.OrganizationID = "6a1f0c3e-8d2b-4f7a-9e5c-3b1d0a8f6e4c" }, kms: true},
+		{name: "key is not keyId", edit: func(w *wrap) { *w = notKeyID }, kms: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, p := vectorWrap(), pub
+			if tc.pub != nil {
+				p = tc.pub
+			}
+			if tc.edit != nil {
+				tc.edit(&w)
+			}
+			decaps := 0
+			_, err := unwrap(w, p, func(enc []byte) ([]byte, error) {
+				decaps++
+				return decap(enc)
+			})
+			if err == nil {
+				t.Fatal("wrap opened")
+			}
+			if (decaps > 0) != tc.kms {
+				t.Fatalf("decapsulated %d times, want after KMS = %v (err: %v)", decaps, tc.kms, err)
+			}
+		})
 	}
 }
