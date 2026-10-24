@@ -84,13 +84,13 @@ jobs:
           npm ci --prefix distributions/javascript
           python scripts/build.py node
           cd distributions/javascript
-          node --test tests/node.test.mjs
+          node --test tests/node.test.mjs tests/server.test.mjs
           npm run test:types
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: Verify the minimum supported Node release with the same addon
-        run: cd distributions/javascript && node --test tests/node.test.mjs
+        run: cd distributions/javascript && node --test tests/node.test.mjs tests/server.test.mjs
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
@@ -120,7 +120,7 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src "$SWIFT_IMAGE" swift test --scratch-path /tmp/swift
       - name: Build a platform-specific, Python-version-independent wheel
         run: |
-          python -m pip install build 'setuptools>=77' 'wheel>=0.45'
+          python -m pip install --require-hashes -r scripts/ci-build-tools.txt
           python scripts/build.py wheel
       - if: runner.os == 'Linux'
         name: Verify and repair the declared Linux compatibility tag
@@ -128,7 +128,6 @@ jobs:
           MANYLINUX_PLATFORM: ${{ matrix.manylinux }}
         run: |
           # Ubuntu 22.04's patchelf is older than auditwheel's minimum.
-          python -m pip install auditwheel 'patchelf>=0.14.5'
           auditwheel repair --plat "$MANYLINUX_PLATFORM" --wheel-dir .build/repaired .build/wheels/*.whl
           rm .build/wheels/*.whl
           cp .build/repaired/*.whl .build/wheels/

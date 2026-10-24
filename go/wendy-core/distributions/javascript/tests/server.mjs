@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { resolve, extname, sep } from 'node:path';
+import { resolve, extname } from 'node:path';
+import { resolveServedFile } from './server-files.mjs';
 
 const root = resolve(process.env.CORE_PACKAGE_ROOT ?? '.');
 const tests = resolve('tests');
@@ -12,8 +13,7 @@ http.createServer(async (request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     const base = pathname.startsWith('/tests/') ? tests : root;
     const relative = base === tests ? pathname.slice('/tests'.length) : pathname;
-    const path = resolve(base, `.${relative}`);
-    if (!path.startsWith(base + sep)) throw new Error('Outside package');
+    const path = await resolveServedFile(base, relative);
     let content = await readFile(path);
     if (pathname === '/tests/browser.html') {
       content = Buffer.from(content.toString().replace('__CORE_BROWSER_ENTRY__', browserEntry));

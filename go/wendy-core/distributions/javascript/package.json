@@ -17,7 +17,7 @@
   "files": ["src", "assets", "README.md", "LICENSE", "NOTICE"],
   "publishConfig": { "access": "public" },
   "scripts": {
-    "test": "node --test tests/node.test.mjs && playwright test",
+    "test": "node --test tests/node.test.mjs tests/server.test.mjs && playwright test",
     "test:types": "tsc --noEmit --strict --module nodenext --target es2022 tests/types.mts",
     "build:native": "node-gyp rebuild --directory native"
   },

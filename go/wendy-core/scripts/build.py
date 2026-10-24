@@ -364,7 +364,7 @@ def wheel():
         environment = dict(os.environ)
         if platform.system() == "Darwin":
             environment["MACOSX_DEPLOYMENT_TARGET"] = "15.0"
-        run(os.sys.executable, "-m", "build", "--wheel", "--outdir", BUILD / "wheels", directory, env=environment)
+        run(os.sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", BUILD / "wheels", directory, env=environment)
 
 
 def swift_release(artifacts, release):
