@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/wendylabsinc/wendy-go/identity"
+
 	"github.com/spf13/cobra"
 	pb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 
@@ -27,32 +29,39 @@ import (
 // (okSessions > 0, no orgs) from "every probe failed" (okSessions == 0) so the
 // reassuring no-orgs sentence is never printed on a failed call.
 func collectOrgsV2(ctx context.Context, cfg *config.Config, w io.Writer) (orgs []*pb.Organization, pickerAuth *config.AuthConfig, okSessions int, failed []error) {
-	seen := make(map[string]bool)
-	for i := range cfg.Auth {
-		a := &cfg.Auth[i]
-		if len(a.Certificates) == 0 {
-			continue
+	var sessions []identity.Session
+	for _, auth := range cfg.Auth {
+		sessions = append(sessions, auth.IdentitySession())
+	}
+	indices := make(map[*identity.Session]int, len(sessions))
+	for i := range sessions {
+		indices[&sessions[i]] = i
+	}
+	originals := make(map[string]*pb.Organization)
+	collection := identity.CollectOrganizations(ctx, sessions, func(ctx context.Context, session *identity.Session) ([]identity.Organization, error) {
+		listed, err := listCloudOrganizationsV2(ctx, &cfg.Auth[indices[session]])
+		if err != nil {
+			return nil, err
 		}
-		fetched, fetchErr := listCloudOrganizationsV2(ctx, a)
-		if fetchErr != nil {
-			e := fmt.Errorf("listing organizations for %s: %w", authSessionLabel(a), fetchErr)
-			fmt.Fprintln(w, e)
-			failed = append(failed, e)
-			continue
-		}
-		okSessions++
-		if pickerAuth == nil {
-			pickerAuth = a
-		}
-		for _, org := range fetched {
-			if org == nil || seen[org.GetId()] {
+		var records []identity.Organization
+		for _, organization := range listed {
+			if organization == nil {
 				continue
 			}
-			seen[org.GetId()] = true
-			orgs = append(orgs, org)
+			if originals[organization.Id] == nil {
+				originals[organization.Id] = organization
+			}
+			records = append(records, identity.Organization{ID: organization.Id, Name: organization.Name})
 		}
+		return records, nil
+	}, func(session *identity.Session) string { return authSessionLabel(&cfg.Auth[indices[session]]) }, func(err error) { fmt.Fprintln(w, err) })
+	for _, organization := range collection.Organizations {
+		orgs = append(orgs, originals[organization.ID])
 	}
-	return orgs, pickerAuth, okSessions, failed
+	if collection.PickerSession != nil {
+		pickerAuth = &cfg.Auth[indices[collection.PickerSession]]
+	}
+	return orgs, pickerAuth, collection.SuccessfulSessions, collection.Failures
 }
 
 func newAuthListOrgsCmd() *cobra.Command {

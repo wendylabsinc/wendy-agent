@@ -6,20 +6,19 @@ package commands
 // is replaced by minting a new assertion.
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/wendylabsinc/wendy-go/identity"
+	"github.com/wendylabsinc/wendy/go/internal/cli/identityhost"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -59,80 +58,17 @@ func parseServiceAccountKey(data []byte) (*serviceAccountKey, crypto.Signer, err
 // possession, so the request carries no DPoP proof; wendy-auth binds the token
 // to the registered key named by kid.
 func mintServiceAccountToken(ctx context.Context, key crypto.Signer, issuer, subject, resource string) (*oidcTokenResponse, error) {
-	issuer = strings.TrimSuffix(issuer, "/")
-	meta, err := discoverOIDC(ctx, issuer)
+	signer, err := identityhost.OperatorKey(key)
 	if err != nil {
 		return nil, err
 	}
-	_, alg, err := operatorPublicJWK(key)
-	if err != nil {
-		return nil, err
-	}
-	kid, err := operatorJWKThumbprint(key)
-	if err != nil {
-		return nil, err
-	}
-	jti, err := randomURLSafe(16)
-	if err != nil {
-		return nil, fmt.Errorf("generating assertion jti: %w", err)
-	}
-	now := time.Now()
-	assertion, err := cloudrequest.SignJWS(key,
-		map[string]any{"alg": alg, "kid": kid},
-		map[string]any{
-			"iss": subject, "sub": subject, "aud": meta.TokenEndpoint, "jti": jti,
-			"iat": now.Unix(), "exp": now.Add(time.Minute).Unix(),
-		})
-	if err != nil {
-		return nil, fmt.Errorf("signing service-account assertion: %w", err)
-	}
-	form := url.Values{}
-	form.Set("grant_type", jwtBearerGrantType)
-	form.Set("assertion", assertion)
-	if resource != "" {
-		form.Set("resource", resource)
-	}
-	token, err := postForToken(ctx, meta.TokenEndpoint, "application/x-www-form-urlencoded", []byte(form.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("minting service-account token: %w", err)
-	}
-	if err := checkServiceAccountToken(token, kid, issuer, resource); err != nil {
-		return nil, err
-	}
-	return token, nil
-}
-
-func postForToken(ctx context.Context, endpoint, contentType string, body []byte) (*oidcTokenResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", contentType)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return parseTokenResponse(resp)
+	return identityhost.Client(http.DefaultClient).MintServiceAccountToken(ctx, signer, issuer, subject, resource)
 }
 
 // checkServiceAccountToken refuses a token not bound to our key, from another
 // realm, or for another audience, before it is stored.
 func checkServiceAccountToken(token *oidcTokenResponse, kid, issuer, resource string) error {
-	claims, err := decodeJWTClaims(token.AccessToken)
-	if err != nil {
-		return fmt.Errorf("inspecting service-account access token: %w", err)
-	}
-	if confirmationThumbprint(claims) != kid {
-		return fmt.Errorf("service-account access token is not bound to this key")
-	}
-	if iss, _ := claims["iss"].(string); iss != issuer {
-		return fmt.Errorf("service-account access token issuer %q does not match %q", iss, issuer)
-	}
-	if resource != "" && !audienceContains(claims["aud"], resource) {
-		return fmt.Errorf("service-account access token audience does not include %s", resource)
-	}
-	return nil
+	return identity.CheckServiceAccountToken(token, kid, issuer, resource)
 }
 
 type serviceAccountLoginOptions struct {
@@ -177,9 +113,7 @@ func performServiceAccountLogin(ctx context.Context, opts serviceAccountLoginOpt
 	return nil
 }
 
-func tokenExpiry(token *oidcTokenResponse) string {
-	return time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
-}
+func tokenExpiry(token *oidcTokenResponse) string { return identity.TokenExpiry(token) }
 
 // remintServiceAccountSession replaces the session's access token with a newly
 // minted one and persists it. Callers hold the auth refresh lock.
@@ -227,39 +161,13 @@ func enrollServiceAccount(ctx context.Context, issuer, secret, outPath string) (
 	if err != nil {
 		return fmt.Errorf("parsing generated key: %w", err)
 	}
-	jwk, _, err := operatorPublicJWK(signer)
+	key, err := identityhost.OperatorKey(signer)
 	if err != nil {
 		return err
 	}
-	kid, err := operatorJWKThumbprint(signer)
+	subject, err := identityhost.Client(http.DefaultClient).EnrollServiceAccount(ctx, key, issuer, secret)
 	if err != nil {
 		return err
-	}
-	enrollURL := issuer + "/service-accounts/enroll"
-	pop, err := newDPoPProof(signer, http.MethodPost, enrollURL, "")
-	if err != nil {
-		return fmt.Errorf("building enrollment proof: %w", err)
-	}
-	body, err := json.Marshal(map[string]any{"enrollment_secret": secret, "public_jwk": jwk, "pop": pop})
-	if err != nil {
-		return err
-	}
-	token, err := postForToken(ctx, enrollURL, "application/json", body)
-	if err != nil {
-		return fmt.Errorf("enrolling service account: %w", err)
-	}
-	// The enrollment response names neither the account nor the realm; both
-	// come from the access token it returns.
-	if err := checkServiceAccountToken(token, kid, issuer, ""); err != nil {
-		return err
-	}
-	claims, err := decodeJWTClaims(token.AccessToken)
-	if err != nil {
-		return err
-	}
-	subject, _ := claims["sub"].(string)
-	if subject == "" {
-		return fmt.Errorf("enrollment access token carries no sub claim")
 	}
 	data, err := json.MarshalIndent(serviceAccountKey{Issuer: issuer, Subject: subject, PrivateKey: privateKeyPEM}, "", "  ")
 	if err != nil {

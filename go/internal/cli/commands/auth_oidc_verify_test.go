@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"bytes"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,9 +11,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"math/big"
+	"net/http"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/identityhost"
 )
 
 func testES256Token(t *testing.T, key *ecdsa.PrivateKey, kid string, claims map[string]any) string {
@@ -50,7 +56,7 @@ func TestOIDCTokenVerifierValidatesSignatureAndClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	const issuer = "https://auth.example/realms/acme"
-	verifier := &oidcTokenVerifier{issuer: issuer, keys: []oidcJWK{testES256JWK(key, "key-1")}}
+	verifier := testOIDCTokenVerifier(t, issuer, []oidcJWK{testES256JWK(key, "key-1")})
 	claims := map[string]any{
 		"iss": issuer, "aud": "wendy-cli", "sub": "user-1", "nonce": "nonce-1",
 		"exp": time.Now().Add(time.Hour).Unix(),
@@ -89,11 +95,11 @@ func TestOIDCTokenVerifierAcceptsMLDSA65(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := input + "." + base64.RawURLEncoding.EncodeToString(signature)
-	verifier := &oidcTokenVerifier{issuer: issuer, keys: []oidcJWK{{
+	verifier := testOIDCTokenVerifier(t, issuer, []oidcJWK{{
 		"kid": "pq", "alg": "ML-DSA-65", "kty": "AKP",
 		"pub": base64.RawURLEncoding.EncodeToString(key.Public().(*mldsa.PublicKey).Bytes()),
-	}}}
-	if _, err := verifier.verify(token, "wendy-cli"); err != nil {
+	}})
+	if _, err := verifier.Verify(context.Background(), token, "wendy-cli"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -104,7 +110,7 @@ func TestOIDCTokenVerifierRejectsTamperingAndNonceMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	const issuer = "https://auth.example/realms/acme"
-	verifier := &oidcTokenVerifier{issuer: issuer, keys: []oidcJWK{testES256JWK(key, "key-1")}}
+	verifier := testOIDCTokenVerifier(t, issuer, []oidcJWK{testES256JWK(key, "key-1")})
 	token := testES256Token(t, key, "key-1", map[string]any{
 		"iss": issuer, "aud": "wendy-cli", "sub": "user-1", "nonce": "wrong",
 		"exp": time.Now().Add(time.Hour).Unix(),
@@ -114,7 +120,7 @@ func TestOIDCTokenVerifierRejectsTamperingAndNonceMismatch(t *testing.T) {
 	}
 	parts := []byte(token)
 	parts[len(parts)-1] ^= 1
-	if _, err := verifier.verify(string(parts), "wendy-cli"); err == nil {
+	if _, err := verifier.Verify(context.Background(), string(parts), "wendy-cli"); err == nil {
 		t.Fatal("tampered signature was accepted")
 	}
 }
@@ -125,3 +131,25 @@ func TestVerifyES256JWKRejectsInvalidPoint(t *testing.T) {
 		t.Fatal("invalid curve point was accepted")
 	}
 }
+
+// The SDK owns the verifier's private state. Load test keys through its public
+// host interface; all existing signature, claim and nonce assertions stay intact.
+func testOIDCTokenVerifier(t *testing.T, issuer string, keys []oidcJWK) *oidcTokenVerifier {
+	t.Helper()
+	document, err := json.Marshal(map[string]any{"keys": keys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := identityhost.Client(oidcVerifierHTTP(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(document))}, nil
+	}))
+	verifier, err := client.LoadTokenVerifier(context.Background(), &oidcProviderMetadata{Issuer: issuer, JWKSURI: "https://issuer.invalid/jwks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return verifier
+}
+
+type oidcVerifierHTTP func(*http.Request) (*http.Response, error)
+
+func (f oidcVerifierHTTP) Do(r *http.Request) (*http.Response, error) { return f(r) }

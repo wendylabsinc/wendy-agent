@@ -249,3 +249,27 @@ func TestResolveAuthPreferenceDoesNotChangeSelectedOrg(t *testing.T) {
 		t.Fatalf("operator preference changed selected org to %d, want first org 9", got)
 	}
 }
+
+// The terminal picker may persist its choice and refresh the selected host
+// entry. Mapping through portable session metadata must preserve both changes.
+func TestResolveAuthPreservesPickerChanges(t *testing.T) {
+	cfg := &Config{Auth: []AuthConfig{
+		{Name: "first", CloudGRPC: "one.example:443", APIKey: "first-token"},
+		{Name: "second", CloudGRPC: "two.example:443", APIKey: "second-token"},
+	}}
+	var picked *AuthConfig
+	selected, err := ResolveAuth(cfg, "", func(c *Config) (*AuthConfig, error) {
+		c.CurrentContext = "second"
+		// Appending also makes any pointers into the old backing array stale.
+		c.Auth = append(c.Auth, AuthConfig{Name: "third", CloudGRPC: "three.example:443", APIKey: "third-token"})
+		c.Auth[1].APIKey = "rotated-token"
+		picked = &c.Auth[1]
+		return picked, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != picked || selected.APIKey != "rotated-token" || cfg.CurrentContext != "second" || len(cfg.Auth) != 3 {
+		t.Fatalf("lost host picker changes: selected=%+v config=%+v", selected, cfg)
+	}
+}

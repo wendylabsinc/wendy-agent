@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/wendylabsinc/wendy-go/identity"
+
 	"github.com/wendylabsinc/wendy/go/internal/shared/atomicfile"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
@@ -341,13 +343,11 @@ func authEntryOrgID(a AuthConfig) int {
 // cloudGRPC, orgID) so that multiple orgs on the same cloud endpoint each
 // keep their own entry instead of overwriting one another.
 func (c *Config) AddAuth(auth AuthConfig) {
-	incomingOrg := auth.OrganizationKey()
+	incoming := auth.IdentitySession()
 	for i, existing := range c.Auth {
-		if existing.CloudDashboard == auth.CloudDashboard &&
-			existing.CloudGRPC == auth.CloudGRPC &&
-			existing.OAuthIssuer == auth.OAuthIssuer &&
-			existing.ServiceAccount == auth.ServiceAccount &&
-			existing.OrganizationKey() == incomingOrg {
+		candidate := identity.SessionSet{Auth: []identity.Session{existing.IdentitySession()}}
+		candidate.AddAuth(incoming)
+		if len(candidate.Auth) == 1 {
 			c.Auth[i] = auth
 			return
 		}
@@ -385,12 +385,4 @@ func (c CertificateInfo) TenantUUID() string {
 
 // AuthOrganizationKey separates UUID organizations, even when all their
 // legacy organizationId fields are zero.
-func (a AuthConfig) OrganizationKey() string {
-	if len(a.Certificates) == 0 {
-		return "0"
-	}
-	if tenant := a.Certificates[0].TenantUUID(); tenant != "" {
-		return tenant
-	}
-	return fmt.Sprint(a.Certificates[0].OrganizationID)
-}
+func (a AuthConfig) OrganizationKey() string { return a.IdentitySession().OrganizationKey() }
