@@ -7,6 +7,8 @@ stages:
       - from: local
         paths: [Package.swift]
       - from: local
+        paths: [Package.resolved]
+      - from: local
         paths: [Sources]
       - from: local
         paths: [Tests]
