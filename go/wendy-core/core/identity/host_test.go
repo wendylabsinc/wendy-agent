@@ -5,12 +5,12 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
+	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/wendylabsinc/WendyOS/go/wendy-core/platform"
 	"math/big"
 	"net/http"
@@ -53,14 +53,18 @@ func (s testSigner) PublicKey(ctx context.Context) ([]byte, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return x509.MarshalPKIXPublicKey(s.key.Public())
+	pub := s.key.Public().(*mldsa.PublicKey).Bytes()
+	return asn1.Marshal(struct {
+		Algorithm struct{ OID asn1.ObjectIdentifier }
+		PublicKey asn1.BitString
+	}{Algorithm: struct{ OID asn1.ObjectIdentifier }{asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 18}}, PublicKey: asn1.BitString{Bytes: pub, BitLength: len(pub) * 8}})
 }
 func (s testSigner) CertificateChain(context.Context) ([][]byte, error) { return nil, nil }
 func (s testSigner) Sign(ctx context.Context, b []byte) ([]byte, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return s.key.Sign(rand.Reader, b, &mldsa.Options{})
+	return s.key.Sign(rand.Reader, b, crypto.Hash(0))
 }
 
 type testSignatureVerifier struct{}
@@ -107,6 +111,7 @@ func verifyMLDSA65JWK(key JWK, message, signature []byte) bool {
 	if err != nil {
 		return false
 	}
-	publicKey, err := mldsa.NewPublicKey(mldsa.MLDSA65(), publicBytes)
-	return err == nil && mldsa.Verify(publicKey, message, signature, nil) == nil
+	var publicKey mldsa.PublicKey
+	err = publicKey.UnmarshalBinary(publicBytes)
+	return err == nil && mldsa.Verify(&publicKey, message, nil, signature)
 }

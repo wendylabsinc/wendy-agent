@@ -2,10 +2,11 @@ package identity
 
 import (
 	"context"
-	"crypto/mldsa"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,7 +16,7 @@ import (
 
 func testKey(t *testing.T) *mldsa.PrivateKey {
 	t.Helper()
-	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	_, key, err := mldsa.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generating test key: %v", err)
 	}

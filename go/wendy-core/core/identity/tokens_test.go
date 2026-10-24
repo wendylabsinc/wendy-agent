@@ -5,11 +5,11 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"testing"
 	"time"
 )
@@ -74,7 +74,7 @@ func TestOIDCTokenVerifierValidatesSignatureAndClaims(t *testing.T) {
 }
 
 func TestOIDCTokenVerifierAcceptsMLDSA65(t *testing.T) {
-	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	_, key, err := mldsa.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
