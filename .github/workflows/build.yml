@@ -647,7 +647,8 @@ jobs:
 
   package-linux:
     name: Package Linux (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    # Pinned for WDY-4031: Ubuntu 26's rpmbuild writes RPM v4.0 leads that Artifact Registry rejects.
+    runs-on: ubuntu-24.04
     needs: [determine-version, build, build-cli-linux]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
     strategy:
