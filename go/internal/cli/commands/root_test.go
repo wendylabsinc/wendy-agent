@@ -2,11 +2,16 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+	wendy "github.com/wendylabsinc/wendy-go"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func TestRootCommand_HasAllSubcommands(t *testing.T) {
@@ -41,19 +46,58 @@ func TestRootCommand_HasAllSubcommands(t *testing.T) {
 }
 
 func TestRootCommand_VersionFlag(t *testing.T) {
-	root := NewRootCmd()
-	buf := new(bytes.Buffer)
-	root.SetOut(buf)
-	root.SetArgs([]string{"--version"})
-
-	err := root.Execute()
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-
-	output := buf.String()
-	if !strings.Contains(output, "wendy version") {
-		t.Errorf("expected version output, got: %q", output)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+		json bool
+	}{
+		{"plain", []string{"--version"}, "wendy version " + version.Version + "\n", false},
+		{"explicit text", []string{"--version", "--json=false"}, "wendy version " + version.Version + "\n", false},
+		{"verbose", []string{"--version", "--verbose"}, fmt.Sprintf("CLI: %s\nCore: %s\nGo: %s\n", version.Version, wendy.CoreVersion(), runtime.Version()), false},
+		{"verbose first", []string{"--verbose", "--version"}, fmt.Sprintf("CLI: %s\nCore: %s\nGo: %s\n", version.Version, wendy.CoreVersion(), runtime.Version()), false},
+		{"verbose false", []string{"--version", "--verbose=false"}, "wendy version " + version.Version + "\n", false},
+		{"json", []string{"--version", "--json"}, "", true},
+		{"json first", []string{"--json", "--version"}, "", true},
+		{"json verbose", []string{"--version", "--verbose", "--json"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := NewRootCmd()
+			var out, stderr bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(&stderr)
+			root.SetArgs(tc.args)
+			root.PersistentPreRunE = func(*cobra.Command, []string) error {
+				t.Fatal("version output must bypass command startup hooks")
+				return nil
+			}
+			root.PersistentPostRunE = root.PersistentPreRunE
+			if err := root.Execute(); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("unexpected stderr: %q", stderr.String())
+			}
+			if !tc.json {
+				if got := out.String(); got != tc.want {
+					t.Fatalf("output = %q, want %q", got, tc.want)
+				}
+				return
+			}
+			var got map[string]string
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatalf("invalid JSON %q: %v", out.String(), err)
+			}
+			want := map[string]string{"cli": version.Version, "core": wendy.CoreVersion(), "go": runtime.Version()}
+			if len(got) != len(want) {
+				t.Fatalf("JSON fields = %v, want %v", got, want)
+			}
+			for field, value := range want {
+				if got[field] != value {
+					t.Errorf("%s = %q, want %q", field, got[field], value)
+				}
+			}
+		})
 	}
 }
 
