@@ -262,3 +262,38 @@ func TestDPoPMetadataFreshProofAndTokenBinding(t *testing.T) {
 		t.Fatal("proof reused or metadata mutated")
 	}
 }
+
+// Moved from the CLI: forwarded authority must carry x5c, and x5c-only calls
+// must skip registration entirely. Use a supported request for the call probe.
+func TestInvokeSignsDeviceForwardedMethodsWithX5C(t *testing.T) {
+	for _, method := range []string{"/wendycloud.v2.DeploymentService/CreateDeployment", "/wendycloud.v2.DeploymentService/ControlContainer"} {
+		if !x5cOnly[method] {
+			t.Errorf("%s may be signed by kid", method)
+		}
+	}
+	s := testSigner(t)
+	x5cOnly[deleteMethod] = true
+	defer delete(x5cOnly, deleteMethod)
+	calls := 0
+	transport := platformtest.Transport{UnaryFunc: func(ctx context.Context, r platform.RPCRequest) (platform.RPCResponse, error) {
+		calls++
+		if r.Method != deleteMethod {
+			t.Fatal("unexpected registration")
+		}
+		var signed pb.SignedRequest
+		if err := proto.Unmarshal(r.Message, &signed); err != nil {
+			t.Fatal(err)
+		}
+		header, _ := claims(t, signed.Signature)
+		if header["kid"] != nil || len(header["x5c"].([]any)) != 1 {
+			t.Fatal("forwarded kid reference")
+		}
+		return platform.RPCResponse{}, nil
+	}}
+	if _, err := s.Invoke(context.Background(), transport, deleteMethod, &pb.DeleteAssetRequest{Id: assetID}, InvokeOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatal("retried x5c-only call")
+	}
+}
