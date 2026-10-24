@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -70,6 +72,10 @@ type cleanupConn struct {
 	changeBinding bool
 	deleteSuccess bool
 	getCount      int
+	// member answers every PKIAdminService revocation the way Cloud answers a
+	// caller with the default member role: device:delete, no pki:*-revoke.
+	member  bool
+	deleted *cloudpbv2.SignedRequest
 }
 
 func newCleanupConn(t *testing.T) *cleanupConn {
@@ -116,6 +122,14 @@ func (c *cleanupConn) mutate(event string) error {
 	return nil
 }
 
+func (c *cleanupConn) revoke(event string) error {
+	if c.member {
+		c.mutations = append(c.mutations, event)
+		return status.Error(codes.PermissionDenied, "insufficient role in organization test")
+	}
+	return c.mutate(event)
+}
+
 func (c *cleanupConn) Invoke(_ context.Context, method string, arg, reply any, _ ...grpc.CallOption) error {
 	switch method {
 	case cloudpbv2.OperatorSessionService_RegisterOperatorLeaf_FullMethodName:
@@ -156,30 +170,21 @@ func (c *cleanupConn) Invoke(_ context.Context, method string, arg, reply any, _
 		if req.GetOrganizationId() != testTenant {
 			c.t.Fatal("revoked token in wrong tenant")
 		}
-		return c.mutate("token " + req.GetTokenId())
+		return c.revoke("token " + req.GetTokenId())
 	case cloudpbv2.PKIAdminService_RevokeEABKey_FullMethodName:
 		var req cloudpbv2.RevokeEABKeyRequest
 		c.decode(arg, &req)
 		if req.GetOrganizationId() != testTenant {
 			c.t.Fatal("revoked EAB in wrong tenant")
 		}
-		return c.mutate("key " + req.GetKeyId())
-	case cloudpbv2.PKIAdminService_RevokePrincipalCertificates_FullMethodName:
-		var req cloudpbv2.RevokePrincipalCertificatesRequest
-		c.decode(arg, &req)
-		if req.GetOrganizationId() != testTenant || len(arg.(*cloudpbv2.SignedRequest).GetPkiManagementRequest()) == 0 {
-			c.t.Fatal("missing tenant or PKI revocation signature")
-		}
-		if err := c.mutate("certificates"); err != nil {
-			return err
-		}
-		proto.Merge(reply.(proto.Message), &pkicorepb.RevokeByPrincipalResponse{RevokedCount: 2})
+		return c.revoke("key " + req.GetKeyId())
 	case cloudpbv2.AssetService_DeleteAsset_FullMethodName:
 		var req cloudpbv2.DeleteAssetRequest
 		c.decode(arg, &req)
-		if req.GetId() != testAsset {
-			c.t.Fatal("deleted wrong asset")
+		if req.GetId() != testAsset || req.GetExpectedDeviceId() != testDevice {
+			c.t.Fatal("deleted wrong asset or without its device binding")
 		}
+		c.deleted = proto.Clone(arg.(*cloudpbv2.SignedRequest)).(*cloudpbv2.SignedRequest)
 		if err := c.mutate("delete"); err != nil {
 			return err
 		}
@@ -197,12 +202,112 @@ func (c *cleanupConn) NewStream(context.Context, *grpc.StreamDesc, string, ...gr
 func TestRemoveScopesCredentialsAndRevokesBeforeDeleting(t *testing.T) {
 	conn := newCleanupConn(t)
 	result, err := Remove(context.Background(), conn, testAuth(t), testAssetRecord())
-	if err != nil || result.CredentialsRevoked != 3 || result.CertificatesRevoked != 2 || !result.AssetDeleted {
+	if err != nil || result.CredentialsRevoked != 3 || !result.AssetDeleted {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	want := []string{"token " + firstToken, "token " + secondToken, "key " + testEAB, "certificates", "delete"}
+	want := []string{"token " + firstToken, "token " + secondToken, "key " + testEAB, "delete"}
 	if !reflect.DeepEqual(conn.mutations, want) || conn.getCount < 2 {
 		t.Fatalf("operations=%v reads=%d, want %v and binding recheck", conn.mutations, conn.getCount, want)
+	}
+}
+
+// A member holds device:delete but no pki:*-revoke right. Cloud's DeleteAsset
+// revokes the device principal under device:delete, so a device whose
+// enrollment completed is removed by DeleteAsset alone (WDY-3939 #14).
+func TestRemoveByMemberDeletesWithoutCertificateRevocation(t *testing.T) {
+	conn := newCleanupConn(t)
+	conn.member = true
+	conn.tokens = map[string]*pkicorepb.ListEnrollmentTokensResponse{"": {Tokens: []*pkicorepb.EnrollmentTokenInfo{
+		{TokenId: "used", DeviceId: testDevice, Consumed: true},
+		{TokenId: "other-device", DeviceId: testDevice + "-other"},
+	}}}
+	conn.keys = map[string]*pkicorepb.ListEABKeysResponse{"": {Keys: []*pkicorepb.EABKeyInfo{
+		{KeyId: "used", DeviceId: testDevice, Status: "consumed"},
+		{KeyId: "revoked", DeviceId: testDevice, Status: "revoked"},
+	}}}
+	result, err := Remove(context.Background(), conn, testAuth(t), testAssetRecord())
+	if err != nil || !result.AssetDeleted || result.CredentialsRevoked != 0 {
+		t.Fatalf("member unenrollment: result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(conn.mutations, []string{"delete"}) {
+		t.Fatalf("operations=%v, want DeleteAsset alone", conn.mutations)
+	}
+}
+
+// Cloud revokes inside DeleteAsset only with the operator's own authority: a
+// revoke_principal request for exactly this device, signed by the same leaf.
+func TestRemoveDeletionCarriesSameLeafPrincipalRevocation(t *testing.T) {
+	conn := newCleanupConn(t)
+	if _, err := Remove(context.Background(), conn, testAuth(t), testAssetRecord()); err != nil {
+		t.Fatal(err)
+	}
+	leaf := func(jws []byte) (string, []byte) {
+		parts := strings.Split(string(jws), ".")
+		if len(parts) != 3 {
+			t.Fatalf("malformed JWS with %d segments", len(parts))
+		}
+		header, err := base64.RawURLEncoding.DecodeString(parts[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var h struct {
+			X5C []string `json:"x5c"`
+		}
+		if err := json.Unmarshal(header, &h); err != nil || len(h.X5C) == 0 {
+			t.Fatalf("JWS does not name its leaf: %s %v", header, err)
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h.X5C[0], payload
+	}
+	if conn.deleted == nil {
+		t.Fatal("DeleteAsset was not sent")
+	}
+	requestLeaf, _ := leaf(conn.deleted.GetSignature())
+	managementLeaf, payload := leaf(conn.deleted.GetPkiManagementRequest())
+	var claims struct {
+		Op, Tenant, Principal string
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims.Op != "revoke_principal" || claims.Tenant != testTenant || claims.Principal != "spiffe://wendy.sh/tenant/"+testTenant+"/device/"+testDevice {
+		t.Fatalf("wrong revocation authority: %s", payload)
+	}
+	if managementLeaf != requestLeaf {
+		t.Fatal("revocation authority signed by a different leaf than the request")
+	}
+}
+
+// Revoking an unused enrollment credential stays owner/admin-only, so a member
+// stops before DeleteAsset and is told who can finish.
+func TestRemoveByMemberStopsAtUnusedCredentialAndNamesAdmin(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, wantOp string
+		noTokens           bool
+	}{
+		{name: "enrollment token", kind: "enrollment token", wantOp: "token " + firstToken},
+		{name: "EAB credential", kind: "EAB credential", wantOp: "key " + testEAB, noTokens: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := newCleanupConn(t)
+			conn.member = true
+			if tc.noTokens {
+				conn.tokens = map[string]*pkicorepb.ListEnrollmentTokensResponse{"": {}}
+			}
+			result, err := Remove(context.Background(), conn, testAuth(t), testAssetRecord())
+			if err == nil || result.AssetDeleted || result.CredentialsRevoked != 0 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if status.Code(err) != codes.PermissionDenied || !strings.Contains(err.Error(), "unused "+tc.kind) || !strings.Contains(err.Error(), "owner or admin") {
+				t.Fatalf("refusal does not explain the admin-only step: %v", err)
+			}
+			if !reflect.DeepEqual(conn.mutations, []string{tc.wantOp}) {
+				t.Fatalf("operations=%v, want only %q", conn.mutations, tc.wantOp)
+			}
+		})
 	}
 }
 
@@ -223,20 +328,19 @@ func TestRemoveStopsBeforeDeletionOnFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name, fail                   string
 		changeBinding, deleteRefused bool
-		credentials, certificates    int
+		credentials                  int
 		wantLast                     string
 	}{
 		{name: "token revocation", fail: "token " + firstToken, wantLast: "token " + firstToken},
 		{name: "EAB revocation", fail: "key " + testEAB, credentials: 2, wantLast: "key " + testEAB},
-		{name: "certificate revocation", fail: "certificates", credentials: 3, wantLast: "certificates"},
-		{name: "binding changed", changeBinding: true, credentials: 3, certificates: 2, wantLast: "certificates"},
-		{name: "deletion not confirmed", deleteRefused: true, credentials: 3, certificates: 2, wantLast: "delete"},
+		{name: "binding changed", changeBinding: true, credentials: 3, wantLast: "key " + testEAB},
+		{name: "deletion not confirmed", deleteRefused: true, credentials: 3, wantLast: "delete"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := newCleanupConn(t)
 			conn.fail, conn.changeBinding, conn.deleteSuccess = tc.fail, tc.changeBinding, !tc.deleteRefused
 			result, err := Remove(context.Background(), conn, testAuth(t), testAssetRecord())
-			if err == nil || result.AssetDeleted || result.CredentialsRevoked != tc.credentials || result.CertificatesRevoked != tc.certificates {
+			if err == nil || result.AssetDeleted || result.CredentialsRevoked != tc.credentials {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 			if len(conn.mutations) == 0 || conn.mutations[len(conn.mutations)-1] != tc.wantLast {

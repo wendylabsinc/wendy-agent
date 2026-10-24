@@ -347,12 +347,14 @@ func TestLiteUnenrollChecksConfiguredTenantBeforeAbsentAssetReset(t *testing.T) 
 			} else if err != nil || strings.Join(d.calls, ",") != "preflight,challenge,reset,verify,reboot" {
 				t.Fatalf("same-tenant/unconfigured recovery failed: err=%v calls=%v", err, d.calls)
 			}
-			var wantMutations int32
+			var wantDeletes int32
 			if mode == "same tenant asset" {
-				wantMutations = 1
+				wantDeletes = 1
 			}
-			if service.revokes.Load() != wantMutations || service.deletes.Load() != wantMutations {
-				t.Fatal("cloud cleanup did not match the configured tenant inventory")
+			// The server answers as Cloud does for a member: the board is reset
+			// after DeleteAsset alone, with no separate certificate revocation.
+			if service.revokes.Load() != 0 || service.deletes.Load() != wantDeletes {
+				t.Fatalf("cloud cleanup did not match the configured tenant inventory: revokes=%d deletes=%d", service.revokes.Load(), service.deletes.Load())
 			}
 		})
 	}

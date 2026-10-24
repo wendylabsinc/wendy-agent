@@ -1,5 +1,6 @@
 // Package cloudunenroll removes a cloud device enrollment without contacting
-// the device. Bootstrap credentials are revoked before issued certificates.
+// the device. Unused bootstrap credentials are revoked first; Cloud's
+// DeleteAsset then revokes the issued certificates and deletes the asset.
 package cloudunenroll
 
 import (
@@ -12,14 +13,17 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"github.com/wendylabsinc/wendy/go/proto/gen/pkicorepb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Result records only operations acknowledged by Cloud. An error may accompany
 // partial progress; the caller must not report a completed unenrollment then.
+// AssetDeleted also means the device certificates are revoked: DeleteAsset
+// revokes them first and refuses to delete otherwise. It reports no count.
 type Result struct {
-	CertificatesRevoked int
-	CredentialsRevoked  int
-	AssetDeleted        bool
+	CredentialsRevoked int
+	AssetDeleted       bool
 }
 
 // DeviceID is the device UUID the asset's certificates name. Since cloud #873
@@ -32,8 +36,11 @@ func DeviceID(asset *cloudpb.Asset) string {
 	return asset.GetId()
 }
 
-// Remove validates the selected asset, revokes its unused bootstrap credentials
-// and issued certificates, then deletes the asset. No device connection is used.
+// Remove validates the selected asset, revokes its unused bootstrap credentials,
+// then deletes the asset. No device connection is used. Cloud revokes the
+// issued certificates inside DeleteAsset under device:delete, which members
+// hold; a separate RevokePrincipalCertificates call would need pki:cert-revoke,
+// which only owners and admins hold (WDY-3939 #14).
 func Remove(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, asset *cloudpb.Asset) (result Result, err error) {
 	if auth == nil || len(auth.Certificates) == 0 || asset == nil {
 		return result, fmt.Errorf("an operator session and cloud asset are required")
@@ -73,7 +80,7 @@ func Remove(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 		err := cloudrequest.Invoke(ctx, conn, auth, cloudpb.PKIAdminService_RevokeEnrollmentToken_FullMethodName,
 			&cloudpb.RevokeEnrollmentTokenRequest{OrganizationId: tenant, TokenId: tokenID}, &pkicorepb.RevokeEnrollmentTokenResponse{})
 		if err != nil {
-			return result, fmt.Errorf("revoking device enrollment token: %w", err)
+			return result, credentialRevocationError("enrollment token", err)
 		}
 		result.CredentialsRevoked++
 	}
@@ -81,13 +88,9 @@ func Remove(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 		err := cloudrequest.Invoke(ctx, conn, auth, cloudpb.PKIAdminService_RevokeEABKey_FullMethodName,
 			&cloudpb.RevokeEABKeyRequest{OrganizationId: tenant, KeyId: keyID}, &pkicorepb.RevokeEABKeyResponse{})
 		if err != nil {
-			return result, fmt.Errorf("revoking device EAB credential: %w", err)
+			return result, credentialRevocationError("EAB credential", err)
 		}
 		result.CredentialsRevoked++
-	}
-	result.CertificatesRevoked, err = cloudrequest.RevokePrincipalCertificates(ctx, conn, auth, deviceID)
-	if err != nil {
-		return result, fmt.Errorf("revoking device certificates: %w", err)
 	}
 	if err := checkBinding(); err != nil {
 		return result, err
@@ -102,6 +105,16 @@ func Remove(ctx context.Context, conn grpc.ClientConnInterface, auth *config.Aut
 	}
 	result.AssetDeleted = true
 	return result, nil
+}
+
+// Revoking an unused enrollment token or EAB key needs pki:enrollment-token-revoke
+// or pki:eab-revoke, which only owners and admins hold. A device whose enrollment
+// completed has none left, so this refusal reaches a member only for a pending one.
+func credentialRevocationError(kind string, err error) error {
+	if status.Code(err) == codes.PermissionDenied {
+		return fmt.Errorf("the device still has an unused %s from an enrollment that never completed, and revoking it requires an owner or admin of the organization; the asset was not deleted, so ask an owner or admin to unenroll it: %w", kind, err)
+	}
+	return fmt.Errorf("revoking device %s: %w", kind, err)
 }
 
 // Complete both inventories before mutation. Bound pagination and reject a
