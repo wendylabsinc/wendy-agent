@@ -494,9 +494,11 @@ type DeviceAssignment struct {
 	DeploymentKeyId string                 `protobuf:"bytes,7,opt,name=deployment_key_id,json=deploymentKeyId,proto3" json:"deployment_key_id,omitempty"`
 	DesiredState    Running                `protobuf:"varint,8,opt,name=desired_state,json=desiredState,proto3,enum=wendycloud.v2.Running" json:"desired_state,omitempty"`
 	DeviceWrap      *KeyWrap               `protobuf:"bytes,9,opt,name=device_wrap,json=deviceWrap,proto3" json:"device_wrap,omitempty"` // recipient = device, scope = deployment at deployment_key_id
-	ExpiresAt       *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The assignment's instruction validity (WDY-4015 item 3): this message's
+	// valid_until, under the same rules (conformance/postbox-entry/README.md).
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeviceAssignment) Reset() {
@@ -648,8 +650,12 @@ type UnassignDeviceRequest struct {
 	OrganizationId string                 `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
 	DeploymentId   string                 `protobuf:"bytes,2,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
 	Device         string                 `protobuf:"bytes,3,opt,name=device,proto3" json:"device,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Instruction validity (WDY-4015 item 3, sem 2026-10-23 22:27), under the
+	// operator's signature: required when cloud relays the request to a device
+	// postbox. Rules: conformance/postbox-entry/README.md.
+	ValidUntil    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UnassignDeviceRequest) Reset() {
@@ -701,6 +707,13 @@ func (x *UnassignDeviceRequest) GetDevice() string {
 		return x.Device
 	}
 	return ""
+}
+
+func (x *UnassignDeviceRequest) GetValidUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidUntil
+	}
+	return nil
 }
 
 type UnassignDeviceResponse struct {
@@ -2164,11 +2177,13 @@ const file_wendycloud_v2_registry_proto_rawDesc = "" +
 	"expires_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"@\n" +
 	"\x14AssignDeviceResponse\x12(\n" +
-	"\x10postbox_entry_id\x18\x01 \x01(\x03R\x0epostboxEntryId\"}\n" +
+	"\x10postbox_entry_id\x18\x01 \x01(\x03R\x0epostboxEntryId\"\xba\x01\n" +
 	"\x15UnassignDeviceRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\x12#\n" +
 	"\rdeployment_id\x18\x02 \x01(\tR\fdeploymentId\x12\x16\n" +
-	"\x06device\x18\x03 \x01(\tR\x06device\"B\n" +
+	"\x06device\x18\x03 \x01(\tR\x06device\x12;\n" +
+	"\vvalid_until\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"validUntil\"B\n" +
 	"\x16UnassignDeviceResponse\x12(\n" +
 	"\x10postbox_entry_id\x18\x01 \x01(\x03R\x0epostboxEntryId\"\xa4\x01\n" +
 	"\x16PublishArtifactRequest\x12'\n" +
@@ -2353,56 +2368,57 @@ var file_wendycloud_v2_registry_proto_depIdxs = []int32{
 	35, // 3: wendycloud.v2.DeviceAssignment.desired_state:type_name -> wendycloud.v2.Running
 	24, // 4: wendycloud.v2.DeviceAssignment.device_wrap:type_name -> wendycloud.v2.KeyWrap
 	36, // 5: wendycloud.v2.DeviceAssignment.expires_at:type_name -> google.protobuf.Timestamp
-	21, // 6: wendycloud.v2.PublishArtifactRequest.manifest:type_name -> wendycloud.v2.ArtifactManifest
-	36, // 7: wendycloud.v2.PublishArtifactResponse.expires_at:type_name -> google.protobuf.Timestamp
-	6,  // 8: wendycloud.v2.PublishArtifactResponse.auto_grant_keys:type_name -> wendycloud.v2.RecipientKey
-	15, // 9: wendycloud.v2.PutBlobRequest.header:type_name -> wendycloud.v2.PutBlobHeader
-	21, // 10: wendycloud.v2.GetArtifactResponse.manifest:type_name -> wendycloud.v2.ArtifactManifest
-	23, // 11: wendycloud.v2.GetMyWrapsRequest.scope:type_name -> wendycloud.v2.WrapScope
-	24, // 12: wendycloud.v2.GetMyWrapsResponse.wraps:type_name -> wendycloud.v2.KeyWrap
-	25, // 13: wendycloud.v2.GetMyWrapsResponse.sealed_content_keys:type_name -> wendycloud.v2.SealedContentKey
-	37, // 14: wendycloud.v2.ArtifactManifest.kind:type_name -> wendycloud.v2.ReleaseType
-	22, // 15: wendycloud.v2.ArtifactManifest.blobs:type_name -> wendycloud.v2.EncryptedBlob
-	0,  // 16: wendycloud.v2.ArtifactManifest.aead:type_name -> wendycloud.v2.AeadSuite
-	23, // 17: wendycloud.v2.KeyWrap.scope:type_name -> wendycloud.v2.WrapScope
-	2,  // 18: wendycloud.v2.KeyWrap.recipient_kind:type_name -> wendycloud.v2.RecipientKind
-	1,  // 19: wendycloud.v2.KeyWrap.suite:type_name -> wendycloud.v2.KemSuite
-	24, // 20: wendycloud.v2.AddWrapsRequest.wraps:type_name -> wendycloud.v2.KeyWrap
-	25, // 21: wendycloud.v2.AddWrapsRequest.sealed_content_keys:type_name -> wendycloud.v2.SealedContentKey
-	23, // 22: wendycloud.v2.RemoveWrapsRequest.scope:type_name -> wendycloud.v2.WrapScope
-	21, // 23: wendycloud.v2.GetDeploymentMaterialResponse.manifest:type_name -> wendycloud.v2.ArtifactManifest
-	25, // 24: wendycloud.v2.GetDeploymentMaterialResponse.sealed_content_key:type_name -> wendycloud.v2.SealedContentKey
-	34, // 25: wendycloud.v2.KeyDirectoryService.RegisterUserEncryptionKey:input_type -> wendycloud.v2.SignedRequest
-	34, // 26: wendycloud.v2.KeyDirectoryService.RegisterDeviceEncryptionKey:input_type -> wendycloud.v2.SignedRequest
-	5,  // 27: wendycloud.v2.KeyDirectoryService.GetRecipientKeys:input_type -> wendycloud.v2.GetRecipientKeysRequest
-	34, // 28: wendycloud.v2.ArtifactRegistryService.PublishArtifact:input_type -> wendycloud.v2.SignedRequest
-	14, // 29: wendycloud.v2.ArtifactRegistryService.PutBlob:input_type -> wendycloud.v2.PutBlobRequest
-	34, // 30: wendycloud.v2.ArtifactRegistryService.AddWraps:input_type -> wendycloud.v2.SignedRequest
-	34, // 31: wendycloud.v2.ArtifactRegistryService.RemoveWraps:input_type -> wendycloud.v2.SignedRequest
-	17, // 32: wendycloud.v2.ArtifactRegistryService.GetArtifact:input_type -> wendycloud.v2.GetArtifactRequest
-	19, // 33: wendycloud.v2.ArtifactRegistryService.GetMyWraps:input_type -> wendycloud.v2.GetMyWrapsRequest
-	34, // 34: wendycloud.v2.ArtifactRegistryService.AssignDevice:input_type -> wendycloud.v2.SignedRequest
-	34, // 35: wendycloud.v2.ArtifactRegistryService.UnassignDevice:input_type -> wendycloud.v2.SignedRequest
-	30, // 36: wendycloud.v2.DeviceArtifactService.GetDeploymentMaterial:input_type -> wendycloud.v2.GetDeploymentMaterialRequest
-	32, // 37: wendycloud.v2.DeviceArtifactService.GetBlob:input_type -> wendycloud.v2.GetBlobRequest
-	4,  // 38: wendycloud.v2.KeyDirectoryService.RegisterUserEncryptionKey:output_type -> wendycloud.v2.RegisterEncryptionKeyResponse
-	4,  // 39: wendycloud.v2.KeyDirectoryService.RegisterDeviceEncryptionKey:output_type -> wendycloud.v2.RegisterEncryptionKeyResponse
-	7,  // 40: wendycloud.v2.KeyDirectoryService.GetRecipientKeys:output_type -> wendycloud.v2.GetRecipientKeysResponse
-	13, // 41: wendycloud.v2.ArtifactRegistryService.PublishArtifact:output_type -> wendycloud.v2.PublishArtifactResponse
-	16, // 42: wendycloud.v2.ArtifactRegistryService.PutBlob:output_type -> wendycloud.v2.PutBlobResponse
-	27, // 43: wendycloud.v2.ArtifactRegistryService.AddWraps:output_type -> wendycloud.v2.AddWrapsResponse
-	29, // 44: wendycloud.v2.ArtifactRegistryService.RemoveWraps:output_type -> wendycloud.v2.RemoveWrapsResponse
-	18, // 45: wendycloud.v2.ArtifactRegistryService.GetArtifact:output_type -> wendycloud.v2.GetArtifactResponse
-	20, // 46: wendycloud.v2.ArtifactRegistryService.GetMyWraps:output_type -> wendycloud.v2.GetMyWrapsResponse
-	9,  // 47: wendycloud.v2.ArtifactRegistryService.AssignDevice:output_type -> wendycloud.v2.AssignDeviceResponse
-	11, // 48: wendycloud.v2.ArtifactRegistryService.UnassignDevice:output_type -> wendycloud.v2.UnassignDeviceResponse
-	31, // 49: wendycloud.v2.DeviceArtifactService.GetDeploymentMaterial:output_type -> wendycloud.v2.GetDeploymentMaterialResponse
-	33, // 50: wendycloud.v2.DeviceArtifactService.GetBlob:output_type -> wendycloud.v2.GetBlobResponse
-	38, // [38:51] is the sub-list for method output_type
-	25, // [25:38] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	36, // 6: wendycloud.v2.UnassignDeviceRequest.valid_until:type_name -> google.protobuf.Timestamp
+	21, // 7: wendycloud.v2.PublishArtifactRequest.manifest:type_name -> wendycloud.v2.ArtifactManifest
+	36, // 8: wendycloud.v2.PublishArtifactResponse.expires_at:type_name -> google.protobuf.Timestamp
+	6,  // 9: wendycloud.v2.PublishArtifactResponse.auto_grant_keys:type_name -> wendycloud.v2.RecipientKey
+	15, // 10: wendycloud.v2.PutBlobRequest.header:type_name -> wendycloud.v2.PutBlobHeader
+	21, // 11: wendycloud.v2.GetArtifactResponse.manifest:type_name -> wendycloud.v2.ArtifactManifest
+	23, // 12: wendycloud.v2.GetMyWrapsRequest.scope:type_name -> wendycloud.v2.WrapScope
+	24, // 13: wendycloud.v2.GetMyWrapsResponse.wraps:type_name -> wendycloud.v2.KeyWrap
+	25, // 14: wendycloud.v2.GetMyWrapsResponse.sealed_content_keys:type_name -> wendycloud.v2.SealedContentKey
+	37, // 15: wendycloud.v2.ArtifactManifest.kind:type_name -> wendycloud.v2.ReleaseType
+	22, // 16: wendycloud.v2.ArtifactManifest.blobs:type_name -> wendycloud.v2.EncryptedBlob
+	0,  // 17: wendycloud.v2.ArtifactManifest.aead:type_name -> wendycloud.v2.AeadSuite
+	23, // 18: wendycloud.v2.KeyWrap.scope:type_name -> wendycloud.v2.WrapScope
+	2,  // 19: wendycloud.v2.KeyWrap.recipient_kind:type_name -> wendycloud.v2.RecipientKind
+	1,  // 20: wendycloud.v2.KeyWrap.suite:type_name -> wendycloud.v2.KemSuite
+	24, // 21: wendycloud.v2.AddWrapsRequest.wraps:type_name -> wendycloud.v2.KeyWrap
+	25, // 22: wendycloud.v2.AddWrapsRequest.sealed_content_keys:type_name -> wendycloud.v2.SealedContentKey
+	23, // 23: wendycloud.v2.RemoveWrapsRequest.scope:type_name -> wendycloud.v2.WrapScope
+	21, // 24: wendycloud.v2.GetDeploymentMaterialResponse.manifest:type_name -> wendycloud.v2.ArtifactManifest
+	25, // 25: wendycloud.v2.GetDeploymentMaterialResponse.sealed_content_key:type_name -> wendycloud.v2.SealedContentKey
+	34, // 26: wendycloud.v2.KeyDirectoryService.RegisterUserEncryptionKey:input_type -> wendycloud.v2.SignedRequest
+	34, // 27: wendycloud.v2.KeyDirectoryService.RegisterDeviceEncryptionKey:input_type -> wendycloud.v2.SignedRequest
+	5,  // 28: wendycloud.v2.KeyDirectoryService.GetRecipientKeys:input_type -> wendycloud.v2.GetRecipientKeysRequest
+	34, // 29: wendycloud.v2.ArtifactRegistryService.PublishArtifact:input_type -> wendycloud.v2.SignedRequest
+	14, // 30: wendycloud.v2.ArtifactRegistryService.PutBlob:input_type -> wendycloud.v2.PutBlobRequest
+	34, // 31: wendycloud.v2.ArtifactRegistryService.AddWraps:input_type -> wendycloud.v2.SignedRequest
+	34, // 32: wendycloud.v2.ArtifactRegistryService.RemoveWraps:input_type -> wendycloud.v2.SignedRequest
+	17, // 33: wendycloud.v2.ArtifactRegistryService.GetArtifact:input_type -> wendycloud.v2.GetArtifactRequest
+	19, // 34: wendycloud.v2.ArtifactRegistryService.GetMyWraps:input_type -> wendycloud.v2.GetMyWrapsRequest
+	34, // 35: wendycloud.v2.ArtifactRegistryService.AssignDevice:input_type -> wendycloud.v2.SignedRequest
+	34, // 36: wendycloud.v2.ArtifactRegistryService.UnassignDevice:input_type -> wendycloud.v2.SignedRequest
+	30, // 37: wendycloud.v2.DeviceArtifactService.GetDeploymentMaterial:input_type -> wendycloud.v2.GetDeploymentMaterialRequest
+	32, // 38: wendycloud.v2.DeviceArtifactService.GetBlob:input_type -> wendycloud.v2.GetBlobRequest
+	4,  // 39: wendycloud.v2.KeyDirectoryService.RegisterUserEncryptionKey:output_type -> wendycloud.v2.RegisterEncryptionKeyResponse
+	4,  // 40: wendycloud.v2.KeyDirectoryService.RegisterDeviceEncryptionKey:output_type -> wendycloud.v2.RegisterEncryptionKeyResponse
+	7,  // 41: wendycloud.v2.KeyDirectoryService.GetRecipientKeys:output_type -> wendycloud.v2.GetRecipientKeysResponse
+	13, // 42: wendycloud.v2.ArtifactRegistryService.PublishArtifact:output_type -> wendycloud.v2.PublishArtifactResponse
+	16, // 43: wendycloud.v2.ArtifactRegistryService.PutBlob:output_type -> wendycloud.v2.PutBlobResponse
+	27, // 44: wendycloud.v2.ArtifactRegistryService.AddWraps:output_type -> wendycloud.v2.AddWrapsResponse
+	29, // 45: wendycloud.v2.ArtifactRegistryService.RemoveWraps:output_type -> wendycloud.v2.RemoveWrapsResponse
+	18, // 46: wendycloud.v2.ArtifactRegistryService.GetArtifact:output_type -> wendycloud.v2.GetArtifactResponse
+	20, // 47: wendycloud.v2.ArtifactRegistryService.GetMyWraps:output_type -> wendycloud.v2.GetMyWrapsResponse
+	9,  // 48: wendycloud.v2.ArtifactRegistryService.AssignDevice:output_type -> wendycloud.v2.AssignDeviceResponse
+	11, // 49: wendycloud.v2.ArtifactRegistryService.UnassignDevice:output_type -> wendycloud.v2.UnassignDeviceResponse
+	31, // 50: wendycloud.v2.DeviceArtifactService.GetDeploymentMaterial:output_type -> wendycloud.v2.GetDeploymentMaterialResponse
+	33, // 51: wendycloud.v2.DeviceArtifactService.GetBlob:output_type -> wendycloud.v2.GetBlobResponse
+	39, // [39:52] is the sub-list for method output_type
+	26, // [26:39] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_wendycloud_v2_registry_proto_init() }

@@ -184,6 +184,8 @@ message DeviceAssignment {
   string deployment_key_id = 7;
   Running desired_state = 8;
   KeyWrap device_wrap = 9;  // recipient = device, scope = deployment at deployment_key_id
+  // The assignment's instruction validity (WDY-4015 item 3): this message's
+  // valid_until, under the same rules (conformance/postbox-entry/README.md).
   google.protobuf.Timestamp expires_at = 10;
 }
 
@@ -195,6 +197,10 @@ message UnassignDeviceRequest {
   string organization_id = 1;
   string deployment_id = 2;
   string device = 3;
+  // Instruction validity (WDY-4015 item 3, sem 2026-10-23 22:27), under the
+  // operator's signature: required when cloud relays the request to a device
+  // postbox. Rules: conformance/postbox-entry/README.md.
+  google.protobuf.Timestamp valid_until = 4;
 }
 
 message UnassignDeviceResponse {
