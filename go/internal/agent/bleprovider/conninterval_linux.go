@@ -120,7 +120,8 @@ func parseLEUpdateEvent(packet []byte, handle uint16) updateEvent {
 	if len(packet) < 3 || packet[0] != hciEventPacket || int(packet[2]) > len(packet)-3 {
 		return updateEvent{}
 	}
-	params := packet[3 : 3+packet[2]]
+	// Widen before adding: a byte sum wraps for 253-255 byte parameters.
+	params := packet[3 : 3+int(packet[2])]
 	switch packet[1] {
 	case hciCommandStatus:
 		if len(params) >= 4 && binary.LittleEndian.Uint16(params[2:4]) == leUpdateOpcode {
