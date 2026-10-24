@@ -1,8 +1,7 @@
 # WendyNotify
 
 A Swift WendyOS example that serves a notification form at `http://<device>:8080/`.
-Open the private `?key=…` link printed in the app startup log. The per-run key
-protects both the form/history and Send, and changes on restart.
+The page has no login, so anyone who can reach port 8080 on that network can send notifications to the device's organization; a real app would put its own authentication in front.
 
 It calls the local Agent over its private Unix socket using grpc-swift 2, without
 WendyKit. Cloud accepts the notification for the Companion inbox and push delivery;
@@ -43,15 +42,10 @@ recipients, title is 1–120 printable UTF-8 bytes, body is 1–2000 printable U
 bytes, and links must target the sending device, for example
 `wendy://devices/current/live`. The Agent also enforces a short burst limit.
 
-This is a device-hosted development example. Anyone with the private link can
-send with this app's entitlement and see its recent results. Keep the link and
-app logs private. HTTP traffic is plaintext: use a trusted network. Deployment
-through Cloud works, but opening this example's page currently requires LAN
-access to the device: the Cloud v2 CLI tunnel catalog allows ports 22 and 50052,
-so `wendy cloud tunnel 8080:8080` refuses port 8080. Do not assume a Cloud deploy
-makes the page remotely accessible. Anonymous requests cannot read the page or
-obtain its form token. Responses are not cached, cannot be framed, and send no
-referrer to external font services.
+Deployment through Cloud works, but opening this example's page currently requires
+LAN access to the device: the Cloud v2 CLI tunnel catalog allows ports 22 and
+50052, so `wendy cloud tunnel 8080:8080` refuses port 8080. Responses are not cached,
+cannot be framed, and send no referrer to external font services.
 
 ## Development
 

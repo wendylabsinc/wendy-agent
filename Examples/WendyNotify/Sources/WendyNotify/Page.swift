@@ -9,7 +9,7 @@ func escapeHTML(_ text: String) -> String {
 }
 
 func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRecord],
-                limits: LimitSnapshot, accessKey: String, now: Date = Date()) -> String {
+                limits: LimitSnapshot, now: Date = Date()) -> String {
     let e = escapeHTML
     let roles = [(1, "Owner"), (2, "Admin"), (3, "Billing manager"), (4, "Member"), (5, "Viewer")]
         .map { value, label in
@@ -85,7 +85,6 @@ func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRec
     \(result)
     <div class="layout"><section><h2>Compose notification</h2>
     <form method="post" action="/" novalidate>
-    <input type="hidden" name="accessKey" value="\(e(accessKey))">
     <label><span>Recipient user IDs</span><textarea name="userIDs" aria-describedby="audience-hint">\(e(form.userIDs))</textarea></label>
     <fieldset><legend>Organization roles</legend>\(roles)</fieldset>
     <p id="audience-hint" class="muted">One user ID per line. Recipients are the union of user IDs and checked roles.</p>
@@ -96,7 +95,7 @@ func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRec
     <label><span>Notification ID · UUID v4</span><input name="notificationID" value="\(e(form.notificationID))"></label>
     <label><span>Metadata JSON · optional object</span><textarea name="metadata" placeholder="{}">\(e(form.metadata))</textarea></label>
     <button type="submit">Send notification</button>
-    <p><a href="/?key=\(e(accessKey))">Start a new notification</a></p>
+    <p><a href="/">Start a new notification</a></p>
     </form><p class="muted">Team selectors are unavailable because Cloud v2 refuses them.</p></section>
     <aside class="budget \(state)" aria-labelledby="budget-title"><p class="eyebrow">Send budget</p>
     <h2 id="budget-title">\(limits.remaining) of 10 left this minute</h2>
