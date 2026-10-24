@@ -48,7 +48,8 @@ actor SendHistory {
     func snapshot(now: Date = Date()) -> (records: [SendRecord], limits: LimitSnapshot) {
         expireWindow(now: now)
         return (records, .init(
-            remaining: max(0, 10 - accepted),
+            remaining: (retryAt.map { $0 > now } == true || quarantineUntil.map { $0 > now } == true)
+                ? 0 : max(0, 10 - accepted),
             resetAt: windowStart?.addingTimeInterval(60),
             retryAt: retryAt.flatMap { $0 > now ? $0 : nil },
             quarantineUntil: quarantineUntil.flatMap { $0 > now ? $0 : nil },

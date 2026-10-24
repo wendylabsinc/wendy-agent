@@ -1,5 +1,7 @@
 import Foundation
 import GRPCCore
+import Hummingbird
+import HummingbirdTesting
 import Testing
 @testable import WendyNotify
 
@@ -64,11 +66,11 @@ import Testing
     var form = NotificationForm()
     form.title = text
     let snapshot = await SendHistory().snapshot()
-    let html = renderPage(form: form, outcome: outcome, records: [], limits: snapshot.limits, csrfToken: "token")
+    let html = renderPage(form: form, outcome: outcome, records: [], limits: snapshot.limits, accessKey: "token")
     #expect(!html.contains(text))
     #expect(html.contains("&lt;script&gt;"))
     #expect(html.contains("novalidate"))
-    #expect(html.contains("name=\"csrfToken\""))
+    #expect(html.contains("name=\"accessKey\""))
 }
 
 @Test func `missing and absent sockets explain the entitlement`() async {
@@ -77,4 +79,29 @@ import Testing
     #expect(missing.message.contains("notifications entitlement"))
     let absent = await NotificationSender(socketPath: "/not/a/wendy/socket").send(.init())
     #expect(absent.message.contains("/not/a/wendy/socket"))
+}
+
+@Test func `anonymous clients cannot read history obtain a token or send`() async throws {
+    let app = Application(router: makeRouter(accessKey: "private-test-key", sender: .init(socketPath: nil)))
+    try await app.test(.router) { client in
+        try await client.execute(uri: "/", method: .get) { response in
+            #expect(response.status == .unauthorized)
+            #expect(!String(buffer: response.body).contains("private-test-key"))
+        }
+        try await client.execute(uri: "/?key=wrong", method: .get) { response in
+            #expect(response.status == .unauthorized)
+        }
+        try await client.execute(uri: "/", method: .post, body: .init(string: "accessKey=wrong")) { response in
+            #expect(response.status == .forbidden)
+        }
+        try await client.execute(uri: "/?key=private-test-key", method: .get) { response in
+            #expect(response.status == .ok)
+            #expect(String(buffer: response.body).contains("name=\"accessKey\" value=\"private-test-key\""))
+            #expect(response.headers[.init("Referrer-Policy")!] == "no-referrer")
+        }
+        try await client.execute(uri: "/", method: .post, body: .init(string: "accessKey=private-test-key&title=test")) { response in
+            #expect(response.status == .ok)
+            #expect(String(buffer: response.body).contains("WENDY_SYSTEM_SOCKET is missing"))
+        }
+    }
 }

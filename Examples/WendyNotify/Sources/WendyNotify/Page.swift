@@ -9,7 +9,7 @@ func escapeHTML(_ text: String) -> String {
 }
 
 func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRecord],
-                limits: LimitSnapshot, csrfToken: String, now: Date = Date()) -> String {
+                limits: LimitSnapshot, accessKey: String, now: Date = Date()) -> String {
     let e = escapeHTML
     let roles = [(1, "Owner"), (2, "Admin"), (3, "Billing manager"), (4, "Member"), (5, "Viewer")]
         .map { value, label in
@@ -24,6 +24,7 @@ func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRec
         <section class="result" aria-labelledby="result-title">
           <h2 id="result-title">\($0.created ? "Notification created" : "Notification refused")</h2>
           <p class="mono">\(e($0.code))</p><pre>\(e($0.message))</pre>
+          \($0.underlyingCause.map { "<p>Underlying connection error</p><pre>\(e($0))</pre>" } ?? "")
         </section>
         """
     } ?? ""
@@ -73,7 +74,7 @@ func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRec
     .check{display:inline-flex;align-items:center;gap:6px;margin:4px 16px 4px 0}.check input{width:18px;height:18px;accent-color:var(--ink)}
     button{background:#9FE2BF;color:#171C23;border-color:#171C23;cursor:pointer;padding:12px 32px}button:hover{background:#86D3A8}:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
     .budget{border-top:5px solid var(--ink)}.budget.warning{border-top-color:var(--warning)}.budget.refused{border-top-color:var(--refused)}.budget.warning h2{color:var(--warning)}.budget.refused h2{color:var(--refused)}
-    meter{display:block;width:100%;height:22px;margin:12px 0;accent-color:var(--ink)}.limits{padding-left:20px;font-size:14px}.limits li{margin-bottom:10px}
+    meter::-webkit-meter-optimum-value{background:var(--ink)}meter::-webkit-meter-suboptimum-value{background:var(--warning)}meter::-webkit-meter-even-less-good-value{background:var(--refused)}meter::-moz-meter-bar{background:var(--ink)}meter{display:block;width:100%;height:22px;margin:12px 0;accent-color:var(--ink)}.limits{padding-left:20px;font-size:14px}.limits li{margin-bottom:10px}
     pre{font:14px/1.6 'Geist Mono',ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}code{font-size:12px;overflow-wrap:anywhere}.table-scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:14px 12px;border-bottom:1px solid var(--line);vertical-align:top}th{font-weight:500}time{font-size:12px}
     @media(prefers-color-scheme:dark){:root{--paper:#171C23;--ink:#F1EEE7;--surface:#1E242D;--muted:#C1BEB6;--line:#535860;--link:#9FE2BF;--warning:#EAC477;--refused:#F2A69C}input,textarea,select{background:#242B35}}
     @media(max-width:740px){.layout{grid-template-columns:1fr}main{padding:24px 16px}section,aside{padding:18px}}
@@ -84,7 +85,7 @@ func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRec
     \(result)
     <div class="layout"><section><h2>Compose notification</h2>
     <form method="post" action="/" novalidate>
-    <input type="hidden" name="csrfToken" value="\(e(csrfToken))">
+    <input type="hidden" name="accessKey" value="\(e(accessKey))">
     <label><span>Recipient user IDs</span><textarea name="userIDs" aria-describedby="audience-hint">\(e(form.userIDs))</textarea></label>
     <fieldset><legend>Organization roles</legend>\(roles)</fieldset>
     <p id="audience-hint" class="muted">One user ID per line. Recipients are the union of user IDs and checked roles.</p>
@@ -95,7 +96,7 @@ func renderPage(form: NotificationForm, outcome: SendOutcome?, records: [SendRec
     <label><span>Notification ID · UUID v4</span><input name="notificationID" value="\(e(form.notificationID))"></label>
     <label><span>Metadata JSON · optional object</span><textarea name="metadata" placeholder="{}">\(e(form.metadata))</textarea></label>
     <button type="submit">Send notification</button>
-    <p><a href="/">Start a new notification</a></p>
+    <p><a href="/?key=\(e(accessKey))">Start a new notification</a></p>
     </form><p class="muted">Team selectors are unavailable because Cloud v2 refuses them.</p></section>
     <aside class="budget \(state)" aria-labelledby="budget-title"><p class="eyebrow">Send budget</p>
     <h2 id="budget-title">\(limits.remaining) of 10 left this minute</h2>

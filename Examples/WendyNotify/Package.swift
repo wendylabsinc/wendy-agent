@@ -20,6 +20,8 @@ let package = Package(
             .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
             .product(name: "SwiftProtobuf", package: "swift-protobuf"),
         ]),
-        .testTarget(name: "WendyNotifyTests", dependencies: ["WendyNotify"]),
+        .testTarget(name: "WendyNotifyTests", dependencies: [
+            "WendyNotify", .product(name: "HummingbirdTesting", package: "hummingbird"),
+        ]),
     ]
 )

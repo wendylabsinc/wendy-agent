@@ -59,6 +59,9 @@ struct SendOutcome: Sendable {
     let error: (any Error)?
 
     var created: Bool { error == nil }
+    var underlyingCause: String? {
+        (error as? RPCError)?.cause.map { String(describing: $0) }
+    }
 
     static func failure(_ error: any Error, notificationID: String, context: String) -> Self {
         if let rpc = error as? RPCError {
