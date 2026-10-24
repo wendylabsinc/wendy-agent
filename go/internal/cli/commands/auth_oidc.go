@@ -5,26 +5,22 @@ package commands
 // resource tokens and the operator CSR to one local DPoP key.
 
 import (
-	"bytes"
 	"context"
 	"crypto"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"strings"
+
+	wendy "github.com/wendylabsinc/wendy-go"
+	"github.com/wendylabsinc/wendy-go/identity"
+	"github.com/wendylabsinc/wendy/go/internal/cli/identityhost"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 )
 
 // oidcScopes: `groups` is read once at session establishment and drives cloud's
 // live authorization decisions. The realm must advertise it.
-const oidcScopes = "openid email profile groups"
+const oidcScopes = identity.Scopes
 
 // oidcLoginOptions configures a single login attempt.
 type oidcLoginOptions struct {
@@ -55,26 +51,10 @@ type oidcLoginOptions struct {
 }
 
 // oidcProviderMetadata is the subset of OIDC discovery this flow needs.
-type oidcProviderMetadata struct {
-	Issuer                string   `json:"issuer"`
-	AuthorizationEndpoint string   `json:"authorization_endpoint"`
-	TokenEndpoint         string   `json:"token_endpoint"`
-	JWKSURI               string   `json:"jwks_uri"`
-	CodeChallengeMethods  []string `json:"code_challenge_methods_supported"`
-	GrantTypes            []string `json:"grant_types_supported"`
-	ScopesSupported       []string `json:"scopes_supported"`
-	RequirePAR            bool     `json:"require_pushed_authorization_requests"`
-}
+type oidcProviderMetadata = identity.ProviderMetadata
 
 // oidcTokenResponse is the token endpoint's success payload.
-type oidcTokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
-	Scope        string `json:"scope"`
-	IDToken      string `json:"id_token"`
-}
+type oidcTokenResponse = identity.TokenResponse
 
 // discoverOIDCIssuerFn is indirected so command tests can verify target routing
 // without contacting a live wendy-auth deployment.
@@ -85,107 +65,21 @@ var discoverOIDCIssuerFn = discoverOIDCIssuer
 // It returns "" when no realm is pinned for the email: wendy-auth answers
 // "unknown" (older servers name the system realm), and the caller falls through
 // to the realm-less universal flow. The system realm is never a login target.
-func discoverOIDCIssuer(ctx context.Context, authBase, email string) (string, error) {
-	if strings.TrimSpace(email) == "" {
-		return "", fmt.Errorf("--email is required when --issuer is not set")
-	}
-	authBase = strings.TrimSuffix(authBase, "/")
-	body, err := json.Marshal(map[string]string{"email": email})
-	if err != nil {
-		return "", fmt.Errorf("encoding realm discovery request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authBase+"/api/login/realm", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("building realm discovery request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("discovering organization: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("organization discovery returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
-	}
-	var result struct {
-		LoginURL string `json:"loginURL"`
-		Realm    string `json:"realm"`
-		State    string `json:"state"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decoding organization discovery response: %w", err)
-	}
-	if result.State == "unknown" {
-		return "", nil
-	}
-	slug := result.Realm
-	if slug == "" && result.LoginURL != "" {
-		u, err := url.Parse(result.LoginURL)
-		if err != nil {
-			return "", fmt.Errorf("parsing organization login URL: %w", err)
-		}
-		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-		if len(parts) < 2 || parts[0] != "realms" || parts[1] == "" {
-			return "", fmt.Errorf("organization discovery returned an invalid login URL")
-		}
-		slug = parts[1]
-	}
-	if slug == "" || slug == "system" {
-		return "", nil
-	}
-	return authBase + "/realms/" + url.PathEscape(slug), nil
+func discoverOIDCIssuer(ctx context.Context, base, email string) (string, error) {
+	return identityhost.Client(http.DefaultClient).DiscoverIssuer(ctx, base, email)
 }
 
-func issuerRealm(issuer string) string {
-	u, err := url.Parse(issuer)
-	if err != nil {
-		return issuer
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	for i := range parts {
-		if parts[i] == "realms" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return issuer
-}
+func issuerRealm(issuer string) string { return identity.IssuerRealm(issuer) }
 
 // effectiveLoginIssuer selects and validates the exact realm that may receive
 // the authorization code. Realm-less starts require RFC 9207 `iss`; an explicit
 // realm retains the compatibility fallback for servers that omit it.
-func effectiveLoginIssuer(requested, authorizationBase, callbackIss string) (string, error) {
-	requested = strings.TrimSuffix(requested, "/")
-	authority := requested
-	if authority == "" {
-		authority = strings.TrimSuffix(authorizationBase, "/")
-		if callbackIss == "" {
-			return "", fmt.Errorf("realm-less authorization response did not identify its issuer; refusing to exchange the code")
-		}
-	}
-	if callbackIss == "" {
-		return validateRealmIssuer(requested, requested)
-	}
-	return validateRealmIssuer(authority, callbackIss)
+func effectiveLoginIssuer(requested, base, callback string) (string, error) {
+	return identity.EffectiveLoginIssuer(requested, base, callback)
 }
 
 func validateRealmIssuer(authority, issuer string) (string, error) {
-	issuer = strings.TrimSuffix(issuer, "/")
-	if !sameIssuerOrigin(issuer, authority) {
-		return "", fmt.Errorf("callback issuer mismatch: %q is not on the configured authority %q; refusing to exchange the code", issuer, authority)
-	}
-	u, err := url.Parse(issuer)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("callback issuer mismatch: %q is not a canonical realm issuer", issuer)
-	}
-	parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
-	if len(parts) != 2 || parts[0] != "realms" || parts[1] == "" || parts[1] == "system" {
-		return "", fmt.Errorf("callback issuer mismatch: %q is not a canonical non-system realm issuer", issuer)
-	}
-	if decoded, err := url.PathUnescape(parts[1]); err != nil || decoded != parts[1] || strings.Contains(decoded, "/") {
-		return "", fmt.Errorf("callback issuer mismatch: %q contains an invalid realm", issuer)
-	}
-	return issuer, nil
+	return identity.ValidateRealmIssuer(authority, issuer)
 }
 
 // sameIssuerOrigin reports whether two issuer URLs share scheme and host, i.e.
@@ -193,28 +87,10 @@ func validateRealmIssuer(authority, issuer string) (string, error) {
 // authorization response may switch realms (path) but must never move the code
 // exchange to a different host — that would hand the authorization code to an
 // unrelated issuer (the mix-up attack the check defends against).
-func sameIssuerOrigin(a, b string) bool {
-	ua, erra := url.Parse(a)
-	ub, errb := url.Parse(b)
-	if erra != nil || errb != nil || ua.Scheme == "" || ua.Host == "" {
-		return false
-	}
-	return ua.Scheme == ub.Scheme && ua.Host == ub.Host
-}
+func sameIssuerOrigin(a, b string) bool { return identity.SameIssuerOrigin(a, b) }
 
 func canonicalAuthorizationBase(raw string) (string, error) {
-	u, err := url.Parse(strings.TrimSuffix(raw, "/"))
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("invalid wendy-auth authorization base %q", raw)
-	}
-	loopback := u.Hostname() == "localhost"
-	if ip := net.ParseIP(u.Hostname()); ip != nil {
-		loopback = ip.IsLoopback()
-	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
-		return "", fmt.Errorf("invalid wendy-auth authorization base %q: want HTTPS or loopback HTTP", raw)
-	}
-	return u.String(), nil
+	return identity.CanonicalAuthorizationBase(raw)
 }
 
 // discoverOIDC fetches the realm's OIDC metadata.
@@ -224,69 +100,18 @@ func canonicalAuthorizationBase(raw string) (string, error) {
 // misconfiguration or an attempt to redirect the client to another realm, and
 // every downstream check (token `iss`, JWKS location) keys off this value.
 func discoverOIDC(ctx context.Context, issuer string) (*oidcProviderMetadata, error) {
-	issuer = strings.TrimSuffix(issuer, "/")
-	discoveryURL := issuer + "/.well-known/openid-configuration"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("building discovery request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w", discoveryURL, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("discovery at %s returned %d: %s", discoveryURL, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var meta oidcProviderMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return nil, fmt.Errorf("decoding discovery document: %w", err)
-	}
-	if meta.Issuer != issuer {
-		return nil, fmt.Errorf("discovery issuer mismatch: requested %q, document declares %q", issuer, meta.Issuer)
-	}
-	if meta.AuthorizationEndpoint == "" || meta.TokenEndpoint == "" {
-		return nil, fmt.Errorf("discovery document missing authorization_endpoint or token_endpoint")
-	}
-	if meta.RequirePAR {
-		return nil, fmt.Errorf("issuer requires pushed authorization requests, which the realm-less flow does not support")
-	}
-	// PKCE S256 is mandatory on this authorization server; fail loudly rather
-	// than silently downgrading to a flow it will reject anyway.
-	if len(meta.CodeChallengeMethods) > 0 && !oidcContainsString(meta.CodeChallengeMethods, "S256") {
-		return nil, fmt.Errorf("realm does not advertise PKCE S256 (got %v)", meta.CodeChallengeMethods)
-	}
-	return &meta, nil
-}
-
-// base64URL encodes without padding, as every JOSE/OAuth structure requires.
-func base64URL(b []byte) string {
-	return base64.RawURLEncoding.EncodeToString(b)
+	return identityhost.Client(http.DefaultClient).Discover(ctx, issuer)
 }
 
 // newPKCEVerifier returns a high-entropy code_verifier and its S256 challenge.
-func newPKCEVerifier() (verifier, challenge string, err error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", fmt.Errorf("generating PKCE verifier: %w", err)
-	}
-	verifier = base64URL(raw)
-	sum := sha256.Sum256([]byte(verifier))
-	return verifier, base64URL(sum[:]), nil
+func newPKCEVerifier() (string, string, error) {
+	return identityhost.Client(http.DefaultClient).NewPKCEVerifier(context.Background())
 }
 
 // randomURLSafe returns n bytes of entropy, base64url-encoded. Used for `state`
 // and DPoP `jti`.
 func randomURLSafe(n int) (string, error) {
-	raw := make([]byte, n)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return base64URL(raw), nil
+	return identityhost.Client(http.DefaultClient).RandomURLSafe(context.Background(), n)
 }
 
 // The DPoP proof builder and the operator JWK/JWS helpers live in the shared
@@ -319,39 +144,11 @@ func canonicalHTU(raw string) (string, error) {
 // This does NOT verify the signature: it exists so the CLI can inspect what it
 // received and assert the cnf.jkt binding locally. Cloud verifies the token
 // signature, issuer, and audience before authorizing an API request.
-func decodeJWTClaims(token string) (map[string]any, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("not a compact JWS (%d segments)", len(parts))
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("decoding token payload: %w", err)
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("parsing token claims: %w", err)
-	}
-	return claims, nil
-}
+func decodeJWTClaims(raw string) (map[string]any, error) { return identity.DecodeJWTClaims(raw) }
 
 // confirmationThumbprint extracts cnf.jkt from decoded claims, if present.
 func confirmationThumbprint(claims map[string]any) string {
-	cnf, ok := claims["cnf"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	jkt, _ := cnf["jkt"].(string)
-	return jkt
-}
-
-func oidcContainsString(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return identity.ConfirmationThumbprint(claims)
 }
 
 const (
@@ -380,107 +177,22 @@ func startLoopbackListener() (net.Listener, string, error) {
 // supplied nonce and retried — RFC 9449 §8 requires clients to handle this, and
 // wendy-auth can be configured to demand it
 // (WENDY_AUTH_DPOP_REQUIRE_NONCE).
-func exchangeCodeForToken(
-	ctx context.Context,
-	key crypto.Signer,
-	meta *oidcProviderMetadata,
-	clientID, code, verifier, redirectURI, resource string,
-) (*oidcTokenResponse, error) {
-	form := url.Values{}
-	form.Set("grant_type", "authorization_code")
-	form.Set("code", code)
-	form.Set("redirect_uri", redirectURI)
-	form.Set("client_id", clientID)
-	form.Set("code_verifier", verifier)
-	if resource != "" {
-		form.Set("resource", resource)
-	}
-	return exchangeDPoPToken(ctx, key, meta.TokenEndpoint, form)
-}
-
-func refreshOIDCToken(
-	ctx context.Context,
-	key crypto.Signer,
-	meta *oidcProviderMetadata,
-	clientID, refreshToken, resource string,
-) (*oidcTokenResponse, error) {
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("client_id", clientID)
-	form.Set("refresh_token", refreshToken)
-	if resource != "" {
-		form.Set("resource", resource)
-	}
-	return exchangeDPoPToken(ctx, key, meta.TokenEndpoint, form)
-}
-
-func exchangeDPoPToken(
-	ctx context.Context,
-	key crypto.Signer,
-	tokenEndpoint string,
-	form url.Values,
-) (*oidcTokenResponse, error) {
-	htu, err := canonicalHTU(tokenEndpoint)
+func exchangeCodeForToken(ctx context.Context, key crypto.Signer, meta *oidcProviderMetadata, clientID, code, verifier, redirectURI, resource string) (*oidcTokenResponse, error) {
+	signer, err := identityhost.OperatorKey(key)
 	if err != nil {
 		return nil, err
 	}
-
-	doRequest := func(nonce string) (*http.Response, error) {
-		proof, err := newDPoPProof(key, http.MethodPost, htu, nonce)
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
-		if err != nil {
-			return nil, fmt.Errorf("building token request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("DPoP", proof)
-		return http.DefaultClient.Do(req)
-	}
-
-	resp, err := doRequest("")
-	if err != nil {
-		return nil, fmt.Errorf("calling token endpoint: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusBadRequest {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var oauthErr struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(body, &oauthErr)
-		if oauthErr.Error == "use_dpop_nonce" {
-			nonce := resp.Header.Get("DPoP-Nonce")
-			if nonce == "" {
-				return nil, fmt.Errorf("server demanded a DPoP nonce but sent no DPoP-Nonce header")
-			}
-			_ = resp.Body.Close()
-			retry, err := doRequest(nonce)
-			if err != nil {
-				return nil, fmt.Errorf("retrying token request with nonce: %w", err)
-			}
-			defer func() { _ = retry.Body.Close() }()
-			return parseTokenResponse(retry)
-		}
-		return nil, fmt.Errorf("token endpoint returned 400: %s", strings.TrimSpace(string(body)))
-	}
-
-	return parseTokenResponse(resp)
+	return identityhost.Client(http.DefaultClient).ExchangeCode(ctx, signer, meta, clientID, code, verifier, redirectURI, resource)
 }
 
-func parseTokenResponse(resp *http.Response) (*oidcTokenResponse, error) {
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+func refreshOIDCToken(ctx context.Context, key crypto.Signer, meta *oidcProviderMetadata, clientID, refreshToken, resource string) (*oidcTokenResponse, error) {
+	signer, err := identityhost.OperatorKey(key)
+	if err != nil {
+		return nil, err
 	}
-	var out oidcTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding token response: %w", err)
-	}
-	if out.AccessToken == "" {
-		return nil, fmt.Errorf("token response contained no access_token")
-	}
-	return &out, nil
+	return identityhost.Client(http.DefaultClient).RefreshToken(ctx, signer, meta, clientID, refreshToken, resource)
+}
+
+func parseTokenResponse(response *http.Response) (*oidcTokenResponse, error) {
+	return identity.ParseTokenResponse(&wendy.HTTPResponse{StatusCode: response.StatusCode, Headers: wendy.HTTPHeaders(response.Header), Body: response.Body})
 }

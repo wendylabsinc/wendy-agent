@@ -3,8 +3,11 @@ package commands
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
+
+	wendy "github.com/wendylabsinc/wendy-go"
+	"github.com/wendylabsinc/wendy-go/identity"
+	"google.golang.org/protobuf/proto"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -80,37 +83,23 @@ func listCloudOrganizationsV2Impl(ctx context.Context, auth *config.AuthConfig) 
 		return nil, err
 	}
 	defer conn.Close()
-	client := pb.NewOrganizationServiceClient(conn)
-	var orgs []*pb.Organization
-	for page := 0; page < orgPageCap; page++ {
-		cloudCtx, err := cloudContext(ctx, auth)
-		if err != nil {
-			return nil, err
-		}
-		stream, err := client.ListOrganizations(cloudCtx, &pb.ListOrganizationsRequest{Offset: int32Ptr(int32(page * orgPageSize)), Limit: int32Ptr(orgPageSize)})
-		if err != nil {
-			return nil, err
-		}
-		received := 0
-		for {
-			r, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, fmt.Errorf("listing organizations: %w", err)
-			}
-			if r.Organization != nil {
-				orgs = append(orgs, r.Organization)
-				cacheCloudOrganizationName(auth.CloudGRPC, r.Organization.Id, r.Organization.Name)
-				received++
-			}
-		}
-		if received < orgPageSize {
-			return orgs, nil
-		}
+	transport, err := wendy.NewGRPCTransport(conn)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("Cloud returned too many organization pages")
+	listed, err := identity.ListOrganizations(ctx, organizationTransport{Transport: transport, auth: auth})
+	if err != nil {
+		return nil, err
+	}
+	var organizations []*pb.Organization
+	for _, record := range listed {
+		var organization pb.Organization
+		if err := proto.Unmarshal(record.Message, &organization); err != nil {
+			return nil, err
+		}
+		organizations = append(organizations, &organization)
+	}
+	return organizations, nil
 }
 
 // pickCloudOrgV2 shows the v2 organization picker. 'd' sets the default for

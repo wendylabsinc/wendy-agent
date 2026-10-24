@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -101,29 +100,32 @@ func loadWrappedKey(store WrappedKeyStore, p Profile) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
 }
 func (s *Session) refreshCloudToken(ctx context.Context) error {
-	expiry, _ := time.Parse(time.RFC3339, s.profile.Expires)
-	if time.Until(expiry) >= time.Minute {
-		return nil
+	flow, err := s.identityFlow()
+	if err != nil {
+		return err
 	}
-	return s.rotateCloudToken(ctx)
+	previousTokens, previousProfile := s.tokens, s.profile
+	if err := flow.RefreshCloudToken(ctx); err != nil {
+		return err
+	}
+	s.applyIdentityFlow(flow)
+	if s.tokens != previousTokens || s.profile != previousProfile {
+		return s.saveLocked()
+	}
+	return nil
 }
 
 // rotateCloudToken exchanges the refresh token now, whatever the access token's
 // remaining lifetime. The issuer rotates the refresh token on every exchange.
 func (s *Session) rotateCloudToken(ctx context.Context) error {
-	refreshed, err := s.exchange(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {s.tokens.Refresh}, "resource": {s.settings().CloudResource}})
+	flow, err := s.identityFlow()
 	if err != nil {
 		return err
 	}
-	claims, err := s.verifyAccess(ctx, refreshed.Access, s.settings().CloudResource)
-	if err != nil {
+	if err := flow.RotateCloudToken(ctx); err != nil {
 		return err
 	}
-	if claims["sub"] != s.profile.Subject || claims["tenant_uuid"] != s.profile.Tenant {
-		return errors.New("Refreshed session identity changed")
-	}
-	s.tokens = refreshed
-	s.profile.Expires = time.Now().Add(time.Duration(refreshed.Expires) * time.Second).UTC().Format(time.RFC3339)
+	s.applyIdentityFlow(flow)
 	return s.saveLocked()
 }
 func (s *Session) Restore(ctx context.Context) (*Profile, error) {

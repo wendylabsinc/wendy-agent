@@ -1,11 +1,6 @@
 package browserauth
 
-import (
-	"fmt"
-	"net"
-	"net/url"
-	"strings"
-)
+import "github.com/wendylabsinc/wendy-go/identity"
 
 // Settings pins the identity, PKI and Cloud services for a deployment. Tool
 // arguments and OAuth redirect parameters cannot change these destinations.
@@ -26,44 +21,17 @@ func (s *Session) settings() Settings {
 	return Settings{AuthBase, ClientID, IdentityResource, IdentityEndpoint, CloudResource, "api.dev.wendy.sh:443", "https://api.dev.wendy.sh"}
 }
 
-func (c Settings) Validate() error {
-	for _, raw := range []string{c.AuthBase, c.IdentityResource, c.IdentityEndpoint, c.CloudResource, c.RelayIssuer} {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
-			return fmt.Errorf("Cloud login services require explicit HTTPS URLs")
-		}
-	}
-	auth, _ := url.Parse(c.AuthBase)
-	relay, _ := url.Parse(c.RelayIssuer)
-	identity, _ := url.Parse(c.IdentityEndpoint)
-	host, port, err := net.SplitHostPort(c.CloudGRPC)
-	if c.ClientID == "" || auth.Path != "" || relay.Path != "" || identity.Path != "/v1/identity/certificate" || err != nil || host == "" || port != "443" || strings.ContainsAny(c.CloudGRPC, "/?#@") {
-		return fmt.Errorf("invalid Cloud login client or service authority")
-	}
-	return nil
-}
+func (c Settings) Validate() error { return c.identitySettings().Validate() }
 
 func (s *Session) validIssuer(raw string) bool {
-	u, err := url.Parse(raw)
-	base, _ := url.Parse(s.settings().AuthBase)
-	if err != nil || base == nil || u.Scheme != "https" || u.Host != base.Host || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" {
-		return false
-	}
-	parts := strings.Split(u.Path, "/")
-	if len(parts) != 3 || parts[1] != "realms" || parts[2] == "" {
-		return false
-	}
-	for _, c := range parts[2] {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
-			return false
-		}
-	}
-	return true
+	settings := s.settings().identitySettings()
+	return (&identity.BrowserSession{Settings: &settings}).ValidIssuer(raw)
 }
 
 // orgIssuer is a valid issuer other than the system realm, which is never a
 // login target. Realm names are compared without case, so /realms/SYSTEM is
 // still the system realm.
 func (s *Session) orgIssuer(raw string) bool {
-	return s.validIssuer(raw) && !strings.EqualFold(raw, s.settings().AuthBase+"/realms/system")
+	settings := s.settings().identitySettings()
+	return (&identity.BrowserSession{Settings: &settings}).OrgIssuer(raw)
 }
