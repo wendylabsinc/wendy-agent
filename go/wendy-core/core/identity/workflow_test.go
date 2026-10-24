@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -23,7 +24,23 @@ const fixtureIssuer = "https://auth.example/realms/acme"
 
 type testHTTP func(*http.Request) (*http.Response, error)
 
-func (f testHTTP) Do(r *http.Request) (*http.Response, error) { return f(r) }
+func (f testHTTP) Do(ctx context.Context, request platform.HTTPRequest) (*platform.HTTPResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, request.Method, request.URL, bytes.NewReader(request.Body))
+	if err != nil {
+		return nil, err
+	}
+	for name, values := range request.Headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	response, err := f(req)
+	if err != nil {
+		return nil, err
+	}
+	return &platform.HTTPResponse{StatusCode: response.StatusCode, Headers: platform.HTTPHeaders(response.Header), Body: response.Body}, nil
+}
+
 func jsonResponse(status int, body any) *http.Response {
 	b, _ := json.Marshal(body)
 	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(b)))}
@@ -71,7 +88,7 @@ func fixture(t *testing.T) *identityFixture {
 		t.Fatal(err)
 	}
 	f := &identityFixture{realmKey: realmKey, key: &testIdentityKey{testSigner: testSigner{testKey(t)}, tenant: fixtureTenant, subject: "user-1"}}
-	f.client = &Client{Verifier: testSignatureVerifier{}, HTTP: testHTTP(func(r *http.Request) (*http.Response, error) {
+	f.client = &Client{Entropy: testEntropy{}, Verifier: testSignatureVerifier{}, HTTP: testHTTP(func(r *http.Request) (*http.Response, error) {
 		if r.Context().Err() != nil {
 			return nil, r.Context().Err()
 		}
@@ -132,7 +149,7 @@ func TestPortableLoginCompletesWithHostCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := login.BeginAuthorization("http://127.0.0.1:8765/callback")
+	target, err := login.BeginAuthorization(context.Background(), "http://127.0.0.1:8765/callback")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +248,7 @@ func TestRefreshAccessAndCertificateRespectCancellation(t *testing.T) {
 func TestTokenExchangeRetriesNonceOnceWithExactForm(t *testing.T) {
 	key := testSigner{testKey(t)}
 	attempt := 0
-	client := &Client{HTTP: testHTTP(func(r *http.Request) (*http.Response, error) {
+	client := &Client{Entropy: testEntropy{}, HTTP: testHTTP(func(r *http.Request) (*http.Response, error) {
 		attempt++
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)

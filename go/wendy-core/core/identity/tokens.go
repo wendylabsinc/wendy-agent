@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -35,16 +34,16 @@ func (c *Client) LoadTokenVerifier(ctx context.Context, meta *ProviderMetadata) 
 	if meta == nil || meta.Issuer == "" || meta.JWKSURI == "" {
 		return nil, fmt.Errorf("OIDC metadata does not identify issuer signing keys")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, meta.JWKSURI, nil)
+	req, err := newHTTPRequest(methodGet, meta.JWKSURI, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building JWKS request: %w", err)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching issuer signing keys: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != statusOK {
 		return nil, fmt.Errorf("issuer JWKS returned %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))

@@ -27,7 +27,11 @@ var buildAuthorizeURL = BuildAuthorizeURL
 var effectiveLoginIssuer = EffectiveLoginIssuer
 var canonicalAuthorizationBase = CanonicalAuthorizationBase
 var sameIssuerOrigin = SameIssuerOrigin
-var newPKCEVerifier = NewPKCEVerifier
+
+func newPKCEVerifier() (string, string, error) {
+	return (&Client{Entropy: testEntropy{}}).NewPKCEVerifier(context.Background())
+}
+
 var canonicalHTU = CanonicalHTU
 
 func operatorPublicJWK(key crypto.Signer) (map[string]string, string, error) {
@@ -37,13 +41,13 @@ func operatorJWKThumbprint(key crypto.Signer) (string, error) {
 	return OperatorJWKThumbprint(context.Background(), testSigner{key})
 }
 func newDPoPProof(key crypto.Signer, method, target, nonce string) (string, error) {
-	return (&Client{}).DPoPProof(context.Background(), testSigner{key}, method, target, nonce)
+	return (&Client{Entropy: testEntropy{}}).DPoPProof(context.Background(), testSigner{key}, method, target, nonce)
 }
 func discoverOIDCIssuer(ctx context.Context, authority, email string) (string, error) {
-	return (&Client{HTTP: http.DefaultClient}).DiscoverIssuer(ctx, authority, email)
+	return (&Client{Entropy: testEntropy{}, HTTP: testHTTP(http.DefaultClient.Do)}).DiscoverIssuer(ctx, authority, email)
 }
 func refreshOIDCToken(ctx context.Context, key crypto.Signer, meta *ProviderMetadata, client, refresh, resource string) (*TokenResponse, error) {
-	return (&Client{HTTP: http.DefaultClient}).RefreshToken(ctx, testSigner{key}, meta, client, refresh, resource)
+	return (&Client{Entropy: testEntropy{}, HTTP: testHTTP(http.DefaultClient.Do)}).RefreshToken(ctx, testSigner{key}, meta, client, refresh, resource)
 }
 
 type testSigner struct{ key crypto.Signer }
@@ -114,4 +118,15 @@ func verifyMLDSA65JWK(key JWK, message, signature []byte) bool {
 	var publicKey mldsa.PublicKey
 	err = publicKey.UnmarshalBinary(publicBytes)
 	return err == nil && mldsa.Verify(&publicKey, message, nil, signature)
+}
+
+type testEntropy struct{}
+
+func (testEntropy) RandomBytes(ctx context.Context, size int) ([]byte, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	raw := make([]byte, size)
+	_, err := rand.Read(raw)
+	return raw, err
 }

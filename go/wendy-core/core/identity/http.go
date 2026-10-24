@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 
@@ -23,17 +22,17 @@ func (c *Client) DiscoverIssuer(ctx context.Context, authBase, email string) (st
 	if err != nil {
 		return "", fmt.Errorf("encoding realm discovery request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authBase+"/api/login/realm", bytes.NewReader(body))
+	req, err := newHTTPRequest(methodPost, authBase+"/api/login/realm", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("building realm discovery request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	req.Headers.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("discovering organization: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != statusOK {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("organization discovery returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
@@ -71,17 +70,17 @@ func (c *Client) Discover(ctx context.Context, issuer string) (*ProviderMetadata
 	issuer = strings.TrimSuffix(issuer, "/")
 	discoveryURL := issuer + "/.well-known/openid-configuration"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	req, err := newHTTPRequest(methodGet, discoveryURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building discovery request: %w", err)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", discoveryURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != statusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("discovery at %s returned %d: %s", discoveryURL, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -154,18 +153,18 @@ func (c *Client) exchangeDPoPToken(
 		return nil, err
 	}
 
-	doRequest := func(nonce string) (*http.Response, error) {
-		proof, err := c.DPoPProof(ctx, key, http.MethodPost, htu, nonce)
+	doRequest := func(nonce string) (*platform.HTTPResponse, error) {
+		proof, err := c.DPoPProof(ctx, key, methodPost, htu, nonce)
 		if err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+		req, err := newHTTPRequest(methodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 		if err != nil {
 			return nil, fmt.Errorf("building token request: %w", err)
 		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("DPoP", proof)
-		return c.HTTP.Do(req)
+		req.Headers.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Headers.Set("DPoP", proof)
+		return c.HTTP.Do(ctx, req)
 	}
 
 	resp, err := doRequest("")
@@ -174,14 +173,14 @@ func (c *Client) exchangeDPoPToken(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusBadRequest {
+	if resp.StatusCode == statusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var oauthErr struct {
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(body, &oauthErr)
 		if oauthErr.Error == "use_dpop_nonce" {
-			nonce := resp.Header.Get("DPoP-Nonce")
+			nonce := resp.Headers.Get("DPoP-Nonce")
 			if nonce == "" {
 				return nil, fmt.Errorf("server demanded a DPoP nonce but sent no DPoP-Nonce header")
 			}
@@ -200,8 +199,8 @@ func (c *Client) exchangeDPoPToken(
 }
 
 // ParseTokenResponse decodes the existing OAuth token endpoint response.
-func ParseTokenResponse(resp *http.Response) (*TokenResponse, error) {
-	if resp.StatusCode != http.StatusOK {
+func ParseTokenResponse(resp *platform.HTTPResponse) (*TokenResponse, error) {
+	if resp.StatusCode != statusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}

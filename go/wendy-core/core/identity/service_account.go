@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -30,7 +29,7 @@ func (c *Client) MintServiceAccountToken(ctx context.Context, key platform.Signe
 	if err != nil {
 		return nil, err
 	}
-	jti, err := RandomURLSafe(16)
+	jti, err := c.RandomURLSafe(ctx, 16)
 	if err != nil {
 		return nil, fmt.Errorf("generating assertion jti: %w", err)
 	}
@@ -61,12 +60,12 @@ func (c *Client) MintServiceAccountToken(ctx context.Context, key platform.Signe
 }
 
 func (c *Client) postForToken(ctx context.Context, endpoint, contentType string, body []byte) (*TokenResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := newHTTPRequest(methodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", contentType)
-	resp, err := c.HTTP.Do(req)
+	req.Headers.Set("Content-Type", contentType)
+	resp, err := c.HTTP.Do(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +122,7 @@ func (c *Client) EnrollServiceAccount(ctx context.Context, key platform.Signer, 
 		return "", err
 	}
 	endpoint := issuer + "/service-accounts/enroll"
-	pop, err := c.DPoPProof(ctx, key, http.MethodPost, endpoint, "")
+	pop, err := c.DPoPProof(ctx, key, methodPost, endpoint, "")
 	if err != nil {
 		return "", fmt.Errorf("building enrollment proof: %w", err)
 	}

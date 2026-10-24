@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/asn1"
 	"encoding/base64"
@@ -17,9 +16,9 @@ import (
 func base64URL(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 // NewPKCEVerifier returns a high-entropy RFC 7636 verifier and S256 challenge.
-func NewPKCEVerifier() (verifier, challenge string, err error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+func (c *Client) NewPKCEVerifier(ctx context.Context) (verifier, challenge string, err error) {
+	raw, err := c.randomBytes(ctx, 32)
+	if err != nil {
 		return "", "", fmt.Errorf("generating PKCE verifier: %w", err)
 	}
 	verifier = base64URL(raw)
@@ -28,12 +27,12 @@ func NewPKCEVerifier() (verifier, challenge string, err error) {
 }
 
 // RandomURLSafe returns n bytes of entropy as unpadded base64url.
-func RandomURLSafe(n int) (string, error) {
+func (c *Client) RandomURLSafe(ctx context.Context, n int) (string, error) {
 	if n < 0 {
 		return "", fmt.Errorf("invalid entropy length")
 	}
-	raw := make([]byte, n)
-	if _, err := rand.Read(raw); err != nil {
+	raw, err := c.randomBytes(ctx, n)
+	if err != nil {
 		return "", err
 	}
 	return base64URL(raw), nil
@@ -110,7 +109,7 @@ func (c *Client) dpopProof(ctx context.Context, key platform.Signer, method, tar
 	if err != nil {
 		return "", err
 	}
-	jti, err := RandomURLSafe(16)
+	jti, err := c.RandomURLSafe(ctx, 16)
 	if err != nil {
 		return "", fmt.Errorf("generating DPoP jti: %w", err)
 	}
@@ -134,4 +133,21 @@ func CanonicalHTU(raw string) (string, error) {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String(), nil
+}
+
+func (c *Client) randomBytes(ctx context.Context, size int) ([]byte, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if c.Entropy == nil {
+		return nil, fmt.Errorf("host entropy source is required")
+	}
+	raw, err := c.Entropy.RandomBytes(ctx, size)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != size {
+		return nil, fmt.Errorf("host entropy source returned the wrong number of bytes")
+	}
+	return raw, nil
 }

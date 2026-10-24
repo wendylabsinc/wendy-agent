@@ -36,8 +36,9 @@ type LoginOptions struct {
 }
 
 // Login holds one browser authorization attempt. Keep it private to the host's
-// login operation; its verifier/state/nonce are not reusable between attempts.
+// login operation; serialize calls and do not reuse its verifier/state/nonce.
 type Login struct {
+	entropy                             platform.Entropy
 	Options                             LoginOptions
 	metadata                            *ProviderMetadata
 	verifier, nonce, state, redirectURI string
@@ -99,21 +100,21 @@ func (c *Client) PrepareLogin(ctx context.Context, opts LoginOptions) (*Login, e
 		meta = &ProviderMetadata{AuthorizationEndpoint: opts.AuthorizationBase + "/authorize"}
 	}
 
-	return &Login{Options: opts, metadata: meta}, nil
+	return &Login{Options: opts, metadata: meta, entropy: c.Entropy}, nil
 }
 
 // BeginAuthorization creates PKCE/state/nonce and the browser URL. The host
 // has already opened its callback listener and supplies the registered URI.
-func (l *Login) BeginAuthorization(redirectURI string) (string, error) {
-	verifier, challenge, err := NewPKCEVerifier()
+func (l *Login) BeginAuthorization(ctx context.Context, redirectURI string) (string, error) {
+	verifier, challenge, err := (&Client{Entropy: l.entropy}).NewPKCEVerifier(ctx)
 	if err != nil {
 		return "", err
 	}
-	state, err := RandomURLSafe(16)
+	state, err := (&Client{Entropy: l.entropy}).RandomURLSafe(ctx, 16)
 	if err != nil {
 		return "", fmt.Errorf("generating state: %w", err)
 	}
-	nonce, err := RandomURLSafe(16)
+	nonce, err := (&Client{Entropy: l.entropy}).RandomURLSafe(ctx, 16)
 	if err != nil {
 		return "", fmt.Errorf("generating nonce: %w", err)
 	}
@@ -135,6 +136,7 @@ func (c *Client) CompleteLogin(ctx context.Context, l *Login, result Callback, k
 	if l.state == "" || subtle.ConstantTimeCompare([]byte(result.State), []byte(l.state)) != 1 {
 		return nil, fmt.Errorf("OIDC callback state mismatch")
 	}
+	l.state = "" // An authorization response is single-use, including failed exchanges.
 	if result.Code == "" {
 		return nil, fmt.Errorf("OIDC callback contained no authorization code")
 	}

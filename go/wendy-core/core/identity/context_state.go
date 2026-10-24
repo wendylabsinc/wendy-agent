@@ -41,8 +41,7 @@ func (c *SessionSet) AddAuth(auth Session) {
 	c.Auth = append(c.Auth, auth)
 }
 
-// CertificatePrincipal reads exactly one tenant identity from the leaf SAN.
-// This recovers identity metadata; transport/request verification still proves it.
+// OrganizationKey prefers the tenant UUID and retains the legacy numeric fallback.
 
 func (a Session) OrganizationKey() string {
 	if len(a.Certificates) == 0 {

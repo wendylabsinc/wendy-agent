@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 
@@ -45,6 +44,11 @@ func parsePrincipal(principal string) (tenant, kind, name string, err error) {
 			return "", "", "", fmt.Errorf("invalid tenant UUID")
 		}
 	}
+	switch parts[1] {
+	case "operator", "service", "device", "signer":
+	default:
+		return "", "", "", fmt.Errorf("unknown SPIFFE principal kind %q: %s", parts[1], principal)
+	}
 	return parts[0], parts[1], parts[2], nil
 }
 
@@ -80,20 +84,20 @@ func (c *Client) RequestIdentityCertificate(
 	if err != nil {
 		return Certificate{}, fmt.Errorf("generating operator CSR: %w", err)
 	}
-	proof, err := c.DPoPAccessProof(ctx, key, http.MethodPost, htu, accessToken)
+	proof, err := c.DPoPAccessProof(ctx, key, methodPost, htu, accessToken)
 	if err != nil {
 		return Certificate{}, fmt.Errorf("building pki-core DPoP proof: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(csrPEM))
+	req, err := newHTTPRequest(methodPost, endpoint, bytes.NewReader(csrPEM))
 	if err != nil {
 		return Certificate{}, fmt.Errorf("building pki-core identity request: %w", err)
 	}
-	req.Header.Set("Authorization", "DPoP "+accessToken)
-	req.Header.Set("DPoP", proof)
-	req.Header.Set("Content-Type", "application/pkcs10")
-	req.Header.Set("Accept", "application/pem-certificate-chain")
+	req.Headers.Set("Authorization", "DPoP "+accessToken)
+	req.Headers.Set("DPoP", proof)
+	req.Headers.Set("Content-Type", "application/pkcs10")
+	req.Headers.Set("Accept", "application/pem-certificate-chain")
 
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(ctx, req)
 	if err != nil {
 		return Certificate{}, fmt.Errorf("calling pki-core identity endpoint %s: %w", endpoint, err)
 	}
@@ -102,9 +106,9 @@ func (c *Client) RequestIdentityCertificate(
 	if readErr != nil {
 		return Certificate{}, fmt.Errorf("reading pki-core identity response: %w", readErr)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != statusOK {
 		detail := strings.TrimSpace(string(body))
-		if resp.StatusCode == http.StatusUnauthorized {
+		if resp.StatusCode == statusUnauthorized {
 			detail = "unauthorized (verify the realm-to-tenant mapping and PKI audience)"
 		}
 		return Certificate{}, fmt.Errorf("pki-core identity endpoint returned %d: %s", resp.StatusCode, detail)

@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -12,7 +11,6 @@ import (
 	"github.com/wendylabsinc/WendyOS/go/wendy-core/platform"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -141,23 +139,15 @@ func (s *BrowserSession) OrgIssuer(raw string) bool {
 	return s.ValidIssuer(raw) && !strings.EqualFold(raw, s.settings().AuthBase+"/realms/system")
 }
 
-func random() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-func (s *BrowserSession) request(ctx context.Context, method, target, body string, headers map[string]string) ([]byte, *http.Response, error) {
-	req, e := http.NewRequestWithContext(ctx, method, target, strings.NewReader(body))
+func (s *BrowserSession) request(ctx context.Context, method, target, body string, headers map[string]string) ([]byte, *platform.HTTPResponse, error) {
+	req, e := newHTTPRequest(method, target, strings.NewReader(body))
 	if e != nil {
 		return nil, nil, e
 	}
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		req.Headers.Set(k, v)
 	}
-	resp, e := s.Client.HTTP.Do(req)
+	resp, e := s.Client.HTTP.Do(ctx, req)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -252,8 +242,16 @@ func (s *BrowserSession) Begin(ctx context.Context, email, issuer, redirect stri
 	}
 	s.Metadata = m
 	s.Key = key
-	s.State = random()
-	s.Verifier = random()
+	state, e := s.Client.RandomURLSafe(ctx, 32)
+	if e != nil {
+		return "", e
+	}
+	verifier, e := s.Client.RandomURLSafe(ctx, 32)
+	if e != nil {
+		return "", e
+	}
+	s.State = state
+	s.Verifier = verifier
 	s.Redirect = redirect
 	s.Started = time.Now()
 	s.Tokens = BrowserToken{}
@@ -287,8 +285,8 @@ func (s *BrowserSession) Exchange(ctx context.Context, form url.Values) (Browser
 				Error string `json:"error"`
 			}
 			_ = json.Unmarshal(b, &problem)
-			if attempt == 0 && problem.Error == "use_dpop_nonce" && r.Header.Get("DPoP-Nonce") != "" {
-				nonce = r.Header.Get("DPoP-Nonce")
+			if attempt == 0 && problem.Error == "use_dpop_nonce" && r.Headers.Get("DPoP-Nonce") != "" {
+				nonce = r.Headers.Get("DPoP-Nonce")
 				continue
 			}
 			return BrowserToken{}, fmt.Errorf("Token exchange failed (%d): %s", r.StatusCode, problem.Error)
