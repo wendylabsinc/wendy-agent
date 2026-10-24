@@ -168,6 +168,8 @@ func NewRootCmd() *cobra.Command {
 	// Cloud
 	cloudCmd := newCloudCmd()
 	cloudCmd.GroupID = "cloud"
+	appCmd := newAppCmd()
+	appCmd.GroupID = "cloud"
 
 	// Settings
 	analyticsCmd := newAnalyticsCmd()
@@ -284,6 +286,7 @@ func NewRootCmd() *cobra.Command {
 		dataCmd,
 		// Cloud
 		cloudCmd,
+		appCmd,
 		// Settings
 		analyticsCmd,
 		cacheCmd,
@@ -360,6 +363,8 @@ func rejectStrayArguments(cmd *cobra.Command) {
 // cobra command path (e.g. "wendy device info").
 func nextStepHint(commandPath string) string {
 	switch commandPath {
+	case "wendy init":
+		return "Next: run `wendy project` to review app settings, then `wendy run` to deploy."
 	case "wendy discover":
 		return "Next: run `wendy init` to create an app, then `wendy run` to deploy it."
 	case "wendy device info", "wendy device top", "wendy device apps list":

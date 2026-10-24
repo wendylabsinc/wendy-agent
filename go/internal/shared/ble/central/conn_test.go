@@ -12,37 +12,40 @@ type blockingL2CAP struct {
 	started chan struct{}
 	release chan struct{}
 	closed  chan struct{}
+	ioMu    sync.Mutex
 }
 
 func (f *blockingL2CAP) L2CAPSend([]byte) error {
+	f.ioMu.Lock()
+	defer f.ioMu.Unlock()
 	close(f.started)
 	<-f.release
-	return nil
+	return net.ErrClosed
 }
 func (f *blockingL2CAP) L2CAPRecv(int) ([]byte, error) { return nil, ErrRecvTimeout }
-func (f *blockingL2CAP) Close()                        { close(f.closed) }
+func (f *blockingL2CAP) Close() {
+	close(f.release)
+	f.ioMu.Lock()
+	defer f.ioMu.Unlock()
+	close(f.closed)
+}
 
-func TestStreamCloseWaitsForNativeWrite(t *testing.T) {
-	f := &blockingL2CAP{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+func TestStreamCloseInterruptsNativeWrite(t *testing.T) {
+	f := &blockingL2CAP{started: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
 	c := &l2capNetConn{conn: f}
 	written := make(chan error, 1)
 	go func() { _, err := c.Write([]byte("TLS record")); written <- err }()
 	<-f.started
 	done := make(chan struct{})
 	go func() { c.Close(); close(done) }()
-	for !c.closed.Load() {
-		time.Sleep(time.Millisecond)
-	}
 	select {
-	case <-f.closed:
-		t.Fatal("native handle freed during write")
-	default:
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not interrupt the native write")
 	}
-	close(f.release)
-	if err := <-written; err != nil {
-		t.Fatal(err)
+	if err := <-written; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("interrupted write: %v", err)
 	}
-	<-done
 	if _, err := c.Write([]byte("late record")); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("write after close: %v", err)
 	}
@@ -50,7 +53,7 @@ func TestStreamCloseWaitsForNativeWrite(t *testing.T) {
 }
 
 func TestStreamReadDeadlineMayChangeDuringRead(t *testing.T) {
-	f := &blockingL2CAP{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	f := &blockingL2CAP{started: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
 	c := &l2capNetConn{conn: f}
 	var wg sync.WaitGroup
 	wg.Add(1)

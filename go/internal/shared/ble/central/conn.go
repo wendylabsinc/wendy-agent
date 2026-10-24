@@ -82,7 +82,7 @@ type l2capNetConn struct {
 	readDeadline time.Time // zero means no deadline; guarded by deadlineMu
 	deadlineMu   sync.RWMutex
 	readMu       sync.Mutex // serializes buffered reads
-	sendMu       sync.Mutex // protects native writes from Close
+	sendMu       sync.Mutex // serializes writes
 	recvMu       sync.Mutex // held across L2CAPRecv so Close can't free under it
 	closed       atomic.Bool
 }
@@ -166,10 +166,9 @@ func (c *l2capNetConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Close waits out in-flight reads and writes so
-// the platform connection cannot be torn down while a reader is still inside
-// it. That is what matters on darwin, where wendy_ble_disconnect hands the
-// CoreBluetooth wrapper to ARC.
+// Close waits for an in-flight Read, which polls in recvChunkSeconds slices.
+// Connection.Close interrupts any in-flight write and waits for it to return
+// before releasing the native connection.
 //
 // Its idempotency is belt and braces these days — Connection.Close is
 // idempotent on both backends — but it costs a bool and keeps this type's own
@@ -180,8 +179,6 @@ func (c *l2capNetConn) Close() error {
 	}
 	c.recvMu.Lock()
 	defer c.recvMu.Unlock()
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
 	c.conn.Close()
 	return nil
 }

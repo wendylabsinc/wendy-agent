@@ -407,6 +407,25 @@ var signedResources = map[string]func(tenant string, req proto.Message) (string,
 		}
 		return "org/" + tenant + "/app/" + in.GetId(), true
 	},
+	// Cloud DeploymentServiceHandler createAppRelease / updateAppRelease.
+	cloudpbv2.DeploymentService_CreateAppRelease_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.CreateAppReleaseRequest)
+		if !ok || in.GetOrganizationId() != tenant || in.GetAppId() == "" {
+			return "", false
+		}
+		return "org/" + tenant + "/app/" + in.GetAppId(), true
+	},
+	cloudpbv2.DeploymentService_UpdateAppRelease_FullMethodName: func(_ string, req proto.Message) (string, bool) {
+		in, ok := req.(*cloudpbv2.UpdateAppReleaseRequest)
+		if !ok {
+			return "", false
+		}
+		id, err := uuid.Parse(in.GetId())
+		if err != nil || id.String() != in.GetId() {
+			return "", false
+		}
+		return "app-release/" + in.GetId(), true
+	},
 	// Ruled 2026-10-13 (WDY-3660); cloud's RequestSigning.md row follows.
 	cloudpbv2.RelayMcpService_OpenRelaySession_FullMethodName: func(tenant string, req proto.Message) (string, bool) {
 		in, ok := req.(*cloudpbv2.OpenRelaySessionRequest)

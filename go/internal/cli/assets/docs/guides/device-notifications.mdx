@@ -14,15 +14,22 @@ and there is currently no `wendy notification send` CLI command.
 
 ## Before you begin
 
+This guide describes the Cloud v2 app-notification workflow. Use the
+[Cloud guide](/docs/cloud) to select the correct context and check
+[migration requirements](/docs/cloud-migration) for an existing v1 deployment.
+Use a Companion build that supports your Cloud environment; the SDK and mobile
+app have separate release tracks.
+
 You need:
 
 1. A Wendy device enrolled in the recipients' Wendy Cloud organization.
-2. An app that exists in the organization's Cloud Apps catalog and is assigned
-   and desired to run on that device.
-3. The `notifications` app entitlement.
-4. The app's Cloud Notification grant enabled.
-5. Recipients with [Wendy Companion installed from the App Store](https://apps.apple.com/app/wendy-companion/id6761771159)
+2. An app running on that device with the `notifications` entitlement.
+3. Recipients with [Wendy Companion installed from the App Store](https://apps.apple.com/app/wendy-companion/id6761771159)
    and signed in to the same organization.
+
+Cloud v2 accepts Notifications from an enrolled device for its own organization;
+the app or campaign name is only a label. No per-app grant, catalog entry, or
+Cloud deployment assignment is required.
 
 Wendy Companion must be installed to receive push notifications. Each recipient
 must also allow notifications and have an active APNs registration. If push
@@ -48,27 +55,8 @@ WendyOS then exposes the app-private Agent socket at:
 WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock
 ```
 
-The entitlement belongs to the app running on the device, not to Companion.
-Declaring it exposes the local API but does not grant Cloud authority.
-
-## Enable the Cloud grant
-
-An organization owner or admin enables Notification sending in the production
-Wendy Cloud portal:
-
-**Organization → Apps → select the app → Wendy Notifications → Enable
-Notification sending**
-
-The app page has this form:
-
-```text
-https://cloud.wendy.dev/organizations/<org-id>/apps/<app-id>
-```
-
-Wendy super-admins can also change the grant. The card controls the app's
-`can_send_notifications` Cloud grant. A local-only app that does not yet appear
-in the Apps catalog must be registered and assigned before the grant can be
-enabled.
+The entitlement exposes the app's local socket. Cloud derives the organization
+from the device's enrolled credential, never from the app's request.
 
 ## Send with Swift and WendyKit
 
@@ -81,7 +69,6 @@ import WendyKit
 let request = try WendyNotificationSendRequest(
     audience: WendyAudience(
         userIDs: ["<cloud-user-id>"],
-        teamIDs: [7],
         roles: [.owner, .admin]
     ),
     title: "Robot needs help",
@@ -94,9 +81,9 @@ let response = try await WendyNotification.send(request)
 print("Created Notification \(response.notificationID)")
 ```
 
-Use Cloud user IDs, not names or email addresses. User, organization team, and
-organization role selectors have union semantics: a user matching more than one
-selector receives one Notification.
+Use Cloud user IDs, not names or email addresses. User and organization role
+selectors have union semantics: a user matching more than one selector receives
+one Notification. Cloud v2 forwarding uses only these selectors.
 
 See the
 [wendy-app-sdk README](https://github.com/wendylabsinc/wendy-app-sdk#send-a-notification)
