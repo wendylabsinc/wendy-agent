@@ -48,6 +48,8 @@ func parsePrincipal(principal string) (tenant, kind, name string, err error) {
 	return parts[0], parts[1], parts[2], nil
 }
 
+// RequestIdentityCertificate sends a host-created CSR directly to pki-core,
+// then checks the returned operator and tenant against the requested identity.
 func (c *Client) RequestIdentityCertificate(
 	ctx context.Context,
 	endpoint string,

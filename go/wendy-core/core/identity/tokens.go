@@ -116,7 +116,7 @@ func (v *TokenVerifier) Verify(ctx context.Context, raw, audience string) (*Veri
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("parsing token Claims: %w", err)
+		return nil, fmt.Errorf("parsing token claims: %w", err)
 	}
 	if issuer, _ := claims["iss"].(string); issuer != v.issuer {
 		return nil, fmt.Errorf("token issuer %q does not match %q", issuer, v.issuer)

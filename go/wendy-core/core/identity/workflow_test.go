@@ -61,6 +61,7 @@ type identityFixture struct {
 	tokens   int
 	fail     string
 	nonce    string
+	alter    func(map[string]any)
 }
 
 func fixture(t *testing.T) *identityFixture {
@@ -92,9 +93,12 @@ func fixture(t *testing.T) *identityFixture {
 			if err != nil {
 				t.Fatal(err)
 			}
-			claims := map[string]any{"iss": fixtureIssuer, "aud": r.Form.Get("resource"), "sub": "user-1", "exp": time.Now().Add(time.Hour).Unix(), "cnf": map[string]string{"jkt": thumbprint}}
+			claims := map[string]any{"iss": fixtureIssuer, "aud": r.Form.Get("resource"), "sub": "user-1", "exp": time.Now().Add(time.Hour).Unix(), "cnf": map[string]string{"jkt": thumbprint}, "tenant_uuid": fixtureTenant}
 			if f.fail == "cloud-subject" && r.Form.Get("resource") == "https://cloud.example/api" {
 				claims["sub"] = "other"
+			}
+			if f.alter != nil {
+				f.alter(claims)
 			}
 			access := testES256Token(t, realmKey, "realm-key", claims)
 			claims["aud"] = "cloud-login"

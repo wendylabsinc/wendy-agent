@@ -107,8 +107,6 @@ func (c *Client) Discover(ctx context.Context, issuer string) (*ProviderMetadata
 	return &meta, nil
 }
 
-// base64URL encodes without padding, as every JOSE/OAuth structure requires.
-
 // ExchangeCode exchanges an authorization code using a host-owned DPoP key.
 func (c *Client) ExchangeCode(
 	ctx context.Context,
