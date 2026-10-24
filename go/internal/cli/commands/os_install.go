@@ -736,14 +736,20 @@ func shouldPromptFlashMode(deviceType, installMode string, rootfsOnlyExplicit bo
 // a full flash needs the device jumpered into recovery mode. A cancelled picker
 // surfaces ErrUserCancelled, which the top-level command maps to a clean exit.
 func chooseT234FlashMode() (rootfsOnly bool, err error) {
-	choice, err := pickFromItems("Select flash mode", []tui.PickerItem{
-		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
-		{Name: "Full flash over UART", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
-	})
+	choice, err := pickFromItems("Select flash mode", t234FlashModeItems())
 	if err != nil {
 		return false, err // ErrUserCancelled propagates unchanged
 	}
 	return choice == "rootfs", nil
+}
+
+// t234FlashModeItems are chooseT234FlashMode's rows. The full flash runs over
+// the Jetson's recovery USB-C port, not a UART.
+func t234FlashModeItems() []tui.PickerItem {
+	return []tui.PickerItem{
+		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
+		{Name: "Full flash over USB-C", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
+	}
 }
 
 func chooseT234RecoveryStorage(device, override string) (string, error) {

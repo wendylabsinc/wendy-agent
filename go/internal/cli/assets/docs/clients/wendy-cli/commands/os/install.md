@@ -290,5 +290,10 @@ It exits nonzero for an unreachable target or unmet expectation and reports
 `application: "not_checked"`; application health needs a separate check.
 For agent-only targets, omit WendyOS version/type expectations.
 
+`--address` takes a hostname, an IP address or `host:port`. For a device on USB,
+pass the link-local address `wendy discover` prints, zone included
+(`fe80::…%en31`). `--expected-os-version` matches both the bare release the
+installer prints (`0.19.5`) and the `WendyOS-0.19.5` form the device reports.
+
 See [agent-assisted setup](/docs/installation/agent-assisted-setup) for the MCP
 tools and the complete sequence from hardware identification to first application.
