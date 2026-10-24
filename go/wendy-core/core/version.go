@@ -8,7 +8,7 @@ import (
 )
 
 const developmentVersion = "0.1.0-dev"
-const coreModulePath = "github.com/wendylabsinc/wendy-core"
+const coreModulePath = "github.com/wendylabsinc/WendyOS/go/wendy-core"
 
 // buildVersion is stamped by scripts/build.py for packaged engines.
 var buildVersion string

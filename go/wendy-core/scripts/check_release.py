@@ -8,7 +8,7 @@ import re
 import subprocess
 
 from build import ROOT, check_version
-from versioning import RELEASE, base_version, identity, release_key
+from versioning import TAG_PREFIX, RELEASE, base_version, identity, release_key
 
 
 def require_compatible(before, after):
@@ -33,17 +33,17 @@ def main():
     tags = subprocess.check_output(["git", "tag", "--merged", "HEAD"], cwd=ROOT, text=True).splitlines()
     prior = []
     for tag in tags:
-        if not re.fullmatch("v" + RELEASE, tag):
+        if not re.fullmatch(re.escape(TAG_PREFIX) + RELEASE, tag):
             continue
-        if identity()["channel"] == "stable" and tag == "v" + value:
+        if identity()["channel"] == "stable" and tag == TAG_PREFIX + value:
             continue
-        parts = release_key(tag[1:])
+        parts = release_key(tag[len(TAG_PREFIX):])
         prior.append((parts, tag))
     if not prior:
         print("Initial Core release: no previous version to compare")
         return
     _, tag = max(prior)
-    raw = subprocess.check_output(["git", "show", f"{tag}:documentation/versions/{tag[1:]}.json"], cwd=ROOT)
+    raw = subprocess.check_output(["git", "show", f"{tag}:go/wendy-core/documentation/versions/{tag[len(TAG_PREFIX):]}.json"], cwd=ROOT)
     require_compatible(json.loads(raw), current)
     print(f"Implemented operation compatibility checked against {tag}")
 

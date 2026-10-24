@@ -1,8 +1,16 @@
 # Wendy Core
 
-`wendy-core` is the standalone, strict-SemVer release unit for the portable engine, selected modules, public contracts and included platform/subsystem implementations. Go is the chosen engine implementation. Core ships in language-consumable distributions. The ergonomic language SDKs build on them in their own repositories: [Wendy Swift](https://github.com/wendylabsinc/wendy-swift) and [Wendy Go](https://github.com/wendylabsinc/wendy-go); others are not started.
+`wendy-core` is the independently versioned release unit in `WendyOS/go/wendy-core` for the portable engine, selected modules, public contracts and included platform/subsystem implementations. Go is the chosen engine implementation. Core ships in language-consumable distributions. The ergonomic language SDKs build on them in their own repositories: [Wendy Swift](https://github.com/wendylabsinc/wendy-swift) and [Wendy Go](https://github.com/wendylabsinc/wendy-go); others are not started.
 
 The runnable contract currently exports `WendyHelloWorld()`, returning the integer **42**, and `WendyCoreVersion()`, returning the effective engine version. Go callers use `core.WendyHelloWorld()` and `core.Version()` directly. Every incarnation reaches the same Go engine. No device, Cloud, authentication, or platform-capability behavior is implemented.
+
+Core remains a nested Go module, `github.com/wendylabsinc/WendyOS/go/wendy-core`.
+Run Core commands from this directory; root-module `go test ./...` skips it.
+The standalone [wendy-go](https://github.com/wendylabsinc/wendy-go) and
+[wendy-swift](https://github.com/wendylabsinc/wendy-swift) repositories remain
+unchanged until follow-up migrations. `Package.swift` supports local builds;
+SwiftPM cannot fetch a package in a repository subdirectory. Distribution from
+WendyOS is an open design question; see [release boundaries](documentation/releasing.md).
 
 ## Shape
 
@@ -18,7 +26,7 @@ cmd/wendy-core-wasm/     The same Go engine compiled for browsers
 include/WendyCore/       Public C headers: binding API + reserved platform SPI
 proto/                   Reserved structured Core schemas
 internal/bridge/         Private native-loader mechanics
-Package.swift            SwiftPM manifest of distributions/swift
+Package.swift            Local SwiftPM manifest of distributions/swift
 
 distributions/
   javascript/            One ESM npm package: Node native + browser WASM
@@ -32,7 +40,7 @@ subsystems/              Reusable infrastructure behind explicit contracts
 documentation/           Contract, projection, versioning and release guides
 examples/                HelloWorld consumers in all six languages
 scripts/                 Build, generation and release mechanics
-.github/workflows/       Core-only CI and gated publication
+../../.github/workflows/ Core CI (wendy-core-*); publication disabled
 ```
 
 Language and platform are orthogonal. In particular, the Swift incarnation is not the Apple adapter, and the Kotlin/JVM incarnation is not an Android adapter.
@@ -50,8 +58,8 @@ See [architecture and boundaries](documentation/architecture.md) for the diagram
 Clone the repository and enter the checkout:
 
 ```sh
-git clone git@github.com:wendylabsinc/wendy-core.git
-cd wendy-core
+git clone https://github.com/wendylabsinc/WendyOS.git
+cd WendyOS/go/wendy-core
 ```
 
 Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21. Swift tests need Swift 6.2+ and, on macOS, XcodeBuildMCP. Documentation generation needs Doxygen and Graphviz (`dot`).
@@ -66,7 +74,7 @@ make documentation       # Doxygen HTML/XML under .build/sdk/site
 ```
 
 ```go
-import "github.com/wendylabsinc/wendy-core/core"
+import "github.com/wendylabsinc/WendyOS/go/wendy-core/core"
 value := core.WendyHelloWorld() // 42; directly in Go
 ```
 
@@ -92,7 +100,7 @@ See [examples/README.md](examples/README.md) for small Go, C, Swift, Python, Kot
 | Windows x64 | CI build/test target | Not yet supported |
 | Browser | Go/WASM, Chromium conformance | — |
 
-[Wendy Core CI](https://github.com/wendylabsinc/wendy-core/actions/workflows/ci.yml) builds and tests this matrix. A passing run verifies the HelloWorld bootstrap, not the proposed domains or platform capabilities. Alpine/musl, Windows arm64, Android, watchOS and other variants are not claimed by this bootstrap; iOS is claimed for Swift only. Go callers use the native module directly; the native-binary matrix does not define every potential Go target.
+[Wendy Core CI](https://github.com/wendylabsinc/WendyOS/actions/workflows/wendy-core-ci.yml) builds and tests this matrix. A passing run verifies the HelloWorld bootstrap, not the proposed domains or platform capabilities. Alpine/musl, Windows arm64, Android, watchOS and other variants are not claimed by this bootstrap; iOS is claimed for Swift only. Go callers use the native module directly; the native-binary matrix does not define every potential Go target.
 
 ## Release boundary
 

@@ -239,3 +239,15 @@ class PackageVersionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MonorepoPublicationTests(unittest.TestCase):
+    def test_publication_cli_is_disabled_before_credentials_or_network_access(self):
+        import sys
+        for command in ('context', 'go-tag', 'swift-tag', 'maven', 'npm-check', 'pypi-check'):
+            with self.subTest(command=command), \
+                    patch.object(sys, 'argv', ['publication.py', command]), \
+                    patch.object(publication, 'api') as api:
+                with self.assertRaisesRegex(ValueError, 'publication is disabled'):
+                    publication.main()
+                api.assert_not_called()

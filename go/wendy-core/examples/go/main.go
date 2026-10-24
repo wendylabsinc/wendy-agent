@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/wendylabsinc/wendy-core/core"
+	"github.com/wendylabsinc/WendyOS/go/wendy-core/core"
 )
 
 func main() {

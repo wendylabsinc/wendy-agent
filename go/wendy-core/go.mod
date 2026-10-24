@@ -1,4 +1,4 @@
-module github.com/wendylabsinc/wendy-core
+module github.com/wendylabsinc/WendyOS/go/wendy-core
 
 go 1.24.0
 

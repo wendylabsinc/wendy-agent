@@ -1,6 +1,6 @@
 # Wendy Core for Swift
 
-The SwiftPM product `WendyCore`: a thin Swift layer over the C interface, separate from the Wendy Swift SDK ([wendy-swift](https://github.com/wendylabsinc/wendy-swift)), which builds on it. Its manifest is the repository root's `Package.swift`, because SwiftPM resolves packages from repository roots.
+The SwiftPM product `WendyCore`: a thin Swift layer over the C interface, separate from the Wendy Swift SDK ([wendy-swift](https://github.com/wendylabsinc/wendy-swift)), which builds on it. Its local manifest is `go/wendy-core/Package.swift`. SwiftPM resolves remote packages from repository roots, so this nested package cannot be consumed by a WendyOS URL.
 
 ```swift
 import WendyCore
@@ -13,13 +13,15 @@ Each process should link at most one Go-based library: a second embedded Go runt
 
 ## Versions and binaries
 
-Swift release tags are bare `x.y.z` (or an exact preview such as `x.y.z-nightly.<run>.<attempt>`); Go uses `vx.y.z`. SwiftPM prefers the bare tag, which names a release-only commit whose `Package.swift` downloads the checksummed binaries from the matching GitHub release:
+Remote Swift distribution from WendyOS is an open design question. Recommend
+checksummed XCFramework/artifact-bundle `binaryTarget` URLs in WendySwift from
+future WendyOS Core releases; a publish-only mirror is an alternative. The
+separate WendySwift repository and its existing Core dependency stay unchanged.
+No tags, binaries or package versions are published by this migration.
 
-```swift
-.package(url: "https://github.com/wendylabsinc/wendy-core.git", from: "0.1.0-seed.1")
-```
-
-On branches, including `main`, `Package.swift` instead uses binaries built locally. In this checkout, run `make swift` (or `python3 scripts/build.py swift`), which writes them to the ignored `distributions/swift/artifacts/`: on macOS the full Apple XCFramework, on Linux the host's artifact bundle. To develop a dependent package against this checkout, depend on it by path.
+For local development, run `make swift` from `go/wendy-core/`. This writes the
+ignored `distributions/swift/artifacts/`: the Apple XCFramework on macOS or the
+host artifact bundle on Linux. Depend on this directory by local path.
 
 `WendyCoreVersion() -> String` returns the effective version stamped into the linked engine, including preview or development suffixes. Source development identities use `0.1.0-dev+<7-character commit>` when a commit is known; the packaged build identity takes precedence. Local checkout builds stamp the same `-dev+<7-character HEAD commit>` format, without a dirty-tree marker.
 

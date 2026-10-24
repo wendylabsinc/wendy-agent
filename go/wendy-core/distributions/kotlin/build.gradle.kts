@@ -22,7 +22,7 @@ publishing {
             pom {
                 name.set("Wendy Core")
                 description.set("Thin Kotlin/JVM access to the shared Wendy Core engine")
-                url.set("https://github.com/wendylabsinc/wendy-core")
+                url.set("https://github.com/wendylabsinc/WendyOS/tree/main/go/wendy-core")
                 licenses {
                     license {
                         name.set("Apache License, Version 2.0")

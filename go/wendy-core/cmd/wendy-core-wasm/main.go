@@ -7,7 +7,7 @@ import (
 	"os"
 	"syscall/js"
 
-	"github.com/wendylabsinc/wendy-core/core"
+	"github.com/wendylabsinc/WendyOS/go/wendy-core/core"
 )
 
 func main() {

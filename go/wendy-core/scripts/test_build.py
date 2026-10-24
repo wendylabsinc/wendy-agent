@@ -18,7 +18,7 @@ class ReleaseTests(unittest.TestCase):
     def test_versions_match_and_wrong_tags_fail(self):
         info = derive(base_version(), "stable", source_sha=build.identity()["sourceSha"])
         with patch.dict(os.environ, {"CORE_BUILD_IDENTITY": json.dumps(info)}):
-            self.assertEqual(build.check_version("v" + info["version"]), info["version"])
+            self.assertEqual(build.check_version("go/wendy-core/v" + info["version"]), info["version"])
             with self.assertRaises(ValueError):
                 build.check_version("v-not-semver")
 

@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: go/wendy-core
+
 env:
   CORE_BUILD_IDENTITY: ${{ inputs.identity }}
   WENDY_CORE_VERSION: ${{ fromJSON(inputs.identity).version }}
@@ -35,6 +39,7 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: go/wendy-core
     env:
       MACOSX_DEPLOYMENT_TARGET: '15.0'
     steps:
@@ -44,12 +49,13 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
-          go-version-file: .go-version
+          go-version-file: go/wendy-core/.go-version
+          cache-dependency-path: go/wendy-core/go.sum
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: distributions/javascript/package-lock.json
+          cache-dependency-path: go/wendy-core/distributions/javascript/package-lock.json
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -135,13 +141,13 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
-          path: .build/native/${{ matrix.target }}/
+          path: go/wendy-core/.build/native/${{ matrix.target }}/
           include-hidden-files: true
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.target }}
-          path: .build/wheels/*.whl
+          path: go/wendy-core/.build/wheels/*.whl
           include-hidden-files: true
           if-no-files-found: error
 
@@ -156,7 +162,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
-          go-version-file: .go-version
+          go-version-file: go/wendy-core/.go-version
+          cache-dependency-path: go/wendy-core/go.sum
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -165,7 +172,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: wasm
-          path: distributions/javascript/assets/wasm/
+          path: go/wendy-core/distributions/javascript/assets/wasm/
           if-no-files-found: error
 
   packages:
@@ -181,7 +188,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
-          go-version-file: .go-version
+          go-version-file: go/wendy-core/.go-version
+          cache-dependency-path: go/wendy-core/go.sum
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -189,7 +197,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: distributions/javascript/package-lock.json
+          cache-dependency-path: go/wendy-core/distributions/javascript/package-lock.json
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -204,7 +212,8 @@ jobs:
           python scripts/check_release.py
       - uses: actions/download-artifact@v8
         with:
-          path: .build/artifacts
+          pattern: '@(native-*|wheel-*|wasm)'
+          path: go/wendy-core/.build/artifacts
       - name: Assemble only complete, version-matching artifacts
         run: python scripts/build.py assemble
       - name: Test the common JS contract in Node and a real browser
@@ -236,6 +245,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: core-release
-          path: .build/release/
+          path: go/wendy-core/.build/release/
           include-hidden-files: true
           if-no-files-found: error

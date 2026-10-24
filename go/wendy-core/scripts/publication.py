@@ -262,6 +262,8 @@ def main():
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--directory", type=Path, default=Path("release"))
     args = parser.parse_args()
+    if args.command != "verify":
+        raise ValueError("Core publication is disabled pending the monorepo release design")
     repository = os.environ["GITHUB_REPOSITORY"]
     if args.command == "context":
         supplied = json.loads((args.directory / "release.json").read_text())

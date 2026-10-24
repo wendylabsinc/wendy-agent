@@ -95,9 +95,9 @@ class VersionTests(unittest.TestCase):
                 versioning.derive(invalid, "stable", source_sha=SHA)
         with patch.object(versioning, "base_version", return_value="0.1.0-seed.1"), \
                 patch.object(versioning.subprocess, "check_output", return_value=SHA):
-            info = versioning.github_plan({}, "push", "tag", "v0.1.0-seed.1", 123, 1)
+            info = versioning.github_plan({}, "push", "tag", "go/wendy-core/v0.1.0-seed.1", 123, 1)
             self.assertEqual(info["version"], "0.1.0-seed.1")
-            for tag in ("v0.1.0", "v0.1.0-seed.2", "v0.1.0-rc.1"):
+            for tag in ("go/wendy-core/v0.1.0", "v0.1.0-seed.2", "v0.1.0-rc.1"):
                 with self.subTest(tag=tag), self.assertRaises(ValueError):
                     versioning.github_plan({}, "push", "tag", tag, 123, 1)
 
@@ -135,7 +135,7 @@ class VersionTests(unittest.TestCase):
                 patch.object(versioning.subprocess, "check_output", return_value=SHA + "\n"):
             self.assertEqual(versioning.github_plan(event, "pull_request", "branch", "42/merge", 123, 1)["pr"], 42)
             self.assertEqual(versioning.github_plan({}, "push", "branch", "main", 123, 1)["channel"], "nightly")
-            self.assertEqual(versioning.github_plan({}, "push", "tag", "v0.1.0", 123, 1)["channel"], "stable")
+            self.assertEqual(versioning.github_plan({}, "push", "tag", "go/wendy-core/v0.1.0", 123, 1)["channel"], "stable")
             self.assertIsNone(versioning.github_plan({}, "workflow_dispatch", "branch", "feature", 123, 1)["pr"])
             for tag in ("v0.2.0", "v0.1.0-pr.42-feature.123.1"):
                 with self.assertRaises(ValueError):
@@ -172,3 +172,30 @@ class VersionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MonorepoVersionTests(unittest.TestCase):
+    def test_nested_module_uses_the_monorepo_revision(self):
+        for git_is_file in (False, True):
+            with self.subTest(worktree=git_is_file), tempfile.TemporaryDirectory() as temp:
+                repository = Path(temp)
+                if git_is_file:
+                    (repository / '.git').write_text('gitdir: /unused/gitdir\n')
+                else:
+                    (repository / '.git').mkdir()
+                root = repository / 'go/wendy-core'
+                root.mkdir(parents=True)
+                with patch.object(versioning, 'ROOT', root), \
+                        patch.object(versioning.subprocess, 'check_output', return_value=SHA + '\n'):
+                    self.assertEqual(versioning.checkout_revision(), SHA)
+                # An extracted source archive at another path must not inherit HEAD.
+                with patch.object(versioning, 'ROOT', repository / 'archive'), \
+                        patch.object(versioning.subprocess, 'check_output') as git:
+                    self.assertIsNone(versioning.checkout_revision())
+                    git.assert_not_called()
+
+    def test_root_release_tags_are_not_core_releases(self):
+        with patch.object(versioning.subprocess, 'check_output', return_value=SHA + '\n'):
+            for tag in ('v0.1.0', 'v0.1.0-seed.1', 'v2026.10.24'):
+                with self.subTest(tag=tag), self.assertRaises(ValueError):
+                    versioning.github_plan({}, 'push', 'tag', tag, 123, 1)

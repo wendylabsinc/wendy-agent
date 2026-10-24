@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STABLE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 RELEASE = STABLE + r"(?:-seed\.[1-9][0-9]*)?"
 SHA = r"[0-9a-f]{40}"
+TAG_PREFIX = "go/wendy-core/v"
 
 
 def base_version(root=ROOT):
@@ -87,8 +88,11 @@ def validate(info):
 
 
 def checkout_revision():
-    # A source archive nested in another repository must not inherit its HEAD.
-    if not (ROOT / ".git").exists():
+    # Only this package's checkout may supply its source identity. A source
+    # archive placed elsewhere inside another repository must not inherit HEAD.
+    monorepo = ROOT.parent.parent
+    if not (ROOT / ".git").exists() and not (
+            ROOT == monorepo / "go/wendy-core" and (monorepo / ".git").exists()):
         return None
     try:
         return subprocess.check_output(["git", "rev-parse", "--verify", "HEAD"], cwd=ROOT,
@@ -118,7 +122,7 @@ def github_plan(event, event_name, ref_type, ref_name, run_id, attempt):
     if ref_type == "tag":
         if event_name != "push":
             raise ValueError("Stable publication starts with a tag push; retry the original run, not a new build")
-        if ref_name != "v" + base_version():
+        if ref_name != TAG_PREFIX + base_version():
             raise ValueError("Stable tags must match VERSION exactly; preview tags are not release triggers")
         channel = "stable"
     elif event_name == "push" and ref_name == "main":

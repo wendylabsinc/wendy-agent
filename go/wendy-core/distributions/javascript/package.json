@@ -3,7 +3,7 @@
   "version": "0.1.0-seed.1",
   "license": "Apache-2.0",
   "description": "Wendy Core: one bridge interface for Node.js and browsers",
-  "repository": { "type": "git", "url": "git+https://github.com/wendylabsinc/wendy-core.git" },
+  "repository": { "type": "git", "url": "git+https://github.com/wendylabsinc/WendyOS.git", "directory": "go/wendy-core" },
   "type": "module",
   "engines": { "node": ">=22" },
   "exports": {

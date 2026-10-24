@@ -1,12 +1,15 @@
-name: Release Wendy Core
+name: Release Wendy Core (build only)
 
 on:
-  push:
-    tags: ['v*']
+  # Manual artifact builds only. Tags and releases cannot trigger publication.
   workflow_dispatch:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: go/wendy-core
 
 concurrency:
   group: core-release-${{ github.ref }}-${{ github.run_id }}
@@ -43,7 +46,7 @@ jobs:
     needs: identity
     permissions:
       contents: read
-    uses: ./.github/workflows/build-core.yml
+    uses: ./.github/workflows/wendy-core-build-core.yml
     with:
       identity: ${{ needs.identity.outputs.identity }}
       source-sha: ${{ needs.identity.outputs.source_sha }}

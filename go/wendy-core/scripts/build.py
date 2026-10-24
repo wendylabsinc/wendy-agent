@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from versioning import base_version, compatibility_version, identity, python_release_version
+from versioning import TAG_PREFIX, base_version, compatibility_version, identity, python_release_version
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / ".build"
@@ -50,7 +50,7 @@ def version():
 
 
 def go_ldflags(extra=""):
-    return f"-X github.com/wendylabsinc/wendy-core/core.buildVersion={version()} {extra}".strip()
+    return f"-X github.com/wendylabsinc/WendyOS/go/wendy-core/core.buildVersion={version()} {extra}".strip()
 
 
 def check_version(tag=None):
@@ -69,8 +69,8 @@ def check_version(tag=None):
         raise ValueError("Python version differs from the PEP 440 mapping of VERSION")
     if f"coreVersion={value}\n" != (KOTLIN / "gradle.properties").read_text():
         raise ValueError("Kotlin version differs from VERSION")
-    if tag and (identity()["channel"] != "stable" or tag != "v" + value):
-        raise ValueError(f"Stable tag {tag!r} must match v{value}")
+    if tag and (identity()["channel"] != "stable" or tag != TAG_PREFIX + value):
+        raise ValueError(f"Stable tag {tag!r} must match {TAG_PREFIX}{value}")
     return version()
 
 
@@ -404,7 +404,7 @@ def pack(artifacts):
     if len(list(release.glob("*.whl"))) != len(TARGETS):
         raise ValueError("Python wheel filenames must identify distinct targets")
     (release / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in sorted(release.iterdir()) if path.is_file()))
-    (release / "release.json").write_text(json.dumps({"version": version(), "identity": identity(), "targets": TARGETS, "javascript": ["node", "browser"], "goModule": "github.com/wendylabsinc/wendy-core/core"}, indent=2) + "\n")
+    (release / "release.json").write_text(json.dumps({"version": version(), "identity": identity(), "targets": TARGETS, "javascript": ["node", "browser"], "goModule": "github.com/wendylabsinc/WendyOS/go/wendy-core/core"}, indent=2) + "\n")
 
 
 def seal():
