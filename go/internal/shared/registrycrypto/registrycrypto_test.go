@@ -545,3 +545,54 @@ func TestCustodianKey(t *testing.T) {
 		t.Fatalf("prod custodian key: %v, want ErrNoCustodian", err)
 	}
 }
+
+// chunk_size comes from the Cloud-served manifest, outside manifest_digest:
+// an oversized one is refused before it sizes a buffer.
+func TestChunkSizeCap(t *testing.T) {
+	contentKey := NewKey()
+	ct, b := encrypt(t, contentKey, []byte("x"), 16)
+	for _, size := range []int{0, -1, MaxChunkSize + 1, 1<<31 - 1 - 16} {
+		if err := DecryptBlob(&bytes.Buffer{}, bytes.NewReader(ct), contentKey, b, size); !errors.Is(err, ErrChunkSize) {
+			t.Errorf("decrypt chunk size %d: want ErrChunkSize, got %v", size, err)
+		}
+		if _, err := EncryptBlob(&bytes.Buffer{}, bytes.NewReader(nil), contentKey, sha(nil), size); !errors.Is(err, ErrChunkSize) {
+			t.Errorf("encrypt chunk size %d: want ErrChunkSize, got %v", size, err)
+		}
+	}
+}
+
+func TestRegistrationClaimsStrict(t *testing.T) {
+	var v struct {
+		Vectors []struct {
+			Name   string `json:"name"`
+			Claims string `json:"claims_jcs"`
+		} `json:"vectors"`
+	}
+	load(t, "device-signed-request-vectors-v1.json", &v)
+	var valid string
+	for _, dv := range v.Vectors {
+		if dv.Name == "mldsa65-register-device-encryption-key-valid" {
+			valid = dv.Claims
+		}
+	}
+	if _, err := parseClaims([]byte(valid)); err != nil {
+		t.Fatalf("vector claims refused: %v", err)
+	}
+	if !strings.HasPrefix(valid, `{"aud":"https://cloud.wendy.sh/broker",`) {
+		t.Fatalf("vector claims shape changed: %s", valid)
+	}
+	rest := strings.TrimPrefix(valid, `{"aud":"https://cloud.wendy.sh/broker",`)
+	for name, raw := range map[string]string{
+		"duplicate key":  `{"aud":"https://cloud.wendy.sh/broker","aud":"https://cloud.wendy.sh/broker",` + rest,
+		"unknown field":  `{"aud":"https://cloud.wendy.sh/broker","aux":1,` + rest,
+		"key case":       `{"Aud":"https://cloud.wendy.sh/broker",` + rest,
+		"missing aud":    `{` + rest,
+		"other audience": `{"aud":"https://cloud.wendy.sh/other",` + rest,
+		"whitespace":     `{"aud": "https://cloud.wendy.sh/broker",` + rest,
+		"trailing value": valid + `{}`,
+	} {
+		if _, err := parseClaims([]byte(raw)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

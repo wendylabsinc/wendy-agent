@@ -24,6 +24,7 @@ const (
 	registerDeviceKey       = "wendycloud.v2.KeyDirectoryService/RegisterDeviceEncryptionKey"
 	registerUserKey         = "wendycloud.v2.KeyDirectoryService/RegisterUserEncryptionKey"
 	maxRegistrationJWS      = 32768
+	brokerAudience          = "https://cloud.wendy.sh/broker"
 )
 
 // Registration is the RegisterEncryptionKeyRequest that registers pub for
@@ -42,13 +43,19 @@ var ErrRegistration = errors.New("recipient key registration does not verify")
 // caller may wrap to for principal (its key id is KeyID of it). It checks the
 // JWS against its x5c leaf, that leaf through chainDER (intermediates up to
 // the tenant CA) to the pinned platform root at the JWS's signed iat (never
-// in the future), the leaf identity against principal and its tenant
-// against organizationID, the operation against the principal kind, the body
-// digest, and the signed payload's organization_id and suite. Only ML-DSA-65
-// is accepted from devices (the tier A/B device-signer profile; tier C has no
-// wrap suite yet), ML-DSA-65 or -87 from operators. Revocation is cloud's:
-// it verified the registration when it was made and stops serving revoked
-// keys.
+// in the future), the leaf identity against principal and the tenant in the
+// leaf's SAN against organizationID, the operation against the principal
+// kind, the body digest, and the signed payload's organization_id and suite.
+// Only ML-DSA-65 is accepted from devices (the tier A/B device-signer
+// profile; tier C has no wrap suite yet), ML-DSA-65 or -87 from operators.
+//
+// The issuing CA is not bound to organizationID: pki-core's tenant CAs carry
+// no tenant marker or name constraint, so a leaf naming one organization
+// under another organization's tenant CA (same pinned root) verifies. That
+// binding waits on pki-core (WDY-4027).
+//
+// Revocation is cloud's: it verified the registration when it was made and
+// stops serving revoked keys.
 func VerifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x509.Certificate, principal, organizationID string) ([]byte, error) {
 	payload, err := verifyRegistration(reg, chainDER, root, principal, organizationID, time.Now())
 	if err != nil {
@@ -120,9 +127,8 @@ func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x
 		Alg string   `json:"alg"`
 		X5C []string `json:"x5c"`
 	}
-	dec := json.NewDecoder(bytes.NewReader(rawHeader))
-	dec.DisallowUnknownFields() // kid and crit are refused here
-	if err := dec.Decode(&header); err != nil || len(header.X5C) != 1 {
+	// kid and crit are refused here.
+	if err := strictJSON(rawHeader, &header); err != nil || len(header.X5C) != 1 {
 		return nil, errors.New("header must carry alg and exactly one x5c leaf")
 	}
 	leafDER, err := base64.StdEncoding.Strict().DecodeString(header.X5C[0])
@@ -160,16 +166,8 @@ func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x
 	if err != nil {
 		return nil, err
 	}
-	var claims struct {
-		Operation string `json:"operation"`
-		Digest    string `json:"body_sha256"`
-		Iat       int64  `json:"iat"`
-		Target    struct {
-			Tenant   string `json:"tenant"`
-			Resource string `json:"resource"`
-		} `json:"target"`
-	}
-	if err := json.Unmarshal(rawClaims, &claims); err != nil {
+	claims, err := parseClaims(rawClaims)
+	if err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(reg.GetPayload())
@@ -205,6 +203,65 @@ func verifyRegistration(reg *cloudpbv2.SignedRequest, chainDER [][]byte, root *x
 		return nil, err
 	}
 	return reg.GetPayload(), nil
+}
+
+// registrationClaims is exactly the request descriptor cloudrequest and
+// devicesign sign.
+type registrationClaims struct {
+	Aud         string `json:"aud"`
+	Digest      string `json:"body_sha256"`
+	Correlation string `json:"correlation_id"`
+	Expiry      int64  `json:"expiry"`
+	Iat         int64  `json:"iat"`
+	Nonce       string `json:"nonce"`
+	Operation   string `json:"operation"`
+	Target      struct {
+		Resource string `json:"resource"`
+		Tenant   string `json:"tenant"`
+	} `json:"target"`
+}
+
+func parseClaims(raw []byte) (registrationClaims, error) {
+	var claims registrationClaims
+	if err := strictJSON(raw, &claims); err != nil {
+		return claims, err
+	}
+	if claims.Aud != brokerAudience {
+		return claims, errors.New("registration is for another audience")
+	}
+	return claims, nil
+}
+
+// strictJSON decodes raw into v and refuses it unless raw is exactly v's
+// canonical encoding: sorted keys, no whitespace, every field present, keys
+// matched case-sensitively, no duplicate or unknown keys (encoding/json alone
+// matches keys case-insensitively and keeps the last duplicate).
+func strictJSON(raw []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	again, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	var object map[string]any
+	dec = json.NewDecoder(bytes.NewReader(again))
+	dec.UseNumber()
+	if err := dec.Decode(&object); err != nil {
+		return err
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(object); err != nil {
+		return err
+	}
+	if !bytes.Equal(bytes.TrimSuffix(b.Bytes(), []byte{'\n'}), raw) {
+		return errors.New("JSON is not in canonical form")
+	}
+	return nil
 }
 
 // RecipientCustodian is RecipientKind RECIPIENT_KIND_CUSTODIAN: the Wendy

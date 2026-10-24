@@ -35,6 +35,9 @@ const (
 	KeySize = 32
 	// DefaultChunkSize is ArtifactManifest.chunk_size when the manifest sets none.
 	DefaultChunkSize = 65536
+	// MaxChunkSize caps ArtifactManifest.chunk_size. The manifest digest does
+	// not cover chunk_size, so a larger value is refused before it sizes a buffer.
+	MaxChunkSize = 16 << 20
 
 	tagSize   = 16
 	nonceSize = 12
@@ -58,6 +61,9 @@ var (
 // ErrOpen is every authentication failure: a tampered, truncated, reordered
 // or misdirected ciphertext, wrap or sealed key.
 var ErrOpen = errors.New("registry ciphertext does not authenticate")
+
+// ErrChunkSize is a chunk size outside 1..MaxChunkSize.
+var ErrChunkSize = errors.New("registry chunk size out of range")
 
 // KeyID is the lower-case hex SHA-256 of a raw key: content_key_id,
 // deployment_key_id, key_id and recipient_key_id.
@@ -104,8 +110,8 @@ func chunkNonce(index uint64, last bool) []byte {
 }
 
 func blobAEAD(contentKey []byte, plaintextDigest string, chunkSize int) (cipher.AEAD, error) {
-	if chunkSize <= 0 || chunkSize > math.MaxInt32-tagSize {
-		return nil, fmt.Errorf("invalid chunk size %d", chunkSize)
+	if chunkSize <= 0 || chunkSize > MaxChunkSize {
+		return nil, fmt.Errorf("%w: %d", ErrChunkSize, chunkSize)
 	}
 	if !strings.HasPrefix(plaintextDigest, "sha256:") {
 		return nil, fmt.Errorf("plaintext digest must be sha256:<hex>")
