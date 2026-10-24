@@ -169,9 +169,10 @@ func (r *ReportedState) session(ctx context.Context) error {
 		}
 	}()
 
-	// sent are the reports cloud has not answered yet, oldest first: cloud
-	// answers each report once, in order, after storing it.
-	var sent []*cloudpbv2.UpdateReportedStateRequest
+	// pending is the newest report sent since cloud's last answer. Cloud
+	// coalesces answers, so an answer is not matched to one report: the next
+	// answer only marks pending as followed by an answer (Postbox.Reported).
+	var pending *cloudpbv2.UpdateReportedStateRequest
 	var last *cloudpbv2.UpdateReportedStateRequest
 	var lastSent time.Time
 	ticker := time.NewTicker(r.poll)
@@ -186,7 +187,7 @@ func (r *ReportedState) session(ctx context.Context) error {
 				return err
 			}
 			last, lastSent = req, time.Now()
-			sent = append(sent, req)
+			pending = req
 		}
 		select {
 		case <-ctx.Done():
@@ -196,12 +197,10 @@ func (r *ReportedState) session(ctx context.Context) error {
 		case err := <-recvErr:
 			return err
 		case <-answered:
-			if len(sent) > 0 {
-				if r.postbox != nil {
-					r.postbox.Reported(sent[0])
-				}
-				sent = sent[1:]
+			if pending != nil && r.postbox != nil {
+				r.postbox.Reported(pending)
 			}
+			pending = nil
 		case <-ticker.C:
 		}
 	}

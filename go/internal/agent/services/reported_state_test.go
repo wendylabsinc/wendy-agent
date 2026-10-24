@@ -93,8 +93,10 @@ func startReportedState(t *testing.T, apps AppReporter, poll, heartbeat time.Dur
 		return conn, conn, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go r.Run(ctx)
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	// Run must stop before a postbox fixture's temp dir is removed: Reported saves there.
+	t.Cleanup(func() { cancel(); <-done })
 	return cloud, pub, r, dials
 }
 

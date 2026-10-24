@@ -68,6 +68,14 @@ type Postbox struct {
 	cloudURL, certPEM, keyPEM, chainPEM string
 	state                               *postboxState
 	refusals                            map[string]int64
+	// answered counts, per app, the answered reports that carried its
+	// current ABSENT outcome (see Reported). In memory: a restart counts again.
+	answered map[string]postboxAnswered
+}
+
+type postboxAnswered struct {
+	entryID int64
+	reports int
 }
 
 // postboxControl is the agent's existing container control path, the one
@@ -905,12 +913,21 @@ func (p *Postbox) decide(ctx context.Context, e *cloudpbv2.PostboxEntry, correla
 	}
 }
 
-// Reported drops the outcomes cloud has taken. The rule: an app's outcome is
-// dropped once cloud answered a report that carried it (cloud stores a report
-// before it answers, one answer per report, in order), that report listed the
-// app ABSENT (not on the device), no held assignment targets the app, and no
-// newer decision (another entry id) has replaced it. A present or targeted
-// app keeps its outcome on its row.
+// Reported is called with the newest report sent before a cloud answer,
+// once per answer that followed a new report, and drops the outcomes cloud
+// has taken.
+//
+// Cloud stores reports in arrival order, but one writer answers both reports
+// and postbox appends, coalescing a burst into one message, so an answer can
+// precede the storing of the report before it. An answer therefore proves
+// nothing about one report. The rule: an app's outcome is dropped once it was
+// carried, ABSENT (not on the device) with the same entry id, in two reports
+// each followed by its own cloud answer, while no held assignment targets the
+// app. Each of the two answers was written after a wake-up; a report wakes the
+// writer only after it is stored, so a premature drop needs two appends to be
+// answered while both reports were still being stored. A present or targeted
+// app keeps its outcome on its row, and a newer decision (another entry id)
+// starts the count again.
 func (p *Postbox) Reported(req *cloudpbv2.UpdateReportedStateRequest) {
 	p.mu.Lock()
 	if p.state == nil {
@@ -921,12 +938,27 @@ func (p *Postbox) Reported(req *cloudpbv2.UpdateReportedStateRequest) {
 	for _, a := range p.state.Assignments {
 		targeted[a.AppID] = true
 	}
+	if p.answered == nil {
+		p.answered = map[string]postboxAnswered{}
+	}
 	outcomes := maps.Clone(p.state.Outcomes) // copy on write: decide reads the old map unlocked
 	for _, s := range req.GetCurrentStates() {
-		if o := outcomes[s.GetAppId()]; o != nil && s.GetReportedState() == cloudpbv2.Running_ABSENT &&
-			o.EntryID == s.GetPostboxEntryId() && !targeted[s.GetAppId()] {
-			delete(outcomes, s.GetAppId())
+		app := s.GetAppId()
+		o := outcomes[app]
+		if o == nil || s.GetReportedState() != cloudpbv2.Running_ABSENT || o.EntryID != s.GetPostboxEntryId() || targeted[app] {
+			delete(p.answered, app)
+			continue
 		}
+		n := p.answered[app]
+		if n.entryID != o.EntryID {
+			n = postboxAnswered{entryID: o.EntryID}
+		}
+		if n.reports++; n.reports < 2 {
+			p.answered[app] = n
+			continue
+		}
+		delete(p.answered, app)
+		delete(outcomes, app)
 	}
 	dropped := len(outcomes) != len(p.state.Outcomes)
 	p.state.Outcomes = outcomes

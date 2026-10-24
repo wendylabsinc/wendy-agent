@@ -754,8 +754,10 @@ func TestPostboxNudgeWakesRun(t *testing.T) {
 	f := newPBFixture(t)
 	f.p.poll = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go f.p.Run(ctx)
+	done := make(chan struct{})
+	go func() { f.p.Run(ctx); close(done) }()
+	// Run must stop before the fixture's temp dir is removed: it saves there.
+	defer func() { cancel(); <-done }()
 	<-f.cloud.pulls // the first cycle runs at once
 	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
 	f.p.Nudge(1)
@@ -1175,7 +1177,7 @@ func TestReportedStateOutcomeHygiene(t *testing.T) {
 		t.Fatalf("outcomes %v, refusals %v: want the invalid app id audited, not reported", f.p.Outcomes(), f.p.refusals)
 	}
 
-	cloud, _, _, _ := startReportedState(t, &fakeAppReporter{apps: []AppReport{{AppID: "web"}}}, 10*time.Millisecond, time.Hour, f.p)
+	cloud, _, _, _ := startReportedState(t, &fakeAppReporter{apps: []AppReport{{AppID: "web"}}}, 10*time.Millisecond, 20*time.Millisecond, f.p)
 	ids := func(req *cloudpbv2.UpdateReportedStateRequest) map[string]bool {
 		out := map[string]bool{}
 		for _, s := range req.GetCurrentStates() {
@@ -1183,14 +1185,70 @@ func TestReportedStateOutcomeHygiene(t *testing.T) {
 		}
 		return out
 	}
-	if got := ids(nextReport(t, cloud.reports)); len(got) != 2 || !got["web"] || !got["db"] {
-		t.Fatalf("first report = %v, want web and db", got)
+	// db (ABSENT, not targeted) is carried until two reports carrying it were
+	// each answered, then dropped; web is present and stays.
+	carried := 0
+	for got := ids(nextReport(t, cloud.reports)); got["db"]; got = ids(nextReport(t, cloud.reports)) {
+		if len(got) != 2 || !got["web"] {
+			t.Fatalf("report = %v, want web and db", got)
+		}
+		carried++
 	}
-	// Cloud answered it: db (ABSENT, not targeted) is dropped, web is present.
-	if got := ids(nextReport(t, cloud.reports)); len(got) != 1 || !got["web"] {
-		t.Fatalf("report after cloud's answer = %v, want web only", got)
+	if carried < 2 {
+		t.Fatalf("db dropped after %d answered reports, want 2", carried)
 	}
 	if o := f.p.Outcomes(); len(o) != 1 || o["web"].EntryID != 2 {
 		t.Fatalf("outcomes = %v, want web's kept, db's dropped", o)
+	}
+}
+
+// The drop rule against cloud coalescing answers: one answered report never
+// drops an outcome, a targeted app keeps it however often it is answered, and
+// a newer decision starts the count again.
+func TestPostboxReportedDropRule(t *testing.T) {
+	f := newPBFixture(t)
+	f.controlUntil("db", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(-time.Second)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+	f.cycle()
+	absent := func() *cloudpbv2.UpdateReportedStateRequest {
+		o := f.p.Outcomes()["db"]
+		return &cloudpbv2.UpdateReportedStateRequest{CurrentStates: []*cloudpbv2.CurrentState{{
+			AppId: "db", ReportedState: cloudpbv2.Running_ABSENT, PostboxEntryId: o.EntryID, CorrelationId: o.CorrelationID, Outcome: o.Outcome,
+		}}}
+	}
+	kept := func() bool { _, ok := f.p.Outcomes()["db"]; return ok }
+	if !kept() {
+		t.Fatal("no outcome for db")
+	}
+
+	f.p.mu.Lock()
+	if f.p.state.Assignments == nil {
+		f.p.state.Assignments = map[string]*postboxAssignment{}
+	}
+	f.p.state.Assignments["dep"] = &postboxAssignment{AppID: "db"}
+	f.p.mu.Unlock()
+	for range 3 {
+		f.p.Reported(absent())
+	}
+	if !kept() {
+		t.Fatal("outcome of a targeted app dropped")
+	}
+
+	f.p.mu.Lock()
+	delete(f.p.state.Assignments, "dep")
+	f.p.mu.Unlock()
+	req := absent()
+	f.p.Reported(req)
+	if !kept() {
+		t.Fatal("outcome dropped after one answered report")
+	}
+	req.CurrentStates[0].PostboxEntryId++ // a report of another decision
+	f.p.Reported(req)
+	f.p.Reported(absent())
+	if !kept() {
+		t.Fatal("outcome dropped although the count was interrupted")
+	}
+	f.p.Reported(absent())
+	if kept() {
+		t.Fatal("outcome kept after two answered reports")
 	}
 }
