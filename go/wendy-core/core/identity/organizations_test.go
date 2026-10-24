@@ -6,22 +6,15 @@ import (
 	"io"
 	"testing"
 
+	"github.com/wendylabsinc/WendyOS/go/wendy-core/core/identity/internal/cloudpb"
 	"github.com/wendylabsinc/WendyOS/go/wendy-core/platform"
 	"github.com/wendylabsinc/WendyOS/go/wendy-core/platform/platformtest"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func organizationWire(t *testing.T, id string) []byte {
 	t.Helper()
-	org, err := organizationMessage("Organization")
-	if err != nil {
-		t.Fatal(err)
-	}
-	org.Set(org.Descriptor().Fields().ByName("id"), protoreflect.ValueOfString(id))
-	org.Set(org.Descriptor().Fields().ByName("name"), protoreflect.ValueOfString("Robotics"))
-	response, _ := organizationMessage("ListOrganizationsResponse")
-	response.Set(response.Descriptor().Fields().ByName("organization"), protoreflect.ValueOfMessage(org))
+	response := &cloudpb.ListOrganizationsResponse{Organization: &cloudpb.Organization{Id: id, Name: "Robotics"}}
 	b, err := proto.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
@@ -31,12 +24,11 @@ func organizationWire(t *testing.T, id string) []byte {
 func TestOrganizationPagingClosesEveryStreamAndPreservesStatus(t *testing.T) {
 	closed, calls := 0, 0
 	transport := platformtest.Transport{ServerStreamFunc: func(ctx context.Context, r platform.RPCRequest) (platform.ServerStream, error) {
-		request, _ := organizationMessage("ListOrganizationsRequest")
+		request := new(cloudpb.ListOrganizationsRequest)
 		if err := proto.Unmarshal(r.Message, request); err != nil {
 			t.Fatal(err)
 		}
-		fields := request.Descriptor().Fields()
-		if r.Method != "/wendycloud.v2.OrganizationService/ListOrganizations" || request.Get(fields.ByName("offset")).Int() != int64(calls*200) || request.Get(fields.ByName("limit")).Int() != 200 {
+		if r.Method != "/wendycloud.v2.OrganizationService/ListOrganizations" || request.GetOffset() != int32(calls*200) || request.GetLimit() != 200 {
 			t.Fatal("paging contract changed")
 		}
 		calls++

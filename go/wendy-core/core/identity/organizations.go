@@ -2,47 +2,18 @@ package identity
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"io"
-	"sync"
 
+	"github.com/wendylabsinc/WendyOS/go/wendy-core/core/identity/internal/cloudpb"
 	"github.com/wendylabsinc/WendyOS/go/wendy-core/platform"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/reflect/protoregistry"
-	"google.golang.org/protobuf/types/descriptorpb"
-	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-// Generate private message descriptors directly from the monorepo service
-// contract. A private registry avoids registering the same service message
-// names twice when the CLI also links its generated Go protobuf package.
-//
-//go:generate protoc -I ../../../../Proto --include_imports --descriptor_set_out=organizations.pb.bin wendycloud/v2/organizations.proto
-//go:embed organizations.pb.bin
-var organizationDescriptors []byte
-
-var organizationRegistry = sync.OnceValues(func() (*protoregistry.Files, error) {
-	var set descriptorpb.FileDescriptorSet
-	if err := proto.Unmarshal(organizationDescriptors, &set); err != nil {
-		return nil, err
-	}
-	return protodesc.NewFiles(&set)
-})
-
-func organizationMessage(name string) (*dynamicpb.Message, error) {
-	files, err := organizationRegistry()
-	if err != nil {
-		return nil, err
-	}
-	desc, err := files.FindDescriptorByName(protoreflect.FullName("wendycloud.v2." + name))
-	if err != nil {
-		return nil, err
-	}
-	return dynamicpb.NewMessage(desc.(protoreflect.MessageDescriptor)), nil
-}
+// Generated with protoc 36.2 and protoc-gen-go v1.36.10. The generator pins
+// the Go plugin and isolates application descriptor/type registration so hosts
+// can also link their own generated copies of the same service contracts.
+//go:generate python3 ../../scripts/generate_identity.py
 
 // Organization preserves the complete serialized Organization message alongside
 // its ID and display name. Hosts can decode Message using their generated API
@@ -62,13 +33,9 @@ const orgPageCap = 50
 func ListOrganizations(ctx context.Context, transport platform.Transport) ([]Organization, error) {
 	var organizations []Organization
 	for page := 0; page < orgPageCap; page++ {
-		request, err := organizationMessage("ListOrganizationsRequest")
-		if err != nil {
-			return nil, err
+		request := &cloudpb.ListOrganizationsRequest{
+			Offset: proto.Int32(int32(page * orgPageSize)), Limit: proto.Int32(orgPageSize),
 		}
-		fields := request.Descriptor().Fields()
-		request.Set(fields.ByName("offset"), protoreflect.ValueOfInt32(int32(page*orgPageSize)))
-		request.Set(fields.ByName("limit"), protoreflect.ValueOfInt32(orgPageSize))
 		data, err := proto.Marshal(request)
 		if err != nil {
 			return nil, err
@@ -99,24 +66,19 @@ func receiveOrganizations(stream platform.ServerStream, organizations *[]Organiz
 		if err != nil {
 			return 0, fmt.Errorf("listing organizations: %w", err)
 		}
-		response, err := organizationMessage("ListOrganizationsResponse")
-		if err != nil {
-			return 0, err
-		}
-		if err := proto.Unmarshal(data, response); err != nil {
+		var response cloudpb.ListOrganizationsResponse
+		if err := proto.Unmarshal(data, &response); err != nil {
 			return 0, fmt.Errorf("listing organizations: %w", err)
 		}
-		field := response.Descriptor().Fields().ByName("organization")
-		if !response.Has(field) {
+		org := response.GetOrganization()
+		if org == nil {
 			continue
 		}
-		org := response.Get(field).Message()
-		fields := org.Descriptor().Fields()
-		wire, err := proto.Marshal(org.Interface())
+		wire, err := proto.Marshal(org)
 		if err != nil {
 			return 0, err
 		}
-		*organizations = append(*organizations, Organization{ID: org.Get(fields.ByName("id")).String(), Name: org.Get(fields.ByName("name")).String(), Message: wire})
+		*organizations = append(*organizations, Organization{ID: org.GetId(), Name: org.GetName(), Message: wire})
 		received++
 	}
 }
