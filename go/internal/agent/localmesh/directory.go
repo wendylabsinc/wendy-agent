@@ -40,10 +40,22 @@ type Manifest struct {
 	// Revision is a persistently increasing origin counter, including restart.
 	Revision        uint64 `json:"revision"`
 	Issued, Expires int64
-	Name            string       `json:"name"`
-	AgentPort       uint16       `json:"agentPort"`
-	Withdraw        bool         `json:"withdraw,omitempty"`
-	Route           *RouteOrigin `json:"route,omitempty"`
+	Name            string         `json:"name"`
+	AgentPort       uint16         `json:"agentPort"`
+	Withdraw        bool           `json:"withdraw,omitempty"`
+	Route           *RouteOrigin   `json:"route,omitempty"`
+	Agent           *AgentMetadata `json:"agent,omitempty"`
+}
+
+// AgentMetadata is covered by the device's manifest signature and lease. It
+// avoids opening an RPC connection to every discovered device over a slow hop.
+// Older routers can relay the signed body without interpreting this field.
+type AgentMetadata struct {
+	Version         string `json:"version"`
+	OS              string `json:"os"`
+	OSVersion       string `json:"osVersion"`
+	DeviceType      string `json:"deviceType,omitempty"`
+	CPUArchitecture string `json:"cpuArchitecture,omitempty"`
 }
 
 // SignedManifest is a manifest plus the full device principal of the identity
@@ -67,6 +79,11 @@ var ErrInvalidManifestSignature = errors.New("invalid manifest signature")
 var ErrManifestOutlivesCertificate = errors.New("manifest outlives certificate")
 
 func (m Manifest) validate(now time.Time) error {
+	if a := m.Agent; a != nil {
+		if m.AgentPort == 0 || a.Version == "" || len(a.Version) > 255 || len(a.OS) > 128 || len(a.OSVersion) > 255 || len(a.DeviceType) > 128 || len(a.CPUArchitecture) > 32 {
+			return errors.New("invalid mesh agent metadata")
+		}
+	}
 	issued, expires := time.UnixMilli(m.Issued), time.UnixMilli(m.Expires)
 	if !expires.After(now) {
 		return ErrExpiredManifest
@@ -462,6 +479,10 @@ func (d *Directory) Snapshot(now time.Time) []Manifest {
 		if m.Route != nil {
 			route := *m.Route
 			m.Route = &route
+		}
+		if m.Agent != nil {
+			agent := *m.Agent
+			m.Agent = &agent
 		}
 		out = append(out, m)
 	}

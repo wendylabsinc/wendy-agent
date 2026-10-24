@@ -1055,6 +1055,7 @@ func main() {
 				runMeshSupervisor(meshCtx, 5*time.Second, func(ctx context.Context) error {
 					return runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: name, AgentPort: uint16(mtlsPortNum),
+						Agent:       services.MeshAgentMetadata(),
 						Certificate: certPEM, Chain: chainPEM, Key: keyPEM,
 					}, logger, meshCatalog, meshVIPs, meshSharing, func(snapshot func() localmesh.NodeSnapshot) {
 						localMeshMu.Lock()

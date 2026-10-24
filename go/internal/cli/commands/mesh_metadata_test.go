@@ -3,8 +3,10 @@ package commands
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/cli/netmesh"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -126,17 +128,83 @@ func TestMeshMetadataBoundsProbesWithoutBlockingPresence(t *testing.T) {
 			t.Fatal(event)
 		}
 	}
-	for i := 0; i < 4; i++ {
-		select {
-		case <-starts:
-		case <-ctx.Done():
-			t.Fatal("probe did not start")
-		}
+	select {
+	case <-starts:
+	case <-ctx.Done():
+		t.Fatal("probe did not start")
 	}
 	cancel()
 	for range events {
 	}
 	if len(starts) != 0 {
-		t.Fatal("more than four metadata probes started")
+		t.Fatal("more than one metadata probe started")
 	}
+}
+
+func TestMeshMetadataSlowSharedCarrier(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		input := make(chan discovery.LANEvent, 3)
+		starts := make(chan string, 3)
+		events := probeMeshDiscovery(ctx, input, func(ctx context.Context, dev models.LANDevice) (models.LANDevice, error) {
+			starts <- dev.ID
+			select {
+			case <-time.After(25 * time.Second):
+				dev.AgentVersion = "resolved"
+				return dev, nil
+			case <-ctx.Done():
+				return dev, ctx.Err()
+			}
+		}, 30*time.Second)
+		for _, id := range []string{"a", "b", "c"} {
+			input <- discovery.LANEvent{Kind: discovery.LANFound, Device: models.LANDevice{ID: id, Mesh: true}}
+			meshMetadataEvent(t, ctx, events)
+		}
+		for _, id := range []string{"a", "b", "c"} {
+			if got := <-starts; got != id {
+				t.Fatalf("unprobed device starved: got %s, want %s", got, id)
+			}
+			event := meshMetadataEvent(t, ctx, events)
+			if event.Device.ID != id || !event.Probed || event.Device.AgentVersion != "resolved" {
+				t.Fatalf("slow metadata did not resolve: %+v", event)
+			}
+		}
+		// Previously the first device was probed again every 30 seconds,
+		// competing with the still-pending devices on the same carrier.
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if len(starts) != 0 {
+			t.Fatal("successful metadata was immediately re-probed")
+		}
+		cancel()
+		for range events {
+		}
+	})
+}
+
+func TestMeshAdvertisedMetadataNeedsNoRPC(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		input := make(chan discovery.LANEvent, 1)
+		events := probeMeshDiscovery(ctx, input, func(context.Context, models.LANDevice) (models.LANDevice, error) {
+			t.Error("signed metadata triggered an unnecessary RPC")
+			return models.LANDevice{}, context.Canceled
+		}, 30*time.Second)
+		device := netmesh.Device{Name: "ci-mesh-1", Agent: &localmesh.AgentMetadata{Version: "signed-version", OS: "wendyos", OSVersion: "WendyOS-0.19.5"}}
+		input <- discovery.LANEvent{Kind: discovery.LANFound, Device: meshDeviceRow(device), Probed: true}
+		event := meshMetadataEvent(t, ctx, events)
+		if event.Device.AgentVersion != "signed-version" || event.Device.OSVersion != "WendyOS-0.19.5" {
+			t.Fatal(event)
+		}
+		if state, _ := lanRowState(event); state != tui.ProbeOK {
+			t.Fatal("signed metadata still shows a spinner")
+		}
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		cancel()
+		for range events {
+		}
+	})
 }

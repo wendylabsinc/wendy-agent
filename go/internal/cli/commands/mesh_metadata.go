@@ -9,9 +9,11 @@ import (
 )
 
 type meshMetadataRow struct {
-	event  discovery.LANEvent
-	cancel context.CancelFunc
-	next   time.Time
+	event      discovery.LANEvent
+	cancel     context.CancelFunc
+	next       time.Time
+	order      uint64
+	advertised bool
 }
 type meshMetadataResult struct {
 	row    *meshMetadataRow
@@ -30,6 +32,7 @@ func probeMeshDiscovery(ctx context.Context, events <-chan discovery.LANEvent, p
 		rows := map[string]*meshMetadataRow{}
 		results := make(chan meshMetadataResult)
 		active := 0
+		var order uint64
 		tick := time.NewTicker(refresh)
 		defer tick.Stop()
 		send := func(event discovery.LANEvent) bool {
@@ -44,14 +47,22 @@ func probeMeshDiscovery(ctx context.Context, events <-chan discovery.LANEvent, p
 			if ctx.Err() != nil {
 				return
 			}
-			for _, row := range rows {
-				if active >= 4 {
-					break
-				}
-				if row.cancel != nil || time.Now().Before(row.next) {
+			// All destinations can share one BLE hop. Concurrent TLS handshakes
+			// compete for that hop and repeatedly time out before metadata arrives.
+			if active != 0 {
+				return
+			}
+			var row *meshMetadataRow
+			for _, candidate := range rows {
+				if candidate.advertised || candidate.cancel != nil || time.Now().Before(candidate.next) {
 					continue
 				}
-				attempt, stop := context.WithTimeout(ctx, 10*time.Second)
+				if row == nil || candidate.next.Before(row.next) || candidate.next.Equal(row.next) && candidate.order < row.order {
+					row = candidate
+				}
+			}
+			if row != nil {
+				attempt, stop := context.WithTimeout(ctx, meshConnectTimeout)
 				row.cancel = stop
 				active++
 				dev := row.event.Device
@@ -79,7 +90,8 @@ func probeMeshDiscovery(ctx context.Context, events <-chan discovery.LANEvent, p
 				}
 				delete(rows, id)
 				if event.Kind == discovery.LANFound || event.Kind == discovery.LANUpdated {
-					rows[id] = &meshMetadataRow{event: event}
+					order++
+					rows[id] = &meshMetadataRow{event: event, next: time.Now(), order: order, advertised: event.Probed}
 				}
 				if !send(event) {
 					return
@@ -97,6 +109,9 @@ func probeMeshDiscovery(ctx context.Context, events <-chan discovery.LANEvent, p
 				row.event.ProbeFailed = result.err != nil
 				if result.err == nil {
 					row.event.Device = result.device
+					// Agent/OS metadata changes infrequently. Leave bandwidth for
+					// commands and for devices whose first probe has not completed.
+					row.next = time.Now().Add(max(refresh, 5*time.Minute))
 				} else {
 					row.event.Device.ProbeFailure = result.device.ProbeFailure
 				}

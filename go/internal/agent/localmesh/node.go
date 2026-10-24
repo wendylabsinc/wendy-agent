@@ -218,6 +218,10 @@ func (n *Node) Snapshot() NodeSnapshot {
 	}
 	out.Devices = append([]Manifest(nil), v.Devices...)
 	for i := range out.Devices {
+		if agent := out.Devices[i].Agent; agent != nil {
+			copy := *agent
+			out.Devices[i].Agent = &copy
+		}
 		if route := out.Devices[i].Route; route != nil {
 			copy := *route
 			out.Devices[i].Route = &copy

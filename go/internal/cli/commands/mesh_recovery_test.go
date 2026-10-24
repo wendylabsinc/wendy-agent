@@ -3,7 +3,10 @@ package commands
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
@@ -70,5 +73,57 @@ func TestMeshDiscoveryStopsWhenOrganizationRemoved(t *testing.T) {
 	}
 	if joins != 2 {
 		t.Fatalf("expected organization recheck, got %d", joins)
+	}
+}
+
+func TestMeshDiscoveryDebouncesRouteGapsButRetractsLostRoutes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		start := time.Now()
+		id := uuid.New()
+		events := meshDiscoveryStreamWith(ctx, time.Second, func(context.Context) (string, error) {
+			return "session", nil
+		}, func(context.Context, string) (netmesh.Status, error) {
+			elapsed := time.Since(start)
+			// A short gap recovers without restarting the row's metadata RPC.
+			if elapsed < time.Second || elapsed >= 5*time.Second && elapsed < 6*time.Second {
+				return netmesh.Status{Devices: []netmesh.Device{{ID: id, Name: "robot", Port: 50052}}}, nil
+			}
+			return netmesh.Status{}, nil
+		})
+		if event := meshMetadataEvent(t, ctx, events); event.Kind != discovery.LANFound {
+			t.Fatal(event)
+		}
+		event := meshMetadataEvent(t, ctx, events)
+		if event.Kind != discovery.LANRetracted || time.Since(start) != 6*time.Second+meshPresenceGrace {
+			t.Fatalf("route gap restarted row or lost route stayed forever: event=%+v elapsed=%v", event, time.Since(start))
+		}
+		cancel()
+		for range events {
+		}
+	})
+}
+
+func TestMeshWorkerRetiresAfterLocalRebuild(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wendy")
+	if err := os.WriteFile(path, []byte("old"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !meshWorkerBinaryCurrent(path, initial) {
+		t.Fatal("unchanged executable retired worker")
+	}
+	if err := os.WriteFile(path+".new", []byte("new"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatal(err)
+	}
+	if meshWorkerBinaryCurrent(path, initial) {
+		t.Fatal("worker survived replacement by a rebuilt CLI")
 	}
 }

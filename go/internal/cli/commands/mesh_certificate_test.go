@@ -123,3 +123,15 @@ func TestMeshCertificateSkipsUnselectedAndNonOperatorSessions(t *testing.T) {
 		}
 	}
 }
+
+func TestMeshCertificateCancellationDoesNotSuggestSigningIn(t *testing.T) {
+	setTempConfig(t, &config.Config{CurrentContext: "selected", Auth: []config.AuthConfig{{
+		Name: "selected", Certificates: []config.CertificateInfo{meshTestCert("11111111-1111-4111-8111-111111111111", "operator")},
+	}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, ok, err := prepareMeshCertificate(ctx, "")
+	if ok || err != context.Canceled {
+		t.Fatalf("cancellation should not become an authentication error: ok=%v, err=%v", ok, err)
+	}
+}

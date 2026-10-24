@@ -29,10 +29,18 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 )
 
 const meshWorkerEnv = "WENDY_INTERNAL_MESH_SESSION"
 const meshEndpointEnv = "WENDY_INTERNAL_MESH_ENDPOINT"
+
+// BLE may carry the TLS certificate chain and RPC over several mesh hops.
+const meshConnectTimeout = time.Minute
+
+// Keep a recently reachable row through a short routing reconvergence. This
+// affects presentation only: dialing still requires a currently authorized route.
+const meshPresenceGrace = 15 * time.Second
 
 var meshStartMu sync.Mutex
 
@@ -88,6 +96,9 @@ func prepareMeshCertificate(ctx context.Context, endpoint string) (config.Certif
 	// This serializes renewal with other auth writers, reloads the session,
 	// and persists rotated OAuth tokens even when certificate issuance fails.
 	if err := prepareDefaultCloudCertificate(ctx, auth); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return config.CertificateInfo{}, false, err
+		}
 		return config.CertificateInfo{}, false, fmt.Errorf("refreshing Wendy Net operator certificate: %w; run 'wendy auth refresh-certs' or sign in again with 'wendy auth login'", err)
 	}
 	certificate, ok := selectedMeshCertificate(cfg, endpoint)
@@ -125,12 +136,30 @@ func RunMeshWorker() bool {
 	if err != nil {
 		return true
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return true
+	}
+	workerBinary, err := os.Stat(executable)
+	if err != nil {
+		return true
+	}
 	valid := func() bool {
+		if !meshWorkerBinaryCurrent(executable, workerBinary) {
+			return false
+		}
 		current, ok := meshSelection(endpoint)
 		return ok && meshFingerprint(current) == fingerprint && time.Now().Before(identity.NotAfter)
 	}
 	_ = netmesh.Serve(ctx, dir, func(ctx context.Context) (*netmesh.Client, error) { return netmesh.New(ctx, dir, credentials) }, valid)
 	return true
+}
+
+// Go builds replace the executable atomically. Retire the old worker so an
+// already-open discovery view reconnects to the locally rebuilt CLI.
+func meshWorkerBinaryCurrent(path string, initial os.FileInfo) bool {
+	current, err := os.Stat(path)
+	return err == nil && os.SameFile(initial, current) && initial.Size() == current.Size() && initial.ModTime().Equal(current.ModTime())
 }
 func ensureMeshSession(ctx context.Context) (string, config.CertificateInfo, error) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
@@ -199,7 +228,12 @@ func ensureMeshSession(ctx context.Context) (string, config.CertificateInfo, err
 	}
 }
 func meshDeviceRow(d netmesh.Device) models.LANDevice {
-	return models.LANDevice{ID: d.ID.String(), DisplayName: meshDisplayName(d.Name), Hostname: "mesh:" + d.ID.String(), IPAddress: d.Address.String(), Port: int(d.Port), IsMTLS: true, IsWendyDevice: true, Mesh: true}
+	row := models.LANDevice{ID: d.ID.String(), DisplayName: meshDisplayName(d.Name), Hostname: "mesh:" + d.ID.String(), IPAddress: d.Address.String(), Port: int(d.Port), IsMTLS: true, IsWendyDevice: true, Mesh: true}
+	if a := d.Agent; a != nil {
+		row.AgentVersion, row.OS, row.OSVersion = a.Version, a.OS, a.OSVersion
+		row.DeviceType, row.CPUArchitecture = a.DeviceType, a.CPUArchitecture
+	}
+	return row
 }
 
 func meshDisplayName(name string) string {
@@ -231,6 +265,7 @@ func meshDiscoveryStreamWith(ctx context.Context, interval time.Duration, ensure
 		defer close(out)
 		dir := ""
 		seen := map[string]models.LANDevice{}
+		missing := map[string]time.Time{}
 		send := func(event discovery.LANEvent) bool {
 			select {
 			case <-ctx.Done():
@@ -262,6 +297,7 @@ func meshDiscoveryStreamWith(ctx context.Context, interval time.Duration, ensure
 					}
 				}
 				seen = map[string]models.LANDevice{}
+				clear(missing)
 				dir = ""
 				select {
 				case <-ctx.Done():
@@ -273,15 +309,24 @@ func meshDiscoveryStreamWith(ctx context.Context, interval time.Duration, ensure
 			next := map[string]models.LANDevice{}
 			for _, d := range status.Devices {
 				row := meshDeviceRow(d)
+				delete(missing, row.ID)
 				next[row.ID] = row
-				if old, ok := seen[row.ID]; !ok || old.DisplayName != row.DisplayName || old.Port != row.Port {
-					if !send(discovery.LANEvent{Kind: discovery.LANFound, Device: row}) {
+				if old, ok := seen[row.ID]; !ok || old.DisplayName != row.DisplayName || old.Port != row.Port || old.AgentVersion != row.AgentVersion || old.OS != row.OS || old.OSVersion != row.OSVersion || old.DeviceType != row.DeviceType || old.CPUArchitecture != row.CPUArchitecture {
+					if !send(discovery.LANEvent{Kind: discovery.LANFound, Device: row, Probed: d.Agent != nil}) {
 						return
 					}
 				}
 			}
 			for id, row := range seen {
 				if _, ok := next[id]; !ok {
+					if missing[id].IsZero() {
+						missing[id] = time.Now()
+					}
+					if time.Since(missing[id]) < meshPresenceGrace {
+						next[id] = row
+						continue
+					}
+					delete(missing, id)
 					if !send(discovery.LANEvent{Kind: discovery.LANRetracted, Device: row}) {
 						return
 					}
@@ -309,7 +354,7 @@ func connectMeshSelector(ctx context.Context, selector string) (*SelectedDevice,
 	if dir == "" {
 		return nil, errors.New("mesh access requires a selected organization and operator certificate")
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, meshConnectTimeout)
 	defer cancel()
 	var device netmesh.Device
 	for {
@@ -338,7 +383,9 @@ func connectMeshSelector(ctx context.Context, selector string) (*SelectedDevice,
 	dial := func(ctx context.Context, _ string) (net.Conn, error) {
 		return netmesh.Dial(ctx, dir, device.ID.String(), device.Port)
 	}
-	connection, err := grpcclient.ConnectWithTLSExpecting(waitCtx, address, &certificate, openPinStore(), &expected, grpc.WithContextDialer(dial))
+	connection, err := grpcclient.ConnectWithTLSExpecting(waitCtx, address, &certificate, openPinStore(), &expected,
+		grpc.WithContextDialer(dial),
+		grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoff.DefaultConfig, MinConnectTimeout: meshConnectTimeout}))
 	if err != nil {
 		return nil, err
 	}

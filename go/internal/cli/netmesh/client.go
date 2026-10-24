@@ -16,15 +16,25 @@ import (
 )
 
 type Device struct {
-	ID      uuid.UUID  `json:"id"`
-	Name    string     `json:"name"`
-	Address netip.Addr `json:"address"`
-	Port    uint16     `json:"port"`
+	ID      uuid.UUID                `json:"id"`
+	Name    string                   `json:"name"`
+	Address netip.Addr               `json:"address"`
+	Port    uint16                   `json:"port"`
+	Agent   *localmesh.AgentMetadata `json:"agent,omitempty"`
 }
 type Status struct {
 	Identity string            `json:"identity"`
 	Devices  []Device          `json:"devices"`
 	Carriers map[string]string `json:"carriers"`
+	Links    []LinkStatus      `json:"links,omitempty"`
+}
+
+// LinkStatus describes the worker's authenticated carriers on its private IPC
+// socket. Queue statistics distinguish a slow carrier from an absent route.
+type LinkStatus struct {
+	Peer      string                  `json:"peer"`
+	Transport string                  `json:"transport"`
+	SendQueue *localmesh.IPQueueStats `json:"sendQueue,omitempty"`
 }
 type Client struct {
 	node        *localmesh.Node
@@ -51,7 +61,11 @@ func New(ctx context.Context, dir string, credentials *localmesh.Credentials) (*
 }
 func (c *Client) Status() Status {
 	sum := sha256.Sum256(c.credentials.Certificate.Certificate[0])
-	status := Status{Identity: hex.EncodeToString(sum[:]), Devices: devicesFromSnapshot(c.node.Snapshot(), time.Now()), Carriers: map[string]string{}}
+	snapshot := c.node.Snapshot()
+	status := Status{Identity: hex.EncodeToString(sum[:]), Devices: devicesFromSnapshot(snapshot, time.Now()), Carriers: map[string]string{}}
+	for _, link := range snapshot.Links {
+		status.Links = append(status.Links, LinkStatus{Peer: link.Device.UUID().String(), Transport: link.Transport, SendQueue: link.SendQueue})
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k, v := range c.carriers {
@@ -78,7 +92,7 @@ func devicesFromSnapshot(snapshot localmesh.NodeSnapshot, now time.Time) []Devic
 		device := meshid.NewDevice(snapshot.Self.Tenant(), m.Device)
 		for _, r := range snapshot.Routes {
 			if !r.Local && !r.Unreachable && links[uint64(r.Link)] && r.Prefix == m.Route.Prefix && r.RouterID == m.Route.RouterID && r.Seqno == m.Route.Seqno && r.Prefix == netip.PrefixFrom(device.MeshAddress(), 128) {
-				devices = append(devices, Device{m.Device, m.Name, device.MeshAddress(), m.AgentPort})
+				devices = append(devices, Device{ID: m.Device, Name: m.Name, Address: device.MeshAddress(), Port: m.AgentPort, Agent: m.Agent})
 				break
 			}
 		}
