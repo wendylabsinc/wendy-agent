@@ -167,6 +167,8 @@ func NewProvisioningService(logger *zap.Logger, configPath string, clock ...*tim
 	svc.resetRecoveryErr = svc.recoverProvisioningReset()
 	if svc.resetRecoveryErr == nil {
 		svc.loadState()
+	} else {
+		logger.Error("Enrollment state recovery failed", zap.Error(svc.resetRecoveryErr))
 	}
 	return svc
 }
@@ -564,7 +566,8 @@ func (s *ProvisioningService) statePath() string {
 func (s *ProvisioningService) loadState() {
 	defer s.finishInterruptedRenewal() // also drops a pending key on an unenrolled device
 	data, err := os.ReadFile(s.statePath())
-	if err != nil {
+	// Like readProvisioningState, treat an empty file as no enrollment.
+	if err != nil || len(data) == 0 {
 		return
 	}
 
