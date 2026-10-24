@@ -157,7 +157,10 @@ func relayPKIWithCA(t *testing.T, principal string, trusted bool) (tls.Certifica
 	return tls.Certificate{Certificate: [][]byte{operator.Raw, intermediate.Raw}, PrivateKey: ok}, chain, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{device.Raw}, PrivateKey: dk}}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert}, intermediate, ik
 }
 
-const devicePrincipal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/lite-441bf6804ff8"
+// liteTestDevice is the enrolled board's device UUID, the only Lite pin.
+const liteTestDevice = "00000000-0000-4000-8000-441bf6804ff8"
+
+const devicePrincipal = "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/" + liteTestDevice
 
 func TestConnectViaRelayMTLS(t *testing.T) {
 	for _, tc := range []struct {
@@ -232,7 +235,7 @@ func TestConnectViaRelayMTLS(t *testing.T) {
 			ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer session"), 30*time.Second)
 			defer cancel()
 			c := NewWendyLiteClient()
-			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", options)
+			err := c.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, liteTestDevice, options)
 			if tc.accept {
 				if err != nil {
 					t.Fatal(err)
@@ -273,7 +276,7 @@ func TestConnectViaRelayReportsRefusalAndClosesConn(t *testing.T) {
 	relay := newFakeRelay()
 	relay.refuse = status.Error(codes.PermissionDenied, "permission denied")
 	cc := dialFakeRelay(t, relay)
-	err := NewWendyLiteClient().ConnectViaRelay(context.Background(), cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions(t, cert))
+	err := NewWendyLiteClient().ConnectViaRelay(context.Background(), cc, relayTestAssetID, cert, chain, liteTestDevice, testRelayOptions(t, cert))
 	if err == nil || !strings.Contains(err.Error(), "PermissionDenied") {
 		t.Fatalf("lost broker refusal: %v", err)
 	}
@@ -325,7 +328,7 @@ func TestRelayRejectsMalformedGrantBeforeTLS(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			client := NewWendyLiteClient()
-			err := client.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, "441bf6804ff8", testRelayOptions(t, cert))
+			err := client.ConnectViaRelay(ctx, cc, relayTestAssetID, cert, chain, liteTestDevice, testRelayOptions(t, cert))
 			if err == nil {
 				client.Close()
 				t.Fatal("accepted invalid grant")
@@ -356,6 +359,32 @@ func TestLiteGrantFramingKeyIDBounds(t *testing.T) {
 		if !validLiteGrantRecord(relayGrantWithKeyID(grant, kid)) {
 			t.Errorf("rejected supported %d-byte key ID", len(kid))
 		}
+	}
+}
+
+func TestLiteGrantFramingAcceptsOnlyWLG3(t *testing.T) {
+	wlg3, err := relayGrantFixture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wlg2Hex, err := os.ReadFile("testdata/lite-grant-wlg2.hex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wlg2, err := hex.DecodeString(strings.TrimSpace(string(wlg2Hex)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wlg3[:4]) != "WLG3" || string(wlg2[:4]) != "WLG2" {
+		t.Fatal("fixtures carry the wrong magic")
+	}
+	if !validLiteGrantRecord(wlg3) {
+		t.Error("rejected the WLG3 conformance record")
+	}
+	// No dual-accept window: a real WLG2 record, or WLG3 bytes under its magic, is refused.
+	relabel := func(grant []byte, magic string) []byte { return append([]byte(magic), grant[4:]...) }
+	if validLiteGrantRecord(wlg2) || validLiteGrantRecord(relabel(wlg3, "WLG2")) || validLiteGrantRecord(relabel(wlg2, "WLG3")) {
+		t.Error("accepted a WLG2 or misframed record")
 	}
 }
 

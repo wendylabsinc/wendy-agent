@@ -100,18 +100,17 @@ func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context
 }
 
 func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, error) {
-	return connectToCloudAgentExpecting(ctx, cloudGRPC, deviceName, brokerURL, nil)
-}
-
-// connectToCloudAgentExpecting checks a saved LAN identity before treating a
-// Cloud name match as the same default device. A reused name in another org or
-// after re-enrollment must not silently redirect a run to a different asset.
-func connectToCloudAgentExpecting(ctx context.Context, cloudGRPC, deviceName, brokerURL string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 	auth, err := pickAuthEntry(cloudGRPC)
 	if err != nil {
 		return nil, err
 	}
 
+	return connectToCloudAgentWithAuthExpecting(ctx, auth, deviceName, brokerURL, nil)
+}
+
+// connectToCloudAgentWithAuthExpecting checks a saved identity before treating
+// a Cloud name match as the same device (see connectToPinnedCloudName).
+func connectToCloudAgentWithAuthExpecting(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string, expected *certs.WendyIdentity) (*grpcclient.AgentConnection, error) {
 	asset, err := pickCloudDiscoveryDevice(ctx, auth, deviceName, brokerURL)
 	if err != nil {
 		return nil, err
@@ -353,14 +352,9 @@ func (d cloudDiscoveryDevice) openTunnel(ctx context.Context, brokerConn *grpc.C
 	if d.legacy != nil {
 		return openBrokerTunnel(ctx, brokerConn, auth, d.legacy.GetId(), remotePort)
 	}
-	service := ""
-	switch remotePort {
-	case 50052:
-		service = "wendy-agent"
-	case 22:
-		service = "ssh"
-	default:
-		return nil, fmt.Errorf("Cloud's authorized tunnel catalog has no service for port %d", remotePort)
+	service, err := cloudrelay.PortService("tcp", remotePort)
+	if err != nil {
+		return nil, err
 	}
 	signer, err := tunnelPrincipalSigner(auth)
 	if err != nil {

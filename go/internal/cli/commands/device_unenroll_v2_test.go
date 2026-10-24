@@ -257,7 +257,7 @@ func TestV2UnenrollUnauthenticatedAgentRefusedBeforeCloudAccess(t *testing.T) {
 				}
 				// Missing connection/auth configuration would fail if the gate
 				// let the Cloud workflow start.
-				err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", flags.yes, flags.checkOnly)
+				err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", flags.yes, flags.checkOnly, false)
 				if err == nil || !strings.Contains(err.Error(), "does not support Cloud-authenticated reset") || !strings.Contains(err.Error(), "no mutation performed") {
 					t.Fatalf("unsafe workflow was not rejected before preflight: %v", err)
 				}
@@ -274,9 +274,34 @@ func TestV2UnenrollAuthenticatedResetBitAloneQualifies(t *testing.T) {
 			CloudAuthenticatedResetSupported: true,
 		}
 		// Passes the capability gate, then stops at the direct-mTLS peer check.
-		err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", true, checkOnly)
+		err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", true, checkOnly, false)
 		if err == nil || !strings.Contains(err.Error(), "directly verified mTLS device connection") {
 			t.Fatalf("check=%t: want direct-mTLS refusal after the capability gate, got %v", checkOnly, err)
+		}
+	}
+}
+
+// Each mode has its own capability: local-reset support never admits the
+// Cloud flow, and Cloud-authenticated reset support never admits --force.
+func TestV2UnenrollModesRequireTheirOwnCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		cloud, local, force bool
+		want                string
+	}{
+		{name: "local only, Cloud flow", local: true, want: "does not support Cloud-authenticated reset"},
+		{name: "Cloud only, forced", cloud: true, force: true, want: "does not support forced local enrollment reset"},
+		{name: "local, forced", local: true, force: true, want: "directly verified mTLS device connection"},
+	} {
+		prov := &agentpbv2.ProvisionedResponse{
+			CloudHost:                        testUnenrollProgress().Cloud,
+			PrincipalUri:                     testUnenrollProgress().Principal,
+			CloudAuthenticatedResetSupported: tc.cloud,
+			LocalResetSupported:              tc.local,
+		}
+		err := runV2DeviceUnenroll(context.Background(), nil, prov, nil, "", "", true, false, tc.force)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: want %q before Cloud access, got %v", tc.name, tc.want, err)
 		}
 	}
 }
@@ -290,5 +315,29 @@ func TestV2UnenrollRequiresDeviceConnectionOperatorLeaf(t *testing.T) {
 	}
 	if err := requireDeviceOperatorLeaf(&grpcclient.AgentConnection{CertInfo: &config.CertificateInfo{PemCertificate: "renewed"}}, auth); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Before cloud #873 the device UUID is pki_device_name on a random asset id;
+// after it, the UUID is the asset id and pki_device_name is empty.
+func TestV2UnenrollBindingMatchesBothAssetShapes(t *testing.T) {
+	postProgress := testUnenrollProgress()
+	postProgress.AssetID = unenrollDevice
+	for name, tc := range map[string]struct {
+		asset    *cloudpbv2.Asset
+		progress v2UnenrollProgress
+	}{
+		"pre-873":  {testUnenrollAsset(), testUnenrollProgress()},
+		"post-873": {&cloudpbv2.Asset{Id: unenrollDevice, OrganizationId: unenrollTenant}, postProgress},
+	} {
+		if err := checkV2UnenrollBinding(tc.asset, tc.progress); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Deletion evidence without a device id falls back to the asset id too.
+	reply := &v2AssetState{Deleted: &cloudpbv2.DeletedAsset{Id: unenrollDevice, OrganizationId: unenrollTenant, DeletedAt: timestamppb.New(time.Now())}}
+	progress := postProgress
+	if _, err := v2UnenrollLifecycle(reply, &progress); err != nil {
+		t.Errorf("post-873 deletion evidence: %v", err)
 	}
 }

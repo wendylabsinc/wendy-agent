@@ -873,12 +873,17 @@ func (*WendyComGetDeviceIdentityParams) Descriptor() ([]byte, []int) {
 }
 
 type WendyComDeviceIdentity struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	DisplayName   string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Hardware id (factory MAC), recorded only as the asset serial number.
+	Id          string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name        string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	DisplayName string `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	// The device's one id once enrolled: the UUID segment of the device
+	// certificate's SAN spiffe://wendy.sh/tenant/<tenant>/device/<uuid>, minted
+	// by the CLI at enrollment and also the cloud asset id. Empty when unenrolled.
+	EnrolledDeviceId string `protobuf:"bytes,4,opt,name=enrolled_device_id,json=enrolledDeviceId,proto3" json:"enrolled_device_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WendyComDeviceIdentity) Reset() {
@@ -928,6 +933,13 @@ func (x *WendyComDeviceIdentity) GetName() string {
 func (x *WendyComDeviceIdentity) GetDisplayName() string {
 	if x != nil {
 		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *WendyComDeviceIdentity) GetEnrolledDeviceId() string {
+	if x != nil {
+		return x.EnrolledDeviceId
 	}
 	return ""
 }
@@ -2850,11 +2862,12 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x06offset\x18\x01 \x01(\rR\x06offset\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\"\x1b\n" +
 	"\x19WendyComConfPushEndParams\"!\n" +
-	"\x1fWendyComGetDeviceIdentityParams\"_\n" +
+	"\x1fWendyComGetDeviceIdentityParams\"\x8d\x01\n" +
 	"\x16WendyComDeviceIdentity\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
-	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\"\x1d\n" +
+	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\x12,\n" +
+	"\x12enrolled_device_id\x18\x04 \x01(\tR\x10enrolledDeviceId\"\x1d\n" +
 	"\x1bWendyComGetDeviceInfoParams\"D\n" +
 	"!WendyComEnrollmentChallengeParams\x12\x1f\n" +
 	"\vstatus_only\x18\x01 \x01(\bR\n" +
