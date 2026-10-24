@@ -45,10 +45,13 @@ bytes, and links must target the sending device, for example
 
 This is a device-hosted development example. Anyone with the private link can
 send with this app's entitlement and see its recent results. Keep the link and
-app logs private. HTTP traffic is plaintext: use a trusted network or an
-authenticated Wendy Cloud tunnel (`wendy cloud tunnel 8080:8080 --device <name>`).
-Anonymous requests cannot read the page or obtain its form token. Responses are
-not cached, cannot be framed, and send no referrer to external font services.
+app logs private. HTTP traffic is plaintext: use a trusted network. Deployment
+through Cloud works, but opening this example's page currently requires LAN
+access to the device: the Cloud v2 CLI tunnel catalog allows ports 22 and 50052,
+so `wendy cloud tunnel 8080:8080` refuses port 8080. Do not assume a Cloud deploy
+makes the page remotely accessible. Anonymous requests cannot read the page or
+obtain its form token. Responses are not cached, cannot be framed, and send no
+referrer to external font services.
 
 ## Development
 
