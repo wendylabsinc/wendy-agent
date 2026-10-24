@@ -32,6 +32,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
@@ -62,6 +63,9 @@ type fakePostboxCloud struct {
 	genTime   time.Time
 	stamp     func(jws []byte) []byte // the TSA token cloud takes at accept
 	inter     []*x509.Certificate     // the checkpoint x5c beyond its leaf
+	// tenantWide and maxID (0: the tip) shape the checkpoint notarize binds.
+	tenantWide bool
+	maxID      int64
 }
 
 func (c *fakePostboxCloud) GetOrgCAs(_ context.Context, in *cloudpbv2.GetOrgCAsRequest, _ ...grpc.CallOption) (*cloudpbv2.GetOrgCAsResponse, error) {
@@ -130,14 +134,18 @@ func (c *fakePostboxCloud) notarize(_ []byte, _ *x509.CertPool, _, _ string, mar
 		return postboxCheckpoint{}, nil
 	}
 	last := c.entries[len(c.entries)-1]
-	if last.GetEntryId() < mark {
+	maxID := last.GetEntryId()
+	if c.maxID > 0 {
+		maxID = c.maxID
+	}
+	if maxID < mark {
 		return postboxCheckpoint{}, cpRefuse("rollback", "max_id below the mark")
 	}
 	gen := c.genTime
 	if gen.IsZero() {
 		gen = now
 	}
-	return postboxCheckpoint{maxID: last.GetEntryId(), head: last.GetEntryHash(), genTime: gen, inter: c.inter}, nil
+	return postboxCheckpoint{maxID: maxID, head: last.GetEntryHash(), genTime: gen, inter: c.inter, tenantWide: c.tenantWide}, nil
 }
 
 type pbFixture struct {
@@ -652,8 +660,9 @@ func TestPostboxFailedSaveLeavesEntryForNextCycle(t *testing.T) {
 
 type crashingControl struct{}
 
-func (crashingControl) StartApp(context.Context, string) error { panic("agent killed") }
-func (crashingControl) StopApp(context.Context, string) error  { panic("agent killed") }
+func (crashingControl) StartApp(context.Context, string) error      { panic("agent killed") }
+func (crashingControl) StopApp(context.Context, string) error       { panic("agent killed") }
+func (crashingControl) AppOf(_ context.Context, name string) string { return name }
 
 func TestPostboxReportsEntryInterruptedByCrash(t *testing.T) {
 	f := newPBFixture(t)
@@ -1024,5 +1033,156 @@ func TestPostboxCachesOnlyTheRequestedOperatorCA(t *testing.T) {
 	f.cycle()
 	if st := f.p.snapshot(); len(st.OrgCAs) != 1 || string(st.OrgCAs[0]) != string(f.opCA.Raw) || len(f.ctr.stopCalls) != 1 {
 		t.Fatalf("cached %d CAs, stop %v: want only the operator authority", len(st.OrgCAs), f.ctr.stopCalls)
+	}
+}
+
+// App ids are reverse-DNS: a STOP of a dotted id files its outcome under the
+// whole id, and a service container's under its app.
+func TestPostboxOutcomeUnderTheWholeAppID(t *testing.T) {
+	f := newPBFixture(t)
+	f.ctr.containers = []*agentpb.AppContainer{
+		{AppName: "sh.wendy.examples.hellohttp"},
+		{AppName: "sh.wendy.examples.multi", Services: []*agentpb.ServiceEntry{{Name: "api"}, {Name: "db"}}},
+	}
+	f.control("sh.wendy.examples.hellohttp", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.control("sh.wendy.examples.multi_api", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.cycle()
+	got := f.p.Outcomes()
+	if o := got["sh.wendy.examples.hellohttp"]; o.EntryID != 1 || o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED {
+		t.Fatalf("outcomes = %v, want entry 1 APPLIED under sh.wendy.examples.hellohttp", got)
+	}
+	if o := got["sh.wendy.examples.multi"]; o.EntryID != 2 || len(got) != 2 {
+		t.Fatalf("outcomes = %v, want entry 2 under sh.wendy.examples.multi and nothing else", got)
+	}
+}
+
+// The served Operator CA is checked at the entry's signing time, as the
+// operator chain is: one expired since is still cached and used.
+func TestPostboxCachesAnOperatorCAValidAtTheSigningTime(t *testing.T) {
+	f := newPBFixture(t)
+	f.stampAt = f.now.Add(-30 * time.Minute)
+	then := func(tmpl *x509.Certificate) *x509.Certificate {
+		tmpl.NotBefore, tmpl.NotAfter = f.now.Add(-50*time.Minute), f.now.Add(-10*time.Minute)
+		return tmpl
+	}
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	oldCA := mkCert(t, then(&x509.Certificate{Subject: pkix.Name{CommonName: "operator authority"}, IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}),
+		f.tenantCA, &caKey.PublicKey, f.tenantCAKey)
+	u, _ := url.Parse("spiffe://wendy.sh/tenant/" + f.tenant + "/operator/alice")
+	leaf := mkCert(t, then(&x509.Certificate{Subject: pkix.Name{CommonName: "leaf"}, URIs: []*url.URL{u},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}), oldCA, f.opKey.PublicKey(), caKey)
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(leaf.RawIssuer): {oldCA}}
+	f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{leaf},
+		func(c map[string]any) { c["iat"] = f.stampAt.Unix() - 5 })
+	f.cycle()
+	if st := f.p.snapshot(); len(st.OrgCAs) != 1 || string(st.OrgCAs[0]) != string(oldCA.Raw) || st.HighWater != 1 || len(f.ctr.stopCalls) != 1 {
+		t.Fatalf("cached %d, high water %d, stop %v, refusals %v: want the CA valid at genTime cached and the entry applied", len(st.OrgCAs), st.HighWater, f.ctr.stopCalls, f.p.refusals)
+	}
+}
+
+// A tenant-wide checkpoint (empty target) is accepted but never sets this
+// device's mark, so a later device-scoped one is not refused as rollback.
+func TestPostboxTenantWideCheckpointLeavesTheMark(t *testing.T) {
+	f := newPBFixture(t)
+	stop := cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP
+	f.cloud.tenantWide, f.cloud.maxID = true, 50 // the tenant chain's max_id, above this device's head
+	f.control("web", stop, nil)
+	f.cycle()
+	if st := f.p.snapshot(); st.HighWater != 1 || st.CheckpointMark != 0 || len(f.ctr.stopCalls) != 1 {
+		t.Fatalf("high water %d, mark %d, stop %v: want entry 1 applied, mark unchanged", st.HighWater, st.CheckpointMark, f.ctr.stopCalls)
+	}
+	f.cloud.tenantWide, f.cloud.maxID = false, 0
+	f.control("web", stop, nil)
+	f.cycle()
+	if st := f.p.snapshot(); st.HighWater != 2 || st.CheckpointMark != 2 || f.p.refusals["checkpoint"] != 0 || len(f.ctr.stopCalls) != 2 {
+		t.Fatalf("high water %d, mark %d, refusals %v: device checkpoint refused after a tenant-wide one", st.HighWater, st.CheckpointMark, f.p.refusals)
+	}
+}
+
+// Nonces are pruned against the trusted-time floor, not the clock: a clock
+// run past valid_until and set back keeps the nonce, so the re-appended
+// request is refused.
+func TestPostboxClockJumpKeepsLiveNonce(t *testing.T) {
+	f := newPBFixture(t)
+	start := f.now
+	f.cloud.genTime = start                                                         // the TSA's time; the floor stays there
+	first := f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil) // valid_until start + 1 h
+	f.cycle()
+
+	f.now, f.stampAt = start.Add(2*time.Hour), start // the clock jumps forward
+	f.control("db", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.cycle()
+
+	f.now = start // NTP corrects it
+	f.cloud.add(first.GetRequestJws(), first.GetRequestPayload(), first.GetPayloadType())
+	f.cycle()
+	if n := len(f.ctr.stopCalls); n != 1 || f.outcome("web").EntryID != 3 || f.outcome("web").Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE {
+		t.Fatalf("stop calls %v, outcome %+v: want the re-appended request refused as a replay", f.ctr.stopCalls, f.outcome("web"))
+	}
+}
+
+// A failed post-apply save holds the cycle until it lands: the decision is
+// not reported before it is on disk, and a restart never settles the applied
+// entry as interrupted.
+func TestPostboxHoldsUntilTheDecisionIsSaved(t *testing.T) {
+	f := newPBFixture(t)
+	f.p.retry = time.Millisecond
+	failures := 0
+	f.p.write = func(dir, name string, data []byte) error {
+		if len(f.ctr.stopCalls) > 0 && failures < 2 {
+			failures++
+			if len(f.p.Outcomes()) != 0 {
+				t.Error("decision reported before it was saved")
+			}
+			return errors.New("disk full")
+		}
+		return writeProvisioningFile(dir, name, data)
+	}
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	_ = f.p.cycle(context.Background()) // the agent may stop right after
+
+	f.p = f.newPostbox()
+	f.cycle()
+	if o := f.outcome("web"); failures != 2 || o.Outcome != cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLIED || f.p.refusals["interrupted"] != 0 || len(f.ctr.stopCalls) != 1 {
+		t.Fatalf("failures %d, outcome %+v, refusals %v: want APPLIED kept across the restart", failures, o, f.p.refusals)
+	}
+}
+
+// An app id cloud would refuse is audit and counter only; outcomes cloud
+// took for apps neither present nor targeted are dropped.
+func TestReportedStateOutcomeHygiene(t *testing.T) {
+	f := newPBFixture(t)
+	dep := uuid.NewString()
+	assign := &cloudpbv2.DeviceAssignment{
+		OrganizationId: f.tenant, DeploymentId: dep, Device: f.uri, AppId: "bad app", AppReleaseId: "rel",
+		DesiredState: cloudpbv2.Running_RUNNING, ExpiresAt: timestamppb.New(f.now.Add(time.Hour)),
+	}
+	jws, payload, typ := f.sign(cloudpbv2.ArtifactRegistryService_AssignDevice_FullMethodName, assign,
+		"org/"+f.tenant+"/deployment/"+dep+"/device/"+f.uuid, []*x509.Certificate{f.opLeaf, f.opCA}, f.opKey, nil)
+	f.cloud.add(jws, payload, typ)
+	f.control("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, nil)
+	f.controlUntil("db", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(-time.Second)), []*x509.Certificate{f.opLeaf, f.opCA}, nil)
+	f.cycle()
+	if _, ok := f.p.Outcomes()["bad app"]; ok || f.p.refusals["app_id"] != 1 {
+		t.Fatalf("outcomes %v, refusals %v: want the invalid app id audited, not reported", f.p.Outcomes(), f.p.refusals)
+	}
+
+	cloud, _, _, _ := startReportedState(t, &fakeAppReporter{apps: []AppReport{{AppID: "web"}}}, 10*time.Millisecond, time.Hour, f.p)
+	ids := func(req *cloudpbv2.UpdateReportedStateRequest) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range req.GetCurrentStates() {
+			out[s.GetAppId()] = true
+		}
+		return out
+	}
+	if got := ids(nextReport(t, cloud.reports)); len(got) != 2 || !got["web"] || !got["db"] {
+		t.Fatalf("first report = %v, want web and db", got)
+	}
+	// Cloud answered it: db (ABSENT, not targeted) is dropped, web is present.
+	if got := ids(nextReport(t, cloud.reports)); len(got) != 1 || !got["web"] {
+		t.Fatalf("report after cloud's answer = %v, want web only", got)
+	}
+	if o := f.p.Outcomes(); len(o) != 1 || o["web"].EntryID != 2 {
+		t.Fatalf("outcomes = %v, want web's kept, db's dropped", o)
 	}
 }

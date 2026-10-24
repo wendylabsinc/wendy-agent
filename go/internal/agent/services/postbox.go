@@ -32,6 +32,7 @@ import (
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/devicesign"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -73,6 +74,9 @@ type Postbox struct {
 type postboxControl interface {
 	StartApp(ctx context.Context, name string) error
 	StopApp(ctx context.Context, name string) error
+	// AppOf is the app a container name addresses: the app whose service
+	// container it names ("{appID}_{service}"), else the name itself, whole.
+	AppOf(ctx context.Context, name string) string
 }
 
 // postboxState is everything that must survive a restart. It belongs to one
@@ -306,7 +310,9 @@ func (p *Postbox) cycle(ctx context.Context) error {
 			id.orgCAs = append(id.orgCAs, ca)
 		}
 	}
-	p.settleInterrupted()
+	if err := p.settleInterrupted(ctx); err != nil {
+		return err
+	}
 	client, closer, err := p.dial(cloudURL, certPEM, keyPEM, chainPEM)
 	if err != nil {
 		return err
@@ -332,7 +338,12 @@ func (p *Postbox) cycle(ctx context.Context) error {
 		}
 		if err == nil {
 			err = p.commit(func(st *postboxState) {
-				st.CheckpointMark = max(st.CheckpointMark, cpMax)
+				// A tenant-wide checkpoint (empty target) is valid but binds the
+				// tenant's chain, not this device's: only a device-scoped one moves
+				// this device's mark (WDY-4015 item 9).
+				if !cp.tenantWide {
+					st.CheckpointMark = max(st.CheckpointMark, cpMax)
+				}
 				st.TimeFloor = max(st.TimeFloor, cp.genTime.Unix())
 			})
 		}
@@ -384,8 +395,7 @@ func (p *Postbox) process(ctx context.Context, client cloudpbv2.DevicePostboxSer
 		chainErr = errors.New("entry is not the head the checkpoint notarized")
 	}
 	if chainErr != nil {
-		p.decide(e, "", "", cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, "chain", chainErr)
-		return chainErr
+		return errors.Join(chainErr, p.decide(ctx, e, "", "", cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_SIGNATURE, "chain", chainErr))
 	}
 
 	// The entry's RFC 3161 token, taken by cloud at accept over
@@ -401,8 +411,9 @@ func (p *Postbox) process(ctx context.Context, client cloudpbv2.DevicePostboxSer
 	}
 	now := p.trustedNow()
 	// An operator leaf whose issuer this device does not hold holds the entry
-	// (not consumed, not refused) until cloud serves a CA that verifies.
-	if err := p.resolveIssuer(ctx, client, id, e, now); err != nil {
+	// (not consumed, not refused) until cloud serves a CA that verifies at the
+	// entry's signing time, as the operator chain is checked.
+	if err := p.resolveIssuer(ctx, client, id, e, signedAt); err != nil {
 		p.count("operator_ca")
 		p.logger.Warn("postbox entry held: operator CA not resolved", zap.String("audit", "postbox"),
 			zap.Int64("entry_id", e.GetEntryId()), zap.String("correlation_id", peekCorrelation(e.GetRequestJws())), zap.Error(err))
@@ -417,24 +428,22 @@ func (p *Postbox) process(ctx context.Context, client cloudpbv2.DevicePostboxSer
 	}
 	// req is set only for a request verified as signed for this device: only
 	// that may set an app's reported outcome; any other refusal is audit only.
-	app := postboxApp(req)
+	app := p.postboxApp(ctx, req)
 	// The entry is verified as part of the chain: claim its nonce and move the
 	// mark BEFORE acting, so a crash never applies one signed request twice
 	// (at most once: an interrupted entry is reported, not retried).
 	pending := &postboxPending{EntryID: e.GetEntryId(), CorrelationID: desc.Correlation, AppID: app}
-	switch err := p.advance(e, desc.Nonce, nonceExpiry, now, pending); {
+	switch err := p.advance(e, desc.Nonce, nonceExpiry, pending); {
 	case errors.Is(err, errReplayed):
 		outcome, reason, verr = cloudpbv2.ApplyOutcome_APPLY_OUTCOME_REJECTED_STALE, "replay", err
 	case err != nil:
 		return err
 	}
 	if verr != nil {
-		p.decide(e, desc.Correlation, app, outcome, reason, verr)
-		return nil
+		return p.decide(ctx, e, desc.Correlation, app, outcome, reason, verr)
 	}
 	app, outcome, reason, aerr := p.apply(ctx, req)
-	p.decide(e, desc.Correlation, app, outcome, reason, aerr)
-	return nil
+	return p.decide(ctx, e, desc.Correlation, app, outcome, reason, aerr)
 }
 
 // postboxEntryHash is cloud's chain construction (cloud migration 000062
@@ -616,12 +625,14 @@ func verifyPostboxSignature(e *cloudpbv2.PostboxEntry, id *postboxIdentity, sign
 // resolveIssuer makes sure the CA that issued the entry's operator leaf is
 // one this device can chain through. When it is not, it asks GetOrgCAs for
 // that issuer and caches the served CA that issued the leaf once it verifies
-// as issued directly by its tenant CA (conformance/postbox-entry). A CA
+// as issued directly by its tenant CA at signedAt, the entry's signing time
+// (conformance/postbox-entry): a CA that expired since still vouches for
+// what it signed while valid, as the operator chain is checked. A CA
 // rotated under the same subject is a different issuer: the old one stays
 // cached for entries it signed. An error means hold: NOT_FOUND, a transport
 // failure, or no served CA verified. An unparseable leaf is left for
 // verification to refuse.
-func (p *Postbox) resolveIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, e *cloudpbv2.PostboxEntry, now time.Time) error {
+func (p *Postbox) resolveIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, e *cloudpbv2.PostboxEntry, signedAt time.Time) error {
 	leaf := peekLeaf(e.GetRequestJws())
 	if leaf == nil {
 		return nil
@@ -629,7 +640,7 @@ func (p *Postbox) resolveIssuer(ctx context.Context, client cloudpbv2.DevicePost
 	if slices.ContainsFunc(slices.Concat(id.anchors, id.orgCAs, peekIntermediates(e.GetRequestJws())), func(ca *x509.Certificate) bool { return issued(ca, leaf) }) {
 		return nil
 	}
-	return p.fetchIssuer(ctx, client, id, leaf, now)
+	return p.fetchIssuer(ctx, client, id, leaf, signedAt)
 }
 
 // issued reports whether ca issued leaf: its subject is the leaf's issuer
@@ -639,18 +650,18 @@ func issued(ca, leaf *x509.Certificate) bool {
 }
 
 // fetchIssuer asks GetOrgCAs for the CA named by leaf's issuer and caches a
-// served CA only if it issued leaf and verifies; the rest of the response is
-// ignored. It fails unless a cached CA now issued leaf.
+// served CA only if it issued leaf and verifies at signedAt; the rest of the
+// response is ignored. It fails unless a cached CA now issued leaf.
 // ponytail: the cache only grows, by one CA per rotation; prune expired CAs
 // if rotations ever become frequent.
-func (p *Postbox) fetchIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, leaf *x509.Certificate, now time.Time) error {
+func (p *Postbox) fetchIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, leaf *x509.Certificate, signedAt time.Time) error {
 	resp, err := client.GetOrgCAs(ctx, &cloudpbv2.GetOrgCAsRequest{Issuer: leaf.RawIssuer})
 	if err != nil {
 		return fmt.Errorf("GetOrgCAs: %w", err)
 	}
 	var added [][]byte
 	for _, der := range resp.GetCaDer() {
-		ca, code, err := verifyOrgCA(der, id.anchors, now)
+		ca, code, err := verifyOrgCA(der, id.anchors, signedAt)
 		if err != nil {
 			p.count(code)
 			p.logger.Warn("postbox: refused a CA cloud served", zap.String("audit", "postbox"), zap.String("reason", code), zap.Error(err))
@@ -676,8 +687,8 @@ func (p *Postbox) fetchIssuer(ctx context.Context, client cloudpbv2.DevicePostbo
 }
 
 // verifyOrgCA accepts a GetOrgCAs certificate only if it is a CA issued
-// directly by one of this device's tenant CAs and valid now; cloud's word
-// alone is never enough. The code is the vectors' refusal label.
+// directly by one of this device's tenant CAs and valid at the given time;
+// cloud's word alone is never enough. The code is the vectors' refusal label.
 func verifyOrgCA(der []byte, tenantCAs []*x509.Certificate, now time.Time) (*x509.Certificate, string, error) {
 	ca, err := x509.ParseCertificate(der)
 	if err != nil {
@@ -793,7 +804,7 @@ func bindsThisDevice(req proto.Message, resource string, id *postboxIdentity) er
 func (p *Postbox) apply(ctx context.Context, req proto.Message) (string, cloudpbv2.ApplyOutcome, string, error) {
 	switch r := req.(type) {
 	case *cloudpbv2.ControlContainerRequest:
-		app := postboxApp(r)
+		app := p.postboxApp(ctx, r)
 		var err error
 		switch r.GetAction() {
 		case cloudpbv2.ContainerAction_CONTAINER_ACTION_START:
@@ -839,8 +850,12 @@ func (p *Postbox) pullMaterial(_ context.Context, releaseID string, _ *cloudpbv2
 	return cloudpbv2.ApplyOutcome_APPLY_OUTCOME_PULL_REFUSED, "material", fmt.Errorf("%s for release %q", materialPending, releaseID)
 }
 
-// decide audits, counts and records one postbox decision.
-func (p *Postbox) decide(e *cloudpbv2.PostboxEntry, correlation, app string, outcome cloudpbv2.ApplyOutcome, reason string, err error) {
+// decide audits, counts and records one postbox decision. The record is
+// swapped in only once it is on disk, so nothing reports a decision a restart
+// could lose; a failed save holds the cycle, retried with backoff until it
+// lands, since the Pending claim left on disk would be settled as
+// interrupted. It fails only when ctx ends first.
+func (p *Postbox) decide(ctx context.Context, e *cloudpbv2.PostboxEntry, correlation, app string, outcome cloudpbv2.ApplyOutcome, reason string, err error) error {
 	if correlation == "" {
 		correlation = peekCorrelation(e.GetRequestJws()) // unverified, for tracing only
 	}
@@ -854,15 +869,65 @@ func (p *Postbox) decide(e *cloudpbv2.PostboxEntry, correlation, app string, out
 	} else {
 		p.logger.Info("postbox entry applied", fields...)
 	}
-	// An outcome not attributable to an app has the audit line as its record.
-	p.mu.Lock()
-	if app != "" {
-		p.state.Outcomes[app] = &postboxOutcome{EntryID: e.GetEntryId(), CorrelationID: correlation, Outcome: outcome}
+	// Cloud refuses a whole report over one invalid app id: an id the signed
+	// payload names that the device would not deploy is audit only.
+	if app != "" && appconfig.ValidateAppID(app) != nil {
+		p.count("app_id")
+		p.logger.Warn("postbox outcome not reported: invalid app id", append(fields, zap.String("reason", "app_id"))...)
+		app = ""
 	}
-	p.state.Pending = nil
+	// An outcome not attributable to an app has the audit line as its record.
+	record := func(st *postboxState) {
+		st.Outcomes = maps.Clone(st.Outcomes)
+		if app != "" {
+			st.Outcomes[app] = &postboxOutcome{EntryID: e.GetEntryId(), CorrelationID: correlation, Outcome: outcome}
+		}
+		st.Pending = nil
+	}
+	for wait := min(time.Second, p.retry); ; wait = min(2*wait, p.retry) {
+		serr := p.commit(record)
+		if serr == nil {
+			return nil
+		}
+		p.logger.Warn("postbox: saving decision failed; holding until it lands", zap.Int64("entry_id", e.GetEntryId()), zap.Error(serr))
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("decision for entry %d not saved: %w", e.GetEntryId(), serr)
+		case <-time.After(wait):
+		}
+	}
+}
+
+// Reported drops the outcomes cloud has taken. The rule: an app's outcome is
+// dropped once cloud answered a report that carried it (cloud stores a report
+// before it answers, one answer per report, in order), that report listed the
+// app ABSENT (not on the device), no held assignment targets the app, and no
+// newer decision (another entry id) has replaced it. A present or targeted
+// app keeps its outcome on its row.
+func (p *Postbox) Reported(req *cloudpbv2.UpdateReportedStateRequest) {
+	p.mu.Lock()
+	if p.state == nil {
+		p.mu.Unlock()
+		return
+	}
+	targeted := map[string]bool{}
+	for _, a := range p.state.Assignments {
+		targeted[a.AppID] = true
+	}
+	outcomes := maps.Clone(p.state.Outcomes) // copy on write: decide reads the old map unlocked
+	for _, s := range req.GetCurrentStates() {
+		if o := outcomes[s.GetAppId()]; o != nil && s.GetReportedState() == cloudpbv2.Running_ABSENT &&
+			o.EntryID == s.GetPostboxEntryId() && !targeted[s.GetAppId()] {
+			delete(outcomes, s.GetAppId())
+		}
+	}
+	dropped := len(outcomes) != len(p.state.Outcomes)
+	p.state.Outcomes = outcomes
 	p.mu.Unlock()
-	if err := p.save(); err != nil {
-		p.logger.Warn("postbox: saving outcome failed", zap.Error(err))
+	if dropped {
+		if err := p.save(); err != nil {
+			p.logger.Warn("postbox: saving reported outcomes failed", zap.Error(err))
+		}
 	}
 }
 
@@ -901,15 +966,16 @@ func (p *Postbox) ack(ctx context.Context, client cloudpbv2.DevicePostboxService
 }
 
 // settleInterrupted reports the entry a crash left between advance and
-// decide: claimed past the mark, never applied. It is not retried.
-func (p *Postbox) settleInterrupted() {
+// decide: claimed past the mark, never decided. It is not retried. A decided
+// entry never reaches it: decide holds until its record is on disk.
+func (p *Postbox) settleInterrupted(ctx context.Context) error {
 	p.mu.Lock()
 	pend := p.state.Pending
 	p.mu.Unlock()
 	if pend == nil {
-		return
+		return nil
 	}
-	p.decide(&cloudpbv2.PostboxEntry{EntryId: pend.EntryID}, pend.CorrelationID, pend.AppID,
+	return p.decide(ctx, &cloudpbv2.PostboxEntry{EntryId: pend.EntryID}, pend.CorrelationID, pend.AppID,
 		cloudpbv2.ApplyOutcome_APPLY_OUTCOME_APPLY_FAILED, "interrupted",
 		errors.New("agent stopped after claiming this entry and before deciding it; not retried"))
 }
@@ -917,7 +983,7 @@ func (p *Postbox) settleInterrupted() {
 // advance moves the mark past a chain-verified entry, claims its nonce and
 // records it as pending. Memory changes only once the new state is on disk:
 // a failed write leaves the entry to be processed again next cycle.
-func (p *Postbox) advance(e *cloudpbv2.PostboxEntry, nonce string, nonceExpiry int64, now time.Time, pending *postboxPending) error {
+func (p *Postbox) advance(e *cloudpbv2.PostboxEntry, nonce string, nonceExpiry int64, pending *postboxPending) error {
 	p.mu.Lock()
 	st := *p.state
 	st.Nonces = maps.Clone(p.state.Nonces)
@@ -930,8 +996,11 @@ func (p *Postbox) advance(e *cloudpbv2.PostboxEntry, nonce string, nonceExpiry i
 			st.Nonces[nonce] = nonceExpiry
 		}
 	}
+	// Pruned against the persisted floor, never the clock: a clock run past
+	// valid_until and set back would otherwise drop a live nonce and let the
+	// re-appended request apply twice.
 	for n, exp := range st.Nonces {
-		if exp <= now.Unix() {
+		if exp <= st.TimeFloor {
 			delete(st.Nonces, n)
 		}
 	}
@@ -1040,12 +1109,13 @@ func (p *Postbox) count(reason string) {
 	})
 }
 
-// postboxApp is the app a verified request names; "" for none.
-func postboxApp(req proto.Message) string {
+// postboxApp is the app a verified request names; "" for none. App ids are
+// reverse-DNS: a container name is resolved against this device's apps,
+// never cut at a '.'.
+func (p *Postbox) postboxApp(ctx context.Context, req proto.Message) string {
 	switch r := req.(type) {
 	case *cloudpbv2.ControlContainerRequest:
-		app, _, _ := strings.Cut(r.GetContainerName(), ".")
-		return app
+		return p.control.AppOf(ctx, r.GetContainerName())
 	case *cloudpbv2.DeviceAssignment:
 		return r.GetAppId()
 	}
@@ -1121,6 +1191,20 @@ func NewPostboxControl(svc *ContainerService) postboxControl { return containerC
 func (c containerControl) StopApp(ctx context.Context, name string) error {
 	_, err := c.svc.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: name})
 	return err
+}
+
+// AppOf maps a service container ("{appID}_{service}") to its app by this
+// device's own listing; any other name is the app id itself.
+func (c containerControl) AppOf(ctx context.Context, name string) string {
+	apps, _ := c.svc.containerd.ListContainers(ctx) // no listing: the name is the app id
+	for _, a := range apps {
+		for _, s := range a.GetServices() {
+			if a.GetAppName()+"_"+s.GetName() == name {
+				return a.GetAppName()
+			}
+		}
+	}
+	return name
 }
 
 func (c containerControl) StartApp(ctx context.Context, name string) error {

@@ -147,6 +147,7 @@ func (r *ReportedState) session(ctx context.Context) error {
 		return err
 	}
 	recvErr := make(chan error, 1)
+	answered := make(chan struct{})
 	go func() {
 		for {
 			resp, err := stream.Recv()
@@ -160,9 +161,17 @@ func (r *ReportedState) session(ctx context.Context) error {
 					r.postbox.Nudge(*head)
 				}
 			}
+			select {
+			case answered <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
+	// sent are the reports cloud has not answered yet, oldest first: cloud
+	// answers each report once, in order, after storing it.
+	var sent []*cloudpbv2.UpdateReportedStateRequest
 	var last *cloudpbv2.UpdateReportedStateRequest
 	var lastSent time.Time
 	ticker := time.NewTicker(r.poll)
@@ -177,6 +186,7 @@ func (r *ReportedState) session(ctx context.Context) error {
 				return err
 			}
 			last, lastSent = req, time.Now()
+			sent = append(sent, req)
 		}
 		select {
 		case <-ctx.Done():
@@ -185,6 +195,13 @@ func (r *ReportedState) session(ctx context.Context) error {
 			return errIdentityChanged
 		case err := <-recvErr:
 			return err
+		case <-answered:
+			if len(sent) > 0 {
+				if r.postbox != nil {
+					r.postbox.Reported(sent[0])
+				}
+				sent = sent[1:]
+			}
 		case <-ticker.C:
 		}
 	}

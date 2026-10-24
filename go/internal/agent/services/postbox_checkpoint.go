@@ -56,6 +56,9 @@ type postboxCheckpoint struct {
 	maxID   int64
 	head    []byte    // hash_of_head: the entry_hash at max_id
 	genTime time.Time // the TSA's time: the device's trusted time (AAA D9)
+	// tenantWide: the body's target is empty, the tenant's chain rather than
+	// this device's.
+	tenantWide bool
 	// inter is the checkpoint x5c beyond its leaf: the platform intermediates
 	// an entry's TSA token chains through (the token embeds only its signer).
 	inter []*x509.Certificate
@@ -143,7 +146,7 @@ func verifyCheckpoint(raw []byte, roots *x509.CertPool, tenant, target string, m
 	if now.After(expires) {
 		return postboxCheckpoint{}, cpRefuse("stale", "expired at %s", expires)
 	}
-	return postboxCheckpoint{maxID: b.MaxID, head: head, genTime: genTime, inter: chain[1:]}, nil
+	return postboxCheckpoint{maxID: b.MaxID, head: head, genTime: genTime, inter: chain[1:], tenantWide: b.Target == ""}, nil
 }
 
 // verifyCheckpointJWS returns the payload and the x5c chain (leaf first).
