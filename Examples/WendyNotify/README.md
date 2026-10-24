@@ -42,10 +42,12 @@ recipients, title is 1–120 printable UTF-8 bytes, body is 1–2000 printable U
 bytes, and links must target the sending device, for example
 `wendy://devices/current/live`. The Agent also enforces a short burst limit.
 
-Deployment through Cloud works, but opening this example's page currently requires
-LAN access to the device: the Cloud v2 CLI tunnel catalog allows ports 22 and
-50052, so `wendy cloud tunnel 8080:8080` refuses port 8080. Responses are not cached,
-cannot be framed, and send no referrer to external font services.
+Deployment through Cloud works. The older CLI used for validation refuses port
+8080 through Cloud v2, so page access with that CLI requires the device LAN.
+Updated Cloud, CLI, and Agent versions support application ports as described in
+the [Cloud tunnel guide](../../go/internal/cli/assets/docs/clients/wendy-cli/commands/cloud/tunnel.md#cloud-v2-ports).
+Responses are not cached, cannot be framed, and send no referrer to external font
+services.
 
 ## Development
 
