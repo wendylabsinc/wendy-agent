@@ -347,11 +347,8 @@ func (m *Manager) stopStaleParticipants(desired map[string]bool) {
 	for _, item := range staleCameras {
 		item.camera.pumpMu.Lock()
 		m.mu.Lock()
-		if !item.camera.active && item.camera.participant == item.participant && item.camera.writer != nil {
-			_ = item.camera.writer.Close()
-			item.camera.writer = nil
-			item.camera.ready = make(chan struct{})
-			item.camera.readyClosed = false
+		if !item.camera.active && item.camera.participant == item.participant {
+			m.closeWriterLocked(item.camera)
 		}
 		m.mu.Unlock()
 		item.camera.pumpMu.Unlock()
@@ -743,8 +740,6 @@ func (m *Manager) release(cam *cameraState) {
 	wanted := cam.viewRefs > 0 || m.containerUse
 	if !wanted {
 		m.unsubscribeLocked(cam)
-	}
-	if !wanted {
 		m.closeWriterLocked(cam)
 	}
 	m.mu.Unlock()
@@ -784,8 +779,6 @@ func (m *Manager) SetContainerConsumers(names []string) {
 			m.mu.Lock()
 			if cam.viewRefs == 0 {
 				m.unsubscribeLocked(cam)
-			}
-			if cam.viewRefs == 0 {
 				m.closeWriterLocked(cam)
 			}
 			m.mu.Unlock()
