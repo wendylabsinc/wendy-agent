@@ -138,7 +138,7 @@ func (c *fakePostboxCloud) notarize(_ []byte, _ *x509.CertPool, _, _ string, mar
 	if c.maxID > 0 {
 		maxID = c.maxID
 	}
-	if maxID < mark {
+	if !c.tenantWide && maxID < mark {
 		return postboxCheckpoint{}, cpRefuse("rollback", "max_id below the mark")
 	}
 	gen := c.genTime
@@ -1096,6 +1096,14 @@ func TestPostboxTenantWideCheckpointLeavesTheMark(t *testing.T) {
 	f.cycle()
 	if st := f.p.snapshot(); st.HighWater != 2 || st.CheckpointMark != 2 || f.p.refusals["checkpoint"] != 0 || len(f.ctr.stopCalls) != 2 {
 		t.Fatalf("high water %d, mark %d, refusals %v: device checkpoint refused after a tenant-wide one", st.HighWater, st.CheckpointMark, f.p.refusals)
+	}
+	// Nor is its max_id a rollback: one below this device's mark and head is
+	// accepted and the next entry applies.
+	f.cloud.tenantWide, f.cloud.maxID = true, 1
+	f.control("web", stop, nil)
+	f.cycle()
+	if st := f.p.snapshot(); st.HighWater != 3 || st.CheckpointMark != 2 || f.p.refusals["checkpoint"] != 0 || len(f.ctr.stopCalls) != 3 {
+		t.Fatalf("high water %d, mark %d, refusals %v: tenant-wide max_id below the mark refused", st.HighWater, st.CheckpointMark, f.p.refusals)
 	}
 }
 

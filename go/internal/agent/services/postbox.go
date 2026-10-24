@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -329,6 +330,12 @@ func (p *Postbox) cycle(ctx context.Context) error {
 			break
 		}
 		cp, err := p.checkpoint(resp.GetCheckpoint(), id.roots, id.tenant, id.uri, p.snapshot().CheckpointMark, p.trustedNow())
+		if cp.tenantWide {
+			// Its max_id and head describe the tenant's chain, not this
+			// device's: nothing here or in process compares with them
+			// (WDY-4015 item 9).
+			cp.maxID, cp.head = math.MaxInt64, nil
+		}
 		cpMax, cpHead := cp.maxID, cp.head
 		if err == nil && cpMax < hwm {
 			err = fmt.Errorf("checkpoint max_id %d is below the high-water mark %d", cpMax, hwm)

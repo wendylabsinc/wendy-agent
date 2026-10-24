@@ -139,8 +139,10 @@ func verifyCheckpoint(raw []byte, roots *x509.CertPool, tenant, target string, m
 	if genTime.Before(notarized.Add(-postboxCheckpointSkew)) {
 		return postboxCheckpoint{}, cpRefuse("skew", "genTime %s before notarized_at %s", genTime, notarized)
 	}
-	// 9, 10.
-	if b.MaxID < mark {
+	// 9, 10. A tenant-wide checkpoint (empty target) is on the tenant's chain,
+	// not this device's: its max_id is never compared with this device's mark
+	// (WDY-4015 item 9).
+	if b.Target != "" && b.MaxID < mark {
 		return postboxCheckpoint{}, cpRefuse("rollback", "max_id %d below the checkpoint mark %d", b.MaxID, mark)
 	}
 	if now.After(expires) {

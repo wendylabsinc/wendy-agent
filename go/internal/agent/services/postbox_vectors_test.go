@@ -84,6 +84,7 @@ func TestPostboxCheckpointVectors(t *testing.T) {
 	if len(doc.Vectors) != 18 {
 		t.Fatalf("%d vectors, want 18", len(doc.Vectors))
 	}
+	tenantWide := 0
 	for _, v := range doc.Vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			raw, _ := base64.StdEncoding.DecodeString(v.Checkpoint)
@@ -102,7 +103,21 @@ func TestPostboxCheckpointVectors(t *testing.T) {
 			if err == nil && (cp.maxID < v.HWM || len(cp.head) != 32 || cp.genTime.IsZero() || len(cp.inter) != 1 || !cp.inter[0].Equal(tsaCA)) {
 				t.Fatalf("verified checkpoint binds %+v", cp)
 			}
+			// A mark above max_id is a rollback for a device checkpoint only:
+			// a tenant-wide one is on another chain (WDY-4015 item 9).
+			if err == nil {
+				_, err := verifyCheckpoint(raw, roots, v.Tenant, v.Target, cp.maxID+1, time.Unix(v.VerifyAt, 0))
+				if cp.tenantWide != (err == nil) {
+					t.Fatalf("tenant-wide %t, mark above max_id: %v", cp.tenantWide, err)
+				}
+				if cp.tenantWide {
+					tenantWide++
+				}
+			}
 		})
+	}
+	if tenantWide == 0 {
+		t.Fatal("no valid tenant-wide vector")
 	}
 }
 
