@@ -4,8 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestRegistryFallbackPlan covers the gate that decides whether a registry-push
@@ -121,4 +132,154 @@ func TestIsChunkDeployCancellation(t *testing.T) {
 			t.Fatal("want false: this must fall through to the registry-push fallback classifiers")
 		}
 	})
+}
+
+// Drive the actual deploy ladder with a local image fixture. A provisioned
+// registry with no local credentials stops the allowed fallback before any
+// network access, letting us assert LAN and v1 still reach it and v2 does not.
+func TestRunRegistryFallbackRespectsCloudV2Catalog(t *testing.T) {
+	defer forceBuildProgressInteractive(false)()
+	setupCloudRunFixture(t)
+	for _, tc := range []struct {
+		name               string
+		cloudV2, reconnect bool
+	}{
+		{name: "LAN"}, {name: "Cloud v1", reconnect: true}, {name: "Cloud v2", cloudV2: true, reconnect: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM busybox:latest\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			registry := &fallbackProvisioningClient{}
+			conn := &grpcclient.AgentConnection{Host: "fixture", IsCloudV2: tc.cloudV2, ContainerService: &probeUnsupportedClient{}, ProvisioningService: registry}
+			conn.CacheAgentVersion(&agentpb.GetAgentVersionResponse{Os: "linux", CpuArchitecture: "arm64"})
+			if tc.reconnect {
+				conn.Reconnect = func(context.Context) (*grpcclient.AgentConnection, error) {
+					t.Fatal("Unimplemented must not reconnect")
+					return nil, nil
+				}
+			}
+			cfg := &appconfig.AppConfig{AppID: "fallback-fixture"}
+			opts := runOptions{builder: imageBuilderAppleContainer, chunking: chunkingAuto, managedRobot: true, yes: true}
+			err := runWithAgentRecorded(t.Context(), conn, dir, cfg, opts, newDeployMetrics(opts))
+			if tc.cloudV2 {
+				if err == nil || !isUnimplementedRPCError(err) || !strings.Contains(err.Error(), "Update the Agent, then retry.") || strings.Contains(err.Error(), "registry") {
+					t.Fatalf("error = %v, want chunk error with unsupported-registry explanation", err)
+				}
+				if registry.calls != 0 {
+					t.Fatalf("v2 attempted the registry fallback %d times", registry.calls)
+				}
+			} else {
+				if registry.calls != 1 || !errors.Is(err, errRegistryAuth) {
+					t.Fatalf("registry calls=%d err=%v, want the registry auth gate", registry.calls, err)
+				}
+			}
+		})
+	}
+}
+
+type fallbackProvisioningClient struct {
+	agentpb.WendyProvisioningServiceClient
+	calls int
+}
+
+func (c *fallbackProvisioningClient) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest, ...grpc.CallOption) (*agentpb.IsProvisionedResponse, error) {
+	c.calls++
+	return &agentpb.IsProvisionedResponse{Response: &agentpb.IsProvisionedResponse_Provisioned{Provisioned: &agentpb.ProvisionedResponse{}}}, nil
+}
+
+func setupCloudRunFixture(t *testing.T) {
+	t.Helper()
+
+	oldCommand, oldLookPath := imageBuilderCommandContext, imageBuilderLookPath
+	oldGOOS, oldGOARCH := imageBuilderHostGOOS, imageBuilderHostGOARCH
+	t.Cleanup(func() {
+		imageBuilderCommandContext, imageBuilderLookPath = oldCommand, oldLookPath
+		imageBuilderHostGOOS, imageBuilderHostGOARCH = oldGOOS, oldGOARCH
+	})
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	t.Setenv("WENDY_AGENT_SOCKET", "")
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	imageBuilderLookPath = func(string) (string, error) { return "/fixture/container", nil }
+	fakeCommand := fakeImageBuilderCommandContext(filepath.Join(t.TempDir(), "builder.log"))
+	imageBuilderCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) >= 2 && args[0] == "image" && args[1] == "save" {
+			for i := 2; i+1 < len(args); i++ {
+				if args[i] == "-o" {
+					writeMinimalOCILayout(t, args[i+1], []byte("fixture-layer"), "application/vnd.oci.image.layer.v1.tar", []byte("fixture-layer"))
+					return fakeCommand(ctx, "container", "--version")
+				}
+			}
+		}
+		return fakeCommand(ctx, name, args...)
+	}
+}
+
+type cloudStartDropClient struct {
+	*fakeContainerClient
+	cause      error
+	rpcFailure bool
+	started    bool
+}
+
+func (c *cloudStartDropClient) PrepareImage(context.Context, *agentpb.RunContainerLayersRequest, ...grpc.CallOption) (*agentpb.PrepareImageResponse, error) {
+	return &agentpb.PrepareImageResponse{}, nil
+}
+
+func (c *cloudStartDropClient) RunContainer(context.Context, *agentpb.RunContainerLayersRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], error) {
+	if c.rpcFailure {
+		return nil, c.cause
+	}
+	remaining := 0
+	if c.started {
+		remaining = 1
+	}
+	return &deploymentAckStream{remaining: remaining, err: c.cause}, nil
+}
+
+func TestCloudRunConnectionDropBeforeStarted(t *testing.T) {
+	defer forceBuildProgressInteractive(false)()
+	defer setBuildProgressOut(io.Discard)()
+	setupCloudRunFixture(t)
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+	for _, tc := range []struct {
+		name                string
+		rpcFailure, started bool
+		code                codes.Code
+	}{
+		{"RunContainer fails", true, false, codes.Unavailable},
+		{"stream fails before Started", false, false, codes.Unavailable},
+		{"stream fails after Started", false, true, codes.Unavailable},
+		{"cancellation before Started", false, false, codes.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM busybox:latest\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cause := status.Error(tc.code, "private container stream details")
+			client := &cloudStartDropClient{fakeContainerClient: &fakeContainerClient{queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse { return &agentpb.QueryChunksResponse{} }}, cause: cause, rpcFailure: tc.rpcFailure, started: tc.started}
+			registry := &fallbackProvisioningClient{}
+			conn := &grpcclient.AgentConnection{Host: "jetson", IsCloudV2: true, ContainerService: client, ProvisioningService: registry}
+			conn.CacheAgentVersion(&agentpb.GetAgentVersionResponse{Os: "linux", CpuArchitecture: "arm64"})
+			opts := runOptions{builder: imageBuilderAppleContainer, chunking: chunkingAuto, managedRobot: true, yes: true}
+			err := runWithAgentRecorded(t.Context(), conn, dir, &appconfig.AppConfig{AppID: "cloud-start-fixture"}, opts, newDeployMetrics(opts))
+			if !errors.Is(err, cause) || registry.calls != 0 {
+				t.Fatalf("err=%v registry calls=%d", err, registry.calls)
+			}
+			if tc.started || tc.code == codes.Canceled {
+				var cloud *cloudDeployError
+				if errors.As(err, &cloud) {
+					t.Fatalf("rewrote a post-start failure or cancellation: %v", err)
+				}
+				return
+			}
+			if ExecutionErrorClass(err) != "device_unreachable" || !strings.Contains(err.Error(), "The Cloud connection to jetson was lost while starting the app.") || !strings.Contains(err.Error(), cloudUploadRetryHint) || strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "during the upload") {
+				t.Fatalf("unactionable/wrong-phase connection loss: %v", err)
+			}
+		})
+	}
 }
