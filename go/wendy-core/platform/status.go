@@ -1,6 +1,9 @@
 package platform
 
-import "strconv"
+import (
+	"context"
+	"strconv"
+)
 
 // RPCStatusCode is a numeric gRPC wire status, independent of grpc-go. Unknown
 // values are preserved when crossing host boundaries.
@@ -56,14 +59,20 @@ type RPCStatusError struct {
 	InitialMetadata Metadata
 	// TrailingMetadata contains any response trailers, including binary status details.
 	TrailingMetadata Metadata
-	// Cause retains the original transport error. For cancellation/deadline
-	// errors it must also match the corresponding context error via errors.Is.
+	// Cause retains the original transport error without displaying it.
 	Cause error
 }
 
 // Error returns a diagnostic that excludes remote messages, metadata and causes.
 func (e *RPCStatusError) Error() string {
 	return "RPC failed with status " + strconv.FormatUint(uint64(e.Code), 10)
+}
+
+// Is matches cancellation and deadline statuses to the corresponding context
+// errors even when the host's original error uses a different representation.
+func (e *RPCStatusError) Is(target error) bool {
+	return (e.Code == RPCCanceled && target == context.Canceled) ||
+		(e.Code == RPCDeadlineExceeded && target == context.DeadlineExceeded)
 }
 
 // Unwrap retains the host error for errors.Is/errors.As without displaying it.

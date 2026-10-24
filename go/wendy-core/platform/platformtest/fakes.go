@@ -12,10 +12,14 @@ import (
 
 // Signer delegates signing and public identity access to test functions.
 type Signer struct {
-	AlgorithmFunc        func() platform.SignatureAlgorithm
+	// AlgorithmFunc reports the fake's signature scheme.
+	AlgorithmFunc func() platform.SignatureAlgorithm
+	// CertificateChainFunc supplies the fake's public certificate chain.
 	CertificateChainFunc func(context.Context) ([][]byte, error)
-	PublicKeyFunc        func(context.Context) ([]byte, error)
-	SignFunc             func(context.Context, []byte) ([]byte, error)
+	// PublicKeyFunc supplies the fake's public key.
+	PublicKeyFunc func(context.Context) ([]byte, error)
+	// SignFunc handles exact signing input and returns a scripted signature/error.
+	SignFunc func(context.Context, []byte) ([]byte, error)
 }
 
 // Algorithm implements platform.Signer.
@@ -36,7 +40,9 @@ func (s Signer) Sign(ctx context.Context, message []byte) ([]byte, error) {
 
 // Transport delegates unary and server-streaming RPCs to test functions.
 type Transport struct {
-	UnaryFunc        func(context.Context, platform.RPCRequest) (platform.RPCResponse, error)
+	// UnaryFunc handles a unary request.
+	UnaryFunc func(context.Context, platform.RPCRequest) (platform.RPCResponse, error)
+	// ServerStreamFunc handles a server-streaming request.
 	ServerStreamFunc func(context.Context, platform.RPCRequest) (platform.ServerStream, error)
 }
 
@@ -52,10 +58,14 @@ func (t Transport) ServerStream(ctx context.Context, request platform.RPCRequest
 
 // ServerStream delegates receive, metadata access and cleanup to test functions.
 type ServerStream struct {
-	HeaderFunc  func() (platform.Metadata, error)
-	RecvFunc    func() ([]byte, error)
+	// HeaderFunc supplies initial metadata or an error.
+	HeaderFunc func() (platform.Metadata, error)
+	// RecvFunc supplies the next message or terminal result.
+	RecvFunc func() ([]byte, error)
+	// TrailerFunc supplies trailing metadata after completion.
 	TrailerFunc func() platform.Metadata
-	CloseFunc   func() error
+	// CloseFunc cancels blocked operations and releases fake resources.
+	CloseFunc func() error
 }
 
 // Header implements platform.ServerStream.

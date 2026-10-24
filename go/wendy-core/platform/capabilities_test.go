@@ -125,6 +125,28 @@ func TestRPCStatusSurvivesWrappingWithoutDisplayingDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRPCStatusMatchesContextErrorsWithoutLosingHostCause(t *testing.T) {
+	hostCause := errors.New("native host status")
+	for _, test := range []struct {
+		code platform.RPCStatusCode
+		want error
+	}{
+		{platform.RPCCanceled, context.Canceled},
+		{platform.RPCDeadlineExceeded, context.DeadlineExceeded},
+		{platform.RPCUnavailable, nil},
+	} {
+		err := fmt.Errorf("host call: %w", &platform.RPCStatusError{Code: test.code, Cause: hostCause})
+		if !errors.Is(err, hostCause) {
+			t.Fatalf("code %d lost the native host cause", test.code)
+		}
+		for _, target := range []error{context.Canceled, context.DeadlineExceeded} {
+			if got := errors.Is(err, target); got != (test.want == target) {
+				t.Fatalf("code %d matches %v = %t", test.code, target, got)
+			}
+		}
+	}
+}
+
 func TestHostCallsHonorCancellationAndExpiredDeadline(t *testing.T) {
 	for _, deadline := range []bool{false, true} {
 		name := "canceled"
