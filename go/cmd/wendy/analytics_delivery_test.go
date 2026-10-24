@@ -98,6 +98,8 @@ func TestInvocationAnalyticsHTTPDelivery(t *testing.T) {
 		{"bare invocation", "wendy", nil, false},
 		{"help flag", "wendy install", []string{"install", "--help"}, false},
 		{"version", "wendy", []string{"--version"}, false},
+		{"verbose version", "wendy", []string{"--version", "--verbose"}, false},
+		{"JSON version", "wendy", []string{"--version", "--json"}, false},
 		{"group", "wendy device", []string{"device"}, false},
 		{"shell completion", "wendy __complete", []string{"__complete", "private-prefix"}, false},
 		{"shell completion alias", "wendy __complete", []string{"__completeNoDesc", "private-prefix"}, false},
@@ -174,7 +176,7 @@ func TestEnablingAnalyticsReportsTheCurrentInvocation(t *testing.T) {
 
 func TestHelpDoesNotCountAsProductUse(t *testing.T) {
 	for _, args := range [][]string{
-		nil, {"--version"}, {"device"}, {"install", "--help"},
+		nil, {"--version"}, {"--version", "--verbose"}, {"--version", "--json"}, {"device"}, {"install", "--help"},
 		{"discover", "--help"}, {"init", "--help"}, {"auth", "login", "--help"},
 		{"__complete", ""},
 	} {
