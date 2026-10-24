@@ -786,7 +786,8 @@ func (b *bridge) registry(r request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	priv, err := browserRegistryKey(saved.Profile, r.Method == "registry-key", p.Rotate)
+	// Only registry-key rotates: an unwrap needs the registered key.
+	priv, err := browserRegistryKey(saved.Profile, r.Method == "registry-key", r.Method == "registry-key" && p.Rotate)
 	if err != nil {
 		return nil, err
 	}
