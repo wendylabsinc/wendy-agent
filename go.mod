@@ -65,7 +65,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	github.com/wendylabsinc/WendyOS/go/babel v0.0.0
-	github.com/wendylabsinc/wendy-go v0.1.0-seed.1.0.20261024171358-1e89a438084f
+	github.com/wendylabsinc/wendy-go v0.1.0-seed.1.0.20261024173235-4a493d65b84b
 	go.bug.st/serial v1.6.4
 	go.etcd.io/bbolt v1.5.0
 	go.opentelemetry.io/proto/otlp v1.11.1

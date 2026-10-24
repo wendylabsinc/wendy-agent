@@ -408,8 +408,8 @@ github.com/wendylabsinc/WendyOS/go/wendy-core v0.0.0-20261024163831-ed99070fd9fe
 github.com/wendylabsinc/WendyOS/go/wendy-core v0.0.0-20261024163831-ed99070fd9fe/go.mod h1:6UZXhqWTxVBoGZltjfJx84EsKQVp9erNnJPFXJCpaKY=
 github.com/wendylabsinc/quic-go v0.0.0-20261021071220-8632456e04a5 h1:BFk/jAKA1NDOVzej6/n6uaslITIScLinEhmugZ781b0=
 github.com/wendylabsinc/quic-go v0.0.0-20261021071220-8632456e04a5/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
-github.com/wendylabsinc/wendy-go v0.1.0-seed.1.0.20261024171358-1e89a438084f h1:Z25j3qx0HJ3IqdAkcx8nbvCDjCxoRSiKDAEcKFXTB3s=
-github.com/wendylabsinc/wendy-go v0.1.0-seed.1.0.20261024171358-1e89a438084f/go.mod h1:aAGc7tEPSFSdC3lKv6cG1hPAX7JPCMzQ3SNj7lB98kU=
+github.com/wendylabsinc/wendy-go v0.1.0-seed.1.0.20261024173235-4a493d65b84b h1:mwCwmQw1kkj44Eal6OaZHiBnkrp7VyjOXkpJyyvSTuQ=
+github.com/wendylabsinc/wendy-go v0.1.0-seed.1.0.20261024173235-4a493d65b84b/go.mod h1:aAGc7tEPSFSdC3lKv6cG1hPAX7JPCMzQ3SNj7lB98kU=
 github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=
 github.com/wlynxg/anet v0.0.5/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
