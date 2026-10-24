@@ -8,11 +8,15 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/registrycrypto"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -53,14 +57,19 @@ func TestRegistryKeyStoreRoundTrip(t *testing.T) {
 
 type keyDirectory struct {
 	cloudpb.UnimplementedKeyDirectoryServiceServer
-	calls int
-	got   *cloudpb.SignedRequest
-	ack   string // key_id to acknowledge; empty acknowledges the registered key
+	calls  int
+	got    *cloudpb.SignedRequest
+	ack    string // key_id to acknowledge; empty acknowledges the registered key
+	refuse error  // refuses every registration
+	served []*cloudpb.RecipientKey
 }
 
 func (k *keyDirectory) RegisterUserEncryptionKey(_ context.Context, in *cloudpb.SignedRequest) (*cloudpb.RegisterEncryptionKeyResponse, error) {
 	k.calls++
 	k.got = in
+	if k.refuse != nil {
+		return nil, k.refuse
+	}
 	var req cloudpb.RegisterEncryptionKeyRequest
 	if err := proto.Unmarshal(in.GetPayload(), &req); err != nil {
 		return nil, err
@@ -69,7 +78,109 @@ func (k *keyDirectory) RegisterUserEncryptionKey(_ context.Context, in *cloudpb.
 	if id == "" {
 		id = registrycrypto.KeyID(req.GetPublicKey())
 	}
+	k.served = append(k.served, &cloudpb.RecipientKey{Principal: "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject, Registration: in})
 	return &cloudpb.RegisterEncryptionKeyResponse{KeyId: id}, nil
+}
+
+func (k *keyDirectory) GetRecipientKeys(context.Context, *cloudpb.GetRecipientKeysRequest) (*cloudpb.GetRecipientKeysResponse, error) {
+	return &cloudpb.GetRecipientKeysResponse{Keys: k.served}, nil
+}
+
+// serveKeyDirectory serves dir on a local plaintext listener and returns its
+// address.
+func serveKeyDirectory(t *testing.T, dir *keyDirectory) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer()
+	cloudpb.RegisterKeyDirectoryServiceServer(srv, dir)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	return lis.Addr().String()
+}
+
+// savedRegistryKeyID is the bound marker of the one stored session.
+func savedRegistryKeyID(t *testing.T) string {
+	t.Helper()
+	cfg, err := config.Load()
+	if err != nil || len(cfg.Auth) != 1 {
+		t.Fatalf("stored sessions: %v", err)
+	}
+	return cfg.Auth[0].RegistryKeyID
+}
+
+// 'registry key show' asks Cloud instead of trusting the bound marker: a key
+// Cloud still serves is left alone, a dropped one is registered again, and a
+// refused one is left unbound so the next refresh retries it.
+func TestRegistryKeyShowChecksWithCloud(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	origFresh := ensureFreshCertificateFn
+	ensureFreshCertificateFn = func(context.Context, *config.AuthConfig) error { return nil }
+	t.Cleanup(func() { ensureFreshCertificateFn = origFresh })
+	dir := &keyDirectory{}
+	addr := serveKeyDirectory(t, dir)
+	session := tenantOperatorSession(t, addr)
+	if err := config.Save(&config.Config{Auth: []config.AuthConfig{session}}); err != nil {
+		t.Fatal(err)
+	}
+	show := func() (string, error) {
+		var err error
+		out := captureStderr(t, func() { err = runRegistryKey(context.Background(), addr, false) })
+		return out, err
+	}
+
+	if out, err := show(); err != nil || dir.calls != 1 || !strings.Contains(out, ": registered with Cloud") {
+		t.Fatalf("first show: %v, %d calls, %q", err, dir.calls, out)
+	}
+	keyID := savedRegistryKeyID(t)
+	if out, err := show(); err != nil || dir.calls != 1 || !strings.Contains(out, ": registered with Cloud") {
+		t.Fatalf("show of a served key: %v, %d calls, %q", err, dir.calls, out)
+	}
+	dir.served = nil // Cloud dropped the registration
+	if out, err := show(); err != nil || dir.calls != 2 || !strings.Contains(out, ": re-registered with Cloud") || savedRegistryKeyID(t) != keyID {
+		t.Fatalf("show of a dropped key: %v, %d calls, %q", err, dir.calls, out)
+	}
+	dir.served, dir.refuse = nil, status.Error(codes.PermissionDenied, "no")
+	if out, err := show(); err == nil || !strings.Contains(out, ": unregistered (cloud refused: ") || savedRegistryKeyID(t) != "" {
+		t.Fatalf("show of a refused key: %v, %q", err, out)
+	}
+}
+
+// The automatic pre-flight renewal is a certificate refresh: it registers an
+// unbound key. Without a renewal nothing is sent.
+func TestPreflightRenewalRetriesRegistryKey(t *testing.T) {
+	t.Setenv("WENDY_CONFIG_DIR", t.TempDir())
+	dir := &keyDirectory{}
+	addr := serveKeyDirectory(t, dir)
+	session := tenantOperatorSession(t, addr)
+	session.OAuthIssuer = "https://auth.example/realms/acme"
+	session.OAuthExpiresAt = time.Now().Add(time.Hour).Format(time.RFC3339)
+	if err := config.Save(&config.Config{Auth: []config.AuthConfig{session}}); err != nil {
+		t.Fatal(err)
+	}
+	renewed := false
+	origFresh := ensureFreshCertificateFn
+	ensureFreshCertificateFn = func(_ context.Context, auth *config.AuthConfig) error {
+		if renewed {
+			key, err := certs.ParseSigningPrivateKeyPEM([]byte(auth.Certificates[0].PemPrivateKey))
+			if err != nil {
+				t.Fatal(err)
+			}
+			auth.Certificates[0].PemCertificate = testLeafPEM(t, key)
+		}
+		return nil
+	}
+	t.Cleanup(func() { ensureFreshCertificateFn = origFresh })
+
+	if _, err := pickAuthEntry(addr); err != nil || dir.calls != 0 {
+		t.Fatalf("no renewal: %v, %d calls", err, dir.calls)
+	}
+	renewed = true
+	if _, err := pickAuthEntry(addr); err != nil || dir.calls != 1 || savedRegistryKeyID(t) == "" {
+		t.Fatalf("renewal did not register the key: %v, %d calls", err, dir.calls)
+	}
 }
 
 // RegisterUserEncryptionKey is operator-signed with x5c over

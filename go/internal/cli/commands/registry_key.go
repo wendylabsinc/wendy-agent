@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -39,7 +41,7 @@ func newRegistryCmd() *cobra.Command {
 	key.AddCommand(
 		&cobra.Command{
 			Use:   "show",
-			Short: "Show this machine's registry key, registering it if Cloud has not yet",
+			Short: "Show this machine's registry key, registering it if Cloud does not hold it",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				return runRegistryKey(cmd.Context(), cloudGRPC, false)
@@ -71,30 +73,77 @@ func runRegistryKey(ctx context.Context, cloudGRPC string, rotate bool) error {
 	if rotate {
 		auth.RegistryPrivateKey, auth.RegistryKeyID = "", ""
 	}
-	regErr := registerRegistryKey(ctx, auth)
-	if err := persistRegistryKey(auth); err != nil {
-		return err
-	}
 	priv, err := sessionRegistryKey(auth)
 	if err != nil {
 		return err
 	}
 	keyID := registrycrypto.KeyID(priv.PublicKey().Bytes())
+	status := "registered"
+	regErr := withCloud(ctx, auth, func(ctx context.Context, conn grpc.ClientConnInterface) error {
+		// The local marker is not proof: Cloud may have dropped the key. When
+		// Cloud does not list it, or the lookup fails, register it again
+		// (registering the same key is idempotent).
+		if auth.RegistryKeyID == keyID {
+			if registryKeyListed(ctx, conn, auth, keyID) {
+				return nil
+			}
+			auth.RegistryKeyID, status = "", "re-registered"
+		}
+		return bindRegistryKey(ctx, conn, auth, priv)
+	})
+	if err := persistRegistryKey(auth); err != nil {
+		return err
+	}
 	if regErr != nil {
-		cliLogln("Registry key %s: not registered with Cloud", keyID)
+		cliLogln("Registry key %s: unregistered (cloud refused: %v)", keyID, regErr)
 		return regErr
 	}
-	cliLogln("Registry key %s: registered with Cloud", keyID)
+	cliLogln("Registry key %s: %s with Cloud", keyID, status)
 	return nil
 }
 
+// registryKeyListed reports whether Cloud's key directory serves keyID for
+// this operator. A served registration is not verified here: this only
+// decides whether to register again, never what to wrap to.
+func registryKeyListed(ctx context.Context, conn grpc.ClientConnInterface, auth *config.AuthConfig, keyID string) bool {
+	principal := auth.Certificates[0].PrincipalURI
+	resp, err := cloudpb.NewKeyDirectoryServiceClient(conn).GetRecipientKeys(ctx, &cloudpb.GetRecipientKeysRequest{
+		OrganizationId: auth.Certificates[0].TenantUUID(), Principals: []string{principal},
+	})
+	if err != nil {
+		return false
+	}
+	for _, key := range resp.GetKeys() {
+		var req cloudpb.RegisterEncryptionKeyRequest
+		if key.GetPrincipal() == principal && proto.Unmarshal(key.GetRegistration().GetPayload(), &req) == nil && registrycrypto.KeyID(req.GetPublicKey()) == keyID {
+			return true
+		}
+	}
+	return false
+}
+
 // registerRegistryKeyAfterMint registers the session's registry key after an
-// operator leaf was minted, generating it on first use. A failure is reported
-// and leaves the key unbound: the next leaf mint or 'wendy registry key show'
-// retries. The caller persists auth.
+// operator leaf was minted or renewed, generating it on first use. A failure
+// is reported and leaves the key unbound: the next sign-in, certificate
+// refresh or 'wendy registry key show' retries. The caller persists auth.
 func registerRegistryKeyAfterMint(ctx context.Context, auth *config.AuthConfig) {
 	if err := registerRegistryKey(ctx, auth); err != nil {
-		cliLogln("Registry key not registered yet (retried at the next sign-in or 'wendy registry key show'): %v", err)
+		cliLogln("Registry key not registered yet (retried at the next sign-in, certificate refresh or 'wendy registry key show'): %v", err)
+	}
+}
+
+// retryRegistryKey registers an unbound registry key after the pre-flight
+// renewed the operator leaf, and saves the result. A bound key costs nothing.
+func retryRegistryKey(auth *config.AuthConfig) {
+	before := auth.RegistryPrivateKey + auth.RegistryKeyID
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	registerRegistryKeyAfterMint(ctx, auth)
+	if auth.RegistryPrivateKey+auth.RegistryKeyID == before {
+		return
+	}
+	if err := persistRegistryKey(auth); err != nil {
+		cliLogln("Registry key not saved: %v", err)
 	}
 }
 
