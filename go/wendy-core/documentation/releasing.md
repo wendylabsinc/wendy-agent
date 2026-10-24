@@ -83,7 +83,7 @@ decision.
 
 Build/test once per immutable version; publish those artifacts without a second build. Registries cannot be published transactionally. Rerun failed **publisher** jobs with the original build artifact, not a fresh build under the same version. npm and PyPI retry checks reject existing versions with different bytes; Maven verifies existing coordinates/assets before deployment, and SwiftPM checks its existing tag's parent and manifest. The GitHub Release is finalized after language publication succeeds, does not overwrite assets, marks previews as prereleases and only marks stable as latest. Publication is not canceled midway.
 
-Apache-2.0 `LICENSE`/`NOTICE` accompany all distribution formats. Go's separate BSD notice is retained as `LICENSE-Go.txt`; original Gradle Wrapper notices remain intact. Modular packaging must still preserve selective native/WASM composition and one shared runtime rather than separate Go engines per module. No module-selection build system is introduced by these channel workflows.
+Apache-2.0 `LICENSE`/`NOTICE` accompany all distribution formats. Go's separate BSD notice is retained as `LICENSE-Go.txt`; the Gradle wrapper and its original notices remain in the imported history only. Kotlin builds require Gradle 9.8.1 on `PATH`, installed by the pinned setup-gradle action in CI. Modular packaging must still preserve selective native/WASM composition and one shared runtime rather than separate Go engines per module. No module-selection build system is introduced by these channel workflows.
 
 ## Current base
 

@@ -64,6 +64,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          gradle-version: '9.8.1'
       - if: runner.os == 'Windows'
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
@@ -97,7 +99,7 @@ jobs:
       - name: Build and test Kotlin/JVM interop
         run: |
           python scripts/build.py jni
-          distributions/kotlin/gradlew -p distributions/kotlin test --no-daemon
+          gradle -p distributions/kotlin test --no-daemon
       - if: matrix.swift && runner.os == 'Linux' && !matrix.swift-image
         uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2.4.0
         with:
@@ -202,6 +204,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          gradle-version: '9.8.1'
       - name: Install reference tools
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler clang doxygen graphviz
       - name: Check generated contract, JS projection, and version compatibility
@@ -233,7 +237,7 @@ jobs:
         run: python scripts/swift_release.py .build/release
       - name: Build the all-target Maven artifact
         run: |
-          distributions/kotlin/gradlew -p distributions/kotlin test jar sourcesJar javadocJar generatePomFileForCorePublication --no-daemon
+          gradle -p distributions/kotlin test jar sourcesJar javadocJar generatePomFileForCorePublication --no-daemon
           cp distributions/kotlin/build/libs/*.jar .build/release/
           cp distributions/kotlin/build/publications/core/pom-default.xml ".build/release/wendy-core-${WENDY_CORE_VERSION}.pom"
           cp .build/sdk/api.json .build/release/api.json

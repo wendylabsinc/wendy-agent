@@ -2,6 +2,7 @@
 import argparse
 import os
 import platform
+import shutil
 
 import build
 from build import BUILD, ROOT, run
@@ -52,9 +53,11 @@ def python():
 
 
 def kotlin():
+    gradle = shutil.which("gradle")
+    if gradle is None:
+        raise SystemExit("Gradle 9.8.1 is required for Kotlin builds; install it and add gradle to PATH.")
     build.jni()
-    gradle = "gradlew.bat" if platform.system() == "Windows" else "gradlew"
-    run(build.KOTLIN / gradle, "-p", build.KOTLIN, "test", "--no-daemon")
+    run(gradle, "-p", build.KOTLIN, "test", "--no-daemon")
 
 
 def swift():

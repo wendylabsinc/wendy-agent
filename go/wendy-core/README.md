@@ -62,7 +62,7 @@ git clone https://github.com/wendylabsinc/WendyOS.git
 cd WendyOS/go/wendy-core
 ```
 
-Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21. Swift tests need Swift 6.2+ and, on macOS, XcodeBuildMCP. Documentation generation needs Doxygen and Graphviz (`dot`).
+Prerequisites: Go, a C compiler, Python 3.9+, `protoc`, and Clang. JavaScript tests additionally need Node 22+; Kotlin needs JDK 21 and Gradle 9.8.1 on `PATH`. Swift tests need Swift 6.2+ and, on macOS, XcodeBuildMCP. Documentation generation needs Doxygen and Graphviz (`dot`).
 
 ```sh
 make check               # real Go/C tests, generated JS interface, metadata
@@ -112,7 +112,7 @@ See [releasing](documentation/releasing.md) for packaging and migration boundari
 
 ## License
 
-Licensed under the Apache License, Version 2.0; see `LICENSE` and `NOTICE`. Native/WASM packages retain the Go runtime's separate BSD license notice. Original Gradle Wrapper notices are preserved.
+Licensed under the Apache License, Version 2.0; see `LICENSE` and `NOTICE`. Native/WASM packages retain the Go runtime's separate BSD license notice. The Gradle wrapper is retained in the imported history but is not distributed at the tip.
 
 ## Contributing
 
