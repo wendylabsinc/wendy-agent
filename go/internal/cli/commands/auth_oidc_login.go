@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"time"
 
+	wendy "github.com/wendylabsinc/wendy-go"
 	"github.com/wendylabsinc/wendy-go/identity"
 	"github.com/wendylabsinc/wendy/go/internal/cli/identityhost"
 
@@ -238,6 +239,9 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 	if err != nil {
 		return err
 	}
+	if lite {
+		csrKey = liteOperatorIdentityKey{csrKey}
+	}
 	session := auth.IdentitySession()
 	session.RefreshToken = refresh
 	err = identityhost.Client(http.DefaultClient).RefreshCertificate(ctx, &session, signer, csrKey, lite)
@@ -262,6 +266,21 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig, lite b
 	}
 	clitimesync.CacheProof(ctx)
 	return nil
+}
+
+// Keep the Lite certificate profile check at the host certificate boundary,
+// before Core rotates back to the Cloud audience.
+type liteOperatorIdentityKey struct{ wendy.IdentityKey }
+
+func (key liteOperatorIdentityKey) CheckCertificate(ctx context.Context, chain []byte) (wendy.CertificateIdentity, error) {
+	checked, err := key.IdentityKey.CheckCertificate(ctx, chain)
+	if err != nil {
+		return wendy.CertificateIdentity{}, err
+	}
+	if err := checkLiteOperatorLeaf(checked.CertificatePEM); err != nil {
+		return wendy.CertificateIdentity{}, err
+	}
+	return checked, nil
 }
 
 // oauthAccessTokenFreshFor reports whether the stored access token stays valid
