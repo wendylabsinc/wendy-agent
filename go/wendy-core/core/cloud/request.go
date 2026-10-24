@@ -38,6 +38,14 @@ func (s *Signer) Invoke(ctx context.Context, transport platform.Transport, metho
 	if _, ok := signedResource(s.tenantUUID, method, request); !ok {
 		return platform.RPCResponse{}, requestTypeError(method, request)
 	}
+	if options.RevokeDeviceID != "" {
+		if method != "/wendycloud.v2.PKIAdminService/RevokePrincipalCertificates" {
+			return platform.RPCResponse{}, fmt.Errorf("revocation authority requires RevokePrincipalCertificates")
+		}
+		if err := validateDeviceID(options.RevokeDeviceID); err != nil {
+			return platform.RPCResponse{}, err
+		}
+	}
 	if transport == nil {
 		return platform.RPCResponse{}, fmt.Errorf("host Cloud transport is required")
 	}
@@ -51,12 +59,6 @@ func (s *Signer) Invoke(ctx context.Context, transport platform.Transport, metho
 			return platform.RPCResponse{}, err
 		}
 		if options.RevokeDeviceID != "" {
-			if method != "/wendycloud.v2.PKIAdminService/RevokePrincipalCertificates" {
-				return platform.RPCResponse{}, fmt.Errorf("revocation authority requires RevokePrincipalCertificates")
-			}
-			if err := validateDeviceID(options.RevokeDeviceID); err != nil {
-				return platform.RPCResponse{}, err
-			}
 			signed.PkiManagementRequest, err = s.principalRevocationManagementRequest(ctx, options.RevokeDeviceID)
 			if err != nil {
 				return platform.RPCResponse{}, err

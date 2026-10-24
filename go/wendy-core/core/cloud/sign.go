@@ -27,6 +27,16 @@ type Channel struct {
 	MCPClientID, RelaySessionID string
 }
 
+// SignerOptions fixes the caller's channel and optional clock at construction.
+// Now defaults to time.Now and must be safe for concurrent use when supplied.
+type SignerOptions struct {
+	Channel Channel
+	Now     func() time.Time
+}
+
+// SignedRequest is Cloud's exact-body request envelope.
+type SignedRequest = cloudpbv2.SignedRequest
+
 // Signer delegates signatures and entropy to the host. The host validates the
 // certificate/key binding and supplies its tenant. Instances are immutable and
 // safe for concurrent calls when the host capabilities are.
@@ -41,7 +51,7 @@ type Signer struct {
 
 // NewSigner binds an ML-DSA-65 host signer to a canonical operator tenant.
 // Hosts validate certificate identity, chain order and key ownership beforehand.
-func NewSigner(ctx context.Context, key platform.Signer, tenant string, entropy platform.Entropy, channel Channel) (*Signer, error) {
+func NewSigner(ctx context.Context, key platform.Signer, tenant string, entropy platform.Entropy, options SignerOptions) (*Signer, error) {
 	if key == nil {
 		return nil, fmt.Errorf("Cloud request signing requires an operator certificate")
 	}
@@ -62,12 +72,24 @@ func NewSigner(ctx context.Context, key platform.Signer, tenant string, entropy 
 	for i, der := range chain {
 		x5c[i] = base64.StdEncoding.EncodeToString(der)
 	}
-	return &Signer{key: key, entropy: entropy, tenantUUID: tenant, kid: leafKID(chain[0]), audience: BrokerAudience, x5c: x5c, now: time.Now, channel: channel}, nil
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Signer{key: key, entropy: entropy, tenantUUID: tenant, kid: leafKID(chain[0]), audience: BrokerAudience, x5c: x5c, now: now, channel: options.Channel}, nil
 }
 
 func leafKID(der []byte) string {
 	sum := sha256.Sum256(der)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// SignRequest encodes the exact request body and its canonical descriptor.
+// byKID is true only after successful leaf registration. Invoke handles that
+// negotiation and retry for ordinary callers; adapters may use this encoder
+// when they already own the call lifecycle.
+func (s *Signer) SignRequest(ctx context.Context, method string, req proto.Message, byKID bool, correlationID string) (*SignedRequest, error) {
+	return s.signRequest(ctx, method, req, byKID, correlationID)
 }
 
 func (s *Signer) signRequest(ctx context.Context, method string, req proto.Message, byKID bool, correlationID string) (*cloudpbv2.SignedRequest, error) {

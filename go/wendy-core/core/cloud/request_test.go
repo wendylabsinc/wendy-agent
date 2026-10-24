@@ -43,7 +43,7 @@ func testSigner(t *testing.T) *Signer {
 		},
 		SignFunc: func(ctx context.Context, data []byte) ([]byte, error) { return append([]byte(nil), data...), ctx.Err() },
 	}
-	s, err := NewSigner(context.Background(), key, tenant, &testEntropy{}, Channel{})
+	s, err := NewSigner(context.Background(), key, tenant, &testEntropy{}, SignerOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
