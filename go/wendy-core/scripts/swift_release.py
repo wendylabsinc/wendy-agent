@@ -1,10 +1,10 @@
 """SwiftPM release manifests and an installed-consumer check.
 
-SwiftPM resolves a repository's root Package.swift at a version tag. Swift
-release tags are bare `x.y.z[-prerelease]`: Go ignores them and SwiftPM prefers
-them over the `vx.y.z` tag of the same version. Each identifies a release-only
-child of the tested source commit whose manifest references the GitHub
-release's checksummed binaries instead of locally built ones.
+The local smoke check creates a temporary repository-root package to validate
+packed binaries. It does not make the nested WendyOS package remotely consumable.
+Remote Swift distribution is unresolved and the publication CLI is disabled.
+The release_manifest helper retains the standalone repository format for legacy
+unit tests; no WendyOS workflow uses it to publish tags or release assets.
 """
 import argparse
 import re

@@ -3,11 +3,9 @@ import Foundation
 import PackageDescription
 
 // The Go engine ships as static libraries: an XCFramework for Apple platforms
-// and a SwiftPM artifact bundle for Linux. Swift release tags (bare `x.y.z`
-// or `x.y.z-seed.N`,
-// while Go uses the same version with a leading `v`) replace this block with the published, checksummed
-// release assets. Elsewhere it uses the binaries `make swift` built locally,
-// which exist only for the host's platform family.
+// and a SwiftPM artifact bundle for Linux. This nested manifest supports local
+// path dependencies using the binaries built by `make swift`. Remote Swift
+// distribution from WendyOS is unresolved; publication remains disabled.
 // BEGIN BINARY TARGETS
 let binaryTargets: [Target] = [
     ("CWendyCoreApple", "CWendyCore.xcframework"),

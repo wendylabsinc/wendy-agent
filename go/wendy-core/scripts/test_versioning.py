@@ -170,10 +170,6 @@ class VersionTests(unittest.TestCase):
             self.assertEqual((source / "package.json").read_text(), original)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MonorepoVersionTests(unittest.TestCase):
     def test_nested_module_uses_the_monorepo_revision(self):
         for git_is_file in (False, True):
@@ -199,3 +195,7 @@ class MonorepoVersionTests(unittest.TestCase):
             for tag in ('v0.1.0', 'v0.1.0-seed.1', 'v2026.10.24'):
                 with self.subTest(tag=tag), self.assertRaises(ValueError):
                     versioning.github_plan({}, 'push', 'tag', tag, 123, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

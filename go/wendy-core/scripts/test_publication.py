@@ -237,10 +237,6 @@ class PackageVersionTests(unittest.TestCase):
                 publication.verify_versions(directory, info)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MonorepoPublicationTests(unittest.TestCase):
     def test_publication_cli_is_disabled_before_credentials_or_network_access(self):
         import sys
@@ -251,3 +247,7 @@ class MonorepoPublicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'publication is disabled'):
                     publication.main()
                 api.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
