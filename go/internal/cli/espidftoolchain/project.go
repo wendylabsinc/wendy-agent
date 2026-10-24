@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -21,6 +23,7 @@ type ProjectToolchain struct {
 	Target         string `json:"target"`
 	Preview        bool   `json:"preview"`
 	root, relative string
+	outputOwner    string
 }
 
 func LoadProjectToolchain(projectPath, target string) (*ProjectToolchain, error) {
@@ -69,24 +72,95 @@ func (p *ProjectToolchain) Ensure(ctx context.Context) error {
 	if p.Image == "" {
 		return EnsureVersion(ctx)
 	}
-	cmd := execCommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	p.outputOwner = ""
+	cmd := execCommandContext(ctx, "docker", "info", "--format", "{{json .}}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("ESP-IDF container requires Docker: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	var info dockerEngineInfo
+	if err := json.Unmarshal(output, &info); err != nil {
+		return fmt.Errorf("reading Docker engine info: %w", err)
+	}
+	if info.needsOwnershipRestore(runtime.GOOS, os.Getuid()) {
+		p.outputOwner = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	}
 	return nil
 }
 
-// Command runs idf.py with args. A nil or zero toolchain uses EIM.
-func (p *ProjectToolchain) Command(ctx context.Context, args ...string) *exec.Cmd {
+type dockerEngineInfo struct {
+	OperatingSystem string
+	SecurityOptions []string
+}
+
+func (info dockerEngineInfo) needsOwnershipRestore(goos string, uid int) bool {
+	if goos != "linux" || uid <= 0 || strings.Contains(strings.ToLower(info.OperatingSystem), "docker desktop") {
+		return false
+	}
+	for _, option := range info.SecurityOptions {
+		name := strings.SplitN(option, ",", 2)[0]
+		if name == "name=rootless" || name == "name=userns" {
+			return false
+		}
+	}
+	return true
+}
+
+// Run executes idf.py and restores generated file ownership even after a failed
+// or cancelled build. Mosaico patches /opt/esp/idf, so it must build as root.
+// A nil or zero toolchain uses EIM.
+func (p *ProjectToolchain) Run(ctx context.Context, projectPath string, args ...string) error {
+	cmd := p.command(ctx, args...)
+	cmd.Dir = projectPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if p == nil || p.outputOwner == "" {
+		return err
+	}
+	return errors.Join(err, p.restoreOutputOwnership(ctx))
+}
+
+func (p *ProjectToolchain) restoreOutputOwnership(ctx context.Context) error {
+	// Restrict cleanup to IDF outputs, including the manifest add-dependency
+	// writes. Do not recursively chown the shared workspace or follow symlinks.
+	var paths []string
+	for _, path := range []string{"build", "managed_components", "sdkconfig", "sdkconfig.old", "dependencies.lock", "main/idf_component.yml"} {
+		if _, err := os.Lstat(filepath.Join(p.root, p.relative, path)); err == nil {
+			paths = append(paths, "./"+path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("checking ESP-IDF output ownership: %w", err)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	args := []string{"-v", filepath.Join(p.root, p.relative) + ":/project", "-w", "/project", "--entrypoint", "find", p.Image, "-P"}
+	args = append(args, paths...)
+	args = append(args, "-xdev", "-uid", "0", "-exec", "chown", "-h", "--", p.outputOwner, "{}", "+")
+	if output, err := dockerRunCommand(cleanupCtx, args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("restoring ESP-IDF output ownership: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (p *ProjectToolchain) command(ctx context.Context, args ...string) *exec.Cmd {
 	if p == nil || p.Image == "" {
 		return IdfCommandContext(ctx, args...)
 	}
-	name := "wendy-idf-" + rand.Text()
-	command := []string{"run", "--rm", "--name", name, "-v", p.root + ":/project", "-w", filepath.ToSlash(filepath.Join("/project", p.relative)), p.Image, "idf.py"}
+	command := []string{"-v", p.root + ":/project", "-w", filepath.ToSlash(filepath.Join("/project", p.relative)), p.Image, "idf.py"}
 	if p.Preview {
 		command = append(command, "--preview")
 	}
-	cmd := execCommandContext(ctx, "docker", append(command, args...)...)
+	return dockerRunCommand(ctx, append(command, args...)...)
+}
+
+func dockerRunCommand(ctx context.Context, args ...string) *exec.Cmd {
+	name := "wendy-idf-" + rand.Text()
+	command := append([]string{"run", "--rm", "--name", name}, args...)
+	cmd := execCommandContext(ctx, "docker", command...)
 	// Killing the docker client alone would leave its container building in
 	// the workspace, where a retried build would race it.
 	cmd.Cancel = func() error {

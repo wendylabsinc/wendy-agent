@@ -630,11 +630,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 
 	configuredTarget := espidftoolchain.ProjectTarget(projectPath)
 	if target != "" && target != configuredTarget {
-		cmd := toolchain.Command(ctx, "set-target", target)
-		cmd.Dir = projectPath
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+		if err := toolchain.Run(ctx, projectPath, "set-target", target); err != nil {
 			return nil, fmt.Errorf("idf.py set-target %s: %w", target, err)
 		}
 	}
@@ -664,11 +660,8 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 	}
 
 	// build the project
-	cmd := toolchain.Command(ctx, "gen_project_binary") // build only the app binary, not the whole firmware image
-	cmd.Dir = projectPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	// Build only the app binary, not the whole firmware image.
+	if err := toolchain.Run(ctx, projectPath, "gen_project_binary"); err != nil {
 		return nil, fmt.Errorf("build: idf.py gen_project_binary: %w", err)
 	}
 

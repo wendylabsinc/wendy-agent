@@ -163,11 +163,7 @@ func (s *WendyCoreSetup) checkSource() error {
 }
 
 func (s *WendyCoreSetup) runIDF(ctx context.Context, args ...string) error {
-	cmd := s.toolchain.Command(ctx, args...)
-	cmd.Dir = s.projectPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := s.toolchain.Run(ctx, s.projectPath, args...); err != nil {
 		return fmt.Errorf("idf.py %s: %w", args[0], err)
 	}
 	return nil
