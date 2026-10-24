@@ -129,8 +129,10 @@ func (b *bridge) handle(r request) (any, error) {
 				return nil, err
 			}
 		}
-		if p.ValidForSeconds > int64(cloudrequest.MaxValidity/time.Second) {
-			return nil, fmt.Errorf("validForSeconds %d is more than 365 days", p.ValidForSeconds)
+		// Bounded before the multiply, which would wrap; a non-integer fails
+		// to decode into int64.
+		if p.ValidForSeconds < 0 || p.ValidForSeconds > int64(cloudrequest.MaxValidity/time.Second) {
+			return nil, fmt.Errorf("validForSeconds %d is outside 0 to 365 days", p.ValidForSeconds)
 		}
 		until, err := cloudrequest.ValidUntil(time.Now(), time.Duration(p.ValidForSeconds)*time.Second)
 		if err != nil {

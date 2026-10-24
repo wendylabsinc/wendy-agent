@@ -43,7 +43,8 @@ func TestValidUntil(t *testing.T) {
 			t.Errorf("%q: valid until %s, want now + %s", params, got, want)
 		}
 	}
-	for _, params := range []string{`{"validForSeconds":31536001}`, `{"validForSeconds":-1}`, `{"validForSeconds":18446744074}`} {
+	for _, params := range []string{`{"validForSeconds":31536001}`, `{"validForSeconds":-1}`, `{"validForSeconds":18446744074}`,
+		`{"validForSeconds":-9223372036854775808}`, `{"validForSeconds":-18446744073}`, `{"validForSeconds":1.5}`, `{"validForSeconds":"3600"}`} {
 		if _, err := b.handle(request{Method: "valid-until", Params: json.RawMessage(params)}); err == nil {
 			t.Errorf("%s was accepted", params)
 		}
