@@ -82,12 +82,14 @@ func (t Tenant) String() string {
 func (t Tenant) IsValid() bool { return t.valid }
 
 // Device is the stable device component of a certificate principal: the wendy net
-// identity used for addressing, peer pinning, and link ordering. Renewal
+// identity used for addressing, peer pinning, and link ordering. PeerFromPrincipal
+// also constructs operator endpoints while keeping their operator principal. Renewal
 // preserves the principal and wendy net address; a newly enrolled identity has a
 // newly derived address.
 type Device struct {
-	tenant Tenant
-	id     uuid.UUID
+	tenant   Tenant
+	id       uuid.UUID
+	operator string
 }
 
 // NewDevice combines an already authenticated tenant scope with a device
@@ -113,7 +115,7 @@ func ParseDevice(tenant Tenant, text string) (Device, error) {
 	if err != nil {
 		return Device{}, fmt.Errorf("device UUID: %w", err)
 	}
-	return Device{tenant, id}, nil
+	return Device{tenant: tenant, id: id}, nil
 }
 
 // DeviceFromPrincipal parses a complete device principal. The complete device
@@ -133,7 +135,7 @@ func DeviceFromPrincipal(principal string) (Device, error) {
 	if err != nil {
 		return Device{}, fmt.Errorf("device component %q of %s is not a canonical UUID: unsupported for wendy net", identity.EntityID, principal)
 	}
-	return Device{tenant, id}, nil
+	return Device{tenant: tenant, id: id}, nil
 }
 
 // DeviceFromCert extracts the wendy net device identity from a leaf certificate.
@@ -161,6 +163,9 @@ func (d Device) IsValid() bool { return d.tenant.IsValid() }
 func (d Device) Principal() string {
 	if !d.IsValid() {
 		return ""
+	}
+	if d.operator != "" {
+		return d.operator
 	}
 	return certs.DeviceSPIFFEURI(d.tenant.String(), d.id.String())
 }

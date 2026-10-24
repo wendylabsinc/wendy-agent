@@ -122,7 +122,7 @@ func OpenIdentityCacheWithCertificates(path string, limits CacheLimits, verify I
 			continue
 		}
 		// A key that is not a device principal cannot be addressed by any peer.
-		if _, err := meshid.DeviceFromPrincipal(principal); err != nil {
+		if _, err := meshid.PeerFromPrincipal(principal); err != nil {
 			continue
 		}
 		if entry.Used.After(now) {

@@ -15,10 +15,11 @@ import (
 )
 
 // Credentials reuses the agent's provisioned signer and ML-DSA-aware trust
-// verifier. Reconstruct this object (and the session/cache) when provisioning or
+// verifier. Desktop callers reuse an organization operator certificate instead.
+// Reconstruct this object (and the session/cache) when provisioning or
 // trust changes. No mesh-specific private key or trust-on-first-use is created.
 //
-// The mesh identity is the leaf's device principal
+// Device identities use the leaf's device principal
 // "spiffe://wendy.sh/tenant/<tenant-uuid>/device/<device-uuid>". Nothing here
 // carries an organization number, an asset number, or a hash of either. Cloud
 // uses the same device UUID for asset_id; certificate and tenant verification
@@ -39,6 +40,16 @@ type Credentials struct {
 // service, or legacy numeric principals — are refused outright; there is no
 // fallback identity.
 func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
+	return newCredentials(certPEM, chainPEM, keyPEM, false)
+}
+
+// NewOperatorCredentials joins with an existing organization operator certificate.
+// It never enrolls the computer as a device.
+func NewOperatorCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
+	return newCredentials(certPEM, chainPEM, keyPEM, true)
+}
+
+func newCredentials(certPEM, chainPEM, keyPEM string, operator bool) (*Credentials, error) {
 	base, err := mtls.NewClientTLSConfig(certPEM, chainPEM, keyPEM, nil)
 	if err != nil {
 		return nil, err
@@ -54,9 +65,12 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 	if err != nil {
 		return nil, err
 	}
-	self, err := meshid.DeviceFromCert(leaf)
+	self, err := meshid.PeerFromCert(leaf)
 	if err != nil {
 		return nil, err
+	}
+	if self.IsOperator() != operator {
+		return nil, errors.New("incorrect mesh identity kind")
 	}
 	signer, ok := cert.PrivateKey.(crypto.Signer)
 	if !ok {
@@ -90,7 +104,7 @@ func NewCredentials(certPEM, chainPEM, keyPEM string) (*Credentials, error) {
 		if err != nil {
 			return Identity{}, err
 		}
-		device, err := meshid.DeviceFromCert(peerLeaf)
+		device, err := meshid.PeerFromCert(peerLeaf)
 		if err != nil {
 			return Identity{}, err
 		}
@@ -176,7 +190,7 @@ func pinPeer(config *tls.Config, peer meshid.Device) {
 		if err != nil {
 			return err
 		}
-		device, err := meshid.DeviceFromCert(leaf)
+		device, err := meshid.PeerFromCert(leaf)
 		if err != nil {
 			return err
 		}

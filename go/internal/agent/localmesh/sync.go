@@ -117,7 +117,7 @@ func ReadControl(r io.Reader) (ControlMessage, error) {
 		}
 	case "identity-request":
 		// Only a full device principal addresses an identity: no hash, no number.
-		if _, err := meshid.DeviceFromPrincipal(m.Principal); err != nil {
+		if _, err := meshid.PeerFromPrincipal(m.Principal); err != nil {
 			return m, errors.New("invalid identity request")
 		}
 		if m.Manifest != nil || len(m.Bundle) != 0 {

@@ -14,12 +14,18 @@ package scan
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"time"
 )
 
 // BLEDeviceInfo is one device seen during a scan.
 type BLEDeviceInfo struct {
+	// ServiceData contains raw service advertisements keyed by canonical UUID.
+	ServiceData map[string][]byte
+	// LastSeen is the last radio observation, when supported by the backend.
+	LastSeen time.Time
+
 	// Address identifies the device to ble.Connect. Its meaning is
 	// platform-dependent: a CoreBluetooth peripheral UUID on macOS (the OS
 	// never exposes the hardware MAC), an "AA:BB:CC:DD:EE:FF" MAC on Linux and
@@ -42,6 +48,9 @@ type BLEDeviceInfo struct {
 
 // Options configures a continuous scan.
 type Options struct {
+	// MaxDevices bounds retained results for long-lived background scans.
+	// Zero preserves the accumulating picker behavior.
+	MaxDevices int
 	// Services filters results: a device is reported when it advertises at
 	// least one of these. Empty reports every device seen. Any spelling is
 	// accepted — 16-bit, 32-bit or full 128-bit, either case.
@@ -128,7 +137,7 @@ func DiscoverBluetoothContinuous(ctx context.Context, opts Options) (<-chan []BL
 	go func() {
 		defer close(out)
 		defer sc.Close()
-		runScan(ctx, sc, want, interval, out)
+		runScan(ctx, sc, want, interval, opts.MaxDevices, out)
 	}()
 	return out, nil
 }
@@ -137,8 +146,9 @@ func DiscoverBluetoothContinuous(ctx context.Context, opts Options) (<-chan []BL
 // whenever it differs from what was last sent. Coalescing on the tick is what
 // keeps RSSI churn — which changes on nearly every advertising packet — from
 // spinning the channel.
-func runScan(ctx context.Context, sc scanner, want []string, interval time.Duration, out chan<- []BLEDeviceInfo) {
+func runScan(ctx context.Context, sc scanner, want []string, interval time.Duration, maxDevices int, out chan<- []BLEDeviceInfo) {
 	store := newDeviceStore()
+	store.limit = maxDevices
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -200,6 +210,7 @@ func sample(ctx context.Context, sc scanner, want []string, store *deviceStore, 
 
 // deviceStore accumulates sightings across samples, keyed by address.
 type deviceStore struct {
+	limit     int
 	byAddress map[string]BLEDeviceInfo
 	// pending is set when the store changed since the last delivered emit, so a
 	// dropped emit is retried on the following tick.
@@ -217,6 +228,18 @@ func newDeviceStore() *deviceStore {
 // recover.
 func (s *deviceStore) merge(d BLEDeviceInfo) bool {
 	prev, existed := s.byAddress[d.Address]
+	if !existed && s.limit > 0 && len(s.byAddress) >= s.limit {
+		var oldest string
+		for key, candidate := range s.byAddress {
+			if oldest == "" || candidate.LastSeen.Before(s.byAddress[oldest].LastSeen) || (candidate.LastSeen.Equal(s.byAddress[oldest].LastSeen) && key < oldest) {
+				oldest = key
+			}
+		}
+		if d.LastSeen.Before(s.byAddress[oldest].LastSeen) {
+			return false
+		}
+		delete(s.byAddress, oldest)
+	}
 	if existed && !deviceChanged(prev, d) {
 		return false
 	}
@@ -224,6 +247,12 @@ func (s *deviceStore) merge(d BLEDeviceInfo) bool {
 	// established: macOS reports a name only once the local-name AD field or
 	// the OS cache supplies it, and BlueZ populates UUIDs asynchronously after
 	// a device first appears.
+	if d.ServiceData == nil {
+		d.ServiceData = prev.ServiceData
+	}
+	if d.LastSeen.IsZero() {
+		d.LastSeen = prev.LastSeen
+	}
 	if d.Name == "" {
 		d.Name = prev.Name
 	}
@@ -259,6 +288,12 @@ func (s *deviceStore) snapshot() []BLEDeviceInfo {
 // treating an empty field as "no news" to match merge's field-preserving
 // behavior.
 func deviceChanged(prev, next BLEDeviceInfo) bool {
+	if !next.LastSeen.IsZero() && !next.LastSeen.Equal(prev.LastSeen) {
+		return true
+	}
+	if next.ServiceData != nil && !reflect.DeepEqual(prev.ServiceData, next.ServiceData) {
+		return true
+	}
 	if next.Name != "" && next.Name != prev.Name {
 		return true
 	}

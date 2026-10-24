@@ -94,7 +94,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceRenameCmd(),
 		newDevicePowerModeCmd(),
 		newDeviceUpdateCmd(),
-		newDeviceLocalMeshCmd(),
+		newLegacyDeviceLocalMeshCmd(),
 		newDeviceSyncTimeCmd(),
 	)
 	addToGroup("hardware",
@@ -619,7 +619,7 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			fmt.Printf("Default device set to: %s\n", tui.Device(device))
 			// Cloud identity is scoped by endpoint, organization and asset ID.
 			// It has no LAN hostname pin to clear or repopulate.
-			if isCloud {
+			if isCloud || strings.HasPrefix(device, "mesh:") {
 				return nil
 			}
 

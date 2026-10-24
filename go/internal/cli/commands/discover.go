@@ -40,7 +40,7 @@ func newDiscoverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "discover",
 		Short: "Discover local and cloud WendyOS devices",
-		Long:  "Continuously discover WendyOS devices in Nearby, Simulator, and Cloud tabs until Ctrl+C. Use --timeout to scan local devices once for a fixed duration.",
+		Long:  "Continuously discover WendyOS devices in Nearby, Simulator, and Cloud tabs until Ctrl+C. When an organization operator identity is selected, automatically join Wendy Net and include reachable mesh devices. Use --timeout to scan once for a fixed duration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var opts discovery.DiscoveryOptions
 
@@ -1563,7 +1563,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:       address,
 				AgentVersion:  discovery.SanitiseDisplayName(d.AgentVersion),
 				AgentOutdated: agentBehindCLI(version.Version, d.AgentVersion),
-				OS:            d.OS,
+				OS:            d.DisplayOS(),
 				OSVersion:     d.OSVersion,
 				Provisioned:   provisioned,
 				Hint:          lanProbeHint(d.LAN),

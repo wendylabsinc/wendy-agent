@@ -94,10 +94,30 @@
             [uuidStrings addObject:s];
         }
     }
+    NSDictionary<CBUUID *, NSData *> *serviceData = advertisementData[CBAdvertisementDataServiceDataKey];
+    NSMutableDictionary *encoded = [NSMutableDictionary dictionary];
+    for (CBUUID *key in serviceData) {
+        if (serviceData[key].length > 512) { continue; }
+        encoded[key.UUIDString] = [serviceData[key] base64EncodedStringWithOptions:0];
+        if (![uuidStrings containsObject:key.UUIDString]) { [uuidStrings addObject:key.UUIDString]; }
+    }
+    NSData *encodedJSON = [NSJSONSerialization dataWithJSONObject:encoded options:0 error:nil];
+    NSString *dataJSON = [[NSString alloc] initWithData:encodedJSON encoding:NSUTF8StringEncoding];
     NSString *joined = [uuidStrings componentsJoinedByString:@","];
 
     [self.discoveredLock lock];
     NSDictionary *existing = self.discovered[address];
+    // A background mesh join may scan for days. Bound even unrelated radio
+    // advertisements before they cross the native bridge.
+    if (!existing && self.discovered.count >= 1024) {
+        NSString *oldest = nil;
+        for (NSString *key in self.discovered) {
+            if (!oldest || [self.discovered[key][@"last_seen"] doubleValue] < [self.discovered[oldest][@"last_seen"] doubleValue]) {
+                oldest = key;
+            }
+        }
+        if (oldest) { [self.discovered removeObjectForKey:oldest]; }
+    }
     // Preserve fields a later, sparser advertisement omits: a device may
     // advertise its name and its service UUIDs in different packets.
     if (existing) {
@@ -112,6 +132,8 @@
         @"name": name ?: @"",
         @"service_uuids": joined ?: @"",
         @"rssi": RSSI ?: @0,
+        @"service_data": encoded.count ? dataJSON : (existing[@"service_data"] ?: @"{}"),
+        @"last_seen": @([NSDate date].timeIntervalSince1970),
     };
     [self.discoveredLock unlock];
 }
@@ -167,6 +189,8 @@
         devices[i].address = strdup([address UTF8String]);
         devices[i].name = strdup([(d[@"name"] ?: @"") UTF8String]);
         devices[i].service_uuids = strdup([(d[@"service_uuids"] ?: @"") UTF8String]);
+        devices[i].service_data = strdup([(d[@"service_data"] ?: @"{}") UTF8String]);
+        devices[i].last_seen = [d[@"last_seen"] doubleValue];
         devices[i].rssi = [d[@"rssi"] intValue];
     }
     [self.discoveredLock unlock];
@@ -223,6 +247,7 @@ void wendy_blescan_free_snapshot(WendyBLEScanSnapshot snapshot) {
         free((void *)snapshot.devices[i].address);
         free((void *)snapshot.devices[i].name);
         free((void *)snapshot.devices[i].service_uuids);
+        free((void *)snapshot.devices[i].service_data);
     }
     free(snapshot.devices);
 }

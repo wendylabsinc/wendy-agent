@@ -676,3 +676,51 @@ LAN browsing currently supports IPv4 endpoints and excludes Wendy Net carrier,
 underlay and service address ranges. Namespace tests cover scoped forwarding,
 withdrawal and coexistence with host Avahi; physical-link acceptance remains a
 separate validation step.
+
+## Desktop operator endpoints
+
+The CLI joins automatically during discovery when an organization operator
+certificate is selected. `NewOperatorCredentials` uses that certificate and key;
+`NewCredentials` still requires a device identity for the agent itself. Link
+admission accepts either a device or an operator in the same verified tenant.
+Service identities, legacy numeric identities, and other tenants remain refused.
+Devices must be updated to support these operator links.
+
+Operator links may cross routed Ethernet/Wi-Fi subnets. The CLI also uses
+ordinary `_wendyos._udp` discovery records as bounded, same-tenant dial hints,
+so a DNS-SD reflector can supply addresses across VLANs. It still dials the
+native mesh QUIC port and verifies the exact advertised device principal.
+Off-subnet incoming connections share the pre-authentication connection budget;
+after TLS, at least one endpoint must be an operator. Device-to-device LAN links
+remain on-link. Discovery hints never authorize routes or populate the roster.
+
+Operator endpoints preserve their complete SPIFFE principal. Their routing UUID
+is the first 16 bytes of SHA-256 over `wendy-net/operator-endpoint/1\0` followed by
+that principal; the existing mesh address rule uses the UUID's final ten bytes.
+This is an endpoint address, not a device identity. Operator manifests include
+that principal and may authorize only their exact return route, with agent port
+zero. They cannot advertise an agent or sign another device's route. Directory
+route authorization rejects conflicting principals claiming the same address.
+ML-DSA signatures use the un-hashed manifest preimage and the same principal
+binding as other signatures. Manifest signatures are bounded to 8192 bytes.
+
+The endpoint is shared by the same operator principal across logins. Concurrent
+mesh participation from multiple computers using that principal is unsupported;
+each operator has one routing endpoint per tenant. Certificate renewal retains
+its endpoint address and replay state.
+
+NAN presence v1 remains unchanged for devices. Presence v2 adds an operator's
+full principal after the fixed UUID and mesh-hint fields, bounded to a 255-byte
+advertisement. The receiver checks the derived endpoint UUID against that
+principal before using the hint; TLS remains the authentication boundary.
+
+`PacketNetwork` separates the router from Linux interface management. Agents
+retain their kernel backend. The CLI supplies a private gVisor IPv6 stack,
+installing only authenticated host routes and retaining TCP connections as the
+Babel next hop changes. This adds no host-wide routes or DNS settings.
+
+Tests cover operator ML-DSA admission, tenant gating, signed route ownership,
+three-node TLS routing with TCP failover, private IPC, and discovery lifecycle.
+Routed Wi-Fi-to-Ethernet discovery and direct/multi-hop operator RPCs have also
+been verified on physical devices. NAN/BLE combinations still require hardware
+validation.

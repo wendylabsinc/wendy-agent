@@ -1,5 +1,3 @@
-//go:build linux
-
 package localmesh
 
 import (
@@ -62,14 +60,14 @@ func (l *leafNodeLink) ReadControl() (ControlMessage, error) {
 		if err != nil {
 			return m, err
 		}
-		device, err := meshid.DeviceFromCert(cert)
+		device, err := meshid.PeerFromCert(cert)
 		if err != nil || device != l.leaf {
 			return m, errors.New("leaf may supply only its own identity bundle")
 		}
 	case "identity-request":
 		// Requests can read other identities needed for endpoint authentication;
 		// they cannot install those identities or their announcements.
-		device, err := meshid.DeviceFromPrincipal(m.Principal)
+		device, err := meshid.PeerFromPrincipal(m.Principal)
 		if err != nil || device.Tenant() != l.leaf.Tenant() {
 			return m, errors.New("leaf requested an identity outside its tenant")
 		}

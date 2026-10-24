@@ -47,6 +47,7 @@ type TCPIdentity struct {
 	Name                    string
 	AgentPort               uint16
 	Certificate, Chain, Key string
+	Agent                   *AgentMetadata
 }
 
 // Devices returns the parsed peers of a config loaded for self.

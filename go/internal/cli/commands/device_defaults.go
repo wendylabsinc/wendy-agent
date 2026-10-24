@@ -279,6 +279,10 @@ func unsetPickerDefault() (string, error) {
 var connectCloudDeviceSelectorFn = connectCloudDeviceSelector
 
 func connectNamedDeviceSelector(ctx context.Context, device string, suppressUpdate bool) (*SelectedDevice, bool, error) {
+	if strings.HasPrefix(device, "mesh:") {
+		picked, err := connectMeshSelector(ctx, device)
+		return picked, true, err
+	}
 	if selector, matched, err := parseCloudDeviceSelector(device); matched {
 		if err != nil {
 			return nil, true, err
@@ -293,7 +297,7 @@ func connectNamedDeviceSelector(ctx context.Context, device string, suppressUpda
 		picked, err := connectSimulatorChoiceFn(ctx, &simulatorChoice{Name: name}, suppressUpdate)
 		return picked, true, err
 	}
-	return nil, false, nil
+	return connectDiscoveredMeshName(ctx, device)
 }
 
 // Used by the MCP connection adapter, which receives the selected identity as

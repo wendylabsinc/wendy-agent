@@ -19,6 +19,13 @@ type RouteOrigin struct {
 }
 
 func (m Manifest) validateRoute(device meshid.Device) error {
+	if device.IsOperator() {
+		if m.Principal != device.Principal() || m.AgentPort != 0 {
+			return errors.New("operator manifest must identify its principal and cannot advertise an agent")
+		}
+	} else if m.Principal != "" && m.Principal != device.Principal() {
+		return errors.New("manifest principal mismatch")
+	}
 	if m.Route == nil {
 		return nil
 	}
@@ -70,6 +77,13 @@ func authorizedOrigins(verified []Manifest, tenant meshid.Tenant) map[RouteOrigi
 			continue
 		}
 		device := meshid.NewDevice(tenant, m.Device)
+		if m.Principal != "" {
+			var err error
+			device, err = meshid.PeerFromPrincipal(m.Principal)
+			if err != nil || device.Tenant() != tenant || device.UUID() != m.Device {
+				continue
+			}
+		}
 		if !device.IsValid() || m.validateRoute(device) != nil {
 			continue
 		}

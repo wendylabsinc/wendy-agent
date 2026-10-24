@@ -189,7 +189,7 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 
 // connectableLiteMDNSService rejects incomplete/stale DNS-SD records. The
 // Wendy Lite LAN connector requires both an IP and a port; presenting a row
-// without them creates a blank-address "LAN (Lite)" device that can never be
+// without them creates a blank-address "LAN" device that can never be
 // selected successfully (commonly an offline device lingering in the macOS
 // mDNSResponder cache).
 func connectableLiteMDNSService(svc discovery.MDNSService) bool {

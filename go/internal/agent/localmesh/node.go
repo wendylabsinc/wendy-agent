@@ -1,5 +1,3 @@
-//go:build linux
-
 package localmesh
 
 import (
@@ -32,7 +30,7 @@ type nodePeer struct {
 	cost           uint16
 	transport      string
 	link           nodeLink
-	tun            *os.File
+	tun            io.ReadWriteCloser
 	pendingBundles sync.Map // fingerprints queued or being written on this link
 	control        chan ControlMessage
 	catalog        chan ControlMessage
@@ -82,7 +80,7 @@ type nodeEvent struct {
 type Node struct {
 	controlHub      *ControlHub
 	Credentials     *Credentials
-	kernel          *Kernel
+	kernel          PacketNetwork
 	cache           *IdentityCache
 	directory       *Directory
 	bundleHints     *bundleHintCache
@@ -105,7 +103,20 @@ type Node struct {
 }
 
 func NewNode(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16) (*Node, error) {
-	if credentials == nil || agentPort == 0 {
+	return newNode(parent, dir, credentials, name, agentPort, newHostNetwork)
+}
+
+// NewNodeWithNetwork runs the same authenticated router with a caller-owned
+// packet backend. The node closes the backend when Run returns.
+func NewNodeWithNetwork(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16, network PacketNetwork) (*Node, error) {
+	if network == nil {
+		return nil, errors.New("missing mesh packet network")
+	}
+	return newNode(parent, dir, credentials, name, agentPort, func(meshid.Device) (PacketNetwork, error) { return network, nil })
+}
+
+func newNode(parent context.Context, dir string, credentials *Credentials, name string, agentPort uint16, createNetwork func(meshid.Device) (PacketNetwork, error)) (*Node, error) {
+	if credentials == nil || (agentPort == 0 && !credentials.Device.IsOperator()) {
 		return nil, errors.New("missing wendy net credentials or agent port")
 	}
 	now := time.Now()
@@ -128,7 +139,7 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	if err != nil {
 		return nil, err
 	}
-	kernel, err := NewKernel(credentials.Device)
+	kernel, err := createNetwork(credentials.Device)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +147,9 @@ func NewNode(parent context.Context, dir string, credentials *Credentials, name 
 	n := &Node{controlHub: NewControlHub(cache.Certificates()), Credentials: credentials, kernel: kernel, cache: cache, directory: directory, bundleHints: newBundleHintCache(), store: store, state: state, peers: map[babel.LinkID]*nodePeer{}, events: make(chan nodeEvent, 256), ctx: ctx, cancel: cancel, started: now,
 		advertisement: Manifest{Version: ManifestVersionRoute, Device: credentials.Device.UUID(), Name: name, AgentPort: agentPort},
 		diagnostics:   carrierDiagnostics{enabled: os.Getenv("WENDY_NET_CARRIER_DIAGNOSTICS") == "1"}}
+	if credentials.Device.IsOperator() {
+		n.advertisement.Principal = credentials.Device.Principal()
+	}
 	ok := false
 	defer func() {
 		if !ok {
@@ -204,6 +218,10 @@ func (n *Node) Snapshot() NodeSnapshot {
 	}
 	out.Devices = append([]Manifest(nil), v.Devices...)
 	for i := range out.Devices {
+		if agent := out.Devices[i].Agent; agent != nil {
+			copy := *agent
+			out.Devices[i].Agent = &copy
+		}
 		if route := out.Devices[i].Route; route != nil {
 			copy := *route
 			out.Devices[i].Route = &copy
@@ -498,7 +516,7 @@ func (n *Node) writePeerControl(p *nodePeer, m ControlMessage) error {
 		if err != nil {
 			return nil
 		}
-		device, err := meshid.DeviceFromCert(leaf)
+		device, err := meshid.PeerFromCert(leaf)
 		if err != nil {
 			return nil
 		}
