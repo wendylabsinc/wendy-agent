@@ -15,4 +15,4 @@ On Windows, use `python` and ensure the Gradle installation's `bin` directory is
 
 Expected application output: `WendyHelloWorld() = 42`.
 
-The example is a separate Gradle application. Its dependency is the local `distributions/kotlin/build/libs/wendy-core-<VERSION>-dev.jar`, which contains the JNI bridge and Go shared library. It does not use a project dependency, Maven Local, or a published Core artifact. Both builds use the installed Gradle 9.8.1; no wrapper is bundled.
+The example is a separate Gradle application. Its dependency is the local `distributions/kotlin/build/libs/wendy-core-<numeric-version>-dev.jar`, which contains the JNI bridge and Go shared library. It does not use a project dependency, Maven Local, or a published Core artifact. Both builds use the installed Gradle 9.8.1; no wrapper is bundled.
