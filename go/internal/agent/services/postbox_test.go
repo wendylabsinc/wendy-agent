@@ -802,6 +802,38 @@ func TestPostboxFetchesOperatorCAOnceAndCachesIt(t *testing.T) {
 	}
 }
 
+// An operator CA rotated under the same subject is a different issuer: the
+// cached old CA must not pass for it, and the entry is held until the new CA
+// is served and verifies.
+func TestPostboxRefetchesARotatedOperatorCA(t *testing.T) {
+	f := newPBFixture(t)
+	stop := cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(f.opLeaf.RawIssuer): {f.opCA}}
+	f.controlUntil("web", stop, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{f.opLeaf}, nil)
+	f.cycle() // caches the old CA
+
+	rotated, rotatedKey := mkCA(t, "operator authority", f.tenantCA, f.tenantCAKey)
+	leaf := mkLeaf(t, "spiffe://wendy.sh/tenant/"+f.tenant+"/operator/alice", f.opKey.PublicKey(), rotated, rotatedKey)
+	f.controlUntil("web", stop, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{leaf}, nil)
+	stray, _ := mkCA(t, "operator authority", f.tenantCA, f.tenantCAKey) // same subject, did not issue the leaf
+	for i, served := range [][]*x509.Certificate{nil, {f.opCA, stray}} { // NOT_FOUND, then CAs other than the leaf's
+		f.cloud.orgCAs = map[string][]*x509.Certificate{}
+		if served != nil {
+			f.cloud.orgCAs[string(leaf.RawIssuer)] = served
+		}
+		f.cycle()
+		if st := f.p.snapshot(); st.HighWater != 1 || len(f.ctr.stopCalls) != 1 || f.cloud.orgCAAsks != 2+i || len(st.OrgCAs) != 1 {
+			t.Fatalf("answer %d: entry not held: high water %d, stop %v, asks %d, cached %d", i, st.HighWater, f.ctr.stopCalls, f.cloud.orgCAAsks, len(st.OrgCAs))
+		}
+	}
+
+	f.cloud.orgCAs = map[string][]*x509.Certificate{string(leaf.RawIssuer): {rotated}}
+	f.cycle()
+	if st := f.p.snapshot(); st.HighWater != 2 || len(f.ctr.stopCalls) != 2 || len(st.OrgCAs) != 2 {
+		t.Fatalf("rotated CA not used: high water %d, stop %v, cached %d", st.HighWater, f.ctr.stopCalls, len(st.OrgCAs))
+	}
+}
+
 func TestPostboxHoldsEntryUntilAnOperatorCAVerifies(t *testing.T) {
 	f := newPBFixture(t)
 	f.controlUntil("web", cloudpbv2.ContainerAction_CONTAINER_ACTION_STOP, timestamppb.New(f.now.Add(time.Hour)), []*x509.Certificate{f.opLeaf}, nil)

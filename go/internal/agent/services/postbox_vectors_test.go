@@ -163,6 +163,17 @@ func TestPostboxEntryVectors(t *testing.T) {
 		return &postboxIdentity{tenant: doc.OrganizationID, uuid: deviceUUID, uri: doc.Device, anchors: []*x509.Certificate{orgCA}}
 	}
 
+	// The operator leaf the vectors sign with, the one GetOrgCAs is asked about.
+	raw, _ := base64.StdEncoding.DecodeString(doc.ValidityVectors[0].SignedRequest)
+	var first cloudpbv2.SignedRequest
+	if err := proto.Unmarshal(raw, &first); err != nil {
+		t.Fatal(err)
+	}
+	leaf := peekLeaf(first.GetSignature())
+	if leaf == nil {
+		t.Fatal("no operator leaf in the vectors")
+	}
+
 	// served is the operator-ca-valid answer: every validity vector resolves
 	// its leaf-only x5c through it.
 	var served *cloudpbv2.GetOrgCAsResponse
@@ -183,7 +194,9 @@ func TestPostboxEntryVectors(t *testing.T) {
 			}
 			p := newVectorPostbox(t)
 			id := ident()
-			err := p.resolveIssuerName(context.Background(), client, id, want.GetIssuer(), time.Unix(doc.VerifyAt, 0))
+			asked := *leaf // the not-found vector asks about an issuer no CA has
+			asked.RawIssuer = want.GetIssuer()
+			err := p.fetchIssuer(context.Background(), client, id, &asked, time.Unix(doc.VerifyAt, 0))
 			got, code := "valid", ""
 			if err != nil {
 				got = "invalid"

@@ -615,8 +615,10 @@ func verifyPostboxSignature(e *cloudpbv2.PostboxEntry, id *postboxIdentity, sign
 
 // resolveIssuer makes sure the CA that issued the entry's operator leaf is
 // one this device can chain through. When it is not, it asks GetOrgCAs for
-// that issuer and caches the served CA with that subject once it verifies as
-// issued directly by its tenant CA (conformance/postbox-entry). An error means hold: NOT_FOUND, a transport
+// that issuer and caches the served CA that issued the leaf once it verifies
+// as issued directly by its tenant CA (conformance/postbox-entry). A CA
+// rotated under the same subject is a different issuer: the old one stays
+// cached for entries it signed. An error means hold: NOT_FOUND, a transport
 // failure, or no served CA verified. An unparseable leaf is left for
 // verification to refuse.
 func (p *Postbox) resolveIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, e *cloudpbv2.PostboxEntry, now time.Time) error {
@@ -624,26 +626,25 @@ func (p *Postbox) resolveIssuer(ctx context.Context, client cloudpbv2.DevicePost
 	if leaf == nil {
 		return nil
 	}
-	known := func() bool {
-		for _, ca := range slices.Concat(id.anchors, id.orgCAs, peekIntermediates(e.GetRequestJws())) {
-			if bytes.Equal(ca.RawSubject, leaf.RawIssuer) {
-				return true
-			}
-		}
-		return false
-	}
-	if known() {
+	if slices.ContainsFunc(slices.Concat(id.anchors, id.orgCAs, peekIntermediates(e.GetRequestJws())), func(ca *x509.Certificate) bool { return issued(ca, leaf) }) {
 		return nil
 	}
-	return p.resolveIssuerName(ctx, client, id, leaf.RawIssuer, now)
+	return p.fetchIssuer(ctx, client, id, leaf, now)
 }
 
-// resolveIssuerName asks GetOrgCAs for the CA named issuer (DER Name) and
-// caches a served CA only if its subject is that Name and it verifies; the
-// rest of the response is ignored. It fails unless a cached CA now has that
-// subject.
-func (p *Postbox) resolveIssuerName(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, issuer []byte, now time.Time) error {
-	resp, err := client.GetOrgCAs(ctx, &cloudpbv2.GetOrgCAsRequest{Issuer: issuer})
+// issued reports whether ca issued leaf: its subject is the leaf's issuer
+// Name and its key signed the leaf.
+func issued(ca, leaf *x509.Certificate) bool {
+	return bytes.Equal(ca.RawSubject, leaf.RawIssuer) && leaf.CheckSignatureFrom(ca) == nil
+}
+
+// fetchIssuer asks GetOrgCAs for the CA named by leaf's issuer and caches a
+// served CA only if it issued leaf and verifies; the rest of the response is
+// ignored. It fails unless a cached CA now issued leaf.
+// ponytail: the cache only grows, by one CA per rotation; prune expired CAs
+// if rotations ever become frequent.
+func (p *Postbox) fetchIssuer(ctx context.Context, client cloudpbv2.DevicePostboxServiceClient, id *postboxIdentity, leaf *x509.Certificate, now time.Time) error {
+	resp, err := client.GetOrgCAs(ctx, &cloudpbv2.GetOrgCAsRequest{Issuer: leaf.RawIssuer})
 	if err != nil {
 		return fmt.Errorf("GetOrgCAs: %w", err)
 	}
@@ -655,8 +656,8 @@ func (p *Postbox) resolveIssuerName(ctx context.Context, client cloudpbv2.Device
 			p.logger.Warn("postbox: refused a CA cloud served", zap.String("audit", "postbox"), zap.String("reason", code), zap.Error(err))
 			continue
 		}
-		if !bytes.Equal(ca.RawSubject, issuer) {
-			continue // a CA the tenant CA issued, but not the one asked for (e.g. the Device CA)
+		if !issued(ca, leaf) {
+			continue // a CA the tenant CA issued, but not this leaf's (e.g. the Device CA)
 		}
 		if !slices.ContainsFunc(id.orgCAs, ca.Equal) {
 			id.orgCAs = append(id.orgCAs, ca)
@@ -668,7 +669,7 @@ func (p *Postbox) resolveIssuerName(ctx context.Context, client cloudpbv2.Device
 			return err
 		}
 	}
-	if !slices.ContainsFunc(id.orgCAs, func(ca *x509.Certificate) bool { return bytes.Equal(ca.RawSubject, issuer) }) {
+	if !slices.ContainsFunc(id.orgCAs, func(ca *x509.Certificate) bool { return issued(ca, leaf) }) {
 		return errors.New("no CA cloud served for this issuer is issued by this device's tenant CA")
 	}
 	return nil
